@@ -4,6 +4,7 @@ import {
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
   publicSpeechJudgmentFamily,
+  publicSpeechMovesForPosition,
   publicTargetPronounBallotClaims,
   publicSpeechMoveCarriesJudgment,
   publicSpeechMoveContextIssue,
@@ -29,6 +30,12 @@ test('accepts all six speech moves with only their owned judgment fields', () =>
       stances,
     }), undefined, move)
   }
+})
+
+test('reserves commit for closing speakers', () => {
+  assert.equal(publicSpeechMovesForPosition('early').includes('commit'), false)
+  assert.equal(publicSpeechMovesForPosition('middle').includes('commit'), false)
+  assert.equal(publicSpeechMovesForPosition('late').includes('commit'), true)
 })
 
 test('rejects judgment fields on conversational moves and missing fields on judgment moves', () => {
@@ -160,6 +167,14 @@ test('finds response requests directed at players whose speaking turn already en
     '4号自己得出面接住这条查验。',
     ['seat-4'],
   ), 'seat-4')
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '6号你先正面讲讲这个判断依据吧。',
+    ['seat-6'],
+  ), 'seat-6')
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '还是希望后面6号能正面讲清楚。',
+    ['seat-6'],
+  ), 'seat-6')
   assert.equal(unavailablePublicTargetResponseRequest(
     '我想听后位8号说说这张票。',
     unavailable,

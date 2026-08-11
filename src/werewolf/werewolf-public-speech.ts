@@ -13,6 +13,22 @@ export const STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES = [
 /** One accepted public table-speech action. */
 export type StandardWerewolfPublicSpeechMove = typeof STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES[number]
 
+/** Speaker position used to expose only moves that are timely at the table. */
+export type StandardWerewolfPublicSpeechPosition = 'early' | 'middle' | 'late'
+
+/**
+ * List speech moves available at one table position.
+ * @param position - speaker position in the living order.
+ * @returns every normal move, with vote-like commitment reserved for the closing seats.
+ */
+export function publicSpeechMovesForPosition(
+  position: StandardWerewolfPublicSpeechPosition,
+): readonly StandardWerewolfPublicSpeechMove[] {
+  return position === 'late'
+    ? STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES
+    : STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES.filter(move => move !== 'commit')
+}
+
 /**
  * Whether a value names one accepted public table-speech action.
  * @param value - value received from structured model output.
@@ -144,8 +160,10 @@ const PUBLIC_RESPONSE_REQUEST_REFERENCES = [
   /(?:请|希望|让)\s*(\d+)\s*号(?:玩家)?[^。！？；]{0,18}(?:回应|回答|解释|表态|补(?:充|一句)|说(?:说|一下)?|讲(?:讲|一下)?|给(?:个|出))/gu,
   /(\d+)\s*号(?:玩家)?[，,:：]?(?:你)?(?:能否|能不能|可否|有没有|请|需要)[^。！？；]{0,18}(?:回应|回答|解释|表态|补(?:充|一句)|说(?:说|一下)?|讲(?:讲|一下)?|给(?:个|出))/gu,
   /(\d+)\s*号(?:玩家)?[^。！？；]{0,18}(?:后面|接下来|再|怎么)[^。！？；]{0,8}(?:回应|回答|解释|表态|补(?:充|一句)|说(?:说|一下)?|讲(?:讲|一下)?|给(?:个|出))/gu,
-  /(\d+)\s*号(?:玩家)?[^\d。！？；]{0,12}(?:后续|后面|接下来)[^。！？；]{0,16}(?:动作|表现|怎么走|接(?:住)?|回应|解释|表态|发言)/gu,
+  /(\d+)\s*号(?:玩家)?[^\d。！？；]{0,12}(?:后续|后面|接下来)[^。！？；]{0,16}(?:动作|表现|怎么走|接(?:住)?|回应|解释|表态|发言|讲清楚|说清楚)/gu,
+  /(?:后续|后面|接下来)[^\d。！？；]{0,8}(\d+)\s*号(?:玩家)?[^。！？；]{0,12}(?:能|要|得|需要|应该)[^。！？；]{0,8}(?:讲清楚|说清楚|解释|回应|表态|发言)/gu,
   /(\d+)\s*号(?:玩家)?[^\d。！？；]{0,12}(?:自己|本人)[^。！？；]{0,8}(?:得|要|应该|需要)[^。！？；]{0,8}(?:出面|接住|回应|解释|表态|发言)/gu,
+  /(\d+)\s*号(?:玩家)?[^\d。！？；]{0,8}(?:你)?(?:先|再|需要|应该|得)[^。！？；]{0,8}(?:正面)?(?:讲讲|说说|讲清楚|说清楚|解释一下|回应一下|表态一下)(?!了|过)/gu,
 ] as const
 
 /**

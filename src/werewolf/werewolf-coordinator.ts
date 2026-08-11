@@ -89,6 +89,7 @@ import {
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
   publicSpeechJudgmentFamily,
+  publicSpeechMovesForPosition,
   publicTargetPronounBallotClaims,
   publicSpeechMoveCarriesJudgment,
   publicSpeechMoveContextIssue,
@@ -138,17 +139,17 @@ const CHARACTER_DECISION_STYLES = [
 ] as const
 // This auditable denylist is intentionally kept as one literal so its alternatives cannot acquire different flags.
 // oxlint-disable-next-line @stylistic/max-len
-const WOLF_SELF_DISCLOSURE = /(?:我是|作为|身为)\s*(?:一名)?\s*狼(?:人)?(?:阵营)?|(?:我|本人)\s*(?:属于|来自)\s*狼(?:人)?阵营|(?:保护|帮助|掩护)\s*(?:我的)?\s*狼(?:队友|队)|狼队友|\bour\s+wolf(?:\s+team|\s+pack)?\b/iu
+const WOLF_SELF_DISCLOSURE = /(?:我是|我\s*\d+\s*号(?:玩家)?\s*是|作为|身为)\s*(?:一名)?\s*狼(?:人)?(?:阵营)?|(?:我|本人)\s*(?:属于|来自)\s*狼(?:人)?阵营|(?:保护|帮助|掩护)\s*(?:我的)?\s*狼(?:队友|队)|狼队友|\bour\s+wolf(?:\s+team|\s+pack)?\b/iu
 type PrivateRoleClaim = 'seer' | 'witch' | 'hunter' | 'idiot' | 'villager'
 const PRIVATE_ROLE_SELF_CLAIMS: readonly {
   readonly role: PrivateRoleClaim
   readonly pattern: RegExp
 }[] = [
-  { role: 'seer', pattern: /(?:我是|作为|身为|我的身份(?:是|为)|我(?:跳|自称)|我)\s*(?:一名)?\s*预言家|\b(?:i am|i'm|as)\s+(?:(?:an?|the)\s+)?(?:seer|prophet)\b/iu },
-  { role: 'witch', pattern: /(?:我是|作为|身为|我的身份(?:是|为)|我(?:跳|自称)|我)\s*(?:一名)?\s*女巫|\b(?:i am|i'm|as)\s+(?:(?:an?|the)\s+)?witch\b/iu },
-  { role: 'hunter', pattern: /(?:我是|作为|身为|我的身份(?:是|为)|我(?:跳|自称)|我)\s*(?:一名)?\s*猎(?:人|手)|\b(?:i am|i'm|as)\s+(?:(?:an?|the)\s+)?hunter\b/iu },
-  { role: 'idiot', pattern: /(?:我是|作为|身为|我的身份(?:是|为)|我(?:跳|自称)|我)\s*(?:一名)?\s*白痴|\b(?:i am|i'm|as)\s+(?:(?:an?|the)\s+)?idiot\b/iu },
-  { role: 'villager', pattern: /(?:我是|作为|身为|我的身份(?:是|为)|我(?:跳|自称)|我)\s*(?:一名)?\s*(?:(?:普通)?村民|平民)|\b(?:i am|i'm|as)\s+(?:(?:an?|the)\s+)?villager\b/iu },
+  { role: 'seer', pattern: /(?:我是|我\s*\d+\s*号(?:玩家)?\s*是|作为|身为|我的身份(?:是|为)|我(?:跳|自称)|我)\s*(?:一名)?\s*预言家|\b(?:i am|i'm|as)\s+(?:(?:an?|the)\s+)?(?:seer|prophet)\b/iu },
+  { role: 'witch', pattern: /(?:我是|我\s*\d+\s*号(?:玩家)?\s*是|作为|身为|我的身份(?:是|为)|我(?:跳|自称)|我)\s*(?:一名)?\s*女巫|\b(?:i am|i'm|as)\s+(?:(?:an?|the)\s+)?witch\b/iu },
+  { role: 'hunter', pattern: /(?:我是|我\s*\d+\s*号(?:玩家)?\s*是|作为|身为|我的身份(?:是|为)|我(?:跳|自称)|我)\s*(?:一名)?\s*猎(?:人|手)|\b(?:i am|i'm|as)\s+(?:(?:an?|the)\s+)?hunter\b/iu },
+  { role: 'idiot', pattern: /(?:我是|我\s*\d+\s*号(?:玩家)?\s*是|作为|身为|我的身份(?:是|为)|我(?:跳|自称)|我)\s*(?:一名)?\s*白痴|\b(?:i am|i'm|as)\s+(?:(?:an?|the)\s+)?idiot\b/iu },
+  { role: 'villager', pattern: /(?:我是|我\s*\d+\s*号(?:玩家)?\s*是|作为|身为|我的身份(?:是|为)|我(?:跳|自称)|我)\s*(?:一名)?\s*(?:(?:普通)?村民|平民)|\b(?:i am|i'm|as)\s+(?:(?:an?|the)\s+)?villager\b/iu },
 ]
 
 const DECISION_TRACE_PROPERTIES = {
@@ -232,13 +233,16 @@ const PUBLIC_STATEMENT_SCHEMA = {
   description: '完成所选 speech_move 的一段自然中文桌面发言。通常一至两个短句，一轮只接一个具体点；允许直接说不知道、承认改口或只落一张票。pass 固定填写“过”。字段值只能包含玩家真正说出口的正文，不得换行或包含改写过程、自检与安全分析。只能依据公开记录；不得透露自己的私密身份或阵营，不得把平安夜、私密信息或真实身份当作预言家查验的印证，也不得声称尚未发言的玩家已经说过某段内容。',
 } as const
 
-const statementOutputSchema = (targets: readonly RoleplayActorId[]): ObjectJsonSchema => ({
+const statementOutputSchema = (
+  targets: readonly RoleplayActorId[],
+  moves: readonly StandardWerewolfPublicSpeechMove[] = STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
+): ObjectJsonSchema => ({
   type: 'object',
   additionalProperties: false,
   properties: {
     speech_move: {
       type: 'string',
-      enum: [...STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES],
+      enum: [...moves],
       description: 'assess 提出一个新判断；respond 回应别人对自己的具体质疑；revise 用新公开信息修正旧判断；hold 明确保留在哪个信息缺口；commit 落一个当前去向；pass 只说“过”。',
     },
     target_id: {
@@ -255,14 +259,17 @@ const statementOutputSchema = (targets: readonly RoleplayActorId[]): ObjectJsonS
   required: ['speech_move', 'target_id', 'stance', ...DECISION_TRACE_REQUIRED, 'statement'],
 })
 
-const wolfStatementOutputSchema = (targets: readonly RoleplayActorId[]): ObjectJsonSchema => ({
+const wolfStatementOutputSchema = (
+  targets: readonly RoleplayActorId[],
+  moves: readonly StandardWerewolfPublicSpeechMove[] = STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
+): ObjectJsonSchema => ({
   type: 'object',
   additionalProperties: false,
   properties: {
     action: { type: 'string', enum: ['speak', 'explode'] },
     speech_move: {
       type: 'string',
-      enum: [...STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES],
+      enum: [...moves],
       description: '正常发言按 assess、respond、revise、hold、commit 或 pass 选择一个动作；选择自爆时使用 pass。',
     },
     target_id: {
@@ -2230,6 +2237,7 @@ async function coordinateDiscussion(
     const position = tableIndex < Math.ceil(living.length / 3)
       ? 'early'
       : tableIndex >= living.length - Math.ceil(living.length / 3) ? 'late' : 'middle'
+    const speechMoves = publicSpeechMovesForPosition(position)
     const positionInstruction = position === 'early'
       ? '公开信息还少：有一个可核对的点就判断它，信息缺口还在就保留或过。'
       : position === 'late'
@@ -2262,7 +2270,7 @@ async function coordinateDiscussion(
       + 'assess 从一项尚未覆盖的公开信息提出新判断；respond 引用并回应本轮指向自己的具体质疑；'
       + 'revise 先承认自己此前的判断，再指出哪项新公开信息触发目标或立场改变；'
       + 'hold 明确判断停在哪个尚缺的信息，不硬点身份；commit 承接桌上已有候选，只落当前去向；pass 只说“过”。'
-      + 'commit 的 target_id 必须已经出现在 covered_public_judgments 中且不能是自己；没有合法候选时使用 assess、hold 或 pass。'
+      + 'commit 只用于 late 位置，target_id 必须已经出现在 covered_public_judgments 中且不能是自己；没有合法候选时使用 assess、hold 或 pass。'
       + 'assess、revise、commit 填写 target_id 与 stance，statement 明确说出对应“N号”；'
       + 'respond、hold、pass 的 target_id 与 stance 都填 null。public_discussion_context.covered_public_judgments 是本轮已有判断。'
       + 'hold 必须指出一个仍可从存活且尚未发言的玩家处获得的具体缺口；若只能说“信息太少”“没有线索”或泛泛等待后位，直接选择 pass。'
@@ -2296,7 +2304,7 @@ async function coordinateDiscussion(
           '你是狼人杀中代表狼队作出本轮公开行动的一名狼人。依据狼队私密身份、自己的历史决定与公开记录，战略性选择发言或自爆。',
           true,
         ),
-        outputSchema: wolfStatementOutputSchema(publicJudgmentTargets),
+        outputSchema: wolfStatementOutputSchema(publicJudgmentTargets, speechMoves),
         pendingPublicStatements: visiblePending,
         publicEvidenceIds,
         allowedPublicRoleClaims: standardWerewolfRoleIn(world, actorId) === 'seer' ? ['seer'] : [],
@@ -2313,7 +2321,7 @@ async function coordinateDiscussion(
           actorId,
           '你是狼人杀中独立准备公开发言的玩家。依据自己的身份、已知事实与已公开记录作出可信发言。',
         ),
-        outputSchema: statementOutputSchema(publicJudgmentTargets),
+        outputSchema: statementOutputSchema(publicJudgmentTargets, speechMoves),
         pendingPublicStatements: visiblePending,
         publicEvidenceIds,
         allowedPublicRoleClaims: standardWerewolfRoleIn(world, actorId) === 'seer' ? ['seer'] : [],
