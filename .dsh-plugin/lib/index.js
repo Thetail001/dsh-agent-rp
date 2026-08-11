@@ -12779,7 +12779,7 @@ function assertDecisionTrace(value, options, visibleIds, committedMemory) {
 		} else {
 			if (typeof trace.target_id !== "string" || !options.publicJudgmentTargets.includes(asRoleplayActorId(trace.target_id))) throw new DecisionValidationError("shape", `${options.label} returned an invalid public judgment target`);
 			if (!STANDARD_WEREWOLF_PUBLIC_STANCES.includes(trace.stance)) throw new DecisionValidationError("shape", `${options.label} returned an invalid public judgment stance`);
-			const repeated = standardWerewolfRoleIn(options.world, options.actorId) === "seer" && [trace.statement, trace.fallback_statement].some((candidate) => typeof candidate === "string" && SEER_RESULT_REFERENCE.test(candidate)) ? void 0 : options.publicDiscussionContext?.coveredJudgments.find((judgment) => judgment.targetId === trace.target_id && publicJudgmentKind(judgment.stance) === publicJudgmentKind(trace.stance));
+			const repeated = standardWerewolfRoleIn(options.world, options.actorId) === "seer" && [trace.statement, trace.fallback_statement].some((candidate) => typeof candidate === "string" && SEER_RESULT_REFERENCE.test(candidate)) ? void 0 : options.publicDiscussionContext?.coveredJudgments.findLast((judgment) => judgment.targetId === trace.target_id && publicJudgmentKind(judgment.stance) === publicJudgmentKind(trace.stance));
 			if (repeated !== void 0 && !evidenceIds.some((id) => {
 				if (!options.publicEvidenceIds?.includes(id) || repeated.availableEvidenceIds.includes(id)) return false;
 				const speechActor = /^day:\d+:speech:(seat-\d+)$/u.exec(id)?.[1];
@@ -12871,7 +12871,7 @@ const PUBLIC_STATEMENT_INTERVIEW_ARTIFACT = new RegExp([
 	"[^，。！？]{0,24}是[^，。！？]{0,24}还是[^，。！？]{0,24}",
 	"而不是"
 ].join("|"), "u");
-const DIRECT_PUBLIC_FOCUS_REFERENCE = new RegExp(["(?:想|要)?听(?:听)?\\s*(\\d+)\\s*号", "(\\d+)\\s*号(?:玩家)?[^。！？]{0,18}(?:说清楚|解释(?:一下)?|给出(?:理由|判断|说法))"].join("|"), "gu");
+const DIRECT_PUBLIC_FOCUS_REFERENCE = new RegExp(["(?:想|要)?听(?:听)?\\s*(\\d+)\\s*号", "(\\d+)\\s*号(?:玩家)?[^。！？]{0,18}(?:说清楚|讲清楚|解释(?:一下)?|给出(?:理由|判断|说法))"].join("|"), "gu");
 const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下|卸力|遮掩|找台阶|回避|矛盾|没(?:有)?给出|空洞|摇摆|改口|转向/iu;
 const SELF_BALLOT_REFERENCE = /(?:投|票|上)(?:给)?我|我(?:被|让)[^。！？]{0,8}(?:投|票|上)/iu;
 const NO_DEATH_REFERENCE = /平安夜|昨夜平安|夜里?平安|(?:没有|无)玩家死亡|无人死亡/iu;

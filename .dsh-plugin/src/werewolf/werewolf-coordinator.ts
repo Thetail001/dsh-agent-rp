@@ -968,7 +968,7 @@ function assertDecisionTrace(
           typeof candidate === 'string' && SEER_RESULT_REFERENCE.test(candidate))
       const repeated = publishesSeerResult
         ? undefined
-        : options.publicDiscussionContext?.coveredJudgments.find(judgment =>
+        : options.publicDiscussionContext?.coveredJudgments.findLast(judgment =>
           judgment.targetId === trace.target_id
           && publicJudgmentKind(judgment.stance) === publicJudgmentKind(
             trace.stance as StandardWerewolfPublicStance,
@@ -1158,7 +1158,7 @@ const PUBLIC_STATEMENT_INTERVIEW_ARTIFACT = new RegExp([
 ].join('|'), 'u')
 const DIRECT_PUBLIC_FOCUS_REFERENCE = new RegExp([
   '(?:想|要)?听(?:听)?\\s*(\\d+)\\s*号',
-  '(\\d+)\\s*号(?:玩家)?[^。！？]{0,18}(?:说清楚|解释(?:一下)?|给出(?:理由|判断|说法))',
+  '(\\d+)\\s*号(?:玩家)?[^。！？]{0,18}(?:说清楚|讲清楚|解释(?:一下)?|给出(?:理由|判断|说法))',
 ].join('|'), 'gu')
 const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下|卸力|遮掩|找台阶|回避|矛盾|没(?:有)?给出|空洞|摇摆|改口|转向/iu
 const SELF_BALLOT_REFERENCE = /(?:投|票|上)(?:给)?我|我(?:被|让)[^。！？]{0,8}(?:投|票|上)/iu
