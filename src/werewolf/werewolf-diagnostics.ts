@@ -15,6 +15,7 @@ export type StandardWerewolfDecisionValidationIssue =
   | 'hold-grounding'
   | 'identity-reveal'
   | 'no-death-corroboration'
+  | 'night-outcome-corroboration'
   | 'private-corroboration'
   | 'private-role-disclosure'
   | 'public-claim-contradiction'

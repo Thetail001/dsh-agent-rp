@@ -27,6 +27,7 @@ import {
   publicStatementContainsFirstPersonAcknowledgement,
   publicStatementDisclosesWolfAlignment,
   publicStatementMisusesNoDeathCorroboration,
+  publicStatementMisusesNightOutcomeCorroboration,
   publicStatementNegatesCorroboration,
   publicStatementRequiresPriorBasisForSeerClaim,
   selectSaturatedPublicJudgment,
@@ -478,6 +479,27 @@ test('rejects listing an absent no-death night as missing Seer corroboration', (
   ), false)
   assert.equal(publicStatementMisusesNoDeathCorroboration(
     '这项查验目前只有12号自己的宣称，尚无其他公开记录可核对。',
+  ), false)
+})
+
+test('rejects night survival or death as evidence for a Seer result', () => {
+  assert.equal(publicStatementMisusesNightOutcomeCorroboration(
+    '9号说查验11号是好人，可首晚出局的是2号，11号并没被狼刀过，这条查验没有公开印证。',
+  ), true)
+  assert.equal(publicStatementMisusesNightOutcomeCorroboration(
+    '9号首夜查验11号好人，2号首晚出局说明这条查验暂时没法当凭据。',
+  ), true)
+  assert.equal(publicStatementMisusesNightOutcomeCorroboration(
+    '9号首夜查验11号，目前只有本人宣称，11号今天还活着没有反证。',
+  ), true)
+  assert.equal(publicStatementMisusesNightOutcomeCorroboration(
+    '11号还活着不能反驳9号的查验。',
+  ), false)
+  assert.equal(publicStatementMisusesNightOutcomeCorroboration(
+    '2号夜里死亡不能证明9号查验11号是真的。',
+  ), false)
+  assert.equal(publicStatementMisusesNightOutcomeCorroboration(
+    '2号的死亡和9号查验11号是两回事。',
   ), false)
 })
 

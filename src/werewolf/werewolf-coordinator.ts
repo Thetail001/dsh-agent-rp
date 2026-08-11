@@ -121,6 +121,7 @@ import {
   publicStatementContainsFirstPersonAcknowledgement,
   publicStatementDisclosesWolfAlignment,
   publicStatementMisusesNoDeathCorroboration,
+  publicStatementMisusesNightOutcomeCorroboration,
   publicStatementNegatesCorroboration,
   publicStatementRequiresPriorBasisForSeerClaim,
   selectSaturatedPublicJudgment,
@@ -1354,6 +1355,12 @@ function assertPublicDiscussionStatement(
       `${options.label} treated a no-death night as corroboration for a Seer claim or result`,
     )
   }
+  if (publicStatementMisusesNightOutcomeCorroboration(statement)) {
+    throw new DecisionValidationError(
+      'night-outcome-corroboration',
+      `${options.label} treated a player's night survival or death as evidence for a Seer result`,
+    )
+  }
   if (publicStatementRequiresPriorBasisForSeerClaim(statement)) {
     throw new DecisionValidationError(
       'seer-prior-basis',
@@ -2325,23 +2332,25 @@ function publicSpeechRetryInstruction(failure: DecisionFailure): string {
           ? 'hold 必须只点一名本轮尚未发言的玩家，并请他解释一项已经发生的公开行动；没有这样具体的等待目标时直接选择 pass。'
           : failure.issue === 'no-death-corroboration'
             ? '平安夜不能验证预言家宣称或查验结果，也不是查验应当具备的支撑。不要说“没有平安夜所以无法印证”；若查验只有当事人的宣称，直接说尚无其他公开记录可核对。'
-            : failure.issue === 'stance-text'
-              ? 'observe 只能写中性观察；若 statement 明确表达空洞、可疑或不放心，应把 stance 改成 question 或 suspect，并让 target_id 与最后点名一致。'
-              : failure.issue === 'seer-prior-basis'
-                ? '预言家的首夜查验不需要“前置依据”。可以说这项查验目前只有本人宣称，或指出它与后续公开记录不符；不得把查验发生前没有公开支撑当作疑点。'
-                : failure.issue === 'public-grounding'
-                  ? '公开发言只能依赖 public_evidence_ids 中实际出现的事实；删去由沉默、未报名、私密身份或尚未发生的回应推导出的判断。'
-                : failure.issue === 'commit-grounding'
-                  ? 'commit 的 target_id 必须是 covered_public_judgments 已有目标；若想评价另一个目标，改用 assess，若没有独立判断则直接 pass。'
-                  : failure.issue === 'self-ballot'
-                    ? '说“投我／票给我”时只能描述公开记录中确实投给自己的选票，并在 evidence_ids 引用对应票型；否则删去这项票型归因。'
-                    : failure.issue === 'identity-reveal'
-                      ? '没有公开翻牌事实时，不得把任何座位写成已经确认的身份；预言家宣称应明确写成自己的查验主张，不等于全桌已确认。'
-                      : failure.issue === 'public-claim-contradiction'
-                        ? '重新核对警长竞选与公开发言，不得否认记录中已经出现的预言家查验宣称。可以质疑这项宣称，但不能说它从未出现。'
-                        : failure.issue === 'wolf-disclosure'
-                          ? '引用别人对你的狼人判断时，明确写成“某号说我／点我／查杀我”，不得写成自我承认。'
-                          : '严格核对 speech_move、target_id、stance、公开 evidence_ids 与 statement，只保留一个符合当前麦序的桌面动作。'
+            : failure.issue === 'night-outcome-corroboration'
+              ? '预言家验谁与狼人刀谁是两项独立行动。查验目标存活、死亡或另一名玩家夜间死亡都不能印证或反驳查验；只根据查验宣称本身与后续公开发言、票型或身份事实判断。'
+              : failure.issue === 'stance-text'
+                ? 'observe 只能写中性观察；若 statement 明确表达空洞、可疑或不放心，应把 stance 改成 question 或 suspect，并让 target_id 与最后点名一致。'
+                : failure.issue === 'seer-prior-basis'
+                  ? '预言家的首夜查验不需要“前置依据”。可以说这项查验目前只有本人宣称，或指出它与后续公开记录不符；不得把查验发生前没有公开支撑当作疑点。'
+                  : failure.issue === 'public-grounding'
+                    ? '公开发言只能依赖 public_evidence_ids 中实际出现的事实；删去由沉默、未报名、私密身份或尚未发生的回应推导出的判断。'
+                    : failure.issue === 'commit-grounding'
+                      ? 'commit 的 target_id 必须是 covered_public_judgments 已有目标；若想评价另一个目标，改用 assess，若没有独立判断则直接 pass。'
+                      : failure.issue === 'self-ballot'
+                        ? '说“投我／票给我”时只能描述公开记录中确实投给自己的选票，并在 evidence_ids 引用对应票型；否则删去这项票型归因。'
+                        : failure.issue === 'identity-reveal'
+                          ? '没有公开翻牌事实时，不得把任何座位写成已经确认的身份；预言家宣称应明确写成自己的查验主张，不等于全桌已确认。'
+                          : failure.issue === 'public-claim-contradiction'
+                            ? '重新核对警长竞选与公开发言，不得否认记录中已经出现的预言家查验宣称。可以质疑这项宣称，但不能说它从未出现。'
+                            : failure.issue === 'wolf-disclosure'
+                              ? '引用别人对你的狼人判断时，明确写成“某号说我／点我／查杀我”，不得写成自我承认。'
+                              : '严格核对 speech_move、target_id、stance、公开 evidence_ids 与 statement，只保留一个符合当前麦序的桌面动作。'
   return `上一次输出未通过桌面规则，请重新完成同一次发言。${correction}不要解释修正过程，只返回所需结构。`
 }
 
@@ -2469,6 +2478,7 @@ async function coordinateDiscussion(
       + '未报名和沉默本身不是可疑证据。身份声称属于公开策略：好人只能声称自己的真实身份；狼人可以伪装成任一好人身份，但已经公开的声称应保持连续。'
       + '可以质疑公开的预言家宣称，但不得说一项已经出现在竞选或发言记录中的查验从未出现。'
       + '首夜查验本身不需要前置依据；可以说它目前只有本人宣称，或指出它与后续公开记录不符，不能把查验发生前没有公开支撑当作疑点。'
+      + '预言家验谁与狼人刀谁是两项独立行动；查验目标存活、死亡或另一名玩家夜间死亡都不能印证或反驳查验。'
       + '平安夜不能印证预言家或查验结论，非预言家也不能用私密信息或真实身份为公开结论背书。'
       + '猎人开枪只公开猎人本人的身份，枪口不证明目标的身份或阵营，也不能核验预言家的查验。描述跨日记录时使用“第 N 天”。'
       + (publicEvidenceIds.length === 0

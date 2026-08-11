@@ -539,6 +539,27 @@ export function publicStatementMisusesNoDeathCorroboration(statement: string): b
     || !publicStatementNegatesCorroboration(statement)
 }
 
+const NIGHT_OUTCOME_REFERENCE = /狼刀|刀口|刀中|袭击|死亡|倒牌|出局|活着|存活/iu
+const NIGHT_OUTCOME_EVIDENCE_REFERENCE = /吻合|印证|证明|支持|支撑|佐证|说明|相符|一致|对应|凭据|反证|核验|核对/iu
+const NIGHT_OUTCOME_CORROBORATION_REBUTTAL = new RegExp([
+  '(?:不能|无法|不足以)[^。！？]{0,8}(?:反驳|否定|推翻|吻合|印证|证明|支持|支撑|佐证|核验|核对)',
+  '(?:不影响|无关|没有关系|两回事)',
+].join('|'), 'iu')
+
+/**
+ * Whether a statement treats a player's night survival or death as evidence for a Seer result.
+ * Wolf attacks and Seer inspections are independent, and this ruleset does not reveal a role on
+ * ordinary night death.
+ * @param statement - public table utterance.
+ * @returns whether the statement assigns invalid evidentiary weight to a night outcome.
+ */
+export function publicStatementMisusesNightOutcomeCorroboration(statement: string): boolean {
+  return SEER_RESULT_REFERENCE.test(statement)
+    && NIGHT_OUTCOME_REFERENCE.test(statement)
+    && NIGHT_OUTCOME_EVIDENCE_REFERENCE.test(statement)
+    && !NIGHT_OUTCOME_CORROBORATION_REBUTTAL.test(statement)
+}
+
 const SEER_PRIOR_BASIS_REFERENCE = new RegExp([
   '(?:预言家|查验|验人|金水|查杀)[^。！？]{0,32}',
   '(?:(?:没有|没|缺少|缺乏|拿不出|给不出)[^。！？]{0,8}(?:前置|事前|此前|之前)(?:依据|支撑|实据)',
