@@ -97,6 +97,8 @@ import {
 } from './werewolf-public-speech.ts'
 import { completeWolfBallotTargets } from './wolf-ballot.ts'
 
+export { DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS } from './werewolf-constants.ts'
+
 /** Model-facing tool that prepares one complete standard Werewolf night. */
 export const STANDARD_WEREWOLF_NIGHT_TOOL = 'standard_werewolf_night'
 /** Model-facing tool that closes simultaneous first-day Sheriff registration. */
@@ -107,8 +109,6 @@ export const STANDARD_WEREWOLF_SHERIFF_VOTE_TOOL = 'standard_werewolf_sheriff_vo
 export const STANDARD_WEREWOLF_ACTION_COMMAND = 'roleplay-action'
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647
-/** Default deadline for one coordinated standard Werewolf Character batch. */
-export const DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS = 30_000
 const COORDINATOR_TOOL_NAMES = new Set([
   STANDARD_WEREWOLF_NIGHT_TOOL,
   STANDARD_WEREWOLF_SHERIFF_REGISTRATION_TOOL,

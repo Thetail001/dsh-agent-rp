@@ -2,13 +2,20 @@
 
 import { randomInt } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
-import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-agent'
-import { createUserMessage, type ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-subagent'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
+import {
+  Config,
+  DEFAULT_DECISION_REASONING_EFFORT,
+  DEFAULT_DISCUSSION_REASONING_EFFORT,
+  PUBLIC_DISCUSSION_MAX_TOKENS,
+  STRUCTURED_DECISION_MAX_TOKENS,
+  type Config as RoleplayConfig,
+} from './config.ts'
 import RoleplayService from './runtime/index.ts'
 import type { RoleplayActorId } from './runtime/index.ts'
 import { registerRoleplaySessionEventTypes } from './runtime/session-event-vocabulary.ts'
@@ -27,49 +34,18 @@ import {
 
 /** Cordis plugin identity. */
 export const name = 'dsh-roleplay-portable-spike'
+export { Config }
 /** Base Host services required by the bundled runtime. */
 export const inject = ['systemPrompt', 'tools']
 
 const APPLICATION_HANDOFF_INSTRUCTION = '这是由“角色扮演”页面驱动的标准十二人狼人杀。普通对话不得推进对局、调用游戏工具或询问玩家行动。收到开局消息时，只回复“对局已创建，请切换到角色扮演页面。”，然后结束本轮。'
 const ROLEPLAY_SESSION_NOTICE = '狼人杀对局已创建'
-const STRUCTURED_DECISION_MAX_TOKENS = 2_048
-const PUBLIC_DISCUSSION_MAX_TOKENS = 2_048
-
-/** Runtime budgets for the portable Roleplay benchmark. */
-export interface Config {
-  /** Full wall-clock window for one asynchronous decision wave. */
-  decisionTimeoutMs?: number
-  /** Output-token cap for constrained choices such as targets and ballots. */
-  decisionMaxTokens?: number
-  /** Adapter-owned effort for constrained choices. */
-  decisionReasoningEffort?: string
-  /** Output-token cap for public table speech. */
-  discussionMaxTokens?: number
-  /** Adapter-owned effort for public table speech. */
-  discussionReasoningEffort?: string
-}
-
-/** Loader schema for portable Roleplay decision budgets. */
-export const Config: z<Config> = z.object({
-  decisionTimeoutMs: z.number().step(1).min(1).max(2_147_483_647)
-    .default(DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS),
-  decisionMaxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER)
-    .default(STRUCTURED_DECISION_MAX_TOKENS),
-  decisionReasoningEffort: z.string().default('off'),
-  discussionMaxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER)
-    .default(PUBLIC_DISCUSSION_MAX_TOKENS),
-  discussionReasoningEffort: z.string().default('high'),
-})
-
-function reasoningEffortId(value: string): ReasoningEffortId {
-  return value as ReasoningEffortId
-}
 
 /**
  * Install the generic runtime and attach standard Werewolf to top-level Agents.
  * @param ctx - settled Web Host context.
  */
-export async function apply(ctx: Context, config: Config): Promise<void> {
+export async function apply(ctx: Context, config: RoleplayConfig): Promise<void> {
   ctx.effect(() => registerRoleplaySessionEventTypes(KNOWN_SESSION_EVENT_TYPES))
   await ctx.plugin(RoleplayService)
   const roleplay = ctx.get('roleplay')
@@ -106,9 +82,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       installStandardWerewolfCoordinator(agent.ctx, webCtx.subagents, 'spawn', {
         decisionTimeoutMs: config.decisionTimeoutMs ?? DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS,
         decisionMaxTokens: config.decisionMaxTokens ?? STRUCTURED_DECISION_MAX_TOKENS,
-        decisionReasoningEffort: reasoningEffortId(config.decisionReasoningEffort ?? 'off'),
+        decisionReasoningEffort: ReasoningEffortId(
+          config.decisionReasoningEffort ?? DEFAULT_DECISION_REASONING_EFFORT,
+        ),
         discussionMaxTokens: config.discussionMaxTokens ?? PUBLIC_DISCUSSION_MAX_TOKENS,
-        discussionReasoningEffort: reasoningEffortId(config.discussionReasoningEffort ?? 'high'),
+        discussionReasoningEffort: ReasoningEffortId(
+          config.discussionReasoningEffort ?? DEFAULT_DISCUSSION_REASONING_EFFORT,
+        ),
         applicationOnly: true,
         humanActorId,
       })

@@ -8,6 +8,8 @@ The Web profile opens new top-level Sessions directly on the Roleplay view. Crea
 
 The benchmark supports night and day phases, Sheriff election, sequential public discussion, voting, special-role actions, victory resolution, and a developer-facing endgame review. Model dialogue remains experimental. Multiplayer is outside this preview.
 
+Character choices and public discussion default to thinking disabled with a 2,048-token output cap and a 30-second decision window. The bundle accepts the DeepSeek adapter's `off`, `high`, and `max` reasoning efforts; unsupported values fail during profile loading.
+
 ## Build and install
 
 Authenticate npm for the private `@deepseek-ai` registry, then install dependencies and build the two package entries:
