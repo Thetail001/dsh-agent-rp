@@ -13,6 +13,16 @@
   color: var(--dsw-alias-label-primary);
 }
 
+/* rc.1 does not yet consume the specialized-view composer hint. Keep the
+   fallback scoped to a conversation that actually contains this view. */
+:global([data-conversation-scroll]:has([data-conversation-composer='hidden'])) > :last-child {
+  display: none;
+}
+
+:global([data-phase]:has([data-conversation-view='exclusive']) [role='tablist']) {
+  display: none;
+}
+
 .header,
 .activity,
 .playerDesk,

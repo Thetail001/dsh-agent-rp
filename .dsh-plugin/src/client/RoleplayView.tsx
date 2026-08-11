@@ -703,6 +703,11 @@ export function RoleplayView({
   const pendingRef = useRef(false)
   const automaticAttemptRef = useRef<string | null>(null)
   const recordViewport = useRef<HTMLDivElement | null>(null)
+  const followLatestRecord = useRef(true)
+
+  useEffect(() => {
+    followLatestRecord.current = true
+  }, [sessionKey])
 
   useEffect(() => {
     setInputExpanded(false)
@@ -733,6 +738,7 @@ export function RoleplayView({
   useEffect(() => {
     const viewport = recordViewport.current
     if (viewport === null || surface === undefined || surface === null) return
+    if (!followLatestRecord.current) return
     viewport.scrollTop = viewport.scrollHeight
   }, [
     inputExpanded,
@@ -888,7 +894,17 @@ export function RoleplayView({
           <header className={css.panelHeader}>
             <div><h2>对局记录</h2></div>
           </header>
-          <div ref={recordViewport} className={css.recordViewport} role="log" aria-label="对局时间线">
+          <div
+            ref={recordViewport}
+            className={css.recordViewport}
+            role="log"
+            aria-label="对局时间线"
+            onScroll={(event) => {
+              const viewport = event.currentTarget
+              const distanceFromLatest = viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop
+              followLatestRecord.current = distanceFromLatest <= 24
+            }}
+          >
             <div className={css.recordStack}>
               <PublicRecordFeed surface={surface} waiting={waiting} onSelectActor={setSelectedActorId} />
               <Review surface={surface} />
