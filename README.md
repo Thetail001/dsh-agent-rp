@@ -4,7 +4,7 @@ This private repository tests one delivery property: one `.dsh-plugin` package c
 
 On a Web Host that provides the application Agent-setup registry, the Host entry registers one complete standard Werewolf setup. A fresh Session receives its random role layout, human seat, observer binding, scoped persona, coordinator, and Roleplay tools before the Session or Agent is published. Headless compositions load the generic runtime but do not create a scenario.
 
-Do not publish this package until the remaining release blockers below are resolved.
+Local single-player testing is ready. Public redistribution remains blocked only by the license decision below.
 
 ## Delivery route
 
@@ -20,7 +20,10 @@ Development builds run from the repository root after `pnpm install` and require
 - Acceptance runs set `DSH_TELEMETRY_DISABLED=1` and do not call a real model API.
 - Packaged files must contain no local path, credential name or value, telemetry value, distribution fingerprint, or private transcript content.
 
-## Release blockers
+## Distribution status
 
-- [dsh-external/issues#501](https://github.com/dsh-external/issues/issues/501): a projection-only application cannot prevent the browser from retrieving canonical parent or Character transcripts. Hosts advertising internal child-session visibility receive that stronger boundary automatically; the current target snapshot does not yet advertise it.
 - No redistribution license has been selected for this extracted package. It remains `private: true` and version `0.0.0` until that decision is explicit.
+
+## Future multiplayer hardening
+
+For local single-player Roleplay, the observer projection is a spoiler-safe presentation boundary rather than an adversarial security boundary: the Roleplay view presents observer-safe state, while the owner may intentionally inspect canonical or Character transcripts. [dsh-external/issues#501](https://github.com/dsh-external/issues/issues/501) becomes relevant if untrusted multiplayer clients or remote hosting later require server-enforced secrecy; it does not block local play or usability testing.
