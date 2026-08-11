@@ -285,6 +285,34 @@ export function publicTargetPronounBallotClaims(
   return claims
 }
 
+/**
+ * Find players whom a statement says acknowledged or admitted a prior point.
+ * Second- and third-person pronouns bind to the structured judgment target.
+ * @param statement - public table utterance containing a possible attribution.
+ * @param publicTargetId - structured target addressed or judged by the utterance.
+ * @returns deduplicated actor ids whose own public words must support the claim.
+ */
+export function publicAcknowledgementClaimActorIds(
+  statement: string,
+  publicTargetId: string,
+): readonly string[] {
+  const actors = new Set<string>()
+  if (/(?:你|他|她|对方)(?:也|都)?(?:自己)?(?:确实)?(?:认|承认|认可|同意)(?:了|过)?/u.test(statement)) {
+    actors.add(publicTargetId)
+  }
+  return [...actors]
+}
+
+/**
+ * Whether a player's own statement acknowledges a prior public point.
+ * @param statement - statement authored by the player being cited.
+ * @returns whether it contains an affirmative first-person acknowledgement.
+ */
+export function publicStatementContainsFirstPersonAcknowledgement(statement: string): boolean {
+  return /(?:^|[，。！？；:：])\s*我(?:也|都)?(?:自己)?(?:确实)?(?:认|承认|认可|同意)(?:了|过|这|那|[，。！？；]|$)/u
+    .test(statement)
+}
+
 const FUTURE_PLAYER_DEPENDENCY = new RegExp([
   '还(?:需要|需|要)(?:更多)?(?:公开)?信息',
   '待(?:观察|回应|解释|发言)',

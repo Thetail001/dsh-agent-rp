@@ -18,6 +18,7 @@ export type StandardWerewolfDecisionValidationIssue =
   | 'private-corroboration'
   | 'private-role-disclosure'
   | 'public-claim-contradiction'
+  | 'public-attribution'
   | 'public-grounding'
   | 'rationale'
   | 'response-grounding'

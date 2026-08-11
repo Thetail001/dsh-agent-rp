@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  publicAcknowledgementClaimActorIds,
   deniedPublicSeerClaims,
   directedPublicFocusTargetIds,
   finalPublicSpeechTargetId,
@@ -19,6 +20,7 @@ import {
   publicSeerCampaignClaimIssue,
   publicSeerClaimTargetIds,
   publicStatementClaimsCurrentSheriffAuthority,
+  publicStatementContainsFirstPersonAcknowledgement,
   publicStatementDisclosesWolfAlignment,
   publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
@@ -197,6 +199,24 @@ test('binds ambiguous ballot pronouns to the structured public target', () => {
     'seat-4',
     'seat-7',
   ), [{ voterId: 'seat-4', targetId: 'seat-7' }])
+})
+
+test('binds acknowledgement pronouns to the structured public target', () => {
+  assert.deepEqual(publicAcknowledgementClaimActorIds(
+    '你也认了，可轮到你只回一个“过”。',
+    'seat-6',
+  ), ['seat-6'])
+  assert.deepEqual(publicAcknowledgementClaimActorIds(
+    '他也自己认了，轮到自己解释却只回一个“过”。',
+    'seat-6',
+  ), ['seat-6'])
+  assert.equal(publicStatementContainsFirstPersonAcknowledgement(
+    '我认，那句话确实不妥。',
+  ), true)
+  assert.equal(publicStatementContainsFirstPersonAcknowledgement(
+    'seat-9: 我认，那句话确实不妥。',
+  ), true)
+  assert.equal(publicStatementContainsFirstPersonAcknowledgement('过'), false)
 })
 
 test('rejects future dependencies on eliminated players without blocking historical review', () => {

@@ -100,6 +100,7 @@ import {
   finalPublicSpeechTargetId,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
+  publicAcknowledgementClaimActorIds,
   publicHoldTargetIssue,
   publicSpeechMovesForPosition,
   publicTargetPronounBallotClaims,
@@ -112,6 +113,7 @@ import {
   publicSeerCampaignClaimIssue,
   publicSeerClaimTargetIds,
   publicStatementClaimsCurrentSheriffAuthority,
+  publicStatementContainsFirstPersonAcknowledgement,
   publicStatementDisclosesWolfAlignment,
   publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
@@ -1289,6 +1291,16 @@ function assertPublicDiscussionStatement(
   options: DecisionOptions,
 ): void {
   assertCitedBallotReferences(statement, evidenceIds, targetId, options)
+  if (typeof targetId === 'string') {
+    for (const actorId of publicAcknowledgementClaimActorIds(statement, targetId)) {
+      if (!publicEvidenceContainsAcknowledgement(options, evidenceIds, actorId)) {
+        throw new DecisionValidationError(
+          'public-attribution',
+          `${options.label} attributed an acknowledgement to a player whose cited words do not contain it`,
+        )
+      }
+    }
+  }
   for (const pattern of CERTAIN_PUBLIC_IDENTITY_REFERENCES) {
     for (const match of statement.matchAll(pattern)) {
       const seat = match[1]
@@ -1460,6 +1472,23 @@ function publicEvidenceContainsSeerClaim(
       ?? options.world.choices.find(choice => String(choice.id) === evidenceId)?.text
     return statement !== undefined && publicSeerClaimTargetIds(statement).includes(targetId)
   }) === true
+}
+
+function publicEvidenceContainsAcknowledgement(
+  options: DecisionOptions,
+  evidenceIds: readonly string[],
+  actorId: string,
+): boolean {
+  return evidenceIds.some((evidenceId) => {
+    const evidenceActor = /^sheriff:candidate:(seat-\d+)$/u.exec(evidenceId)?.[1]
+      ?? /^day:\d+:speech:(seat-\d+)$/u.exec(evidenceId)?.[1]
+    if (evidenceActor !== actorId) return false
+    const statement = options.pendingPublicStatements
+      ?.find(candidate => candidate.evidence_id === evidenceId)?.statement
+      ?? options.world.choices.find(choice => String(choice.id) === evidenceId)?.text
+    return statement !== undefined
+      && publicStatementContainsFirstPersonAcknowledgement(statement)
+  })
 }
 
 function seatActorId(number: string): RoleplayActorId {
@@ -2258,7 +2287,9 @@ function explicitHumanQuestionJudgments(
 function publicSpeechRetryInstruction(failure: DecisionFailure): string {
   const correction = failure.issue === 'response-grounding'
     ? 'respond 只用于回应公开记录中直接指向自己的质疑；仅被提到、被查验或被认可不算。不要向已经发言的玩家追问；可以评价其现有发言后落下判断，或直接过。'
-    : failure.issue === 'target-reference'
+    : failure.issue === 'public-attribution'
+      ? '“你／他承认了”只能指 target_id 本人的公开原话；若承认来自其他玩家，明确写出真正说话的座位，或删去这项归因。'
+      : failure.issue === 'target-reference'
       ? '若 speech_move 带有 target_id，statement 最后点名的玩家必须回到该目标；提供证据的人不是自动的判断目标。'
       : failure.issue === 'public-claim-contradiction'
         ? '重新核对警长竞选与公开发言，不得否认记录中已经出现的预言家查验宣称。可以质疑这项宣称，但不能说它从未出现。'
