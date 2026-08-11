@@ -78,6 +78,35 @@ export function publicStatementDisclosesWolfAlignment(statement: string): boolea
   return DIRECT_WOLF_SELF_CLAIM.test(statement)
 }
 
+/** One explicit denial that a player ever published a named Seer result. */
+export interface PublicSeerClaimDenial {
+  readonly actorId: string
+  readonly targetId: string
+}
+
+/**
+ * Extract claims that a named player never published one named Seer result.
+ * @param statement - public table utterance that may deny an earlier claim.
+ * @returns denied claimant/target pairs in textual order.
+ */
+export function deniedPublicSeerClaims(statement: string): readonly PublicSeerClaimDenial[] {
+  return [...statement.matchAll(
+    /(?<!\d)(\d{1,2})\s*号(?:玩家)?[^。！？]{0,64}(?:从未|从没|并未|未曾|没有|没)[^。！？]{0,16}(?:查验|查杀|验(?:过|了)?)\s*(\d{1,2})\s*号(?:玩家)?/gu,
+  )].flatMap((match) => match[1] === undefined || match[2] === undefined
+    ? []
+    : [{ actorId: `seat-${match[1]}`, targetId: `seat-${match[2]}` }])
+}
+
+/**
+ * Extract the named targets from one published Seer claim.
+ * @param statement - candidate speech or public table statement.
+ * @returns claimed inspection target ids in textual order.
+ */
+export function publicSeerClaimTargetIds(statement: string): readonly string[] {
+  return [...statement.matchAll(/(?:查验|查杀|验(?:过|了)?)\s*(\d{1,2})\s*号(?:玩家)?/gu)]
+    .flatMap(match => match[1] === undefined ? [] : [`seat-${match[1]}`])
+}
+
 /**
  * Normalize the only fixed public utterance while preserving authored moves.
  * @param move - structured public speech move.

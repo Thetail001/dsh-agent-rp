@@ -95,6 +95,7 @@ import {
   type StandardWerewolfDecisionValidationIssue as DecisionValidationIssue,
 } from './werewolf-diagnostics.ts'
 import {
+  deniedPublicSeerClaims,
   directedPublicFocusTargetIds,
   finalPublicSpeechTargetId,
   inactivePublicTargetFutureReference,
@@ -107,6 +108,7 @@ import {
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
   publicResponseIsGrounded,
+  publicSeerClaimTargetIds,
   publicStatementDisclosesWolfAlignment,
   publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
@@ -1202,6 +1204,14 @@ function assertPublicStatementCandidate(
     )
   }
   if (options.publicDiscussionContext !== undefined) {
+    for (const denial of deniedPublicSeerClaims(statement)) {
+      if (publicEvidenceContainsSeerClaim(options, denial.actorId, denial.targetId)) {
+        throw new DecisionValidationError(
+          'public-claim-contradiction',
+          `${options.label} denied a Seer claim already present in the public record`,
+        )
+      }
+    }
     assertPublicDiscussionStatement(statement, trace.evidence_ids, trace.speech_move, trace.target_id, options)
   }
 }
@@ -1416,6 +1426,22 @@ function publicEvidenceReferencesActor(
   return statement !== undefined
     && seat !== undefined
     && new RegExp(`(?<!\\d)${seat}\\s*号(?:玩家)?`, 'u').test(statement)
+}
+
+function publicEvidenceContainsSeerClaim(
+  options: DecisionOptions,
+  actorId: string,
+  targetId: string,
+): boolean {
+  return options.publicEvidenceIds?.some((evidenceId) => {
+    const evidenceActor = /^sheriff:candidate:(seat-\d+)$/u.exec(evidenceId)?.[1]
+      ?? /^day:\d+:speech:(seat-\d+)$/u.exec(evidenceId)?.[1]
+    if (evidenceActor !== actorId) return false
+    const statement = options.pendingPublicStatements
+      ?.find(candidate => candidate.evidence_id === evidenceId)?.statement
+      ?? options.world.choices.find(choice => String(choice.id) === evidenceId)?.text
+    return statement !== undefined && publicSeerClaimTargetIds(statement).includes(targetId)
+  }) === true
 }
 
 function seatActorId(number: string): RoleplayActorId {
@@ -2216,9 +2242,11 @@ function publicSpeechRetryInstruction(failure: DecisionFailure): string {
     ? '本轮每人只发言一次。不要向已经发言的玩家提问、要求补充或等待后续回应；可以直接评价他已经留下的发言，并落下当前判断。'
     : failure.issue === 'target-reference'
       ? '若 speech_move 带有 target_id，statement 最后点名的玩家必须回到该目标；提供证据的人不是自动的判断目标。'
-      : failure.issue === 'wolf-disclosure'
-        ? '引用别人对你的狼人判断时，明确写成“某号说我／点我／查杀我”，不得写成自我承认。'
-        : '严格核对 speech_move、target_id、stance、公开 evidence_ids 与 statement，只保留一个符合当前麦序的桌面动作。'
+      : failure.issue === 'public-claim-contradiction'
+        ? '重新核对警长竞选与公开发言，不得否认记录中已经出现的预言家查验宣称。可以质疑这项宣称，但不能说它从未出现。'
+        : failure.issue === 'wolf-disclosure'
+          ? '引用别人对你的狼人判断时，明确写成“某号说我／点我／查杀我”，不得写成自我承认。'
+          : '严格核对 speech_move、target_id、stance、公开 evidence_ids 与 statement，只保留一个符合当前麦序的桌面动作。'
   return `上一次输出未通过桌面规则，请重新完成同一次发言。${correction}不要解释修正过程，只返回所需结构。`
 }
 
@@ -2343,6 +2371,7 @@ async function coordinateDiscussion(
       + '具体描述自己或别人把票投给谁时，必须引用并核对对应的公开选票；不要凭别人的转述补出票型。'
       + '出局、夜间死亡或被猎人带走都不会自动公开目标身份；没有公开身份事实时，不得把推测写成“结果、坐实、证实某号是狼人”等翻牌结论。'
       + '未报名和沉默本身不是可疑证据。只有真实预言家可以延续已经公开的预言家身份；不得自称女巫、猎人、白痴或村民。'
+      + '可以质疑公开的预言家宣称，但不得说一项已经出现在竞选或发言记录中的查验从未出现。'
       + '平安夜不能印证预言家或查验结论，非预言家也不能用私密信息或真实身份为公开结论背书。'
       + '猎人开枪只公开猎人本人的身份，枪口不证明目标的身份或阵营，也不能核验预言家的查验。描述跨日记录时使用“第 N 天”。'
       + (publicEvidenceIds.length === 0

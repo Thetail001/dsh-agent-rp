@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  deniedPublicSeerClaims,
   directedPublicFocusTargetIds,
   finalPublicSpeechTargetId,
   inactivePublicTargetFutureReference,
@@ -14,6 +15,7 @@ import {
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
   publicResponseIsGrounded,
+  publicSeerClaimTargetIds,
   publicStatementDisclosesWolfAlignment,
   publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
@@ -341,4 +343,16 @@ test('distinguishes a reported wolf accusation from direct self-disclosure', () 
   assert.equal(publicStatementDisclosesWolfAlignment('其实我是狼，今天我认出。'), true)
   assert.equal(publicStatementDisclosesWolfAlignment('我属于狼人阵营。'), true)
   assert.equal(publicStatementDisclosesWolfAlignment('我得保护我的狼队友。'), true)
+})
+
+test('pairs a denied Seer result with the public claim it contradicts', () => {
+  assert.deepEqual(deniedPublicSeerClaims(
+    '8号从头到尾只投过6号一票，从没说过查验6号。',
+  ), [{ actorId: 'seat-8', targetId: 'seat-6' }])
+  assert.deepEqual(deniedPublicSeerClaims(
+    '8号查验6号这件事我不信。',
+  ), [])
+  assert.deepEqual(publicSeerClaimTargetIds(
+    '我是预言家，首夜查验6号为狼人，第二夜验了10号。',
+  ), ['seat-6', 'seat-10'])
 })
