@@ -24,6 +24,7 @@ import {
   publicStatementClaimsCurrentSheriffAuthority,
   publicStatementContainsFirstPersonAcknowledgement,
   publicStatementDisclosesWolfAlignment,
+  publicStatementMisusesNoDeathCorroboration,
   publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
@@ -408,6 +409,21 @@ test('recognizes corroboration negated before or after the verb', () => {
   assert.equal(publicStatementNegatesCorroboration('第一天平安夜，查验没有外界印证。'), true)
   assert.equal(publicStatementNegatesCorroboration('平安夜也证明不了8号的预言家身份。'), true)
   assert.equal(publicStatementNegatesCorroboration('平安夜证明了8号是预言家。'), false)
+})
+
+test('rejects listing an absent no-death night as missing Seer corroboration', () => {
+  assert.equal(publicStatementMisusesNoDeathCorroboration(
+    '12号这句查验没有平安夜，也没有别的记录能支撑。',
+  ), true)
+  assert.equal(publicStatementMisusesNoDeathCorroboration(
+    '我手头既没有平安夜，也没有记录能给这句查验背书。',
+  ), true)
+  assert.equal(publicStatementMisusesNoDeathCorroboration(
+    '平安夜不能证明8号是预言家。',
+  ), false)
+  assert.equal(publicStatementMisusesNoDeathCorroboration(
+    '这项查验目前只有12号自己的宣称，尚无其他公开记录可核对。',
+  ), false)
 })
 
 test('distinguishes a reported wolf accusation from direct self-disclosure', () => {

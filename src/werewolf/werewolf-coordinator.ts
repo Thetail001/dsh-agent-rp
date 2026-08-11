@@ -118,6 +118,7 @@ import {
   publicStatementClaimsCurrentSheriffAuthority,
   publicStatementContainsFirstPersonAcknowledgement,
   publicStatementDisclosesWolfAlignment,
+  publicStatementMisusesNoDeathCorroboration,
   publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
@@ -1264,12 +1265,10 @@ const PUBLIC_STATEMENT_AUTHORING_ARTIFACT = new RegExp([
 ].join('|'), 'u')
 const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下|卸力|遮掩|找台阶|回避|矛盾|没(?:有)?给出|空洞|摇摆|改口|转向/iu
 const SELF_BALLOT_REFERENCE = /(?:投|上)我|票给我|我(?:被|让)[^。！？]{0,8}(?:投|票|上)/iu
-const NO_DEATH_REFERENCE = /平安夜|昨夜平安|夜里?平安|(?:没有|无)玩家死亡|无人死亡/iu
 const SEER_RESULT_REFERENCE = new RegExp([
   '预言家|查验|验人|金水|查杀|好人身份',
   '(?:查|验)(?:了)?\\s*\\d+\\s*号(?:玩家)?[^。！？]{0,8}(?:好人|狼人)',
 ].join('|'), 'iu')
-const CORROBORATION_REFERENCE = /吻合|印证|证明|支持|佐证|相符|一致|对应/iu
 const PRIVATE_INFORMATION_CORROBORATION_REFERENCE = new RegExp([
   '(?:我(?:这边)?(?:所)?(?:掌握|知道|了解|持有)|我手中)(?:的)?(?:信息|情况)',
   '[^。！？]{0,12}(?:吻合|印证|证明|支持|佐证|相符|一致|对应)',
@@ -1322,10 +1321,7 @@ function assertPublicDiscussionStatement(
       `${options.label} treated non-registration or silence as suspicious public evidence`,
     )
   }
-  if (NO_DEATH_REFERENCE.test(statement)
-    && SEER_RESULT_REFERENCE.test(statement)
-    && CORROBORATION_REFERENCE.test(statement)
-    && !publicStatementNegatesCorroboration(statement)) {
+  if (publicStatementMisusesNoDeathCorroboration(statement)) {
     throw new DecisionValidationError(
       'no-death-corroboration',
       `${options.label} treated a no-death night as corroboration for a Seer claim or result`,
@@ -2295,7 +2291,7 @@ function publicSpeechRetryInstruction(failure: DecisionFailure): string {
         : failure.issue === 'hold-grounding'
           ? 'hold 必须只点一名本轮尚未发言的玩家，并请他解释一项已经发生的公开行动；没有这样具体的等待目标时直接选择 pass。'
           : failure.issue === 'no-death-corroboration'
-            ? '平安夜不能验证预言家宣称或查验结果；可以把它写成尚未得到验证的一面之词，但不能当作支持或反驳查验的证据。'
+            ? '平安夜不能验证预言家宣称或查验结果，也不是查验应当具备的支撑。不要说“没有平安夜所以无法印证”；若查验只有当事人的宣称，直接说尚无其他公开记录可核对。'
             : failure.issue === 'stance-text'
               ? 'observe 只能写中性观察；若 statement 明确表达空洞、可疑或不放心，应把 stance 改成 question 或 suspect，并让 target_id 与最后点名一致。'
               : failure.issue === 'public-grounding'

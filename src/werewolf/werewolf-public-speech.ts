@@ -474,8 +474,8 @@ export function publicResponseIsGrounded<T extends {
 }
 
 const NEGATED_CORROBORATION_REFERENCE = new RegExp([
-  '(?:不能|无法|没法|没有|没|未|不代表|并不|不是|不足以|不)[^。！？]{0,12}(?:吻合|印证|证明|支持|佐证|相符|一致|对应)',
-  '(?:吻合|印证|证明|支持|佐证|相符|一致|对应)不(?:了|到|能|成立)?',
+  '(?:不能|无法|没法|没有|没|未|不代表|并不|不是|不足以|不)[^。！？]{0,12}(?:吻合|印证|证明|支持|支撑|佐证|相符|一致|对应|背书)',
+  '(?:吻合|印证|证明|支持|支撑|佐证|相符|一致|对应|背书)不(?:了|到|能|成立)?',
 ].join('|'), 'iu')
 
 /**
@@ -485,6 +485,28 @@ const NEGATED_CORROBORATION_REFERENCE = new RegExp([
  */
 export function publicStatementNegatesCorroboration(statement: string): boolean {
   return NEGATED_CORROBORATION_REFERENCE.test(statement)
+}
+
+const NO_DEATH_REFERENCE = /平安夜|昨夜平安|夜里?平安|(?:没有|无)玩家死亡|无人死亡/iu
+const SEER_RESULT_REFERENCE = new RegExp([
+  '预言家|查验|验人|金水|查杀|好人身份',
+  '(?:查|验)(?:了)?\s*\d+\s*号(?:玩家)?[^。！？]{0,8}(?:好人|狼人)',
+].join('|'), 'iu')
+const CORROBORATION_REFERENCE = /吻合|印证|证明|支持|支撑|佐证|相符|一致|对应|背书/iu
+const ABSENT_NO_DEATH_REFERENCE = /(?:没有|没|未|并无|缺少)[^。！？]{0,8}平安夜|平安夜(?:都|也)?(?:没有|没发生|不存在)/iu
+
+/**
+ * Detect statements that treat a no-death night as evidence for a Seer claim, including wording
+ * that incorrectly lists an absent no-death night among the claim's missing corroboration.
+ * @param statement - public table utterance.
+ * @returns whether the statement assigns evidentiary value to a no-death night.
+ */
+export function publicStatementMisusesNoDeathCorroboration(statement: string): boolean {
+  if (!NO_DEATH_REFERENCE.test(statement)
+    || !SEER_RESULT_REFERENCE.test(statement)
+    || !CORROBORATION_REFERENCE.test(statement)) return false
+  return ABSENT_NO_DEATH_REFERENCE.test(statement)
+    || !publicStatementNegatesCorroboration(statement)
 }
 
 /**
