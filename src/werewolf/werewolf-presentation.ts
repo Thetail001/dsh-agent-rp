@@ -386,10 +386,10 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       hunterShot.origin === 'night'
         ? `第 ${hunterShot.round} 天 · 猎人结算`
         : `第 ${hunterShot.round} 天 · 放逐后猎人结算`,
-      '猎人正在决定是否开枪。',
+      '猎人正在选择开枪目标',
       [coordinatedAction(
         'hunter-shot-continue',
-        '等待猎人决定',
+        '等待猎人行动',
         view.revision,
         'primary',
         { automatic: true },
@@ -401,7 +401,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
     if (deadSheriff !== human.id) {
       return guide(
         '警徽流转',
-        `${seatLabel(deadSheriff)}已经出局，正在决定警徽去向。`,
+        `${seatLabel(deadSheriff)}已出局，正在决定警徽去向`,
         [coordinatedAction(
           'sheriff-badge-continue',
           '等待警徽去向',
@@ -416,7 +416,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       .map(actor => actor.id)
     return guide(
       '警徽流转',
-      '请选择警徽去向',
+      '决定警徽去向',
       [
         ...targets.map(target => coordinatedAction(
           `sheriff-badge-${String(target)}`,
@@ -429,7 +429,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       ],
       undefined,
       'active',
-      '可以移交给一名存活玩家，也可以销毁',
+      '警徽可移交给一名存活玩家，也可销毁',
     )
   }
   const night = roundAt(location, 'night')
@@ -562,7 +562,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       if (human.location !== 'alive') {
         return guide(
           `第 ${sheriffElection} 天 · 警长竞选报名`,
-          '你已经出局，可以旁观其他玩家报名。',
+          '你已出局，可旁观其他玩家报名',
           [coordinatedAction(
             'sheriff-registration-continue',
             '查看报名结果',
@@ -595,8 +595,8 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       `第 ${sheriffElection} 天 · 警长投票`,
       !humanCanVote
         ? human.location === 'alive'
-          ? '你是候选人，本轮不参与投票。'
-          : '你已经出局，可以旁观本轮投票。'
+          ? '候选人不参与本轮投票'
+          : '你已出局，可旁观本轮投票'
         : '选择一名候选人，或弃票',
       !humanCanVote
         ? [coordinatedAction(
@@ -634,8 +634,8 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       `第 ${sheriffPk} 天 · 警长平票重投`,
       !humanCanVote
         ? human.location === 'alive'
-          ? '你是平票候选人，本轮不参与投票。'
-          : '你已经出局，可以旁观本轮重投。'
+          ? '平票候选人不参与本轮重投'
+          : '你已出局，可旁观本轮重投'
         : '在平票候选人中选择一人，或弃票',
       !humanCanVote
         ? [coordinatedAction(
@@ -693,7 +693,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
         `第 ${discussion} 天 · 公开发言`,
         human.location === 'alive'
           ? `${seatLabel(nextSpeaker.id)}先发言`
-          : '你已经出局，可以旁观本轮发言。',
+          : '你已出局，可旁观本轮发言',
         [coordinatedAction(
           'discussion-continue',
           human.location !== 'alive'
@@ -718,7 +718,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
     if (human.location !== 'alive') {
       return guide(
         `第 ${exileVote} 天 · 放逐投票`,
-        '你已经出局，可以旁观本轮投票。',
+        '你已出局，可旁观本轮投票',
         [coordinatedAction(
           'exile-vote-continue',
           '查看投票结果',
@@ -763,8 +763,8 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       `第 ${exilePk} 天 · 放逐平票重投`,
       !humanCanVote
         ? human.location === 'alive'
-          ? '你是平票候选人，本轮不参与投票。'
-          : '你已经出局，可以旁观本轮重投。'
+          ? '平票候选人不参与本轮重投'
+          : '你已出局，可旁观本轮重投'
         : '在平票候选人中选择一人，或弃票',
       !humanCanVote
         ? [coordinatedAction(
