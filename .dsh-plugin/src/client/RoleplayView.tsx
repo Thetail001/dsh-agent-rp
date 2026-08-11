@@ -219,7 +219,7 @@ function statementFeedItems(records: readonly RoleplaySurfaceRecord[]): Statemen
   return items
 }
 
-function timelineGroups(surface: RoleplayPlayerSurface): RecordGroup[] {
+function timelineGroups(surface: RoleplayPlayerSurface, includeProgress: boolean): RecordGroup[] {
   const narrationByRevision = new Map(surface.narration.map(item => [item.revision, item]))
   const recordsByRevision = new Map<number, RoleplaySurfaceRecord[]>()
   const legacyRecords: RoleplaySurfaceRecord[] = []
@@ -274,7 +274,7 @@ function timelineGroups(surface: RoleplayPlayerSurface): RecordGroup[] {
     legacyByPhase.set(record.phase, group)
     groups.push(group)
   }
-  for (const record of surface.progress?.records ?? []) {
+  for (const record of includeProgress ? surface.progress?.records ?? [] : []) {
     const current = groups.at(-1)
     if (current?.phase !== record.phase) {
       groups.push({ key: `progress-${record.phase}`, phase: record.phase, records: [record] })
@@ -299,8 +299,11 @@ function recordGroupCount(group: RecordGroup): string {
   return group.narration === undefined ? '暂无公开记录' : '1 条阶段结果'
 }
 
-function visibleRecords(surface: RoleplayPlayerSurface): readonly RoleplaySurfaceRecord[] {
-  return [...surface.records, ...(surface.progress?.records ?? [])]
+function visibleRecords(
+  surface: RoleplayPlayerSurface,
+  includeProgress: boolean,
+): readonly RoleplaySurfaceRecord[] {
+  return [...surface.records, ...(includeProgress ? surface.progress?.records ?? [] : [])]
 }
 
 function VoteTally({
@@ -344,7 +347,7 @@ function PublicRecordFeed({
   onSelectActor: (actorId: RoleplaySurfaceActorId) => void
 }) {
   const actorById = new Map(surface.actors.map(actor => [String(actor.id), actor]))
-  const groups = timelineGroups(surface)
+  const groups = timelineGroups(surface, waiting)
   if (groups.length === 0) {
     return <p className={css.empty}>{waiting ? '正在等待第一条对局记录' : '对局记录会显示在这里'}</p>
   }
@@ -443,6 +446,7 @@ function markMeta(mark: PlayerMark | undefined) {
 
 function PlayerBoard({
   surface,
+  waiting,
   marks,
   selectedActorId,
   selectedActionId,
@@ -458,6 +462,7 @@ function PlayerBoard({
   onMark,
 }: {
   surface: RoleplayPlayerSurface
+  waiting: boolean
   marks: PlayerMarks
   selectedActorId: RoleplaySurfaceActorId | null
   selectedActionId: string | null
@@ -478,7 +483,7 @@ function PlayerBoard({
   const actorById = new Map(surface.actors.map(actor => [String(actor.id), actor]))
   const selectedRecords = selected === undefined
     ? []
-    : visibleRecords(surface).filter(record => record.actorId === selected.id)
+    : visibleRecords(surface, waiting).filter(record => record.actorId === selected.id)
   const inspectorClose = useRef<HTMLButtonElement | null>(null)
   useEffect(() => {
     if (selected === undefined) return
@@ -1050,6 +1055,7 @@ export function RoleplayView({
 
         <PlayerBoard
           surface={surface}
+          waiting={waiting}
           marks={marks}
           selectedActorId={selectedActorId}
           selectedActionId={selectedActionId}

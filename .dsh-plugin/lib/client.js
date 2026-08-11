@@ -255,7 +255,7 @@ window.__ModuleLoader__.load({
 			}
 			return items;
 		}
-		function timelineGroups(surface) {
+		function timelineGroups(surface, includeProgress) {
 			const narrationByRevision = new Map(surface.narration.map((item) => [item.revision, item]));
 			const recordsByRevision = /* @__PURE__ */ new Map();
 			const legacyRecords = [];
@@ -312,7 +312,7 @@ window.__ModuleLoader__.load({
 				legacyByPhase.set(record.phase, group);
 				groups.push(group);
 			}
-			for (const record of surface.progress?.records ?? []) {
+			for (const record of includeProgress ? surface.progress?.records ?? [] : []) {
 				const current = groups.at(-1);
 				if (current?.phase !== record.phase) {
 					groups.push({
@@ -339,8 +339,8 @@ window.__ModuleLoader__.load({
 			if (outcomes > 0) return `${String(outcomes)} 条结果`;
 			return group.narration === void 0 ? "暂无公开记录" : "1 条阶段结果";
 		}
-		function visibleRecords(surface) {
-			return [...surface.records, ...surface.progress?.records ?? []];
+		function visibleRecords(surface, includeProgress) {
+			return [...surface.records, ...includeProgress ? surface.progress?.records ?? [] : []];
 		}
 		function VoteTally({ records, actorById }) {
 			const ballots = records.filter((record) => record.kind === "ballot");
@@ -364,7 +364,7 @@ window.__ModuleLoader__.load({
 		}
 		function PublicRecordFeed({ surface, waiting, onSelectActor }) {
 			const actorById = new Map(surface.actors.map((actor) => [String(actor.id), actor]));
-			const groups = timelineGroups(surface);
+			const groups = timelineGroups(surface, waiting);
 			if (groups.length === 0) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 				className: RoleplayView_module_css_default.empty,
 				children: waiting ? "正在等待第一条对局记录" : "对局记录会显示在这里"
@@ -453,10 +453,10 @@ window.__ModuleLoader__.load({
 		function markMeta(mark) {
 			return PLAYER_MARKS.find((candidate) => candidate.value === mark);
 		}
-		function PlayerBoard({ surface, marks, selectedActorId, selectedActionId, selectedTargetAction, targetActions, companionActions, targetGuidance, targetGuidanceDetail, actionLocked, onSelectActor, onSelectAction, onSubmitAction, onMark }) {
+		function PlayerBoard({ surface, waiting, marks, selectedActorId, selectedActionId, selectedTargetAction, targetActions, companionActions, targetGuidance, targetGuidanceDetail, actionLocked, onSelectActor, onSelectAction, onSubmitAction, onMark }) {
 			const selected = selectedActorId === null ? void 0 : surface.actors.find((actor) => actor.id === selectedActorId);
 			const actorById = new Map(surface.actors.map((actor) => [String(actor.id), actor]));
-			const selectedRecords = selected === void 0 ? [] : visibleRecords(surface).filter((record) => record.actorId === selected.id);
+			const selectedRecords = selected === void 0 ? [] : visibleRecords(surface, waiting).filter((record) => record.actorId === selected.id);
 			const inspectorClose = (0, react.useRef)(null);
 			(0, react.useEffect)(() => {
 				if (selected === void 0) return;
@@ -995,6 +995,7 @@ window.__ModuleLoader__.load({
 						]
 					}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PlayerBoard, {
 						surface,
+						waiting,
 						marks,
 						selectedActorId,
 						selectedActionId,

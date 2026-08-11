@@ -291,6 +291,7 @@ export function presentStandardWerewolfProgress(
   event: SessionEvent,
 ): RoleplaySurfaceProgress | null {
   if (event.type === 'session/end-seed') return null
+  if (event.type === 'command/run' || event.type === 'command/done') return null
   if (event.type === 'user/message' && event.data.source.kind === 'roleplay') return null
   if (event.type !== 'werewolf/progress') return current
   const state = event.data.state
