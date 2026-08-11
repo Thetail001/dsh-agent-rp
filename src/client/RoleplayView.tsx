@@ -872,7 +872,8 @@ export function RoleplayView({
 
   const automaticAction = surface.actions.find(action => action.automatic === true)
   const automaticWaiting = automaticAction !== undefined && visibleError === null
-  const waiting = pending || running || automaticWaiting
+  const submittedWaiting = submittedActionLabel !== null && visibleError === null
+  const waiting = pending || running || automaticWaiting || submittedWaiting
   const locked = waiting || surface.status === 'complete'
   const surfaceInput = surface.input
   const inputNeedsChoice = surfaceInput !== undefined && surface.actions.length > 0
@@ -925,7 +926,9 @@ export function RoleplayView({
                     ? '正在提交行动'
                     : running
                       ? runningStatus(surface)
-                      : automaticWaiting ? surface.guidance : '等待你的行动'}
+                      : automaticWaiting
+                        ? surface.guidance
+                        : submittedWaiting ? '正在处理行动' : '等待你的行动'}
           </span>
         </div>
       </header>
@@ -1027,6 +1030,7 @@ export function RoleplayView({
                       submission.kind === 'prompt' ? draft : `${submission.prefix} ${JSON.stringify(draft.trim())}`,
                       true,
                       submission.kind,
+                      surfaceInput.submitLabel,
                     )
                   }}
                 >
