@@ -96,6 +96,7 @@ import {
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
   type StandardWerewolfPublicSpeechMove,
+  unavailablePublicTargetResponseRequest,
 } from './werewolf-public-speech.ts'
 import { completeWolfBallotTargets } from './wolf-ballot.ts'
 import { completeDirectProgress } from './werewolf-progress-counts.ts'
@@ -1289,6 +1290,25 @@ function assertPublicDiscussionStatement(
       'public-grounding',
       `${options.label} treated an eliminated player as a source of future table information`,
     )
+  }
+  const round = options.publicDiscussionContext?.round
+  if (round !== undefined) {
+    const speechPrefix = `day:${String(round)}:speech:`
+    const priorSpeakers = new Set([
+      ...existingDiscussionSpeakers(options.world, round),
+      ...options.pendingPublicStatements?.flatMap(statement =>
+        statement.evidence_id.startsWith(speechPrefix) ? [statement.actor_id] : []) ?? [],
+    ])
+    const unavailableResponseTarget = unavailablePublicTargetResponseRequest(
+      statement,
+      [...priorSpeakers].map(String),
+    )
+    if (unavailableResponseTarget !== undefined) {
+      throw new DecisionValidationError(
+        'response-grounding',
+        `${options.label} requested another response from a player whose turn already ended`,
+      )
+    }
   }
 }
 

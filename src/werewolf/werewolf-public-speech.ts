@@ -56,7 +56,8 @@ export function normalizePublicSpeechStatement(move: unknown, statement: string)
       && (GENERIC_INFORMATION_HOLD.test(statement) || EXPLICIT_PASS_ENDING.test(statement.trim())))) {
     return '过'
   }
-  const withoutWaitTail = statement.replace(REDUNDANT_FUTURE_WAIT_TAIL, '').trimEnd()
+  const withoutFalseSheriffHandoff = statement.replace(FALSE_SHERIFF_HANDOFF_PREFIX, '')
+  const withoutWaitTail = withoutFalseSheriffHandoff.replace(REDUNDANT_FUTURE_WAIT_TAIL, '').trimEnd()
   return withoutWaitTail !== statement
     && /[。！？]$/u.test(statement)
     && !/[。！？]$/u.test(withoutWaitTail)
@@ -68,8 +69,10 @@ const GENERIC_INFORMATION_HOLD = new RegExp([
   '信息(?:确实|还是|仍然|还|也)?(?:太少|不足)',
   '(?:没有|没|还没有|还没)(?:能|有)?[^。！？]{0,16}(?:新(?:的)?(?:依据|信息|线索)|线索|逻辑点|能落定的点|能指认谁的点|能指人的点)',
   '(?:暂时|目前)[^。！？]{0,12}(?:判断不出来|无法判断|没法判断)',
+  '(?:暂时|目前)?[^。！？]{0,8}没抓到(?:别的|更多|新的)?(?:矛盾|冲突|问题|点)',
 ].join('|'), 'u')
 const EXPLICIT_PASS_ENDING = /(?:^|[，。！？\s])过[。！？]?$/u
+const FALSE_SHERIFF_HANDOFF_PREFIX = /^我(?:这轮)?先把警长交给\s*\d+\s*号(?:玩家)?[，,]/u
 const REDUNDANT_FUTURE_WAIT_TAIL = new RegExp([
   '[，,](?:我)?(?:先)?(?:等|等待|看|听)(?:一等|一下)?后面[^。！？]{0,48}(?:发言|回应|表态|收口)[^。！？]*[。！？]?$',
   '[，,]后面[^。！？]{0,48}(?:发言|回应|表态|收口)[^。！？]*[。！？]?$',
@@ -133,6 +136,34 @@ export function inactivePublicTargetFutureReference(
     const reference = new RegExp(`(?<!\\d)${seat}\\s*号(?:玩家)?`, 'u')
     return clauses.some(clause => reference.test(clause) && FUTURE_PLAYER_DEPENDENCY.test(clause))
   })
+}
+
+const PUBLIC_RESPONSE_REQUEST_REFERENCES = [
+  /(?:想|要|请|先|再|希望)?问(?:问|一下|一句)?[^。！？；]{0,8}?(\d+)\s*号(?:玩家)?/gu,
+  /(?:想|要|请|先|再|希望)?(?:听(?:听)?|等(?:待)?|看(?:看)?)\s*(\d+)\s*号(?:玩家)?[^。！？；]{0,18}(?:回应|回答|解释|表态|补(?:充|一句)|说(?:说|一下)?|讲(?:讲|一下)?|给(?:个|出))/gu,
+  /(?:请|希望|让)\s*(\d+)\s*号(?:玩家)?[^。！？；]{0,18}(?:回应|回答|解释|表态|补(?:充|一句)|说(?:说|一下)?|讲(?:讲|一下)?|给(?:个|出))/gu,
+  /(\d+)\s*号(?:玩家)?[，,:：]?(?:你)?(?:能否|能不能|可否|有没有|请|需要)[^。！？；]{0,18}(?:回应|回答|解释|表态|补(?:充|一句)|说(?:说|一下)?|讲(?:讲|一下)?|给(?:个|出))/gu,
+  /(\d+)\s*号(?:玩家)?[^。！？；]{0,18}(?:后面|接下来|再|怎么)[^。！？；]{0,8}(?:回应|回答|解释|表态|补(?:充|一句)|说(?:说|一下)?|讲(?:讲|一下)?|给(?:个|出))/gu,
+] as const
+
+/**
+ * Find a player who can no longer answer but is asked for another response in the current round.
+ * @param statement - public table utterance.
+ * @param unavailableActorIds - players whose once-per-round speech has already ended.
+ * @returns the first impossible response target, or `undefined`.
+ */
+export function unavailablePublicTargetResponseRequest(
+  statement: string,
+  unavailableActorIds: readonly string[],
+): string | undefined {
+  const unavailable = new Set(unavailableActorIds)
+  for (const pattern of PUBLIC_RESPONSE_REQUEST_REFERENCES) {
+    for (const match of statement.matchAll(pattern)) {
+      const seat = match[1]
+      if (seat !== undefined && unavailable.has(`seat-${seat}`)) return `seat-${seat}`
+    }
+  }
+  return undefined
 }
 
 /**

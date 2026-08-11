@@ -10,6 +10,7 @@ import {
   publicSpeechMoveShapeIssue,
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
+  unavailablePublicTargetResponseRequest,
 } from '../src/werewolf/werewolf-public-speech.ts'
 
 const targets = ['seat-2', 'seat-3']
@@ -88,6 +89,14 @@ test('lets hold and pass omit evidence and normalizes pass to one table word', (
     'assess',
     '5号昨天说先留判断，票却给了3号，这个前后对不太上，我先记下来，后面7号、11号发言再对照看。',
   ), '5号昨天说先留判断，票却给了3号，这个前后对不太上，我先记下来。')
+  assert.equal(normalizePublicSpeechStatement(
+    'hold',
+    '前面几位基本都过了，我暂时没抓到别的矛盾，先看看后位有没有新信息。',
+  ), '过')
+  assert.equal(normalizePublicSpeechStatement(
+    'assess',
+    '我先把警长交给8号，他竞选时给出了明确的带队思路，这个态度我认可。',
+  ), '他竞选时给出了明确的带队思路，这个态度我认可。')
 })
 
 test('binds ambiguous ballot pronouns to the structured public target', () => {
@@ -116,6 +125,34 @@ test('rejects future dependencies on eliminated players without blocking histori
   assert.equal(inactivePublicTargetFutureReference(
     '10号和7号都出局了，前面的两条线没法再核对。',
     ['seat-7', 'seat-10'],
+  ), undefined)
+})
+
+test('finds response requests directed at players whose speaking turn already ended', () => {
+  const unavailable = ['seat-2', 'seat-5']
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '我想问问5号，你这张票准备怎么解释？',
+    unavailable,
+  ), 'seat-5')
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '我先听5号补一句，再决定这一票。',
+    unavailable,
+  ), 'seat-5')
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '我先把票跟到11号这边，看看5号后面怎么解释再说。',
+    unavailable,
+  ), 'seat-5')
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '警长既然说查了5号是狼，我先把票给5号，跟警长看看后面怎么解释。',
+    unavailable,
+  ), 'seat-5')
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '我想听后位8号说说这张票。',
+    unavailable,
+  ), undefined)
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '5号昨天投给8号，这条公开记录还可以回看。',
+    unavailable,
   ), undefined)
 })
 
