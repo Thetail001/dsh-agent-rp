@@ -3,11 +3,13 @@ import test from 'node:test'
 import {
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
+  publicSpeechJudgmentFamily,
   publicTargetPronounBallotClaims,
   publicSpeechMoveCarriesJudgment,
   publicSpeechMoveContextIssue,
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
+  selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
   unavailablePublicTargetResponseRequest,
@@ -227,4 +229,20 @@ test('revise compares the latest judgment while other moves preserve the same ta
 
   assert.equal(selectPublicSpeechPrior('revise', 'seat-2', history), latest)
   assert.equal(selectPublicSpeechPrior('assess', 'seat-2', history), oldTarget)
+})
+
+test('keeps two table perspectives before requiring new evidence on one judgment family', () => {
+  const judgments = [
+    { actorId: 'seat-1', targetId: 'seat-9', stance: 'observe' },
+    { actorId: 'seat-2', targetId: 'seat-9', stance: 'question' },
+    { actorId: 'seat-3', targetId: 'seat-9', stance: 'trust' },
+  ]
+
+  assert.equal(publicSpeechJudgmentFamily('suspect'), 'attention')
+  assert.equal(selectSaturatedPublicJudgment(judgments.slice(0, 1), 'seat-9', 'suspect'), undefined)
+  assert.deepEqual(
+    selectSaturatedPublicJudgment(judgments, 'seat-9', 'suspect'),
+    judgments[1],
+  )
+  assert.equal(selectSaturatedPublicJudgment(judgments, 'seat-9', 'trust'), undefined)
 })

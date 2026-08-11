@@ -88,11 +88,13 @@ import {
 import {
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
+  publicSpeechJudgmentFamily,
   publicTargetPronounBallotClaims,
   publicSpeechMoveCarriesJudgment,
   publicSpeechMoveContextIssue,
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
+  selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
   type StandardWerewolfPublicSpeechMove,
@@ -969,7 +971,7 @@ function assertDecisionTrace(
         const context = options.publicDiscussionContext
         const groundedByJudgment = context?.coveredJudgments.some(judgment =>
           judgment.targetId === options.actorId
-          && publicJudgmentKind(judgment.stance) === 'attention'
+          && publicSpeechJudgmentFamily(judgment.stance) === 'attention'
           && evidenceIds.includes(`day:${String(context.round)}:speech:${String(judgment.actorId)}`)) === true
         const groundedByCitedStatement = evidenceIds.some(id =>
           options.publicEvidenceIds?.includes(id) === true
@@ -987,11 +989,11 @@ function assertDecisionTrace(
         && SEER_RESULT_REFERENCE.test(trace.statement)
       const repeated = publishesSeerResult
         ? undefined
-        : options.publicDiscussionContext?.coveredJudgments.findLast(judgment =>
-          judgment.targetId === trace.target_id
-          && publicJudgmentKind(judgment.stance) === publicJudgmentKind(
-            trace.stance as StandardWerewolfPublicStance,
-          ))
+        : selectSaturatedPublicJudgment(
+          options.publicDiscussionContext?.coveredJudgments ?? [],
+          trace.target_id,
+          trace.stance,
+        )
       if (speechMove !== 'commit'
         && repeated !== undefined
         && !evidenceIds.some((id) => {
@@ -1187,7 +1189,7 @@ const DIRECT_PUBLIC_FOCUS_REFERENCE = new RegExp([
   '(\\d+)\\s*号(?:玩家)?[^。！？]{0,18}(?:说清楚|讲清楚|解释(?:一下)?|给出(?:理由|判断|说法))',
 ].join('|'), 'gu')
 const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下|卸力|遮掩|找台阶|回避|矛盾|没(?:有)?给出|空洞|摇摆|改口|转向/iu
-const SELF_BALLOT_REFERENCE = /(?:投|票|上)(?:给)?我|我(?:被|让)[^。！？]{0,8}(?:投|票|上)/iu
+const SELF_BALLOT_REFERENCE = /(?:投|上)我|票给我|我(?:被|让)[^。！？]{0,8}(?:投|票|上)/iu
 const NO_DEATH_REFERENCE = /平安夜|昨夜平安|夜里?平安|(?:没有|无)玩家死亡|无人死亡/iu
 const SEER_RESULT_REFERENCE = new RegExp([
   '预言家|查验|验人|金水|查杀|好人身份',
@@ -1219,10 +1221,6 @@ function isBarePassEvidence(id: string, options: DecisionOptions): boolean {
   if (actorId === undefined) return false
   const choice = options.world.choices.find(candidate => String(candidate.id) === id)
   return choice?.text.trim() === `${actorId}: 过`
-}
-
-function publicJudgmentKind(stance: StandardWerewolfPublicStance): 'trust' | 'attention' {
-  return stance === 'trust' ? 'trust' : 'attention'
 }
 
 function assertPublicDiscussionStatement(
@@ -2264,10 +2262,12 @@ async function coordinateDiscussion(
       + 'assess 从一项尚未覆盖的公开信息提出新判断；respond 引用并回应本轮指向自己的具体质疑；'
       + 'revise 先承认自己此前的判断，再指出哪项新公开信息触发目标或立场改变；'
       + 'hold 明确判断停在哪个尚缺的信息，不硬点身份；commit 承接桌上已有候选，只落当前去向；pass 只说“过”。'
+      + 'commit 的 target_id 必须已经出现在 covered_public_judgments 中且不能是自己；没有合法候选时使用 assess、hold 或 pass。'
       + 'assess、revise、commit 填写 target_id 与 stance，statement 明确说出对应“N号”；'
       + 'respond、hold、pass 的 target_id 与 stance 都填 null。public_discussion_context.covered_public_judgments 是本轮已有判断。'
       + 'hold 必须指出一个仍可从存活且尚未发言的玩家处获得的具体缺口；若只能说“信息太少”“没有线索”或泛泛等待后位，直接选择 pass。'
       + 'question、observe、suspect 都属于对目标的关注；换一个 stance 名称不算新判断。'
+      + '同一目标的同类关注最多保留两位玩家的独立看法；第三位没有目标本人的新发言、后来的公开票型或阶段事实时直接 pass。'
       + '对同一目标重复关注，只有目标后续的新发言、后来的公开票型或阶段事实才能触发 revise；其他人的附和不算新信息。'
       + 'statement 是玩家此刻真正说出口的话：先说当前结论或缺口，再给一条公开事实，通常一两句就停。'
       + '回应只接一项具体质疑，改判点明新出现的信息，归票直接落今天的去向；不要逐号点评、复述全桌、解释输出字段或汇报推理步骤。'

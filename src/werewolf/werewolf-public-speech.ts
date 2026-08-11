@@ -183,6 +183,44 @@ export function selectPublicSpeechPrior<T extends { readonly targetId: string }>
   return history.findLast(judgment => move === 'revise' || judgment.targetId === targetId)
 }
 
+/** Broad table-reading family used to limit repeated judgments without silencing the first reply. */
+export type PublicSpeechJudgmentFamily = 'trust' | 'attention'
+
+/**
+ * Group public stances by whether they trust or scrutinize a target.
+ * @param stance - structured public stance.
+ * @returns the table-reading family, or `undefined` outside the stance vocabulary.
+ */
+export function publicSpeechJudgmentFamily(stance: unknown): PublicSpeechJudgmentFamily | undefined {
+  if (stance === 'trust') return 'trust'
+  if (stance === 'suspect' || stance === 'question' || stance === 'observe') return 'attention'
+  return undefined
+}
+
+/**
+ * Return the latest matching judgment only after a target/family has filled its table capacity.
+ * @param history - public judgments in chronological order.
+ * @param targetId - target proposed by the current speaker.
+ * @param stance - stance proposed by the current speaker.
+ * @param capacity - number of distinct speakers allowed before repetition needs new evidence.
+ * @returns the latest saturated judgment, or `undefined` while another perspective is still useful.
+ */
+export function selectSaturatedPublicJudgment<T extends {
+  readonly targetId: string
+  readonly stance: string
+}>(
+  history: readonly T[],
+  targetId: unknown,
+  stance: unknown,
+  capacity = 2,
+): T | undefined {
+  const family = publicSpeechJudgmentFamily(stance)
+  if (family === undefined) return undefined
+  const matching = history.filter(judgment =>
+    judgment.targetId === targetId && publicSpeechJudgmentFamily(judgment.stance) === family)
+  return matching.length >= capacity ? matching.at(-1) : undefined
+}
+
 /** Compact structural problem returned before context-sensitive speech validation. */
 export type PublicSpeechMoveShapeIssue =
   | 'invalid-move'
