@@ -96,6 +96,7 @@ const REDUNDANT_FUTURE_WAIT_TAIL = new RegExp([
 
 const DIRECT_PUBLIC_FOCUS_REFERENCES = [
   /(?:想|要)?听(?:听)?\s*(\d+)\s*号/gu,
+  /(?:还)?缺\s*(\d+)\s*号(?:玩家)?[^。！？]{0,12}(?:解释|表态|票型|理由|判断|说法)/gu,
   /(\d+)\s*号(?:玩家)?[^。！？]{0,48}(?:(?:轮到你(?:时)?|请你|你(?:先|得|要|需要|应该))[^。！？]{0,24}|(?<!已经)把[^。！？]{0,20}(?:这票|理由|判断|说法)[^。！？]{0,12})(?:说清楚|讲清楚|解释(?:一下)?|给出(?:理由|判断|说法))(?!了|过)/gu,
 ] as const
 
@@ -112,6 +113,35 @@ export function directedPublicFocusTargetIds(statement: string): readonly string
     }
   }
   return [...targets]
+}
+
+/** Context problem that makes a hold repeat or wait for an unavailable answer. */
+export type PublicHoldTargetIssue =
+  | 'missing-future-target'
+  | 'multiple-future-targets'
+  | 'unavailable-future-target'
+  | 'repeated-future-target'
+
+/**
+ * Validate that a hold asks one available later player for a distinct answer.
+ * @param input - authored statement, legal later players, and earlier statements from this round.
+ * @returns the contextual problem, or `undefined` for one actionable hold.
+ */
+export function publicHoldTargetIssue(input: {
+  readonly statement: string
+  readonly legalFutureTargetIds: readonly string[]
+  readonly priorStatements: readonly string[]
+}): PublicHoldTargetIssue | undefined {
+  const targets = directedPublicFocusTargetIds(input.statement)
+  if (targets.length === 0) return 'missing-future-target'
+  if (targets.length > 1) return 'multiple-future-targets'
+  const target = targets[0]
+  if (target === undefined || !input.legalFutureTargetIds.includes(target)) {
+    return 'unavailable-future-target'
+  }
+  return input.priorStatements.some(statement => directedPublicFocusTargetIds(statement).includes(target))
+    ? 'repeated-future-target'
+    : undefined
 }
 
 /** One ballot claim whose pronoun is bound to the structured public target. */

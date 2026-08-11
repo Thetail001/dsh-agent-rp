@@ -4,6 +4,7 @@ import {
   directedPublicFocusTargetIds,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
+  publicHoldTargetIssue,
   publicSpeechJudgmentFamily,
   publicSpeechMovesForPosition,
   publicTargetPronounBallotClaims,
@@ -121,6 +122,32 @@ test('recognizes a concrete question even when its target and request are separa
   assert.deepEqual(directedPublicFocusTargetIds(
     '10号已经把这张警长票的理由讲清楚了，我不再重复。',
   ), [])
+  assert.deepEqual(directedPublicFocusTargetIds('我还缺3号的解释。'), ['seat-3'])
+})
+
+test('allows one actionable hold without repeating an earlier waiting target', () => {
+  const base = {
+    statement: '我还缺10号对昨天那张票的解释。',
+    legalFutureTargetIds: ['seat-10', 'seat-11'],
+    priorStatements: ['8号的警长票我暂时看不懂。'],
+  }
+  assert.equal(publicHoldTargetIssue(base), undefined)
+  assert.equal(publicHoldTargetIssue({
+    ...base,
+    priorStatements: ['我也想听10号解释一下那张票。'],
+  }), 'repeated-future-target')
+  assert.equal(publicHoldTargetIssue({
+    ...base,
+    legalFutureTargetIds: ['seat-11'],
+  }), 'unavailable-future-target')
+  assert.equal(publicHoldTargetIssue({
+    ...base,
+    statement: '我想听10号，也想听11号。',
+  }), 'multiple-future-targets')
+  assert.equal(publicHoldTargetIssue({
+    ...base,
+    statement: '我想等后面再说。',
+  }), 'missing-future-target')
 })
 
 test('binds ambiguous ballot pronouns to the structured public target', () => {

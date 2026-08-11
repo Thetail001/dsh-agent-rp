@@ -89,6 +89,7 @@ import {
   directedPublicFocusTargetIds,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
+  publicHoldTargetIssue,
   publicSpeechMovesForPosition,
   publicTargetPronounBallotClaims,
   publicSpeechMoveCarriesJudgment,
@@ -450,6 +451,7 @@ type DecisionValidationIssue =
   | 'commit-grounding'
   | 'evidence'
   | 'hunter-target-corroboration'
+  | 'hold-grounding'
   | 'identity-reveal'
   | 'no-death-corroboration'
   | 'private-corroboration'
@@ -1225,7 +1227,7 @@ function assertPublicStatementCandidate(
     )
   }
   if (options.publicDiscussionContext !== undefined) {
-    assertPublicDiscussionStatement(statement, trace.evidence_ids, trace.target_id, options)
+    assertPublicDiscussionStatement(statement, trace.evidence_ids, trace.speech_move, trace.target_id, options)
   }
 }
 
@@ -1277,6 +1279,7 @@ function isBarePassEvidence(id: string, options: DecisionOptions): boolean {
 function assertPublicDiscussionStatement(
   statement: string,
   evidenceIds: readonly string[],
+  speechMove: unknown,
   targetId: unknown,
   options: DecisionOptions,
 ): void {
@@ -1360,6 +1363,34 @@ function assertPublicDiscussionStatement(
       ...options.pendingPublicStatements?.flatMap(statement =>
         statement.evidence_id.startsWith(speechPrefix) ? [statement.actor_id] : []) ?? [],
     ])
+    if (speechMove === 'hold') {
+      const priorStatements = [
+        ...options.world.choices.flatMap((choice) => {
+          const id = String(choice.id)
+          if (!id.startsWith(speechPrefix)) return []
+          const actorId = id.slice(speechPrefix.length)
+          const prefix = `${actorId}:`
+          return [choice.text.startsWith(prefix) ? choice.text.slice(prefix.length).trimStart() : choice.text]
+        }),
+        ...options.pendingPublicStatements?.flatMap(pending =>
+          pending.evidence_id.startsWith(speechPrefix) ? [pending.statement] : []) ?? [],
+      ]
+      const issue = publicHoldTargetIssue({
+        statement,
+        legalFutureTargetIds: options.world.actors
+          .filter(actor => actor.location === 'alive'
+            && actor.id !== options.actorId
+            && !priorSpeakers.has(actor.id))
+          .map(actor => String(actor.id)),
+        priorStatements,
+      })
+      if (issue !== undefined) {
+        throw new DecisionValidationError(
+          'hold-grounding',
+          `${options.label} returned an unactionable public hold: ${issue}`,
+        )
+      }
+    }
     const unavailableResponseTarget = unavailablePublicTargetResponseRequest(
       statement,
       [...priorSpeakers].map(String),
@@ -2315,7 +2346,7 @@ async function coordinateDiscussion(
       + 'commit 只用于 late 位置，target_id 必须已经出现在 covered_public_judgments 中且不能是自己；没有合法候选时使用 assess、hold 或 pass。'
       + 'assess、revise、commit 填写 target_id 与 stance，statement 明确说出对应“N号”；'
       + 'respond、hold、pass 的 target_id 与 stance 都填 null。public_discussion_context.covered_public_judgments 是本轮已有判断。'
-      + 'hold 必须指出一个仍可从存活且尚未发言的玩家处获得的具体缺口；若只能说“信息太少”“没有线索”或泛泛等待后位，直接选择 pass。'
+      + 'hold 只能点一名仍可发言的存活玩家，并要求他解释一项已经发生的公开行动；同一个等待目标已经有人点过、无法点出目标或只能泛泛等信息时，直接选择 pass。'
       + 'question、observe、suspect 都属于对目标的关注；换一个 stance 名称不算新判断。'
       + '同一目标的同类关注最多保留两位玩家的独立看法；第三位没有目标本人的新发言、后来的公开票型或阶段事实时直接 pass。'
       + '对同一目标重复关注，只有目标后续的新发言、后来的公开票型或阶段事实才能触发 revise；其他人的附和不算新信息。'
