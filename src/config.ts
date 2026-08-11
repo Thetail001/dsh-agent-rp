@@ -1,7 +1,10 @@
 /** Loader-owned decision budgets for the portable Roleplay benchmark. */
 
 import z from '@deepseek-ai/schemastery'
-import { DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS } from './werewolf/werewolf-constants.ts'
+import {
+  DEFAULT_PUBLIC_DISCUSSION_ATTEMPT_LIMIT,
+  DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS,
+} from './werewolf/werewolf-constants.ts'
 
 /** Default output-token cap for constrained Character decisions. */
 export const STRUCTURED_DECISION_MAX_TOKENS = 2_048
@@ -26,6 +29,8 @@ export interface Config {
   discussionMaxTokens?: number
   /** Adapter-owned effort for public table speech. */
   discussionReasoningEffort?: DeepSeekReasoningEffort
+  /** Maximum model attempts before one invalid public turn falls back to passing. */
+  discussionAttemptLimit?: number
 }
 
 /** Loader schema for portable Roleplay decision budgets. */
@@ -40,4 +45,6 @@ export const Config: z<Config> = z.object({
     .default(PUBLIC_DISCUSSION_MAX_TOKENS),
   discussionReasoningEffort: z.union(['off', 'high', 'max'])
     .default(DEFAULT_DISCUSSION_REASONING_EFFORT),
+  discussionAttemptLimit: z.number().step(1).min(1).max(5)
+    .default(DEFAULT_PUBLIC_DISCUSSION_ATTEMPT_LIMIT),
 })

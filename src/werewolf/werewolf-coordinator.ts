@@ -74,6 +74,7 @@ import {
   createStandardWerewolfProgressReporter,
   type StandardWerewolfProgressReporter,
 } from './werewolf-progress.ts'
+import { DEFAULT_PUBLIC_DISCUSSION_ATTEMPT_LIMIT } from './werewolf-constants.ts'
 import {
   appendStandardWerewolfDecisionMemory,
   STANDARD_WEREWOLF_PUBLIC_STANCES,
@@ -126,7 +127,10 @@ import {
 import { completeWolfBallotTargets } from './wolf-ballot.ts'
 import { completeDirectProgress } from './werewolf-progress-counts.ts'
 
-export { DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS } from './werewolf-constants.ts'
+export {
+  DEFAULT_PUBLIC_DISCUSSION_ATTEMPT_LIMIT,
+  DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS,
+} from './werewolf-constants.ts'
 
 /** Model-facing tool that prepares one complete standard Werewolf night. */
 export const STANDARD_WEREWOLF_NIGHT_TOOL = 'standard_werewolf_night'
@@ -453,6 +457,8 @@ interface DecisionBatchOptions {
   readonly signal: AbortSignal
   readonly decisionTimeoutMs: number
   readonly agentOptions: AgentOptions | undefined
+  /** Maximum model attempts for one public discussion turn. */
+  readonly discussionAttemptLimit?: number
   readonly onProgress?: (completed: number, total: number) => void
   /** Best-effort observer for one Character attempt that cannot contribute a decision. */
   readonly onFailure?: (failure: DecisionFailure) => void
@@ -723,14 +729,19 @@ export interface StandardWerewolfCoordinatorOptions {
   readonly discussionMaxTokens?: number
   /** Optional adapter-owned reasoning effort overriding the general effort for public discussion. */
   readonly discussionReasoningEffort?: ReasoningEffortId
+  /** Maximum model attempts before an invalid public turn falls back to passing. */
+  readonly discussionAttemptLimit?: number
   /** Optional trial-only set of exactly three non-human seat numbers forced to register for Sheriff. */
   readonly sheriffRegistrationPreset?: readonly number[]
 }
 
 type ResolvedStandardWerewolfCoordinatorOptions = Omit<
   StandardWerewolfCoordinatorOptions,
-  'humanActorId'
-> & { readonly humanActorId: RoleplayActorId }
+  'humanActorId' | 'discussionAttemptLimit'
+> & {
+  readonly humanActorId: RoleplayActorId
+  readonly discussionAttemptLimit: number
+}
 
 interface NightPlan {
   readonly base_revision: number
@@ -2290,12 +2301,22 @@ function publicSpeechRetryInstruction(failure: DecisionFailure): string {
     : failure.issue === 'public-attribution'
       ? '“你／他承认了”只能指 target_id 本人的公开原话；若承认来自其他玩家，明确写出真正说话的座位，或删去这项归因。'
       : failure.issue === 'target-reference'
-      ? '若 speech_move 带有 target_id，statement 最后点名的玩家必须回到该目标；提供证据的人不是自动的判断目标。'
-      : failure.issue === 'public-claim-contradiction'
-        ? '重新核对警长竞选与公开发言，不得否认记录中已经出现的预言家查验宣称。可以质疑这项宣称，但不能说它从未出现。'
-        : failure.issue === 'wolf-disclosure'
-          ? '引用别人对你的狼人判断时，明确写成“某号说我／点我／查杀我”，不得写成自我承认。'
-          : '严格核对 speech_move、target_id、stance、公开 evidence_ids 与 statement，只保留一个符合当前麦序的桌面动作。'
+        ? '若 speech_move 带有 target_id，statement 最后点名的玩家必须回到该目标；提供证据的人不是自动的判断目标。'
+        : failure.issue === 'hold-grounding'
+          ? 'hold 必须只点一名本轮尚未发言的玩家，并请他解释一项已经发生的公开行动；没有这样具体的等待目标时直接选择 pass。'
+          : failure.issue === 'no-death-corroboration'
+            ? '平安夜不能验证预言家宣称或查验结果；可以把它写成尚未得到验证的一面之词，但不能当作支持或反驳查验的证据。'
+            : failure.issue === 'stance-text'
+              ? 'observe 只能写中性观察；若 statement 明确表达空洞、可疑或不放心，应把 stance 改成 question 或 suspect，并让 target_id 与最后点名一致。'
+              : failure.issue === 'public-grounding'
+                ? '公开发言只能依赖 public_evidence_ids 中实际出现的事实；删去由沉默、未报名、私密身份或尚未发生的回应推导出的判断。'
+                : failure.issue === 'commit-grounding'
+                  ? 'commit 的 target_id 必须是 covered_public_judgments 已有目标；若想评价另一个目标，改用 assess，若没有独立判断则直接 pass。'
+                  : failure.issue === 'public-claim-contradiction'
+                    ? '重新核对警长竞选与公开发言，不得否认记录中已经出现的预言家查验宣称。可以质疑这项宣称，但不能说它从未出现。'
+                    : failure.issue === 'wolf-disclosure'
+                      ? '引用别人对你的狼人判断时，明确写成“某号说我／点我／查杀我”，不得写成自我承认。'
+                      : '严格核对 speech_move、target_id、stance、公开 evidence_ids 与 statement，只保留一个符合当前麦序的桌面动作。'
   return `上一次输出未通过桌面规则，请重新完成同一次发言。${correction}不要解释修正过程，只返回所需结构。`
 }
 
@@ -2465,27 +2486,30 @@ async function coordinateDiscussion(
         publicDiscussionContext: { round, position, coveredJudgments: [...coveredJudgments] },
         publicJudgmentTargets,
       }
-    const attemptFailures: DecisionFailure[] = []
-    const [initialDecision] = await decideTogether<StatementDecision | WolfStatementDecision>({
-      ...options,
-      allowAllFailures: true,
-      onFailure(failure) {
-        attemptFailures.push(failure)
-        options.onFailure?.(failure)
-      },
-    }, [spec])
-    let decision = initialDecision
-    const firstFailure = attemptFailures[0]
-    if (decision === undefined && firstFailure?.kind === 'invalid') {
-      const [retriedDecision] = await decideTogether<StatementDecision | WolfStatementDecision>({
+    let decision: StatementDecision | WolfStatementDecision | undefined
+    let retryFailure: DecisionFailure | undefined
+    const attemptLimit = options.discussionAttemptLimit ?? DEFAULT_PUBLIC_DISCUSSION_ATTEMPT_LIMIT
+    for (let attempt = 0; attempt < attemptLimit && decision === undefined; attempt += 1) {
+      let attemptFailure: DecisionFailure | undefined
+      const [attemptDecision] = await decideTogether<StatementDecision | WolfStatementDecision>({
         ...options,
         allowAllFailures: true,
+        onFailure(failure) {
+          attemptFailure = failure
+          options.onFailure?.(failure)
+        },
       }, [{
         ...spec,
-        label: `${spec.label} retry`,
-        task: `${spec.task}\n\n${publicSpeechRetryInstruction(firstFailure)}`,
+        ...(retryFailure === undefined
+          ? {}
+          : {
+              label: `${spec.label} retry${attempt === 1 ? '' : ` ${String(attempt)}`}`,
+              task: `${spec.task}\n\n${publicSpeechRetryInstruction(retryFailure)}`,
+            }),
       }])
-      decision = retriedDecision
+      decision = attemptDecision
+      if (attemptFailure?.kind !== 'invalid') break
+      retryFailure = attemptFailure
     }
     decisions.push(decision)
     if (decision !== undefined
@@ -3581,6 +3605,12 @@ function assertCoordinatorOptions(options: StandardWerewolfCoordinatorOptions): 
     && (!Number.isSafeInteger(options.discussionMaxTokens) || options.discussionMaxTokens <= 0)) {
     throw new Error('standard Werewolf discussionMaxTokens must be a positive safe integer')
   }
+  if (options.discussionAttemptLimit !== undefined
+    && (!Number.isSafeInteger(options.discussionAttemptLimit)
+      || options.discussionAttemptLimit < 1
+      || options.discussionAttemptLimit > 5)) {
+    throw new Error('standard Werewolf discussionAttemptLimit must be an integer from 1 through 5')
+  }
   if (options.humanActorId !== undefined && !STANDARD_WEREWOLF_HUMAN_SEATS.includes(options.humanActorId)) {
     throw new Error('standard Werewolf humanActorId must name a playable seat')
   }
@@ -3809,6 +3839,7 @@ async function coordinateApplicationAction(
     signal,
     decisionTimeoutMs: options.decisionTimeoutMs,
     agentOptions,
+    discussionAttemptLimit: options.discussionAttemptLimit,
     onFailure: onDecisionFailure,
   }
   if (action.actionId === 'role-confirm') {
@@ -4184,6 +4215,8 @@ export function installStandardWerewolfCoordinator(
   const resolvedOptions: ResolvedStandardWerewolfCoordinatorOptions = {
     ...options,
     humanActorId: options.humanActorId ?? HUMAN,
+    discussionAttemptLimit: options.discussionAttemptLimit
+      ?? DEFAULT_PUBLIC_DISCUSSION_ATTEMPT_LIMIT,
   }
   const childAgentOptions = decisionAgentOptions(resolvedOptions)
   const publicDiscussionAgentOptions = discussionAgentOptions(resolvedOptions, childAgentOptions)

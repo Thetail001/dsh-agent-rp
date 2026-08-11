@@ -20,6 +20,7 @@ import RoleplayService from './runtime/index.ts'
 import type { RoleplayActorId } from './runtime/index.ts'
 import { registerRoleplaySessionEventTypes } from './runtime/session-event-vocabulary.ts'
 import {
+  DEFAULT_PUBLIC_DISCUSSION_ATTEMPT_LIMIT,
   DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS,
   installStandardWerewolfCoordinator,
 } from './werewolf/werewolf-coordinator.ts'
@@ -89,6 +90,8 @@ export async function apply(ctx: Context, config: RoleplayConfig): Promise<void>
         discussionReasoningEffort: ReasoningEffortId(
           config.discussionReasoningEffort ?? DEFAULT_DISCUSSION_REASONING_EFFORT,
         ),
+        discussionAttemptLimit: config.discussionAttemptLimit
+          ?? DEFAULT_PUBLIC_DISCUSSION_ATTEMPT_LIMIT,
         applicationOnly: true,
         humanActorId,
       })

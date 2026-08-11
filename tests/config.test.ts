@@ -9,8 +9,14 @@ test('uses one supported bounded effort for every Character decision by default'
   assert.equal(config.discussionReasoningEffort, 'off')
   assert.equal(config.decisionMaxTokens, 2_048)
   assert.equal(config.discussionMaxTokens, 2_048)
+  assert.equal(config.discussionAttemptLimit, 3)
 })
 
 test('rejects a reasoning effort that the DeepSeek adapter does not advertise', () => {
   assert.throws(() => Config({ discussionReasoningEffort: 'medium' } as never))
+})
+
+test('bounds public discussion attempts', () => {
+  assert.throws(() => Config({ discussionAttemptLimit: 0 }))
+  assert.throws(() => Config({ discussionAttemptLimit: 6 }))
 })

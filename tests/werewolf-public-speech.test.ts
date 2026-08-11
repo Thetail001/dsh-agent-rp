@@ -380,6 +380,8 @@ test('accepts a response to an existing structured concern', () => {
 
 test('recognizes corroboration negated before or after the verb', () => {
   assert.equal(publicStatementNegatesCorroboration('平安夜不能证明8号是预言家。'), true)
+  assert.equal(publicStatementNegatesCorroboration('平安夜，这条查验没法印证。'), true)
+  assert.equal(publicStatementNegatesCorroboration('第一天平安夜，查验没有外界印证。'), true)
   assert.equal(publicStatementNegatesCorroboration('平安夜也证明不了8号的预言家身份。'), true)
   assert.equal(publicStatementNegatesCorroboration('平安夜证明了8号是预言家。'), false)
 })
