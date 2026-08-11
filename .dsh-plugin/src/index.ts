@@ -56,7 +56,7 @@ export const Config: z<Config> = z.object({
   decisionReasoningEffort: z.string().default('off'),
   discussionMaxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER)
     .default(PUBLIC_DISCUSSION_MAX_TOKENS),
-  discussionReasoningEffort: z.string().default('off'),
+  discussionReasoningEffort: z.string().default('high'),
 })
 
 function reasoningEffortId(value: string): ReasoningEffortId {
@@ -107,7 +107,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         decisionMaxTokens: config.decisionMaxTokens ?? STRUCTURED_DECISION_MAX_TOKENS,
         decisionReasoningEffort: reasoningEffortId(config.decisionReasoningEffort ?? 'off'),
         discussionMaxTokens: config.discussionMaxTokens ?? PUBLIC_DISCUSSION_MAX_TOKENS,
-        discussionReasoningEffort: reasoningEffortId(config.discussionReasoningEffort ?? 'off'),
+        discussionReasoningEffort: reasoningEffortId(config.discussionReasoningEffort ?? 'high'),
         applicationOnly: true,
         humanActorId,
       })

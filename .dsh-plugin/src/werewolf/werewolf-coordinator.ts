@@ -85,6 +85,16 @@ import {
   STANDARD_WEREWOLF_RATIONALE_MAX_LENGTH,
   STANDARD_WEREWOLF_STATEMENT_MAX_LENGTH,
 } from './werewolf-decision-limits.ts'
+import {
+  normalizePublicSpeechStatement,
+  publicSpeechMoveCarriesJudgment,
+  publicSpeechMoveContextIssue,
+  publicSpeechMoveNeedsPublicEvidence,
+  publicSpeechMoveShapeIssue,
+  selectPublicSpeechPrior,
+  STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
+  type StandardWerewolfPublicSpeechMove,
+} from './werewolf-public-speech.ts'
 import { completeWolfBallotTargets } from './wolf-ballot.ts'
 
 /** Model-facing tool that prepares one complete standard Werewolf night. */
@@ -111,14 +121,14 @@ const CHARACTER_DECISION_PERSONA = 'You are one private Character in a standard 
   + 'Write rationale and public text in Simplified Chinese.'
 const CONSTRAINED_DECISION_DISCIPLINE = 'Do not recount the match, enumerate the full history, or reconsider the same alternatives. '
   + 'Choose one decisive tradeoff and call structured_output immediately; the structured fields are the answer.'
-const PUBLIC_DISCUSSION_DISCIPLINE = 'Do not recap the whole match or repeat every earlier speaker. '
-  + 'Choose one new publicly grounded point, turn it into one natural table statement, and call structured_output immediately. '
-  + 'Passing is legal only when no useful new public point remains.'
+const PUBLIC_DISCUSSION_DISCIPLINE = 'Complete one table move, not a report about the match. '
+  + 'Decide the move, grounding, and confidence before writing the public statement. '
+  + 'It is legal to remain uncertain, revise an earlier read, commit one vote, or pass when the table gives you nothing useful.'
 const CHARACTER_DECISION_STYLES = [
-  '偏重可核验信息：优先比较具体说法、可验证承诺和已经公开的矛盾。',
-  '偏重审慎验证：对首轮强身份声称保留怀疑，权衡伪装收益与后续验证成本。',
-  '偏重关系与结构：留意公开发言的目的、公开票型留下的关系和后续责任。',
-  '偏重风险控制：证据不足时保留判断，不为得到整齐结论而机械跟随。',
+  '说话偏短：先报当前结论，最多补一个真正影响结论的原因，说清就停。',
+  '愿意保留：信息不够时直接承认定不下来，不为填满麦序硬点狼人。',
+  '会明确改口：新发言或新票型推翻旧判断时，先承认自己前面怎么看，再说现在为何改变。',
+  '重视当轮行动：中段只接一个具体矛盾，末段需要收口时只落一个去向。',
 ] as const
 // This auditable denylist is intentionally kept as one literal so its alternatives cannot acquire different flags.
 // oxlint-disable-next-line @stylistic/max-len
@@ -213,36 +223,30 @@ function sheriffRegistrationOutputSchema(forcedStand?: boolean): ObjectJsonSchem
 
 const PUBLIC_STATEMENT_SCHEMA = {
   type: 'string',
-  description: '首选的一段自然中文桌面发言。substantive 只提出一条新判断；response 直接回应本轮别人对自己的质疑；brief 固定填写“过”。通常一至两个短句，不要逐号点评、总结发言顺序、写分析报告或堆叠句号。字段值只能包含玩家真正说出口的一段正文，不得换行或包含改写过程、主句、备选、自检与安全分析。只能依据公开记录；不得透露自己的私密身份或阵营，不得把平安夜、私密信息或真实身份当作预言家查验的印证，也不得声称尚未发言的玩家已经说过某段内容。',
-} as const
-
-const PUBLIC_FALLBACK_STATEMENT_SCHEMA = {
-  type: 'string',
-  description: 'substantive 或 response 在首选发言越过公开边界时使用的独立替代发言；brief 固定填写“过”。字段值只能包含玩家真正说出口的一段正文，不得自称主句、备选或候选，也不得包含改写过程、自检与安全分析。优先保留已有公开信息支持的核心内容，可以省略不确定的旁支；不得复制首选发言，也必须满足全部公开边界。',
+  description: '完成所选 speech_move 的一段自然中文桌面发言。通常一至两个短句，一轮只接一个具体点；允许直接说不知道、承认改口或只落一张票。pass 固定填写“过”。字段值只能包含玩家真正说出口的正文，不得换行或包含改写过程、自检与安全分析。只能依据公开记录；不得透露自己的私密身份或阵营，不得把平安夜、私密信息或真实身份当作预言家查验的印证，也不得声称尚未发言的玩家已经说过某段内容。',
 } as const
 
 const statementOutputSchema = (targets: readonly RoleplayActorId[]): ObjectJsonSchema => ({
   type: 'object',
   additionalProperties: false,
   properties: {
-    speech_mode: {
+    speech_move: {
       type: 'string',
-      enum: ['substantive', 'response', 'brief'],
-      description: '有一条此前没有出现的具体判断时选 substantive；本轮有人怀疑或追问自己时可选 response；两者都不适用时选 brief。',
+      enum: [...STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES],
+      description: 'assess 提出一个新判断；respond 回应别人对自己的具体质疑；revise 用新公开信息修正旧判断；hold 明确保留在哪个信息缺口；commit 落一个当前去向；pass 只说“过”。',
     },
     target_id: {
       oneOf: [{ type: 'string', enum: [...targets] }, { type: 'null' }],
-      description: 'substantive 的当前焦点玩家；response 或 brief 必须为 null。',
+      description: 'assess、revise 或 commit 的当前焦点玩家；respond、hold 或 pass 必须为 null。',
     },
     stance: {
       oneOf: [{ type: 'string', enum: [...STANDARD_WEREWOLF_PUBLIC_STANCES] }, { type: 'null' }],
-      description: 'substantive 的临时立场摘要；response 或 brief 必须为 null。',
+      description: 'assess、revise 或 commit 的临时立场摘要；respond、hold 或 pass 必须为 null。',
     },
-    statement: PUBLIC_STATEMENT_SCHEMA,
-    fallback_statement: PUBLIC_FALLBACK_STATEMENT_SCHEMA,
     ...DECISION_TRACE_PROPERTIES,
+    statement: PUBLIC_STATEMENT_SCHEMA,
   },
-  required: ['speech_mode', 'target_id', 'stance', 'statement', 'fallback_statement', ...DECISION_TRACE_REQUIRED],
+  required: ['speech_move', 'target_id', 'stance', ...DECISION_TRACE_REQUIRED, 'statement'],
 })
 
 const wolfStatementOutputSchema = (targets: readonly RoleplayActorId[]): ObjectJsonSchema => ({
@@ -250,24 +254,23 @@ const wolfStatementOutputSchema = (targets: readonly RoleplayActorId[]): ObjectJ
   additionalProperties: false,
   properties: {
     action: { type: 'string', enum: ['speak', 'explode'] },
-    speech_mode: {
+    speech_move: {
       type: 'string',
-      enum: ['substantive', 'response', 'brief'],
-      description: '正常发言有新增判断时选 substantive；本轮有人怀疑或追问自己时可选 response；没有内容或选择自爆时选 brief。',
+      enum: [...STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES],
+      description: '正常发言按 assess、respond、revise、hold、commit 或 pass 选择一个动作；选择自爆时使用 pass。',
     },
     target_id: {
       oneOf: [{ type: 'string', enum: [...targets] }, { type: 'null' }],
-      description: 'substantive 的当前焦点玩家；response、brief 或自爆时必须为 null。',
+      description: 'assess、revise 或 commit 的当前焦点玩家；respond、hold、pass 或自爆时必须为 null。',
     },
     stance: {
       oneOf: [{ type: 'string', enum: [...STANDARD_WEREWOLF_PUBLIC_STANCES] }, { type: 'null' }],
-      description: 'substantive 的临时立场摘要；response、brief 或自爆时必须为 null。',
+      description: 'assess、revise 或 commit 的临时立场摘要；respond、hold、pass 或自爆时必须为 null。',
     },
-    statement: PUBLIC_STATEMENT_SCHEMA,
-    fallback_statement: PUBLIC_FALLBACK_STATEMENT_SCHEMA,
     ...DECISION_TRACE_PROPERTIES,
+    statement: PUBLIC_STATEMENT_SCHEMA,
   },
-  required: ['action', 'speech_mode', 'target_id', 'stance', 'statement', 'fallback_statement', ...DECISION_TRACE_REQUIRED],
+  required: ['action', 'speech_move', 'target_id', 'stance', ...DECISION_TRACE_REQUIRED, 'statement'],
 })
 
 const NIGHT_PLAN_OUTPUT_SCHEMA = {
@@ -522,20 +525,18 @@ interface SheriffRegistrationDecision extends DecisionTrace {
 }
 
 interface StatementDecision extends DecisionTrace {
-  readonly speech_mode: 'substantive' | 'response' | 'brief'
+  readonly speech_move: StandardWerewolfPublicSpeechMove
   readonly target_id: RoleplayActorId | null
   readonly stance: StandardWerewolfPublicStance | null
   readonly statement: string
-  readonly fallback_statement: string
 }
 
 interface WolfStatementDecision extends DecisionTrace {
   readonly action: 'speak' | 'explode'
-  readonly speech_mode: 'substantive' | 'response' | 'brief'
+  readonly speech_move: StandardWerewolfPublicSpeechMove
   readonly target_id: RoleplayActorId | null
   readonly stance: StandardWerewolfPublicStance | null
   readonly statement: string
-  readonly fallback_statement: string
 }
 
 function publicRoleInstruction(
@@ -887,9 +888,8 @@ function assertDecisionTrace(
     confidence?: unknown
     evidence_ids?: unknown
     statement?: unknown
-    fallback_statement?: unknown
     action?: unknown
-    speech_mode?: unknown
+    speech_move?: unknown
     target_id?: unknown
     stance?: unknown
   }
@@ -919,12 +919,21 @@ function assertDecisionTrace(
       `${options.label} cited evidence outside its private view: ${JSON.stringify(invisible)}`,
     )
   }
+  const nonPublicEvidence = options.publicDiscussionContext === undefined
+    ? undefined
+    : evidenceIds.find(id => !options.publicEvidenceIds?.includes(id))
+  if (trace.action !== 'explode' && nonPublicEvidence !== undefined) {
+    throw new DecisionValidationError(
+      'public-grounding',
+      `${options.label} cited private evidence for its public table statement`,
+    )
+  }
   if (trace.action !== 'explode'
     && options.publicDiscussionContext !== undefined
     && options.publicEvidenceIds !== undefined
+    && publicSpeechMoveNeedsPublicEvidence(trace.speech_move)
     && (options.publicEvidenceIds.length === 0
-      ? trace.speech_mode !== 'brief'
-      : !evidenceIds.some(id => options.publicEvidenceIds?.includes(id)))) {
+      || !evidenceIds.some(id => options.publicEvidenceIds?.includes(id)))) {
     throw new DecisionValidationError(
       'public-grounding',
       `${options.label} cited no public evidence for its table statement`,
@@ -932,19 +941,19 @@ function assertDecisionTrace(
   }
   let repeatedPublicJudgment = false
   if (options.publicJudgmentTargets !== undefined) {
-    if (trace.speech_mode !== 'substantive'
-      && trace.speech_mode !== 'response'
-      && trace.speech_mode !== 'brief') {
-      throw new DecisionValidationError('shape', `${options.label} returned an invalid public speech mode`)
+    const shapeIssue = publicSpeechMoveShapeIssue({
+      action: trace.action,
+      move: trace.speech_move,
+      targetId: trace.target_id,
+      stance: trace.stance,
+      targets: options.publicJudgmentTargets,
+      stances: STANDARD_WEREWOLF_PUBLIC_STANCES,
+    })
+    if (shapeIssue !== undefined) {
+      throw new DecisionValidationError('shape', `${options.label} returned invalid public speech shape: ${shapeIssue}`)
     }
-    if (trace.speech_mode === 'brief' || trace.speech_mode === 'response' || trace.action === 'explode') {
-      if (trace.target_id !== null || trace.stance !== null) {
-        throw new DecisionValidationError(
-          'shape',
-          `${options.label} attached a public judgment to a response, brief statement, or explosion`,
-        )
-      }
-      if (trace.speech_mode === 'response' && trace.action !== 'explode') {
+    if (!publicSpeechMoveCarriesJudgment(trace.speech_move) || trace.action === 'explode') {
+      if (trace.speech_move === 'respond' && trace.action !== 'explode') {
         const context = options.publicDiscussionContext
         const grounded = context?.coveredJudgments.some(judgment =>
           judgment.targetId === options.actorId
@@ -953,21 +962,14 @@ function assertDecisionTrace(
         if (!grounded) {
           throw new DecisionValidationError(
             'response-grounding',
-            `${options.label} used response mode without citing a public concern directed at itself`,
+            `${options.label} used respond without citing a public concern directed at itself`,
           )
         }
       }
     } else {
-      if (typeof trace.target_id !== 'string'
-        || !options.publicJudgmentTargets.includes(asRoleplayActorId(trace.target_id))) {
-        throw new DecisionValidationError('shape', `${options.label} returned an invalid public judgment target`)
-      }
-      if (!(STANDARD_WEREWOLF_PUBLIC_STANCES as readonly unknown[]).includes(trace.stance)) {
-        throw new DecisionValidationError('shape', `${options.label} returned an invalid public judgment stance`)
-      }
       const publishesSeerResult = standardWerewolfRoleIn(options.world, options.actorId) === 'seer'
-        && [trace.statement, trace.fallback_statement].some(candidate =>
-          typeof candidate === 'string' && SEER_RESULT_REFERENCE.test(candidate))
+        && typeof trace.statement === 'string'
+        && SEER_RESULT_REFERENCE.test(trace.statement)
       const repeated = publishesSeerResult
         ? undefined
         : options.publicDiscussionContext?.coveredJudgments.findLast(judgment =>
@@ -975,7 +977,8 @@ function assertDecisionTrace(
           && publicJudgmentKind(judgment.stance) === publicJudgmentKind(
             trace.stance as StandardWerewolfPublicStance,
           ))
-      if (repeated !== undefined
+      if (trace.speech_move !== 'commit'
+        && repeated !== undefined
         && !evidenceIds.some((id) => {
           if (!options.publicEvidenceIds?.includes(id) || repeated.availableEvidenceIds.includes(id)) return false
           const speechActor = /^day:\d+:speech:(seat-\d+)$/u.exec(id)?.[1]
@@ -984,14 +987,32 @@ function assertDecisionTrace(
         })) {
         repeatedPublicJudgment = true
       }
-      const prior = committedMemory.findLast(decision => decision.action.name === 'speak'
-        && decision.publicJudgment?.targetId === trace.target_id)
-      if (prior?.publicJudgment?.stance !== undefined
-        && prior.publicJudgment.stance !== trace.stance
-        && !evidenceIds.some(id => options.publicEvidenceIds?.includes(id) && !prior.evidenceIds.includes(id))) {
+      const prior = selectPublicSpeechPrior(
+        trace.speech_move,
+        trace.target_id,
+        committedMemory.flatMap(decision => decision.action.name === 'speak'
+          && decision.publicJudgment !== undefined
+          ? [{
+            targetId: decision.publicJudgment.targetId,
+            stance: decision.publicJudgment.stance,
+            evidenceIds: decision.evidenceIds,
+          }]
+          : []),
+      )
+      const contextIssue = publicSpeechMoveContextIssue({
+        move: trace.speech_move,
+        targetId: trace.target_id,
+        stance: trace.stance,
+        evidenceIds,
+        publicEvidenceIds: options.publicEvidenceIds ?? [],
+        ...(prior === undefined ? {} : { prior }),
+        coveredTargetIds: options.publicDiscussionContext?.coveredJudgments.map(judgment =>
+          String(judgment.targetId)) ?? [],
+      })
+      if (contextIssue !== undefined) {
         throw new DecisionValidationError(
-          'stance-change',
-          `${options.label} changed public stance without newly cited public evidence`,
+          contextIssue === 'commit-without-candidate' ? 'commit-grounding' : 'stance-change',
+          `${options.label} returned invalid public speech context: ${contextIssue}`,
         )
       }
     }
@@ -1015,48 +1036,30 @@ function assertDecisionTrace(
       )
     }
   }
-  if (trace.speech_mode === 'brief' && trace.action !== 'explode') {
-    return { ...normalizedValue, statement: '过', fallback_statement: '过' }
+  if (trace.speech_move === 'pass' && trace.action !== 'explode') {
+    return { ...normalizedValue, statement: normalizePublicSpeechStatement(trace.speech_move, '') }
   }
   if (trace.statement === undefined) return normalizedValue
   if (typeof trace.statement !== 'string') {
     throw new DecisionValidationError('shape', `${options.label} returned an invalid statement`)
   }
-  const candidates = [trace.statement]
-  if (options.outputSchema.properties?.fallback_statement !== undefined) {
-    if (typeof trace.fallback_statement !== 'string') {
-      throw new DecisionValidationError('shape', `${options.label} returned an invalid fallback statement`)
-    }
-    candidates.push(trace.fallback_statement)
-  }
-  let firstFailure: DecisionValidationError | undefined
-  for (const statement of candidates) {
-    try {
-      assertPublicStatementCandidate(statement, {
-        action: trace.action,
-        evidence_ids: evidenceIds,
-        speech_mode: trace.speech_mode,
-        stance: trace.stance,
-        target_id: trace.target_id,
-      }, options)
-      if (repeatedPublicJudgment) {
-        return {
-          ...normalizedValue,
-          speech_mode: 'brief',
-          target_id: null,
-          stance: null,
-          statement: '过',
-          fallback_statement: '过',
-        }
-      }
-      return statement === trace.statement ? normalizedValue : { ...normalizedValue, statement }
-    } catch (error) {
-      if (!(error instanceof DecisionValidationError)) throw error
-      firstFailure ??= error
+  assertPublicStatementCandidate(trace.statement, {
+    action: trace.action,
+    evidence_ids: evidenceIds,
+    speech_move: trace.speech_move,
+    stance: trace.stance,
+    target_id: trace.target_id,
+  }, options)
+  if (repeatedPublicJudgment) {
+    return {
+      ...normalizedValue,
+      speech_move: 'pass',
+      target_id: null,
+      stance: null,
+      statement: '过',
     }
   }
-  /* v8 ignore next -- every candidate failure assigns the first error. */
-  throw firstFailure ?? new DecisionValidationError('shape', `${options.label} returned no public statement candidate`)
+  return normalizedValue
 }
 
 function assertPublicStatementCandidate(
@@ -1064,7 +1067,7 @@ function assertPublicStatementCandidate(
   trace: {
     readonly action?: unknown
     readonly evidence_ids: readonly string[]
-    readonly speech_mode?: unknown
+    readonly speech_move?: unknown
     readonly stance?: unknown
     readonly target_id?: unknown
   },
@@ -1085,13 +1088,7 @@ function assertPublicStatementCandidate(
       `${options.label} returned drafting or self-review text instead of one public statement`,
     )
   }
-  if (PUBLIC_STATEMENT_INTERVIEW_ARTIFACT.test(statement)) {
-    throw new DecisionValidationError(
-      'statement-form',
-      `${options.label} returned an interview template instead of one direct table statement`,
-    )
-  }
-  if (trace.speech_mode === 'substantive' && typeof trace.target_id === 'string') {
+  if (publicSpeechMoveCarriesJudgment(trace.speech_move) && typeof trace.target_id === 'string') {
     const targetSeat = /^seat-(\d+)$/u.exec(trace.target_id)?.[1]
     if (targetSeat !== undefined
       && !new RegExp(`(?<!\\d)${targetSeat}\\s*号(?:玩家)?`, 'u').test(statement)) {
@@ -1150,13 +1147,6 @@ const PUBLIC_STATEMENT_AUTHORING_ARTIFACT = new RegExp([
   '(?:两|这两)句都(?:没有|符合)',
   '(?:私密泄露|公开边界|安全分析|所需结构)',
   '(?:某某|某\\s*号|某位玩家)',
-].join('|'), 'u')
-const PUBLIC_STATEMENT_INTERVIEW_ARTIFACT = new RegExp([
-  '我想问(?:一句|一下)?',
-  '我想请(?:你|他|她)?',
-  '还是说[^。！？]{0,60}(?:思路|说法|判断|解释)',
-  '[^，。！？]{0,24}是[^，。！？]{0,24}还是[^，。！？]{0,24}',
-  '而不是',
 ].join('|'), 'u')
 const DIRECT_PUBLIC_FOCUS_REFERENCE = new RegExp([
   '(?:想|要)?听(?:听)?\\s*(\\d+)\\s*号',
@@ -1446,7 +1436,7 @@ function decisionMemory(
 function statementPublicJudgment(
   decision: StatementDecision | WolfStatementDecision,
 ): StandardWerewolfPublicJudgment | undefined {
-  return decision.speech_mode === 'substantive'
+  return publicSpeechMoveCarriesJudgment(decision.speech_move)
     && decision.target_id !== null
     && decision.stance !== null
     ? { targetId: decision.target_id, stance: decision.stance }
@@ -2156,15 +2146,15 @@ async function coordinateDiscussion(
       ? 'early'
       : tableIndex >= living.length - Math.ceil(living.length / 3) ? 'late' : 'middle'
     const positionInstruction = position === 'early'
-      ? '公开信息还少，只处理一个最值得澄清的点，不急着给全桌结论。'
+      ? '公开信息还少：有一个可核对的点就判断它，信息缺口还在就保留或过。'
       : position === 'late'
-        ? '前面的判断已经很多，只处理仍有分歧的一点；没有新增内容就简短保留。'
-        : '接住一条会影响判断的具体发言，并补充此前没有出现的理由。'
+        ? '接近收口：可以承接桌上已有候选落当前去向；只有新信息改变旧判断时才另起判断。'
+        : '只接住一条真正影响自己的公开信息，可以回应、改判或提出一个新判断。'
     const noveltyInstruction = publicEvidenceIds.length === 0
-      ? '桌面还没有可核对的公开信息，选择 brief，不得借用私密身份或夜间信息制造判断。'
+      ? '桌面还没有可核对的公开信息，只能 hold 或 pass；不得借用私密身份或夜间信息制造判断。'
       : coveredJudgments.length === 0
-        ? '本轮还没有人提出实质判断。只要公开记录中已有竞选承诺、选票变化或具体发言，就必须选其中一个可核对的选择发问或判断，不能因为没人先开口就选 brief。'
-        : '先检查已有判断是否真的覆盖了当前公开矛盾；只有没有新问题、新理由或新证据时才选 brief。'
+        ? '本轮还没有结构化判断；若现有公开信息仍不足以形成判断，可以明确停在哪个缺口或直接过。'
+        : '桌上已有候选时可以直接承接；没有新信息时不要换词重做别人已经完成的判断。'
     const alreadySpoke = [...existing, ...pendingPublicStatements.map(statement => statement.actor_id)]
     const canStillSpeak = remaining.slice(remaining.indexOf(actorId) + 1)
     const turnBoundary = `本轮已经发言且不能再次回应的玩家：${alreadySpoke.length === 0 ? '无' : alreadySpoke.map(seatLabel).join('、')}。`
@@ -2175,18 +2165,15 @@ async function coordinateDiscussion(
       + noveltyInstruction
       + turnBoundary
       + '先按顺序阅读 pending_public_statements；只能回应已经公开的原话，尚未出现的玩家还没有发言。'
-      + '真人桌面发言通常只接住一两个具体矛盾，直接表示同意、反对或留下明确判断，不会重新汇报整张桌子。'
-      + '有一条此前没人说过的具体判断时选择 substantive，并填写 target_id 与 stance；'
-      + 'substantive 的正文必须明确写出 target_id 对应的“N号”，不能只用“你、他、某某”代替；'
-      + '如果本轮已有玩家明确怀疑或追问你，可以选择 response，target_id 与 stance 都填 null，引用那条发言并直接澄清自己的选择；'
-      + 'response 只回应指向自己的具体问题，不要为了反击而强行评价别人。两种情形都不适用时选择 brief，'
-      + 'target_id 与 stance 都填 null，statement 与 fallback_statement 都只填“过”。'
-      + 'public_discussion_context.covered_public_judgments 列出本轮已有的结构化判断；对同一目标的怀疑、追问与观察属于同一类关注，'
-      + '只有被评价玩家随后说出的新内容，或后来出现的选票与阶段事实，才足以继续这个判断；其他玩家的附和与改写不算新证据。'
-      + '否则必须改用 brief，不能换词复述。statement 不得提及前置位、后置位、发言顺序、'
-      + '输出字段、证据 ID 或系统规则，也不要逐号点评、使用“依据公开记录”一类报告式开头或在结尾重复总结。'
-      + '直接说出自己的判断，不要使用“是……还是……”“而不是……”或“我想问一句”这类采访式对照句。'
-      + '一句能说清就停，短分句用逗号连接，不要用一串句号制造停顿。警长竞选已经结束，不得继续竞选或复述竞选词；'
+      + '先定 speech_move、公开 evidence_ids 和 confidence，再写 statement；这一轮只完成下面一个动作：'
+      + 'assess 从一项尚未覆盖的公开信息提出新判断；respond 引用并回应本轮指向自己的具体质疑；'
+      + 'revise 先承认自己此前的判断，再指出哪项新公开信息触发目标或立场改变；'
+      + 'hold 明确判断停在哪个尚缺的信息，不硬点身份；commit 承接桌上已有候选，只落当前去向；pass 只说“过”。'
+      + 'assess、revise、commit 填写 target_id 与 stance，statement 明确说出对应“N号”；'
+      + 'respond、hold、pass 的 target_id 与 stance 都填 null。public_discussion_context.covered_public_judgments 是本轮已有判断。'
+      + '对同一目标重复怀疑、追问或观察，只有目标后续的新发言、后来的公开票型或阶段事实才能触发 revise；其他人的附和不算新信息。'
+      + 'statement 是玩家此刻真正说出口的话，只接一个具体点，说清就停；不要逐号点评、复述全桌、解释输出字段或汇报推理步骤。'
+      + '自然问句、对照和口语重复可以使用，但必须由当前具体矛盾触发。警长竞选已经结束，不得继续竞选或复述竞选词；'
       + '具体描述自己或别人把票投给谁时，必须引用并核对对应的公开选票；不要凭别人的转述补出票型。'
       + '出局、夜间死亡或被猎人带走都不会自动公开目标身份；没有公开身份事实时，不得把推测写成“结果、坐实、证实某号是狼人”等翻牌结论。'
       + '未报名和沉默本身不是可疑证据。只有真实预言家可以延续已经公开的预言家身份；不得自称女巫、猎人、白痴或村民。'
@@ -2194,10 +2181,10 @@ async function coordinateDiscussion(
       + '猎人开枪只公开猎人本人的身份，枪口不证明目标的身份或阵营，也不能核验预言家的查验。描述跨日记录时使用“第 N 天”。'
       + (publicEvidenceIds.length === 0
         ? '当前 public_evidence_ids 为空，evidence_ids 填空数组。'
-        : 'evidence_ids 至少引用 public_evidence_ids 中一项；substantive 的正文要指向一名具体玩家或一处具体冲突。')
-      + '若 committed_decision_memory 中对同一目标的立场不同，还必须增加一项此前未引用的公开依据。'
-      + 'fallback_statement 是独立的安全替代表达，不能复制 statement；两个字段都只写玩家真正说出口的一段正文，'
-      + '不得换行，不得包含改写过程、自检、安全分析或给主持人的说明。'
+        : 'assess、respond、revise、commit 的 evidence_ids 至少引用 public_evidence_ids 中一项；hold 与 pass 可以为空。')
+      + '私密身份、夜间所知和狼人计划可以影响 rationale，但不能进入公开 evidence_ids 或 statement。'
+      + 'revise 必须改变 committed_decision_memory 中已有判断的目标或立场，并引用一项此前未用的新公开信息。'
+      + 'statement 不得换行，也不得包含改写过程、自检、安全分析或给主持人的说明。'
     const spec: DecisionSpec = actorId === explosionDecider
       ? {
         actorId,
@@ -2239,7 +2226,8 @@ async function coordinateDiscussion(
       allowAllFailures: true,
     }, [spec])
     decisions.push(decision)
-    if (decision?.speech_mode === 'substantive'
+    if (decision !== undefined
+      && publicSpeechMoveCarriesJudgment(decision.speech_move)
       && decision.target_id !== null
       && decision.stance !== null) {
       coveredJudgments.push({
