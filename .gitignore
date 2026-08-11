@@ -1,2 +1,4 @@
 node_modules/
+.dsh-plugin/dsh-plugin-assets/
+.dsh-plugin/dsh-plugin.mjs
 *.tgz

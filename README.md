@@ -1,21 +1,22 @@
-# Portable Roleplay delivery probe
+# Portable Roleplay repository Plugin
 
-This private local package tests one delivery property only: a single DSH profile bundle can carry the original Roleplay Host runtime, standard Werewolf presenter, and Chinese browser UI without installing three linked workspace packages.
+This private repository tests one delivery property: one `.dsh-plugin` package can carry the Roleplay Host runtime, standard Werewolf presenter, and Chinese browser UI without resolving unpublished DSH packages at installation or runtime.
 
 It intentionally provides no Agent creation or conversion entry. Do not publish or treat it as a playable plugin until the Web Host provides both pre-publication application setup and projection-only transcript protection.
 
 ## Delivery route
 
-This package is an official profile bundle: `package.json#dsh.bundle.patch` inserts its Host row and `package.json#dshClient` exposes the browser half. Install or remove it with `dsh plugin --profile web add <package>` and `dsh plugin --profile web remove @dsh-external/dsh-roleplay-portable-spike`.
+The installable package lives at [`.dsh-plugin`](.dsh-plugin). Its manifest declares `dsh.entry` and `dsh.client`; `dsh-plugin-prepare` validates the committed Host and browser bundles during repository installation. DSH supplies that exact-version preparation command, so the package neither installs a private preparation dependency nor rebuilds against a user's machine.
 
-The repository `.dsh-plugin` format is complementary rather than a replacement. It carries trusted Host entries, Skills, and MCP servers, but does not carry this package's browser client entry.
+Development builds run from the repository root after `pnpm install` and require `DSH_SOURCE_ROOT` to name the matching DSH source checkout, for example `$env:DSH_SOURCE_ROOT = 'D:\dsh-snapshot-20260810-integration'` followed by `pnpm run build`. The build resolver embeds the required DSH and Cordis implementation into `lib/index.js`; only Node built-ins remain as Host imports. The browser bundle keeps React as a Host-provided module. Development dependencies stay outside `.dsh-plugin`, so cold installation prepares the committed bundles without installing a compiler.
 
 ## Local acceptance evidence
 
-- The self-contained build emits one 328,752-byte Host bundle plus a 70,280-byte client bundle and its source map.
-- `pnpm pack --dry-run` contains only `cordis.patch.yml`, the three built files, `package.json`, and this README.
-- An isolated latest-snapshot profile completed install, cold boot, remove, reinstall, and a second cold boot. Both boots served the root page and client bundle with HTTP 200 and produced an empty Host error log.
-- The packaged files contain no local username, credential variable name, instrumentation toggle, distribution fingerprint, or private transcript content.
+- The prepared package must install from an exact Git source with no registry lookup for `@deepseek-ai/*` packages.
+- The installed Host entry and browser bundle must load, unload, and load again from a fresh DSH home.
+- Headless startup must activate the Host entry without waiting for Web-only services.
+- Acceptance runs set `DSH_TELEMETRY_DISABLED=1` and do not call a real model API.
+- Packaged files must contain no local path, credential name or value, telemetry value, distribution fingerprint, or private transcript content.
 
 ## Release blockers
 

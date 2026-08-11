@@ -1,0 +1,32 @@
+{
+  "name": "@dsh-external/dsh-roleplay-portable-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dsh-plugin.mjs",
+    "dsh-plugin-assets",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/client.js.map"
+  ],
+  "dsh": {
+    "entry": "./lib/index.js",
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "prepack": "dsh-plugin-prepare"
+  }
+}

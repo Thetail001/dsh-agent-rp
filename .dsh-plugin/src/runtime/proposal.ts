@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { assertNever, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { CallId } from '@deepseek-ai/dsh-llm'
-import type SubagentService from '@deepseek-ai/dsh-subagent'
+import { delegationDepthOf, type default as SubagentService } from '@deepseek-ai/dsh-subagent'
 import type { JsonSchemaNode, ObjectJsonSchema, ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
 import { RoleplayError } from './error.ts'
 import { asRoleplayActorId, asRoleplayFactId, asRoleplayProposalId, asRoleplayResolverName } from './ids.ts'
@@ -531,8 +531,6 @@ export async function consultRoleplay(options: RoleplayConsultOptions): Promise<
   assertRoleplayProposalProvider(options.subagents, options.providerName)
   const initial = options.getWorld()
   const composition = childComposition(options.request, initial, options.parentObserverId)
-  // Keep the optional peer's runtime values behind the enabled consultation path.
-  const { delegationDepthOf } = await import('@deepseek-ai/dsh-subagent')
   const maxDepth = delegationDepthOf(options.agent) + 1
   if (!Number.isSafeInteger(maxDepth)) {
     throw new RoleplayError('roleplay proposal depth exceeds the safe-integer range', 'ROLEPLAY_PROPOSAL_UNAVAILABLE')
