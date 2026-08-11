@@ -86,7 +86,9 @@ import {
   STANDARD_WEREWOLF_STATEMENT_MAX_LENGTH,
 } from './werewolf-decision-limits.ts'
 import {
+  inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
+  publicTargetPronounBallotClaims,
   publicSpeechMoveCarriesJudgment,
   publicSpeechMoveContextIssue,
   publicSpeechMoveNeedsPublicEvidence,
@@ -825,6 +827,12 @@ async function startDecision<T extends DecisionTrace>(options: DecisionOptions):
             day: options.publicDiscussionContext.round,
             speaker_id: options.actorId,
             position: options.publicDiscussionContext.position,
+            living_player_ids: view.actors
+              .filter(actor => actor.location === 'alive')
+              .map(actor => actor.id),
+            eliminated_player_ids: view.actors
+              .filter(actor => actor.location !== 'alive')
+              .map(actor => actor.id),
             covered_public_judgments: options.publicDiscussionContext.coveredJudgments.map(judgment => ({
               actor_id: judgment.actorId,
               target_id: judgment.targetId,
@@ -1052,6 +1060,17 @@ function assertDecisionTrace(
     stance: trace.stance,
     target_id: trace.target_id,
   }, options)
+  const normalizedStatement = normalizePublicSpeechStatement(trace.speech_move, trace.statement)
+  if (normalizedStatement !== trace.statement) {
+    return {
+      ...normalizedValue,
+      speech_move: 'pass',
+      target_id: null,
+      stance: null,
+      evidence_ids: [],
+      statement: normalizedStatement,
+    }
+  }
   if (repeatedPublicJudgment) {
     return {
       ...normalizedValue,
@@ -1259,6 +1278,18 @@ function assertPublicDiscussionStatement(
       )
     }
   }
+  const inactiveFutureSource = inactivePublicTargetFutureReference(
+    statement,
+    options.world.actors
+      .filter(actor => actor.location !== 'alive')
+      .map(actor => String(actor.id)),
+  )
+  if (inactiveFutureSource !== undefined) {
+    throw new DecisionValidationError(
+      'public-grounding',
+      `${options.label} treated an eliminated player as a source of future table information`,
+    )
+  }
 }
 
 function hasCitedBallot(
@@ -1295,7 +1326,7 @@ function assertCitedBallotReferences(
   targetId: unknown,
   options: DecisionOptions,
 ): void {
-  const positiveTarget = '(?<![没未不])投(?:给|了|的(?:却)?是)?\\s*(\\d+)\\s*号'
+  const positiveTarget = '(?<![没未不])投(?:给(?:了)?|了|的(?:却)?是)?\\s*(\\d+)\\s*号'
   for (const match of statement.matchAll(new RegExp(
     `(?:把票(?:投)?给|投(?:给|了)?)\\s*(\\d+)\\s*号(?:玩家)?的(?:有|包括)\\s*`
       + `((?:\\d+\\s*(?:号(?:玩家)?)?)(?:\\s*[、,，和及]\\s*\\d+\\s*(?:号(?:玩家)?)?)*)`,
@@ -1325,13 +1356,17 @@ function assertCitedBallotReferences(
         assertCitedBallot(evidenceIds, options, publicTarget, seatActorId(match[1]))
       }
     }
-    for (const match of statement.matchAll(new RegExp(`你[^。！？]{0,18}${positiveTarget}`, 'gu'))) {
-      if (match[1] !== undefined) {
-        assertCitedBallot(evidenceIds, options, publicTarget, seatActorId(match[1]))
-      }
-    }
-    if (new RegExp(`(?:你|他)[^。！？]{0,18}(?<![没未不])投(?:给|了|的(?:却)?是)?\\s*我`, 'u').test(statement)) {
-      assertCitedBallot(evidenceIds, options, publicTarget, options.actorId)
+    for (const claim of publicTargetPronounBallotClaims(
+      statement,
+      String(publicTarget),
+      String(options.actorId),
+    )) {
+      assertCitedBallot(
+        evidenceIds,
+        options,
+        asRoleplayActorId(claim.voterId),
+        asRoleplayActorId(claim.targetId),
+      )
     }
   }
   for (const match of statement.matchAll(new RegExp(
@@ -2167,9 +2202,16 @@ async function coordinateDiscussion(
       + `本轮尚可发言的玩家：${canStillSpeak.length === 0 ? '无' : canStillSpeak.map(seatLabel).join('、')}。`
       + '对已经发言的玩家只能回应、反驳或把矛盾留作投票依据，不能追问、要求解释或等待其回答；'
       + '问题只能留给本轮尚可发言的玩家。'
+    const eliminated = world.actors
+      .filter(candidate => candidate.location !== 'alive')
+      .map(candidate => candidate.id)
+    const lifeBoundary = eliminated.length === 0
+      ? '当前没有出局玩家。'
+      : `已经出局的玩家：${eliminated.map(seatLabel).join('、')}。出局者只能用于回顾已经发生的公开事件，不能等待其发言、回应或提供更多信息。`
     const task = `进行第 ${String(round)} 天公开发言。你是${seatLabel(actorId)}。${positionInstruction}`
       + noveltyInstruction
       + turnBoundary
+      + lifeBoundary
       + '先按顺序阅读 pending_public_statements；只能回应已经公开的原话，尚未出现的玩家还没有发言。'
       + '先定 speech_move、公开 evidence_ids 和 confidence，再写 statement；这一轮只完成下面一个动作：'
       + 'assess 从一项尚未覆盖的公开信息提出新判断；respond 引用并回应本轮指向自己的具体质疑；'
@@ -2177,6 +2219,7 @@ async function coordinateDiscussion(
       + 'hold 明确判断停在哪个尚缺的信息，不硬点身份；commit 承接桌上已有候选，只落当前去向；pass 只说“过”。'
       + 'assess、revise、commit 填写 target_id 与 stance，statement 明确说出对应“N号”；'
       + 'respond、hold、pass 的 target_id 与 stance 都填 null。public_discussion_context.covered_public_judgments 是本轮已有判断。'
+      + 'hold 必须指出一个仍可从存活且尚未发言的玩家处获得的具体缺口；若只能说“信息太少”“没有线索”或泛泛等待后位，直接选择 pass。'
       + '对同一目标重复怀疑、追问或观察，只有目标后续的新发言、后来的公开票型或阶段事实才能触发 revise；其他人的附和不算新信息。'
       + 'statement 是玩家此刻真正说出口的话，只接一个具体点，说清就停；不要逐号点评、复述全桌、解释输出字段或汇报推理步骤。'
       + '自然问句、对照和口语重复可以使用，但必须由当前具体矛盾触发。警长竞选已经结束，不得继续竞选或复述竞选词；'

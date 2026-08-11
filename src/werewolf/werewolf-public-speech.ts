@@ -51,7 +51,83 @@ export function publicSpeechMoveNeedsPublicEvidence(move: unknown): boolean {
  * @returns the accepted table utterance.
  */
 export function normalizePublicSpeechStatement(move: unknown, statement: string): string {
-  return move === 'pass' ? '过' : statement
+  if (move === 'pass' || (move === 'hold' && GENERIC_INFORMATION_HOLD.test(statement))) return '过'
+  const withoutWaitTail = statement.replace(REDUNDANT_FUTURE_WAIT_TAIL, '').trimEnd()
+  return withoutWaitTail !== statement
+    && /[。！？]$/u.test(statement)
+    && !/[。！？]$/u.test(withoutWaitTail)
+    ? `${withoutWaitTail}。`
+    : withoutWaitTail
+}
+
+const GENERIC_INFORMATION_HOLD = new RegExp([
+  '信息(?:确实|还是|仍然|还|也)?(?:太少|不足)',
+  '(?:没有|没|还没有|还没)(?:能|有)?[^。！？]{0,16}(?:新(?:的)?(?:依据|信息|线索)|线索|逻辑点|能落定的点|能指认谁的点|能指人的点)',
+  '(?:暂时|目前)[^。！？]{0,12}(?:判断不出来|无法判断|没法判断)',
+].join('|'), 'u')
+const REDUNDANT_FUTURE_WAIT_TAIL = new RegExp([
+  '[，,](?:我)?(?:先)?(?:等|等待|看|听)(?:一等|一下)?后面[^。！？]{0,48}(?:发言|回应|表态|收口)[^。！？]*[。！？]?$',
+  '[，,]后面[^。！？]{0,48}(?:发言|回应|表态|收口)[^。！？]*[。！？]?$',
+].join('|'), 'u')
+
+/** One ballot claim whose pronoun is bound to the structured public target. */
+export interface PublicTargetPronounBallotClaim {
+  readonly voterId: string
+  readonly targetId: string
+}
+
+/**
+ * Extract ballot claims headed by an otherwise ambiguous second- or third-person pronoun.
+ * @param statement - public table utterance.
+ * @param publicTargetId - structured player whom the utterance addresses or judges.
+ * @param speakerId - player producing the utterance.
+ * @returns ballot claims that must be grounded in public records.
+ */
+export function publicTargetPronounBallotClaims(
+  statement: string,
+  publicTargetId: string,
+  speakerId: string,
+): readonly PublicTargetPronounBallotClaim[] {
+  const claims: PublicTargetPronounBallotClaim[] = []
+  const positiveTarget = '(?<![没未不])投(?:给(?:了)?|了|的(?:却)?是)?\\s*(\\d+)\\s*号'
+  for (const match of statement.matchAll(new RegExp(
+    `(?:你|他|她|对方)[^。！？]{0,18}${positiveTarget}`,
+    'gu',
+  ))) {
+    if (match[1] !== undefined) {
+      claims.push({ voterId: publicTargetId, targetId: `seat-${match[1]}` })
+    }
+  }
+  if (/(?:(?:你|他|她|对方))[^。！？]{0,18}(?<![没未不])投(?:给(?:了)?|了|的(?:却)?是)?\s*我/u.test(statement)) {
+    claims.push({ voterId: publicTargetId, targetId: speakerId })
+  }
+  return claims
+}
+
+const FUTURE_PLAYER_DEPENDENCY = new RegExp([
+  '还(?:需要|需|要)(?:更多)?(?:公开)?信息',
+  '待(?:观察|回应|解释|发言)',
+  '等(?:待)?[^，。！？；]{0,18}(?:发言|回应|解释|收口|表态)',
+  '(?:今天|明天|后面|下一轮)[^，。！？；]{0,12}(?:继续)?(?:看|观察|听|等)',
+].join('|'), 'u')
+
+/**
+ * Find an eliminated player treated as a source of future table information.
+ * @param statement - public table utterance.
+ * @param inactiveActorIds - players no longer alive in the current Storyworld.
+ * @returns the first impossible future source, or `undefined`.
+ */
+export function inactivePublicTargetFutureReference(
+  statement: string,
+  inactiveActorIds: readonly string[],
+): string | undefined {
+  const clauses = statement.split(/[。！？；]/u)
+  return inactiveActorIds.find((actorId) => {
+    const seat = /^seat-(\d+)$/u.exec(actorId)?.[1]
+    if (seat === undefined) return false
+    const reference = new RegExp(`(?<!\\d)${seat}\\s*号(?:玩家)?`, 'u')
+    return clauses.some(clause => reference.test(clause) && FUTURE_PLAYER_DEPENDENCY.test(clause))
+  })
 }
 
 /**

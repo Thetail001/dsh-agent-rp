@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
+  publicTargetPronounBallotClaims,
   publicSpeechMoveCarriesJudgment,
   publicSpeechMoveContextIssue,
   publicSpeechMoveNeedsPublicEvidence,
@@ -70,6 +72,47 @@ test('lets hold and pass omit evidence and normalizes pass to one table word', (
   }
   assert.equal(normalizePublicSpeechStatement('pass', '没有更多要说的'), '过')
   assert.equal(normalizePublicSpeechStatement('hold', '我还缺3号的解释。'), '我还缺3号的解释。')
+  assert.equal(normalizePublicSpeechStatement(
+    'hold',
+    '目前信息太少，我还没有能落定的点，等后面发言。',
+  ), '过')
+  assert.equal(normalizePublicSpeechStatement(
+    'hold',
+    '我前面怀疑过3号，但今天还没有能对上的新依据，我等后面发言再看。',
+  ), '过')
+  assert.equal(normalizePublicSpeechStatement(
+    'assess',
+    '5号昨天说先留判断，票却给了3号，这个前后对不太上，我先记下来，后面7号、11号发言再对照看。',
+  ), '5号昨天说先留判断，票却给了3号，这个前后对不太上，我先记下来。')
+})
+
+test('binds ambiguous ballot pronouns to the structured public target', () => {
+  assert.deepEqual(publicTargetPronounBallotClaims(
+    '4号今天先点10号，他自己也是投了10号警长当选的那一边。',
+    'seat-4',
+    'seat-7',
+  ), [{ voterId: 'seat-4', targetId: 'seat-10' }])
+  assert.deepEqual(publicTargetPronounBallotClaims(
+    '对方昨天投给了我，今天却完全不接这张票。',
+    'seat-4',
+    'seat-7',
+  ), [{ voterId: 'seat-4', targetId: 'seat-7' }])
+})
+
+test('rejects future dependencies on eliminated players without blocking historical review', () => {
+  const inactive = ['seat-1', 'seat-9']
+  assert.equal(inactivePublicTargetFutureReference(
+    '9号和1号的情况还需要更多公开信息，我先保留判断。',
+    inactive,
+  ), 'seat-1')
+  assert.equal(inactivePublicTargetFutureReference(
+    '1号已经出局，他昨天投给8号的记录还可以回看。',
+    inactive,
+  ), undefined)
+  assert.equal(inactivePublicTargetFutureReference(
+    '10号和7号都出局了，前面的两条线没法再核对。',
+    ['seat-7', 'seat-10'],
+  ), undefined)
 })
 
 test('requires revise to change an earlier judgment on newly cited public information', () => {
