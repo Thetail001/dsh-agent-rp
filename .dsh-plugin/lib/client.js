@@ -751,7 +751,12 @@ window.__ModuleLoader__.load({
 				if (automaticAttemptRef.current === attemptKey) return;
 				automaticAttemptRef.current = attemptKey;
 				const value = action.submission.kind === "prompt" ? action.submission.text : action.submission.line;
-				submit(value, false, action.submission.kind, action.label);
+				const timer = window.setTimeout(() => {
+					submit(value, false, action.submission.kind, action.label);
+				}, 0);
+				return () => {
+					window.clearTimeout(timer);
+				};
 			}, [
 				pending,
 				running,
