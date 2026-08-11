@@ -96,6 +96,7 @@ import {
   type StandardWerewolfPublicSpeechMove,
 } from './werewolf-public-speech.ts'
 import { completeWolfBallotTargets } from './wolf-ballot.ts'
+import { completeVoteProgress } from './werewolf-vote-progress.ts'
 
 export { DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS } from './werewolf-constants.ts'
 
@@ -1773,13 +1774,17 @@ async function coordinateSheriffVote(
     throw new Error('the human Sheriff ballot must name an active candidate')
   }
   const agentVoters = voters.filter(actorId => actorId !== humanActorId)
+  const initialProgress = completeVoteProgress(humanCanVote, 0, agentVoters.length)
   if (agentVoters.length > 0) {
-    progress?.update({ kind: 'sheriff-vote', completed: 0, total: agentVoters.length })
+    progress?.update({ kind: 'sheriff-vote', ...initialProgress })
   }
   const batchOptions = progress === undefined || agentVoters.length === 0 ? options : {
     ...options,
     onProgress: (completed: number, total: number) => {
-      progress.update({ kind: 'sheriff-vote', completed, total })
+      progress.update({
+        kind: 'sheriff-vote',
+        ...completeVoteProgress(humanCanVote, completed, total),
+      })
     },
   }
   const decisions = await decideTogether<TargetDecision>(
@@ -2424,13 +2429,17 @@ async function coordinateExileVote(
   }
   const agentVoters = voters.filter(actorId => actorId !== humanActorId)
   const publicEvidenceIds = tablePublicEvidenceIds(world, livingSeats(world))
+  const initialProgress = completeVoteProgress(humanCanVote, 0, agentVoters.length)
   if (agentVoters.length > 0) {
-    progress?.update({ kind: 'exile-vote', completed: 0, total: agentVoters.length })
+    progress?.update({ kind: 'exile-vote', ...initialProgress })
   }
   const batchOptions = progress === undefined || agentVoters.length === 0 ? options : {
     ...options,
     onProgress: (completed: number, total: number) => {
-      progress.update({ kind: 'exile-vote', completed, total })
+      progress.update({
+        kind: 'exile-vote',
+        ...completeVoteProgress(humanCanVote, completed, total),
+      })
     },
   }
   const decisions = await decideTogether<TargetDecision>(batchOptions, agentVoters.map((actorId) => {

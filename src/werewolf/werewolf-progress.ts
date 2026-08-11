@@ -132,8 +132,10 @@ function validateInitialState(state: StandardWerewolfProgressState): void {
     }
     return
   }
-  if (state.completed !== 0) {
-    throw new Error('standard Werewolf counted progress must start with zero completed attempts')
+  const directBallotAlreadyCompleted = (state.kind === 'sheriff-vote' || state.kind === 'exile-vote')
+    && state.completed === 1
+  if (state.completed !== 0 && !directBallotAlreadyCompleted) {
+    throw new Error('standard Werewolf counted progress must start before Character attempts')
   }
 }
 
