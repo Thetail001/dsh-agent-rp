@@ -918,12 +918,15 @@ async function startDecision<T extends DecisionTrace>(options: DecisionOptions):
         },
     })}\n</standard-werewolf-private-context>`,
   }]
+  const allowedEvidenceIds = options.publicDiscussionContext === undefined
+    ? evidenceIds
+    : options.publicEvidenceIds ?? []
   const run = await options.subagents.start(options.providerName, {
     label: options.label,
     prompt,
     parent: options.parent,
     signal: options.signal,
-    outputSchema: bindDecisionEvidenceSchema(options.outputSchema, evidenceIds),
+    outputSchema: bindDecisionEvidenceSchema(options.outputSchema, allowedEvidenceIds),
     maxDepth,
     toolFilter: { allow: [] },
     persona: CHARACTER_DECISION_PERSONA,
@@ -1098,7 +1101,8 @@ function assertDecisionTrace(
         coveredTargetIds: options.publicDiscussionContext?.coveredJudgments.map(judgment =>
           String(judgment.targetId)) ?? [],
       })
-      if (speechMove === 'revise' && contextIssue === 'revise-without-prior-change') {
+      if ((speechMove === 'revise' && contextIssue === 'revise-without-prior-change')
+        || (speechMove === 'commit' && contextIssue === 'commit-without-candidate')) {
         speechMove = 'assess'
         normalizedValue = { ...normalizedValue, speech_move: speechMove }
         contextIssue = publicSpeechMoveContextIssue({

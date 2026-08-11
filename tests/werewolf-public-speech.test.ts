@@ -112,6 +112,15 @@ test('offers only moves supported by the current public turn', () => {
     hasCoveredJudgment: false,
     mustAllowExplosion: true,
   }), ['assess', 'hold', 'pass'])
+  assert.deepEqual(publicSpeechMovesForTurn({
+    position: 'middle',
+    hasTargetablePublicEvidence: true,
+    hasDirectedConcern: false,
+    hasRevisablePrior: false,
+    hasFutureSpeaker: true,
+    hasCoveredJudgment: true,
+    mustAllowExplosion: false,
+  }), ['assess', 'pass'])
 })
 
 test('rejects judgment fields on conversational moves and missing fields on judgment moves', () => {

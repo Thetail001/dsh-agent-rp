@@ -9,7 +9,7 @@ import {
 /** Default output-token cap for constrained Character decisions. */
 export const STRUCTURED_DECISION_MAX_TOKENS = 2_048
 /** Default output-token cap for public table speech. */
-export const PUBLIC_DISCUSSION_MAX_TOKENS = 2_048
+export const PUBLIC_DISCUSSION_MAX_TOKENS = 768
 /** Default adapter-owned effort for constrained Character decisions. */
 export const DEFAULT_DECISION_REASONING_EFFORT = 'off'
 /** Default adapter-owned effort for public table speech. */

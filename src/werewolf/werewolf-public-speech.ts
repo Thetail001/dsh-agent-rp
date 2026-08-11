@@ -85,7 +85,7 @@ export function publicSpeechMovesForTurn(
   if (turn.hasTargetablePublicEvidence) moves.push('assess')
   if (turn.hasDirectedConcern) moves.push('respond')
   if (turn.hasRevisablePrior) moves.push('revise')
-  if (turn.hasFutureSpeaker) moves.push('hold')
+  if (turn.hasFutureSpeaker && !turn.hasCoveredJudgment) moves.push('hold')
   if (turn.position === 'late' && turn.hasCoveredJudgment) moves.push('commit')
 
   const mustOpenJudgment = turn.hasTargetablePublicEvidence
