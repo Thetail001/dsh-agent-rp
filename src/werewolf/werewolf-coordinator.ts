@@ -104,9 +104,10 @@ import {
   normalizePublicSpeechStatement,
   prematurePublicBallotExplanationTarget,
   publicBallotTargetIds,
+  publicEvidenceActorIds,
   publicAcknowledgementClaimActorIds,
   publicHoldTargetIssue,
-  publicSpeechMovesForPosition,
+  publicSpeechMovesForTurn,
   publicTargetPronounBallotClaims,
   publicSpeechMoveCarriesJudgment,
   publicSpeechMoveContextIssue,
@@ -165,6 +166,14 @@ const CONSTRAINED_DECISION_DISCIPLINE = 'Do not recount the match, enumerate the
 const PUBLIC_DISCUSSION_DISCIPLINE = 'Complete one table move, not a report about the match. '
   + 'Decide the move, grounding, and confidence before writing the public statement. '
   + 'It is legal to remain uncertain, revise an earlier read, commit one vote, or pass when the table gives you nothing useful.'
+const PUBLIC_SPEECH_MOVE_INSTRUCTIONS: Readonly<Record<StandardWerewolfPublicSpeechMove, string>> = {
+  assess: 'assess 从一项尚未覆盖的公开信息提出新判断',
+  respond: 'respond 只回应本轮直接指向自己的具体质疑',
+  revise: 'revise 用新公开信息改变自己先前的判断',
+  hold: 'hold 请一名尚未发言的玩家解释已经发生的公开行动',
+  commit: 'commit 承接桌上已有候选，只落当前去向',
+  pass: 'pass 只说“过”',
+}
 const CHARACTER_DECISION_STYLES = [
   '说话偏短：先报当前结论，最多补一个真正影响结论的原因，说清就停。',
   '愿意保留：信息不够时直接承认定不下来，不为填满麦序硬点狼人。',
@@ -1284,13 +1293,21 @@ const HUNTER_TARGET_CORROBORATION_REFERENCE = /证死|实锤|印证|证明|证�
 const HUNTER_TARGET_IDENTITY_REFERENCE = /狼(?:人)?|查杀|查验|身份|阵营|这条线|结论/iu
 const HUNTER_SHOT_IDENTITY_LINK_REFERENCE = /(?:猎人[^。！？]{0,16}(?:带走|枪口|开枪)|被猎人[^。！？]{0,8}(?:带走|击中))/iu
 const QUOTED_HUNTER_CORROBORATION_REBUTTAL = /(?:你|他|\d+\s*号)[^。！？]{0,12}(?:说|声称)[^。！？]{0,48}(?:可|但|只是|不过)/iu
-function isBarePassEvidence(id: string, options: DecisionOptions): boolean {
-  const pending = options.pendingPublicStatements?.find(statement => statement.evidence_id === id)
+function publicEvidenceIsBarePass(
+  id: string,
+  world: Storyworld,
+  pendingPublicStatements: readonly PendingPublicStatement[] | undefined,
+): boolean {
+  const pending = pendingPublicStatements?.find(statement => statement.evidence_id === id)
   if (pending !== undefined) return pending.statement.trim() === '过'
   const actorId = /^day:\d+:speech:(seat-\d+)$/u.exec(id)?.[1]
   if (actorId === undefined) return false
-  const choice = options.world.choices.find(candidate => String(candidate.id) === id)
+  const choice = world.choices.find(candidate => String(candidate.id) === id)
   return choice?.text.trim() === `${actorId}: 过`
+}
+
+function isBarePassEvidence(id: string, options: DecisionOptions): boolean {
+  return publicEvidenceIsBarePass(id, options.world, options.pendingPublicStatements)
 }
 
 function assertPublicDiscussionStatement(
@@ -1498,7 +1515,7 @@ function assertCitedBallot(
 function publicEvidenceDirectsResponseToActor(
   evidenceId: string,
   actorId: RoleplayActorId,
-  options: DecisionOptions,
+  options: Pick<DecisionOptions, 'pendingPublicStatements' | 'world'>,
 ): boolean {
   const statement = options.pendingPublicStatements
     ?.find(candidate => candidate.evidence_id === evidenceId)?.statement
@@ -2442,19 +2459,49 @@ async function coordinateDiscussion(
     const position = tableIndex < Math.ceil(living.length / 3)
       ? 'early'
       : tableIndex >= living.length - Math.ceil(living.length / 3) ? 'late' : 'middle'
-    const speechMoves = publicSpeechMovesForPosition(position)
     const positionInstruction = position === 'early'
-      ? '公开信息还少：有一个可核对的点就判断它，信息缺口还在就保留或过。'
+      ? '公开信息还少：只判断一个可核对的点，信息缺口要明确。'
       : position === 'late'
         ? '接近收口：可以承接桌上已有候选落当前去向；只有新信息改变旧判断时才另起判断。'
         : '只接住一条真正影响自己的公开信息，可以回应、改判或提出一个新判断。'
     const noveltyInstruction = publicEvidenceIds.length === 0
       ? '桌面还没有可核对的公开信息，只能 hold 或 pass；不得借用私密身份或夜间信息制造判断。'
       : coveredJudgments.length === 0
-        ? '本轮还没有结构化判断；若现有公开信息仍不足以形成判断，可以明确停在哪个缺口或直接过。'
+        ? '本轮还没有结构化判断；只处理一项当前可用动作，不硬凑全桌结论。'
         : '桌上已有候选时可以直接承接；没有新信息时不要换词重做别人已经完成的判断。'
     const alreadySpoke = [...existing, ...pendingPublicStatements.map(statement => statement.actor_id)]
     const canStillSpeak = remaining.slice(remaining.indexOf(actorId) + 1)
+    const hasTargetablePublicEvidence = publicEvidenceIds.some(evidenceId =>
+      !publicEvidenceIsBarePass(evidenceId, world, visiblePending)
+      && publicEvidenceActorIds(evidenceId).some(evidenceActorId =>
+        evidenceActorId !== actorId
+        && publicJudgmentTargets.includes(asRoleplayActorId(evidenceActorId))))
+    const citesDirectedConcern = publicEvidenceIds.some(evidenceId =>
+      publicEvidenceDirectsResponseToActor(evidenceId, actorId, {
+        world,
+        pendingPublicStatements: visiblePending,
+      }))
+    const hasDirectedConcern = publicResponseIsGrounded(
+      coveredJudgments,
+      actorId,
+      citesDirectedConcern,
+    )
+    const priorPublicJudgment = standardWerewolfDecisionHistory(options.parent.session.events, actorId)
+      .findLast(decision => decision.action.name === 'speak' && decision.publicJudgment !== undefined)
+    const hasRevisablePrior = priorPublicJudgment !== undefined
+      && publicEvidenceIds.some(evidenceId => !priorPublicJudgment.evidenceIds.includes(evidenceId))
+    const speechMoves = publicSpeechMovesForTurn({
+      position,
+      hasTargetablePublicEvidence,
+      hasDirectedConcern,
+      hasRevisablePrior,
+      hasFutureSpeaker: canStillSpeak.length > 0,
+      hasCoveredJudgment: coveredJudgments.length > 0,
+      mustAllowExplosion: actorId === explosionDecider,
+    })
+    const moveInstruction = `本轮只可选择：${speechMoves
+      .map(move => PUBLIC_SPEECH_MOVE_INSTRUCTIONS[move])
+      .join('；')}。`
     const turnBoundary = `本轮已经发言且不能再次回应的玩家：${alreadySpoke.length === 0 ? '无' : alreadySpoke.map(seatLabel).join('、')}。`
       + `本轮尚可发言的玩家：${canStillSpeak.length === 0 ? '无' : canStillSpeak.map(seatLabel).join('、')}。`
       + '对已经发言的玩家只能依据其现有发言形成当前判断，不能追问、要求解释、等待其回答或把判断推迟到其后续动作；'
@@ -2472,15 +2519,16 @@ async function coordinateDiscussion(
       + lifeBoundary
       + '先按顺序阅读 pending_public_statements；只能回应已经公开的原话，尚未出现的玩家还没有发言。'
       + '可以请尚未发言的玩家轮到时解释公开选票，但在其发言机会到来前不得说他“至今没解释、一直没给理由”，也不能据此判断。'
-      + '先定 speech_move、公开 evidence_ids 和 confidence，再写 statement；这一轮只完成下面一个动作：'
-      + 'assess 从一项尚未覆盖的公开信息提出新判断；respond 引用并回应本轮指向自己的具体质疑；'
-      + 'revise 先承认自己此前的判断，再指出哪项新公开信息触发目标或立场改变；'
-      + 'hold 明确判断停在哪个尚缺的信息，不硬点身份；commit 承接桌上已有候选，只落当前去向；pass 只说“过”。'
-      + 'commit 只用于 late 位置，target_id 必须已经出现在 covered_public_judgments 中且不能是自己；没有合法候选时使用 assess、hold 或 pass。'
+      + '先定 speech_move、公开 evidence_ids 和 confidence，再写 statement；一轮只完成一个动作。'
+      + moveInstruction
       + 'assess、revise、commit 填写 target_id 与 stance；target_id 是被判断的人，不是提供证据的人，statement 最后一个点名必须回到对应“N号”；'
       + 'respond、hold、pass 的 target_id 与 stance 都填 null。public_discussion_context.covered_public_judgments 是本轮已有判断。'
-      + 'respond 只处理指向自己的那项公开质疑，结尾只能落回自己或提出质疑的玩家，不得顺带评价第三名玩家。'
-      + 'hold 只能点一名仍可发言的存活玩家，并要求他解释一项已经发生的公开行动；同一个等待目标已经有人点过、无法点出目标或只能泛泛等信息时，直接选择 pass。'
+      + (speechMoves.includes('respond')
+        ? 'respond 只处理指向自己的那项公开质疑，结尾只能落回自己或提出质疑的玩家，不得顺带评价第三名玩家。'
+        : '')
+      + (speechMoves.includes('hold')
+        ? 'hold 只能点一名仍可发言的存活玩家，并要求他解释一项已经发生的公开行动；同一个等待目标已经有人点过、无法点出目标或只能泛泛等信息时不要使用 hold。'
+        : '')
       + 'question、observe、suspect 都属于对目标的关注；换一个 stance 名称不算新判断。'
       + '同一目标的同类关注最多保留两位玩家的独立看法，之后最多再由一位后位玩家承接收口；已有收口且没有目标本人的新发言、后来的公开票型或阶段事实时直接 pass。'
       + '对同一目标重复关注，只有目标后续的新发言、后来的公开票型或阶段事实才能触发 revise；其他人的附和不算新信息。'

@@ -10,10 +10,12 @@ import {
   normalizePublicSpeechStatement,
   prematurePublicBallotExplanationTarget,
   publicBallotTargetIds,
+  publicEvidenceActorIds,
   publicHoldTargetIssue,
   publicSpeechJudgmentFamily,
   publicSpeechJudgmentCapacity,
   publicSpeechMovesForPosition,
+  publicSpeechMovesForTurn,
   publicTargetPronounBallotClaims,
   publicSpeechMoveCarriesJudgment,
   publicSpeechMoveContextIssue,
@@ -69,6 +71,45 @@ test('reserves commit for closing speakers', () => {
   assert.equal(publicSpeechMovesForPosition('early').includes('commit'), false)
   assert.equal(publicSpeechMovesForPosition('middle').includes('commit'), false)
   assert.equal(publicSpeechMovesForPosition('late').includes('commit'), true)
+})
+
+test('offers only moves supported by the current public turn', () => {
+  assert.deepEqual(publicSpeechMovesForTurn({
+    position: 'early',
+    hasTargetablePublicEvidence: true,
+    hasDirectedConcern: false,
+    hasRevisablePrior: false,
+    hasFutureSpeaker: true,
+    hasCoveredJudgment: false,
+    mustAllowExplosion: false,
+  }), ['assess', 'hold'])
+  assert.deepEqual(publicSpeechMovesForTurn({
+    position: 'late',
+    hasTargetablePublicEvidence: true,
+    hasDirectedConcern: true,
+    hasRevisablePrior: true,
+    hasFutureSpeaker: false,
+    hasCoveredJudgment: true,
+    mustAllowExplosion: false,
+  }), ['assess', 'respond', 'revise', 'commit', 'pass'])
+  assert.deepEqual(publicSpeechMovesForTurn({
+    position: 'early',
+    hasTargetablePublicEvidence: false,
+    hasDirectedConcern: false,
+    hasRevisablePrior: false,
+    hasFutureSpeaker: true,
+    hasCoveredJudgment: false,
+    mustAllowExplosion: false,
+  }), ['hold', 'pass'])
+  assert.deepEqual(publicSpeechMovesForTurn({
+    position: 'early',
+    hasTargetablePublicEvidence: true,
+    hasDirectedConcern: false,
+    hasRevisablePrior: false,
+    hasFutureSpeaker: true,
+    hasCoveredJudgment: false,
+    mustAllowExplosion: true,
+  }), ['assess', 'hold', 'pass'])
 })
 
 test('rejects judgment fields on conversational moves and missing fields on judgment moves', () => {
@@ -161,6 +202,17 @@ test('reads self-targets from every public ballot phase', () => {
     'day:1:pk-vote:seat-4:seat-8',
     'day:1:speech:seat-5',
   ]), ['seat-10', 'seat-8'])
+})
+
+test('finds players represented by actionable public evidence', () => {
+  assert.deepEqual(publicEvidenceActorIds('sheriff:candidate:seat-9'), ['seat-9'])
+  assert.deepEqual(publicEvidenceActorIds('day:1:speech:seat-8'), ['seat-8'])
+  assert.deepEqual(
+    publicEvidenceActorIds('sheriff-election:1:seat-3:seat-9'),
+    ['seat-3', 'seat-9'],
+  )
+  assert.deepEqual(publicEvidenceActorIds('day:1:exile-vote:seat-3:abstain'), ['seat-3'])
+  assert.deepEqual(publicEvidenceActorIds('day:1:announcement'), [])
 })
 
 test('recognizes a concrete question even when its target and request are separated by ballot detail', () => {

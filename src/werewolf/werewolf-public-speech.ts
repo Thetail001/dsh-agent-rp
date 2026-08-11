@@ -53,6 +53,49 @@ export function publicSpeechMovesForPosition(
     : STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES.filter(move => move !== 'commit')
 }
 
+/** Public facts and conversational openings that make speech moves usable this turn. */
+export interface StandardWerewolfPublicSpeechTurn {
+  /** Current place in the living speaking order. */
+  readonly position: StandardWerewolfPublicSpeechPosition
+  /** Whether public evidence refers to another living player who can be assessed. */
+  readonly hasTargetablePublicEvidence: boolean
+  /** Whether an earlier public concern currently points at the speaker. */
+  readonly hasDirectedConcern: boolean
+  /** Whether a prior judgment can be changed using newly public evidence. */
+  readonly hasRevisablePrior: boolean
+  /** Whether one later living player can still answer a concrete question. */
+  readonly hasFutureSpeaker: boolean
+  /** Whether the table already contains a structured judgment to answer or close. */
+  readonly hasCoveredJudgment: boolean
+  /** Whether the wolf-only schema must preserve the pass-shaped explosion branch. */
+  readonly mustAllowExplosion: boolean
+}
+
+/**
+ * Expose only speech moves that the current public context can support. The first non-wolf speaker
+ * facing another player's actionable public record must open one judgment instead of spending three
+ * model attempts on impossible response or revision shapes.
+ * @param turn - public facts and conversational openings available at this exact speaking turn.
+ * @returns context-supported moves in stable table order.
+ */
+export function publicSpeechMovesForTurn(
+  turn: StandardWerewolfPublicSpeechTurn,
+): readonly StandardWerewolfPublicSpeechMove[] {
+  const moves: StandardWerewolfPublicSpeechMove[] = []
+  if (turn.hasTargetablePublicEvidence) moves.push('assess')
+  if (turn.hasDirectedConcern) moves.push('respond')
+  if (turn.hasRevisablePrior) moves.push('revise')
+  if (turn.hasFutureSpeaker) moves.push('hold')
+  if (turn.position === 'late' && turn.hasCoveredJudgment) moves.push('commit')
+
+  const mustOpenJudgment = turn.hasTargetablePublicEvidence
+    && !turn.hasCoveredJudgment
+    && !turn.hasDirectedConcern
+    && !turn.hasRevisablePrior
+  if (!mustOpenJudgment || turn.mustAllowExplosion) moves.push('pass')
+  return moves.length === 0 ? ['pass'] : moves
+}
+
 /**
  * Whether a value names one accepted public table-speech action.
  * @param value - value received from structured model output.
@@ -207,6 +250,21 @@ export function publicBallotTargetIds(evidenceIds: readonly string[]): readonly 
     if (targetId !== undefined) targets.add(targetId)
   }
   return [...targets]
+}
+
+/**
+ * Read the public players directly represented by one evidence id. Announcements without an actor
+ * are deliberately excluded so a night death alone cannot force a judgment about an unrelated seat.
+ * @param evidenceId - one table-public evidence id.
+ * @returns represented player ids in voter/target or author order.
+ */
+export function publicEvidenceActorIds(evidenceId: string): readonly string[] {
+  const directActor = /^(?:sheriff:(?:candidate|holder):|day:\d+:(?:speech|hunter-shot):)(seat-\d+)$/u
+    .exec(evidenceId)?.[1]
+  if (directActor !== undefined) return [directActor]
+  const ballot = PUBLIC_BALLOT_REFERENCE.exec(evidenceId)
+  if (ballot === null) return []
+  return [...new Set([ballot[1], ballot[2]].filter(actorId => actorId !== 'abstain'))] as string[]
 }
 
 const GENERIC_INFORMATION_HOLD = new RegExp([
