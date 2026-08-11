@@ -3,7 +3,11 @@
  * and sends only presenter-supplied prompts, commands, or explicit player text.
  */
 import type { Context } from '@deepseek-ai/cordis'
-import type { EngineStoreHandle, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type {
+  EngineStoreHandle,
+  SessionId,
+  SessionsService,
+} from '@deepseek-ai/dsh-client-runtime/client'
 import type { ChatStoreState, IConversation } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { useEffect } from 'react'
@@ -41,8 +45,8 @@ function RoleplayDefaultView({ actions }: RoleplayDefaultViewProps): null {
 /** Player-input face bound to the session-scoped conversation service. */
 export interface RoleplayViewInjected {
   /**
-   * Open a fresh game through the shared Workspace flow, then archive the superseded Session.
-   * @returns completion after the Workspace-owned transition is requested and the old Session is hidden recoverably.
+   * Open a fresh game in the current Workspace, then archive the superseded Session.
+   * @returns completion after the fresh Session is selected and the old Session is hidden recoverably.
    */
   startScene: () => Promise<void>
   /**
@@ -117,7 +121,11 @@ export function apply(ctx: Context): void {
             if (workspace === undefined) {
               throw new Error('当前会话未绑定工作区，无法新开一局。')
             }
-            const nextSessionId = await ctx.workspaces.connectWorkspace(workspace.workspaceId)
+            // rc.2 commands do not engage a blank Session, while connectWorkspace()
+            // intentionally reuses one. Roleplay therefore needs the runtime's
+            // exported concrete create() operation to guarantee a distinct game.
+            const sessions = ctx.sessions as SessionsService
+            const nextSessionId = await sessions.create({ workspaceId: workspace.workspaceId })
             await ctx.workspaces.archiveSession(sessionId)
             ctx.sessions.open(nextSessionId)
           },
