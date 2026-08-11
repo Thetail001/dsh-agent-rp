@@ -16,6 +16,7 @@ import {
   publicSpeechMoveShapeIssue,
   publicResponseIsGrounded,
   publicRoleClaimsForPrivateRole,
+  publicSeerCampaignClaimIssue,
   publicSeerClaimTargetIds,
   publicStatementDisclosesWolfAlignment,
   publicStatementNegatesCorroboration,
@@ -140,6 +141,9 @@ test('recognizes a concrete question even when its target and request are separa
     '10号已经把这张警长票的理由讲清楚了，我不再重复。',
   ), [])
   assert.deepEqual(directedPublicFocusTargetIds('我还缺3号的解释。'), ['seat-3'])
+  assert.deepEqual(directedPublicFocusTargetIds(
+    '我是预言家，昨晚查验3号是好人。',
+  ), [])
 })
 
 test('keeps the final named player aligned with the structured judgment target', () => {
@@ -368,4 +372,16 @@ test('pairs a denied Seer result with the public claim it contradicts', () => {
   assert.deepEqual(publicSeerClaimTargetIds(
     '我是预言家，首夜查验6号为狼人，第二夜验了10号。',
   ), ['seat-6', 'seat-10'])
+})
+
+test('requires one final first-night inspection in a Seer campaign claim', () => {
+  assert.equal(publicSeerCampaignClaimIssue(
+    '我是预言家，昨晚查验3号是好人。',
+  ), undefined)
+  assert.equal(publicSeerCampaignClaimIssue(
+    '我是预言家，警徽流先按位置验人。',
+  ), 'missing-target')
+  assert.equal(publicSeerCampaignClaimIssue(
+    '我是预言家，昨晚查验6号……不，我查验了3号，3号是好人。',
+  ), 'multiple-targets')
 })

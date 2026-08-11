@@ -131,6 +131,24 @@ export function publicSeerClaimTargetIds(statement: string): readonly string[] {
     .flatMap(match => match[1] === undefined ? [] : [`seat-${match[1]}`])
 }
 
+/** Problem in a first-night Seer campaign statement's published inspection. */
+export type PublicSeerCampaignClaimIssue = 'missing-target' | 'multiple-targets'
+
+/**
+ * Validate the one inspection target available before the first Sheriff election.
+ * The caller establishes that the speaker publicly claims Seer; later days may
+ * legitimately recount more than one inspection and do not use this contract.
+ * @param statement - first-day Sheriff campaign statement claiming Seer.
+ * @returns the target-count problem, or `undefined` for exactly one target.
+ */
+export function publicSeerCampaignClaimIssue(
+  statement: string,
+): PublicSeerCampaignClaimIssue | undefined {
+  const targets = new Set(publicSeerClaimTargetIds(statement))
+  if (targets.size === 0) return 'missing-target'
+  return targets.size > 1 ? 'multiple-targets' : undefined
+}
+
 /**
  * Normalize the only fixed public utterance while preserving authored moves.
  * @param move - structured public speech move.

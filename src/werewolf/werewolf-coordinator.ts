@@ -109,6 +109,7 @@ import {
   publicSpeechMoveShapeIssue,
   publicResponseIsGrounded,
   publicRoleClaimsForPrivateRole,
+  publicSeerCampaignClaimIssue,
   publicSeerClaimTargetIds,
   publicStatementDisclosesWolfAlignment,
   publicStatementNegatesCorroboration,
@@ -1009,7 +1010,7 @@ function assertDecisionTrace(
         const context = options.publicDiscussionContext
         const groundedByCitedStatement = evidenceIds.some(id =>
           options.publicEvidenceIds?.includes(id) === true
-          && publicEvidenceReferencesActor(id, options.actorId, options))
+          && publicEvidenceDirectsResponseToActor(id, options.actorId, options))
         if (!publicResponseIsGrounded(
           context?.coveredJudgments ?? [],
           options.actorId,
@@ -1179,16 +1180,26 @@ function assertPublicStatementCandidate(
       )
     }
   }
-  const forbiddenRoleClaim = options.allowedPublicRoleClaims === undefined
-    ? undefined
-    : PRIVATE_ROLE_SELF_CLAIMS.find(claim =>
-      claim.pattern.test(statement)
-      && !options.allowedPublicRoleClaims?.includes(claim.role))
+  const selfRoleClaims = options.allowedPublicRoleClaims === undefined
+    ? []
+    : PRIVATE_ROLE_SELF_CLAIMS.filter(claim => claim.pattern.test(statement))
+  const forbiddenRoleClaim = selfRoleClaims.find(claim =>
+    !options.allowedPublicRoleClaims?.includes(claim.role))
   if (forbiddenRoleClaim !== undefined) {
     throw new DecisionValidationError(
       'private-role-disclosure',
       `${options.label} disclosed a forbidden private ${forbiddenRoleClaim.role} role in public text`,
     )
+  }
+  if (options.publicDiscussionContext === undefined
+    && selfRoleClaims.some(claim => claim.role === 'seer')) {
+    const issue = publicSeerCampaignClaimIssue(statement)
+    if (issue !== undefined) {
+      throw new DecisionValidationError(
+        'public-claim-contradiction',
+        `${options.label} published an invalid first-night Seer inspection: ${issue}`,
+      )
+    }
   }
   if (trace.action !== 'explode'
     && standardWerewolfRoleIn(options.world, options.actorId) === 'wolf'
@@ -1415,7 +1426,7 @@ function assertCitedBallot(
   )
 }
 
-function publicEvidenceReferencesActor(
+function publicEvidenceDirectsResponseToActor(
   evidenceId: string,
   actorId: RoleplayActorId,
   options: DecisionOptions,
@@ -1423,10 +1434,8 @@ function publicEvidenceReferencesActor(
   const statement = options.pendingPublicStatements
     ?.find(candidate => candidate.evidence_id === evidenceId)?.statement
     ?? options.world.choices.find(choice => String(choice.id) === evidenceId)?.text
-  const seat = /^seat-(\d+)$/u.exec(actorId)?.[1]
   return statement !== undefined
-    && seat !== undefined
-    && new RegExp(`(?<!\\d)${seat}\\s*号(?:玩家)?`, 'u').test(statement)
+    && directedPublicFocusTargetIds(statement).includes(String(actorId))
 }
 
 function publicEvidenceContainsSeerClaim(
@@ -1733,7 +1742,7 @@ function sheriffRegistrationTask(
   actorId: RoleplayActorId,
   wolfRepresentative: RoleplayActorId,
 ): string {
-  const campaignBoundary = '只有预言家可以在竞选发言中主动公开其身份和一条查验结果。其他身份即使竞选，也不得提及、暗示或复述私密身份、夜间能力、夜间行动或仅凭私密身份可知的信息；必须只使用公开信息和公开可验证的带队方法。若竞选，给出一句简短、自然的中文竞选发言。只返回所需结构。'
+  const campaignBoundary = '只有预言家可以在竞选发言中主动公开其身份和首夜唯一一次查验的最终结果；写完后核对查验对象，只保留一个号码，不得保留草稿、改口或自我修正。其他身份即使竞选，也不得提及、暗示或复述私密身份、夜间能力、夜间行动或仅凭私密身份可知的信息；必须只使用公开信息和公开可验证的带队方法。若竞选，给出一句简短、自然的中文竞选发言。只返回所需结构。'
   if (forcedStand === true) {
     return '同时进行警长报名。本局明确启用了三候选试玩预设，你是其中一名指定候选人。本预设只规定报名人，不替你写发言，也不影响后续投票。必须返回 stand: true，并根据你掌握的信息自行给出竞选发言。' + campaignBoundary
   }
@@ -2240,7 +2249,7 @@ function explicitHumanQuestionJudgments(
 
 function publicSpeechRetryInstruction(failure: DecisionFailure): string {
   const correction = failure.issue === 'response-grounding'
-    ? '本轮每人只发言一次。不要向已经发言的玩家提问、要求补充或等待后续回应；可以直接评价他已经留下的发言，并落下当前判断。'
+    ? 'respond 只用于回应公开记录中直接指向自己的质疑；仅被提到、被查验或被认可不算。不要向已经发言的玩家追问；可以评价其现有发言后落下判断，或直接过。'
     : failure.issue === 'target-reference'
       ? '若 speech_move 带有 target_id，statement 最后点名的玩家必须回到该目标；提供证据的人不是自动的判断目标。'
       : failure.issue === 'public-claim-contradiction'
