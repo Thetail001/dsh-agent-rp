@@ -10618,7 +10618,7 @@ function wolfExplode(world, wolfId) {
 /** Resolver adapters that expose the standard Werewolf referee through roleplay commits. */
 /** Resolver name for the player's private pre-game role acknowledgement. */
 const STANDARD_CONFIRM_ROLE = asRoleplayResolverName("standard_confirm_role");
-/** Resolver name for one private wolf proposal before pack confirmation. */
+/** Resolver name for one private wolf proposal before the final pack ballot. */
 const STANDARD_WOLF_PROPOSE = asRoleplayResolverName("standard_wolf_propose");
 /** Resolver name for one private wolf target. */
 const STANDARD_WOLF_KILL = asRoleplayResolverName("standard_wolf_kill");
@@ -10870,7 +10870,7 @@ const STANDARD_WEREWOLF_RESOLVERS = [
 		name: STANDARD_WOLF_PROPOSE,
 		version: "1",
 		applicationOnly: true,
-		description: "Record one living wolf's private proposal before the pack confirms a shared target.",
+		description: "Record one living wolf's private proposal before the pack casts its final ballots.",
 		parameters: {
 			type: "object",
 			additionalProperties: false,
@@ -11599,8 +11599,8 @@ const STANDARD_WEREWOLF_SHERIFF_VOTE_TOOL = "standard_werewolf_sheriff_vote";
 /** Scoped direct-action command used by the browser Roleplay surface. */
 const STANDARD_WEREWOLF_ACTION_COMMAND = "roleplay-action";
 const MAX_TIMER_DELAY_MS = 2147483647;
-/** Default deadline for one coordinated standard Werewolf decision window. */
-const DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS = 12e3;
+/** Default deadline for one coordinated standard Werewolf Character batch. */
+const DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS = 3e4;
 const COORDINATOR_TOOL_NAMES = /* @__PURE__ */ new Set([
 	STANDARD_WEREWOLF_NIGHT_TOOL,
 	STANDARD_WEREWOLF_SHERIFF_REGISTRATION_TOOL,
@@ -12958,16 +12958,19 @@ function wolfPackDecisionSpec(parent, world, actorId, task) {
 		world,
 		label: `standard Werewolf pack decision for ${String(actorId)}`,
 		task: `${task} Legal targets are ${targets.map(seatLabel$2).join("、")}; the listed order is not a recommendation. Return only the requested structured fields. 请用简体中文填写 rationale。`,
-		roleInstruction: "You are the private wolf-pack decision agent for exactly one living werewolf seat, not for the pack. You have exactly the same authority as every other living werewolf; choose only the target this seat can confirm.",
+		roleInstruction: "You are the private wolf-pack decision agent for exactly one living werewolf seat, not for the pack. You have exactly the same authority as every other living werewolf; choose only the target this seat supports.",
 		outputSchema: TARGET_OUTPUT_SCHEMA(targets)
 	};
 }
 async function startRequiredDecisionBatch(options, specs, label) {
+	options.signal.throwIfAborted();
+	const deadline = AbortSignal.timeout(options.decisionTimeoutMs);
+	const signal = AbortSignal.any([options.signal, deadline]);
 	const starts = await Promise.allSettled(specs.map((spec) => startDecision({
 		subagents: options.subagents,
 		providerName: options.providerName,
 		parent: options.parent,
-		signal: options.signal,
+		signal,
 		agentOptions: options.agentOptions,
 		...spec
 	})));
@@ -13014,17 +13017,20 @@ function wolfSelectionContext(world, directSelections) {
 		agentWolves: livingWolves.filter((actorId) => !directByActor.has(actorId))
 	};
 }
-function confirmedWolfPackDecision(context, decisions) {
+function resolveWolfPackBallot(parent, world, context, decisions) {
 	const targetByActor = new Map(context.directByActor);
 	for (const [index, actorId] of context.agentWolves.entries()) {
 		const decision = decisions[index];
 		if (decision === void 0) throw new Error(`${String(actorId)} produced no final wolf-pack decision`);
 		targetByActor.set(actorId, decision.target_id);
 	}
-	const confirmedTargets = new Set(targetByActor.values());
-	if (confirmedTargets.size !== 1 || targetByActor.size !== context.livingWolves.length) throw new Error("the living werewolves did not unanimously confirm one pack target");
-	const targetId = confirmedTargets.values().next().value;
-	if (targetId === void 0) throw new Error("the living werewolves produced no pack target");
+	if (targetByActor.size !== context.livingWolves.length) throw new Error("the living werewolves did not each cast one final pack ballot");
+	const votes = /* @__PURE__ */ new Map();
+	for (const targetId of targetByActor.values()) votes.set(targetId, (votes.get(targetId) ?? 0) + 1);
+	const highestVoteCount = Math.max(...votes.values());
+	const tiedTargets = [...votes].filter(([, count]) => count === highestVoteCount).map(([targetId]) => targetId);
+	const targetId = decisionTargetOrder(parent, world, `night-wolf-pack-ballot:${String(nightRound(world))}`, tiedTargets)[0];
+	if (targetId === void 0) throw new Error("the living werewolves produced no pack ballot");
 	return {
 		attributionActorId: context.attributionActorId,
 		targetId,
@@ -13033,7 +13039,7 @@ function confirmedWolfPackDecision(context, decisions) {
 			if (decision === void 0) throw new Error(`${String(actorId)} produced no final wolf-pack decision`);
 			return decisionMemory(actorId, {
 				name: "wolf-kill",
-				arguments: { target_id: targetId }
+				arguments: { target_id: decision.target_id }
 			}, decision);
 		})
 	};
@@ -13045,27 +13051,25 @@ async function startWolfPack(options, world, directSelections, recordedProposals
 		return targetId === void 0 ? [] : [`${seatLabel$2(actorId)}提议${seatLabel$2(targetId)}`];
 	});
 	const proposalTask = directSummary.length === 0 ? "Propose one victim for the pack. This is your seat's proposal, not a pack-representative decision." : `Propose one victim after considering these equal teammate proposals: ${directSummary.join("、")}. A directly controlled teammate is not the pack leader and its proposal is not an order.`;
-	const deadline = AbortSignal.timeout(options.decisionTimeoutMs);
-	const signal = AbortSignal.any([options.signal, deadline]);
 	const packOptions = {
 		subagents: options.subagents,
 		providerName: options.providerName,
 		parent: options.parent,
-		signal,
+		signal: options.signal,
 		decisionTimeoutMs: options.decisionTimeoutMs,
 		agentOptions: options.agentOptions
 	};
 	if (recordedProposals !== void 0) {
 		const proposalContext = wolfSelectionContext(world, recordedProposals);
-		if (proposalContext.directByActor.size !== context.livingWolves.length || context.livingWolves.some((actorId) => !proposalContext.directByActor.has(actorId))) throw new Error("standard Werewolf pack confirmation requires one recorded proposal per living wolf");
+		if (proposalContext.directByActor.size !== context.livingWolves.length || context.livingWolves.some((actorId) => !proposalContext.directByActor.has(actorId))) throw new Error("standard Werewolf pack ballot requires one recorded proposal per living wolf");
 		const consultation = context.livingWolves.map((actorId) => {
 			const targetId = proposalContext.directByActor.get(actorId);
 			if (targetId === void 0) throw new Error(`${String(actorId)} has no recorded wolf-pack proposal`);
 			return `${seatLabel$2(actorId)}提议${seatLabel$2(targetId)}`;
 		}).join("、");
-		const confirmationRun = await startRequiredDecisionBatch(packOptions, context.agentWolves.map((actorId) => wolfPackDecisionSpec(options.parent, world, actorId, `The living pack proposed: ${consultation}. After this private consultation, confirm the one target this seat agrees to designate.`)), "standard Werewolf pack confirmation batch");
-		const result = confirmationRun.result.then((decisions) => confirmedWolfPackDecision(context, decisions));
-		const cleanup = confirmationRun.cleanup;
+		const ballotRun = await startRequiredDecisionBatch(packOptions, context.agentWolves.map((actorId) => wolfPackDecisionSpec(options.parent, world, actorId, `The living pack proposed: ${consultation}. After this private consultation, cast this seat's final equal ballot. The target with the most ballots is selected; a tie uses the match's replay-stable random order.`)), "standard Werewolf pack ballot batch");
+		const result = ballotRun.result.then((decisions) => resolveWolfPackBallot(options.parent, world, context, decisions));
+		const cleanup = ballotRun.cleanup;
 		result.catch(() => void 0);
 		cleanup.catch(() => void 0);
 		return {
@@ -13084,7 +13088,7 @@ async function startWolfPack(options, world, directSelections, recordedProposals
 		};
 	}
 	const proposalRun = await startRequiredDecisionBatch(packOptions, context.agentWolves.map((actorId) => wolfPackDecisionSpec(options.parent, world, actorId, proposalTask)), "standard Werewolf pack proposal batch");
-	let confirmationRun;
+	let ballotRun;
 	const result = proposalRun.result.then(async (proposals) => {
 		const targetByActor = new Map(context.directByActor);
 		for (const [index, actorId] of context.agentWolves.entries()) {
@@ -13099,19 +13103,19 @@ async function startWolfPack(options, world, directSelections, recordedProposals
 				if (targetId === void 0) throw new Error(`${String(actorId)} has no wolf-pack proposal`);
 				return `${seatLabel$2(actorId)}提议${seatLabel$2(targetId)}`;
 			}).join("、");
-			confirmationRun = await startRequiredDecisionBatch(packOptions, context.agentWolves.map((actorId) => wolfPackDecisionSpec(options.parent, world, actorId, `The living pack proposed: ${consultation}. After this private consultation, confirm the one target this seat agrees to designate.`)), "standard Werewolf pack confirmation batch");
-			finalDecisions = await confirmationRun.result;
+			ballotRun = await startRequiredDecisionBatch(packOptions, context.agentWolves.map((actorId) => wolfPackDecisionSpec(options.parent, world, actorId, `The living pack proposed: ${consultation}. After this private consultation, cast this seat's final equal ballot. The target with the most ballots is selected; a tie uses the match's replay-stable random order.`)), "standard Werewolf pack ballot batch");
+			finalDecisions = await ballotRun.result;
 			for (const [index, actorId] of context.agentWolves.entries()) {
-				const confirmation = finalDecisions[index];
-				if (confirmation === void 0) throw new Error(`${String(actorId)} produced no wolf-pack confirmation`);
-				targetByActor.set(actorId, confirmation.target_id);
+				const ballot = finalDecisions[index];
+				if (ballot === void 0) throw new Error(`${String(actorId)} produced no final wolf-pack ballot`);
+				targetByActor.set(actorId, ballot.target_id);
 			}
 		}
-		return confirmedWolfPackDecision(context, finalDecisions);
+		return resolveWolfPackBallot(options.parent, world, context, finalDecisions);
 	});
 	const cleanup = (async () => {
 		await result.catch(() => void 0);
-		const failures = (await Promise.allSettled([proposalRun.cleanup, ...confirmationRun === void 0 ? [] : [confirmationRun.cleanup]])).flatMap((outcome) => outcome.status === "rejected" ? [outcome.reason] : []);
+		const failures = (await Promise.allSettled([proposalRun.cleanup, ...ballotRun === void 0 ? [] : [ballotRun.cleanup]])).flatMap((outcome) => outcome.status === "rejected" ? [outcome.reason] : []);
 		if (failures.length > 0) throw new AggregateError(failures, "standard Werewolf pack cleanup failed");
 	})();
 	result.catch(() => void 0);
@@ -13139,13 +13143,8 @@ async function coordinateHumanWolfProposals(options, world, humanSelection, prog
 		kind: "night",
 		stage: "independent"
 	});
-	const deadline = AbortSignal.timeout(options.decisionTimeoutMs);
-	const signal = AbortSignal.any([options.signal, deadline]);
 	const teammateProposal = `${seatLabel$2(humanSelection.actorId)}提议${seatLabel$2(humanSelection.targetId)}`;
-	const decisions = await (await startRequiredDecisionBatch({
-		...options,
-		signal
-	}, context.agentWolves.map((actorId) => wolfPackDecisionSpec(options.parent, world, actorId, `Propose one victim after considering this equal teammate proposal: ${teammateProposal}. A directly controlled teammate is not the pack leader and its proposal is not an order.`)), "standard Werewolf pack proposal batch")).settle();
+	const decisions = await (await startRequiredDecisionBatch(options, context.agentWolves.map((actorId) => wolfPackDecisionSpec(options.parent, world, actorId, `Propose one victim after considering this equal teammate proposal: ${teammateProposal}. A directly controlled teammate is not the pack leader and its proposal is not an order.`)), "standard Werewolf pack proposal batch")).settle();
 	const targetByActor = new Map(context.directByActor);
 	for (const [index, actorId] of context.agentWolves.entries()) {
 		const decision = decisions[index];
@@ -13178,11 +13177,9 @@ async function coordinateNight(subagents, providerName, parent, world, signal, d
 	const witchId = standardWerewolfActorWithRole(world, "witch");
 	const humanIsLiving = isLiving(world, humanActorId);
 	if (humanIsLiving && humanRole === "witch") throw new Error("a living human Witch requires the staged night action path");
-	if (humanIsLiving && humanRole === "wolf" && humanSelection.kind !== "wolf") throw new Error("the living human werewolf must confirm one pack target");
+	if (humanIsLiving && humanRole === "wolf" && humanSelection.kind !== "wolf") throw new Error("the living human werewolf must cast one final pack ballot");
 	if (humanIsLiving && humanRole === "seer" && humanSelection.kind !== "seer") throw new Error("the living human Seer must choose an inspection target");
 	if (humanSelection.kind !== "automatic" && (!humanIsLiving || humanSelection.kind !== humanRole)) throw new Error("the human night selection does not match the living player role");
-	const independentDeadline = AbortSignal.timeout(decisionTimeoutMs);
-	const independentSignal = AbortSignal.any([signal, independentDeadline]);
 	progress?.update({
 		kind: "night",
 		stage: "independent"
@@ -13191,13 +13188,13 @@ async function coordinateNight(subagents, providerName, parent, world, signal, d
 	const recordedWolfProposals = standardWerewolfWolfProposals(world, nightRound(world));
 	if (humanIsLiving && humanRole === "wolf") {
 		const livingWolves = standardWerewolfActorsWithRole(world, "wolf").filter((actorId) => isLiving(world, actorId));
-		if (recordedWolfProposals.length !== livingWolves.length) throw new Error("the living human werewolf must confirm after every living wolf has proposed");
+		if (recordedWolfProposals.length !== livingWolves.length) throw new Error("the living human werewolf must vote after every living wolf has proposed");
 	}
 	const wolfDecision = startWolfPack({
 		subagents,
 		providerName,
 		parent,
-		signal: independentSignal,
+		signal,
 		decisionTimeoutMs,
 		agentOptions
 	}, world, humanWolfTarget === void 0 ? [] : [{
@@ -13211,7 +13208,7 @@ async function coordinateNight(subagents, providerName, parent, world, signal, d
 		subagents,
 		providerName,
 		parent,
-		signal: independentSignal,
+		signal: AbortSignal.any([signal, AbortSignal.timeout(decisionTimeoutMs)]),
 		actorId: seerId,
 		world,
 		label: "standard Werewolf Seer decision",
@@ -13670,8 +13667,8 @@ async function coordinateApplicationAction(subagents, providerName, parent, worl
 					targetId: asRoleplayActorId(action.actionId.slice(prefix.length))
 				}, progress);
 			}
-			const prefix = `night-${String(round)}-wolf-confirm-`;
-			if (!action.actionId.startsWith(prefix)) throw new Error("the directly controlled werewolf must confirm one visible pack target");
+			const prefix = `night-${String(round)}-wolf-vote-`;
+			if (!action.actionId.startsWith(prefix)) throw new Error("the directly controlled werewolf must cast one visible final pack ballot");
 			humanSelection = {
 				kind: "wolf",
 				targetId: asRoleplayActorId(action.actionId.slice(prefix.length))
@@ -14420,7 +14417,7 @@ function roleIntroduction(view, actorId) {
 		case "witch": return "好人阵营；持有一瓶解药和一瓶毒药，每晚最多使用一瓶，仅第一夜可以自救，且不能毒杀自己";
 		case "hunter": return "好人阵营；被狼人袭击或被放逐出局时必须开枪带走一名存活玩家，中毒出局不能开枪";
 		case "idiot": return "好人阵营；被放逐时翻牌并继续留在场上，此后失去投票权";
-		case "wolf": return `狼人阵营；每夜各自提出目标，再与存活队友共同确认；全员一致后袭击才会生效；同阵营：${seatList(view.actors.filter((candidate) => candidate.id !== actorId && view.facts.some((fact) => String(fact.id) === `${String(candidate.id)}-role`) && standardWerewolfRoleIn(view, candidate.id) === "wolf").map((candidate) => candidate.id))}`;
+		case "wolf": return `狼人阵营；每夜各自提出目标，再由所有存活狼人等权投票；最高票目标生效，平票按本夜随机顺序决定；同阵营：${seatList(view.actors.filter((candidate) => candidate.id !== actorId && view.facts.some((fact) => String(fact.id) === `${String(candidate.id)}-role`) && standardWerewolfRoleIn(view, candidate.id) === "wolf").map((candidate) => candidate.id))}`;
 	}
 }
 function standardWerewolfGuide(view) {
@@ -14451,7 +14448,7 @@ function standardWerewolfGuide(view) {
 		if (human.location === "alive" && role === "wolf") {
 			const targets = view.actors.filter((actor) => actor.location === "alive").map((actor) => actor.id);
 			const proposals = standardWerewolfWolfProposals(view, night);
-			if (proposals.length > 0) return guide(`第 ${night} 夜`, "确认狼队今晚的袭击目标", targets.map((target) => coordinatedAction(`night-${String(night)}-wolf-confirm-${String(target)}`, `确认袭击 ${seatLabel(target)}`, view.revision, "secondary", { actorId: target })), void 0, "active", `当前提议：${proposals.map((proposal) => `${seatLabel(proposal.actorId)} → ${seatLabel(proposal.targetId)}`).join("；")}`);
+			if (proposals.length > 0) return guide(`第 ${night} 夜`, "投出狼队最终票", targets.map((target) => coordinatedAction(`night-${String(night)}-wolf-vote-${String(target)}`, `投给 ${seatLabel(target)}`, view.revision, "secondary", { actorId: target })), void 0, "active", `每名存活狼人一票，最高票目标生效；平票按本夜随机顺序决定。当前提议：${proposals.map((proposal) => `${seatLabel(proposal.actorId)} → ${seatLabel(proposal.targetId)}`).join("；")}`);
 			return guide(`第 ${night} 夜`, "提出一名袭击目标", targets.map((target) => coordinatedAction(`night-${String(night)}-wolf-propose-${String(target)}`, `提议 ${seatLabel(target)}`, view.revision, "secondary", { actorId: target })), void 0, "active", "提交后汇总所有存活狼人的提议");
 		}
 		if (human.location === "alive" && role === "witch") {

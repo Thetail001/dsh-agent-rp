@@ -38,7 +38,7 @@ import { STANDARD_WEREWOLF_STATEMENT_MAX_LENGTH } from './werewolf-decision-limi
 
 /** Resolver name for the player's private pre-game role acknowledgement. */
 export const STANDARD_CONFIRM_ROLE = asRoleplayResolverName('standard_confirm_role')
-/** Resolver name for one private wolf proposal before pack confirmation. */
+/** Resolver name for one private wolf proposal before the final pack ballot. */
 export const STANDARD_WOLF_PROPOSE = asRoleplayResolverName('standard_wolf_propose')
 /** Resolver name for one private wolf target. */
 export const STANDARD_WOLF_KILL = asRoleplayResolverName('standard_wolf_kill')
@@ -360,7 +360,7 @@ const WOLF_PROPOSE_RESOLVER: RoleplayActionResolver = {
   name: STANDARD_WOLF_PROPOSE,
   version: '1',
   applicationOnly: true,
-  description: 'Record one living wolf\'s private proposal before the pack confirms a shared target.',
+  description: 'Record one living wolf\'s private proposal before the pack casts its final ballots.',
   parameters: {
     type: 'object',
     additionalProperties: false,

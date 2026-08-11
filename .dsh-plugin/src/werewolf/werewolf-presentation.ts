@@ -341,7 +341,7 @@ function roleIntroduction(view: RoleplayView, actorId: RoleplayActorId): string 
           && view.facts.some(fact => String(fact.id) === `${String(candidate.id)}-role`)
           && standardWerewolfRoleIn(view, candidate.id) === 'wolf')
         .map(candidate => candidate.id)
-      return `狼人阵营；每夜各自提出目标，再与存活队友共同确认；全员一致后袭击才会生效；同阵营：${seatList(sameSide)}`
+      return `狼人阵营；每夜各自提出目标，再由所有存活狼人等权投票；最高票目标生效，平票按本夜随机顺序决定；同阵营：${seatList(sameSide)}`
     }
   }
 }
@@ -462,17 +462,17 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       if (proposals.length > 0) {
         return guide(
           `第 ${night} 夜`,
-          '确认狼队今晚的袭击目标',
+          '投出狼队最终票',
           targets.map(target => coordinatedAction(
-            `night-${String(night)}-wolf-confirm-${String(target)}`,
-            `确认袭击 ${seatLabel(target)}`,
+            `night-${String(night)}-wolf-vote-${String(target)}`,
+            `投给 ${seatLabel(target)}`,
             view.revision,
             'secondary',
             { actorId: target },
           )),
           undefined,
           'active',
-          `当前提议：${proposals.map(proposal =>
+          `每名存活狼人一票，最高票目标生效；平票按本夜随机顺序决定。当前提议：${proposals.map(proposal =>
             `${seatLabel(proposal.actorId)} → ${seatLabel(proposal.targetId)}`).join('；')}`,
         )
       }
