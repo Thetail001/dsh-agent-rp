@@ -214,6 +214,43 @@ export function normalizePublicSpeechStatement(move: unknown, statement: string)
     : withoutWaitTail
 }
 
+const PUBLIC_STATEMENT_REPETITION_THRESHOLD = 0.6
+const PUBLIC_STATEMENT_REPETITION_MIN_BIGRAMS = 20
+
+function publicStatementBigrams(statement: string): ReadonlySet<string> {
+  const compact = statement.replace(/[\p{P}\p{S}\s]/gu, '')
+  const bigrams = new Set<string>()
+  for (let index = 0; index + 1 < compact.length; index += 1) {
+    bigrams.add(compact.slice(index, index + 2))
+  }
+  return bigrams
+}
+
+/**
+ * Find an earlier turn whose wording is mostly repeated by a new statement. Short table phrases are
+ * excluded because shared game terms such as “警长票” are not enough to establish imitation.
+ * @param statement - new authored public statement.
+ * @param priorStatements - earlier statements from the current speaking round.
+ * @returns zero-based source index, or `undefined` when the wording has enough independent content.
+ */
+export function repeatedPublicStatementIndex(
+  statement: string,
+  priorStatements: readonly string[],
+): number | undefined {
+  const current = publicStatementBigrams(statement)
+  if (current.size < PUBLIC_STATEMENT_REPETITION_MIN_BIGRAMS) return undefined
+  for (let index = priorStatements.length - 1; index >= 0; index -= 1) {
+    const prior = publicStatementBigrams(priorStatements[index] ?? '')
+    if (prior.size < PUBLIC_STATEMENT_REPETITION_MIN_BIGRAMS) continue
+    let shared = 0
+    for (const bigram of current) if (prior.has(bigram)) shared += 1
+    if ((2 * shared) / (current.size + prior.size) >= PUBLIC_STATEMENT_REPETITION_THRESHOLD) {
+      return index
+    }
+  }
+  return undefined
+}
+
 const PUBLIC_IDENTITY = '(?:狼(?:人)?|好人|预言家|女巫|猎人|白痴|村民|平民)'
 const PUBLIC_IDENTITY_CERTAINTY = '(?:结果|已经|现已|确认|证实|坐实|实锤|翻牌)'
 const CERTAIN_PUBLIC_IDENTITY_REFERENCES = [
@@ -446,6 +483,8 @@ const PUBLIC_RESPONSE_REQUEST_REFERENCES = [
   /(?:后续|后面|接下来)[^\d。！？；]{0,8}(\d+)\s*号(?:玩家)?[^。！？；]{0,12}(?:能|要|得|需要|应该)[^。！？；]{0,8}(?:讲清楚|说清楚|解释|回应|表态|发言)/gu,
   /(\d+)\s*号(?:玩家)?[^\d。！？；]{0,12}(?:自己|本人)[^。！？；]{0,8}(?:得|要|应该|需要)[^。！？；]{0,8}(?:出面|接住|回应|解释|表态|发言)/gu,
   /(\d+)\s*号(?:玩家)?[^\d。！？；]{0,8}(?:你)?(?:先|再|需要|应该|得)[^。！？；]{0,8}(?:正面)?(?:讲讲|说说|讲清楚|说清楚|解释一下|回应一下|表态一下)(?!了|过)/gu,
+  /(\d+)\s*号(?:玩家)?[^\d。！？；]{0,40}(?:轮到(?:你)?时|这一轮|这轮)[^。！？；]{0,16}(?:要|得|需要|应该)?(?:把)?[^。！？；]{0,12}(?:话|发言|立场|理由)[^。！？；]{0,8}(?:说|讲)(?:实|满|清楚|透|完整)(?:一点)?(?!了|过)/gu,
+  /(\d+)\s*号(?:玩家)?[，,:：]?(?:你)?(?:这一轮|这轮)[^。！？；]{0,8}(?:把)?[^。！？；]{0,8}(?:话|发言|立场|理由)[^。！？；]{0,8}(?:说|讲)(?:实|满|清楚|透|完整)(?:一点)?(?!了|过)/gu,
 ] as const
 
 /**

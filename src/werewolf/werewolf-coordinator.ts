@@ -126,6 +126,7 @@ import {
   publicStatementMisusesNightOutcomeCorroboration,
   publicStatementNegatesCorroboration,
   publicStatementRequiresPriorBasisForSeerClaim,
+  repeatedPublicStatementIndex,
   selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
@@ -1435,6 +1436,24 @@ function assertPublicDiscussionStatement(
       ...options.pendingPublicStatements?.flatMap(statement =>
         statement.evidence_id.startsWith(speechPrefix) ? [statement.actor_id] : []) ?? [],
     ])
+    const priorStatements = [
+      ...options.world.choices.flatMap((choice) => {
+        const id = String(choice.id)
+        if (!id.startsWith(speechPrefix)) return []
+        const actorId = id.slice(speechPrefix.length)
+        const prefix = `${actorId}:`
+        return [choice.text.startsWith(prefix) ? choice.text.slice(prefix.length).trimStart() : choice.text]
+      }),
+      ...options.pendingPublicStatements?.flatMap(pending =>
+        pending.evidence_id.startsWith(speechPrefix) ? [pending.statement] : []) ?? [],
+    ]
+    if (speechMove !== 'respond'
+      && repeatedPublicStatementIndex(statement, priorStatements) !== undefined) {
+      throw new DecisionValidationError(
+        'statement-repetition',
+        `${options.label} mostly repeated an earlier public statement`,
+      )
+    }
     const futureSpeakerIds = options.world.actors
       .filter(actor => standardWerewolfLocationIsLiving(actor.location)
         && actor.id !== options.actorId
@@ -1451,17 +1470,6 @@ function assertPublicDiscussionStatement(
       )
     }
     if (speechMove === 'hold') {
-      const priorStatements = [
-        ...options.world.choices.flatMap((choice) => {
-          const id = String(choice.id)
-          if (!id.startsWith(speechPrefix)) return []
-          const actorId = id.slice(speechPrefix.length)
-          const prefix = `${actorId}:`
-          return [choice.text.startsWith(prefix) ? choice.text.slice(prefix.length).trimStart() : choice.text]
-        }),
-        ...options.pendingPublicStatements?.flatMap(pending =>
-          pending.evidence_id.startsWith(speechPrefix) ? [pending.statement] : []) ?? [],
-      ]
       const issue = publicHoldTargetIssue({
         statement,
         legalFutureTargetIds: futureSpeakerIds,
@@ -2357,7 +2365,9 @@ function publicSpeechRetryInstruction(failure: DecisionFailure): string {
       ? '“你／他承认了”只能指 target_id 本人的公开原话；若承认来自其他玩家，明确写出真正说话的座位，或删去这项归因。'
       : failure.issue === 'target-reference'
         ? '若 speech_move 带有 target_id，statement 最后点名的玩家必须回到该目标；提供证据的人不是自动的判断目标。'
-        : failure.issue === 'future-explanation'
+        : failure.issue === 'statement-repetition'
+          ? '不要复述前面玩家的句式和整段理由。保留自己的当前结论，只使用一条不同的公开依据；没有独立信息时选择 pass。'
+          : failure.issue === 'future-explanation'
           ? '尚未轮到的玩家还没有解释机会。可以中性地请他轮到时说明一张公开选票，但不得说他“至今没解释、一直没给理由”，也不能据此下判断。'
           : failure.issue === 'hold-grounding'
             ? 'hold 必须只点一名本轮尚未发言的玩家，并请他解释一项已经发生的公开行动；没有这样具体的等待目标时直接选择 pass。'

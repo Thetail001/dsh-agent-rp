@@ -32,6 +32,7 @@ export type StandardWerewolfDecisionValidationIssue =
   | 'stance-text'
   | 'statement-form'
   | 'statement-length'
+  | 'statement-repetition'
   | 'target-reference'
   | 'wolf-disclosure'
 

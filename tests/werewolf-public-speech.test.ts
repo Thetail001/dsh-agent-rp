@@ -33,6 +33,7 @@ import {
   publicStatementMisusesNightOutcomeCorroboration,
   publicStatementNegatesCorroboration,
   publicStatementRequiresPriorBasisForSeerClaim,
+  repeatedPublicStatementIndex,
   selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
@@ -184,6 +185,16 @@ test('lets hold and pass omit evidence and normalizes pass to one table word', (
     'assess',
     '我暂时看不清10号这套,先记下。',
   ), '我暂时看不清10号这套，先记下。')
+})
+
+test('rejects near-copy table speech without treating short shared terms as repetition', () => {
+  const first = '我警长票已经投给6号，因为6号竞选时报出了昨晚查验8号是好人，还给了警徽流预案，比12号只讲空泛思路更实。今天我先跟6号的狼坑走。'
+  const nearCopy = '我警长票也投了6号，因为6号竞选时报出昨晚查验8号是好人、还有警徽流预案，比12号只讲空泛带队思路更实。今天我想先听12号把具体范围说清楚，别一直停在口号上。'
+  const independent = '我警长票给了12号，6号的查验和警徽流报得太顺，我想先看12号能不能把自己的范围落到具体人。'
+
+  assert.equal(repeatedPublicStatementIndex(nearCopy, [first]), 0)
+  assert.equal(repeatedPublicStatementIndex(independent, [first, nearCopy]), undefined)
+  assert.equal(repeatedPublicStatementIndex('我也投了6号。', ['我警长票投给6号。']), undefined)
 })
 
 test('does not join identity certainty across separate clauses', () => {
@@ -355,6 +366,18 @@ test('finds response requests directed at players whose speaking turn already en
     '还是希望后面6号能正面讲清楚。',
     ['seat-6'],
   ), 'seat-6')
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '5号你自己这一轮除了这句还看不出立场，轮到时把话说实一点。',
+    ['seat-5'],
+  ), 'seat-5')
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '3号你这轮把话说满一点，我先把你也记进观察范围里。',
+    ['seat-3'],
+  ), 'seat-3')
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '3号这轮已经把话说得很满，我不认同。',
+    ['seat-3'],
+  ), undefined)
   assert.equal(unavailablePublicTargetResponseRequest(
     '我想听后位8号说说这张票。',
     unavailable,
