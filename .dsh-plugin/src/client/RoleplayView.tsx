@@ -234,7 +234,7 @@ function timelineGroups(surface: RoleplayPlayerSurface): RecordGroup[] {
   }
   const revisions = [...new Set([...narrationByRevision.keys(), ...recordsByRevision.keys()])]
     .sort((left, right) => left - right)
-  const groups = revisions.map((revision): RecordGroup => {
+  const revisionGroups = revisions.map((revision): RecordGroup => {
     const narration = narrationByRevision.get(revision)
     const records = recordsByRevision.get(revision) ?? []
     return {
@@ -244,6 +244,20 @@ function timelineGroups(surface: RoleplayPlayerSurface): RecordGroup[] {
       ...(narration === undefined ? {} : { narration: narration.text }),
     }
   })
+  const groups: RecordGroup[] = []
+  for (const group of revisionGroups) {
+    const previous = groups.at(-1)
+    if (previous?.phase !== group.phase) {
+      groups.push(group)
+      continue
+    }
+    groups[groups.length - 1] = {
+      key: previous.key,
+      phase: previous.phase,
+      records: [...previous.records, ...group.records],
+      ...(group.narration === undefined ? {} : { narration: group.narration }),
+    }
+  }
   const legacyByPhase = new Map<string, RecordGroup>()
   for (const record of legacyRecords) {
     const matching = groups.findLast(group => group.phase === record.phase)
@@ -261,10 +275,16 @@ function timelineGroups(surface: RoleplayPlayerSurface): RecordGroup[] {
     groups.push(group)
   }
   for (const record of surface.progress?.records ?? []) {
-    const key = `progress-${record.phase}`
-    const current = groups.find(group => group.key === key)
-    if (current === undefined) groups.push({ key, phase: record.phase, records: [record] })
-    else current.records.push(record)
+    const current = groups.at(-1)
+    if (current?.phase !== record.phase) {
+      groups.push({ key: `progress-${record.phase}`, phase: record.phase, records: [record] })
+      continue
+    }
+    groups[groups.length - 1] = {
+      key: current.key,
+      phase: current.phase,
+      records: [...current.records, record],
+    }
   }
   return groups
 }

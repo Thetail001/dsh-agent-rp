@@ -268,7 +268,7 @@ window.__ModuleLoader__.load({
 				if (records === void 0) recordsByRevision.set(record.revision, [record]);
 				else records.push(record);
 			}
-			const groups = [.../* @__PURE__ */ new Set([...narrationByRevision.keys(), ...recordsByRevision.keys()])].sort((left, right) => left - right).map((revision) => {
+			const revisionGroups = [.../* @__PURE__ */ new Set([...narrationByRevision.keys(), ...recordsByRevision.keys()])].sort((left, right) => left - right).map((revision) => {
 				const narration = narrationByRevision.get(revision);
 				const records = recordsByRevision.get(revision) ?? [];
 				return {
@@ -278,6 +278,20 @@ window.__ModuleLoader__.load({
 					...narration === void 0 ? {} : { narration: narration.text }
 				};
 			});
+			const groups = [];
+			for (const group of revisionGroups) {
+				const previous = groups.at(-1);
+				if (previous?.phase !== group.phase) {
+					groups.push(group);
+					continue;
+				}
+				groups[groups.length - 1] = {
+					key: previous.key,
+					phase: previous.phase,
+					records: [...previous.records, ...group.records],
+					...group.narration === void 0 ? {} : { narration: group.narration }
+				};
+			}
 			const legacyByPhase = /* @__PURE__ */ new Map();
 			for (const record of legacyRecords) {
 				const matching = groups.findLast((group) => group.phase === record.phase);
@@ -299,14 +313,20 @@ window.__ModuleLoader__.load({
 				groups.push(group);
 			}
 			for (const record of surface.progress?.records ?? []) {
-				const key = `progress-${record.phase}`;
-				const current = groups.find((group) => group.key === key);
-				if (current === void 0) groups.push({
-					key,
-					phase: record.phase,
-					records: [record]
-				});
-				else current.records.push(record);
+				const current = groups.at(-1);
+				if (current?.phase !== record.phase) {
+					groups.push({
+						key: `progress-${record.phase}`,
+						phase: record.phase,
+						records: [record]
+					});
+					continue;
+				}
+				groups[groups.length - 1] = {
+					key: current.key,
+					phase: current.phase,
+					records: [...current.records, record]
+				};
 			}
 			return groups;
 		}
