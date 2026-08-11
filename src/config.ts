@@ -13,7 +13,7 @@ export const PUBLIC_DISCUSSION_MAX_TOKENS = 2_048
 /** Default adapter-owned effort for constrained Character decisions. */
 export const DEFAULT_DECISION_REASONING_EFFORT = 'off'
 /** Default adapter-owned effort for public table speech. */
-export const DEFAULT_DISCUSSION_REASONING_EFFORT = 'off'
+export const DEFAULT_DISCUSSION_REASONING_EFFORT = 'high'
 
 type DeepSeekReasoningEffort = 'off' | 'high' | 'max'
 
