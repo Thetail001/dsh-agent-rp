@@ -3056,6 +3056,31 @@ function discussionAgentOptions(
   }
 }
 
+function standardWerewolfChildLabel(agent: Agent): string | undefined {
+  const descriptor = agent.session.events.find(event => event.type === 'subagent/descriptor')
+  const label = descriptor?.type === 'subagent/descriptor' ? descriptor.data.label : undefined
+  return label?.startsWith('standard Werewolf ') === true ? label : undefined
+}
+
+function installStandardWerewolfChildBudgets(
+  agentCtx: Context,
+  parent: Agent,
+  decisionOptions: AgentOptions | undefined,
+  discussionOptions: AgentOptions | undefined,
+): void {
+  if (decisionOptions === undefined && discussionOptions === undefined) return
+  agentCtx.on('agent/request', async ({ agent: subject }, next) => {
+    const config = await next()
+    if (subject.session.header.parentSession !== parent.session.header.id) return config
+    const label = standardWerewolfChildLabel(subject)
+    if (label === undefined) return config
+    const options = label.startsWith('standard Werewolf discussion ')
+      ? discussionOptions
+      : decisionOptions
+    return options === undefined ? config : { ...config, ...options }
+  }, { global: true, prepend: true })
+}
+
 function followsCoordinatorCall(parent: Agent, turn: number, step: number): boolean {
   const call = parent.session.events.findLast(event =>
     event.type === 'tool/call' && event.data.turn === turn && event.data.step < step)
@@ -3565,6 +3590,12 @@ export function installStandardWerewolfCoordinator(
   }
   const childAgentOptions = decisionAgentOptions(resolvedOptions)
   const publicDiscussionAgentOptions = discussionAgentOptions(resolvedOptions, childAgentOptions)
+  installStandardWerewolfChildBudgets(
+    agentCtx,
+    parent,
+    childAgentOptions,
+    publicDiscussionAgentOptions,
+  )
   installApplicationActionCommand(
     agentCtx,
     subagents,

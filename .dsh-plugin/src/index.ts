@@ -53,10 +53,10 @@ export const Config: z<Config> = z.object({
     .default(DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS),
   decisionMaxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER)
     .default(STRUCTURED_DECISION_MAX_TOKENS),
-  decisionReasoningEffort: z.string().default('high'),
+  decisionReasoningEffort: z.string().default('off'),
   discussionMaxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER)
     .default(PUBLIC_DISCUSSION_MAX_TOKENS),
-  discussionReasoningEffort: z.string().default('high'),
+  discussionReasoningEffort: z.string().default('off'),
 })
 
 function reasoningEffortId(value: string): ReasoningEffortId {
@@ -105,9 +105,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       installStandardWerewolfCoordinator(agentCtx, webCtx.subagents, 'spawn', {
         decisionTimeoutMs: config.decisionTimeoutMs ?? DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS,
         decisionMaxTokens: config.decisionMaxTokens ?? STRUCTURED_DECISION_MAX_TOKENS,
-        decisionReasoningEffort: reasoningEffortId(config.decisionReasoningEffort ?? 'high'),
+        decisionReasoningEffort: reasoningEffortId(config.decisionReasoningEffort ?? 'off'),
         discussionMaxTokens: config.discussionMaxTokens ?? PUBLIC_DISCUSSION_MAX_TOKENS,
-        discussionReasoningEffort: reasoningEffortId(config.discussionReasoningEffort ?? 'high'),
+        discussionReasoningEffort: reasoningEffortId(config.discussionReasoningEffort ?? 'off'),
         applicationOnly: true,
         humanActorId,
       })

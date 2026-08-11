@@ -14197,6 +14197,28 @@ function discussionAgentOptions(options, inherited) {
 		...options.discussionReasoningEffort === void 0 ? {} : { reasoningEffort: options.discussionReasoningEffort }
 	};
 }
+function standardWerewolfChildLabel(agent) {
+	const descriptor = agent.session.events.find((event) => event.type === "subagent/descriptor");
+	const label = descriptor?.type === "subagent/descriptor" ? descriptor.data.label : void 0;
+	return label?.startsWith("standard Werewolf ") === true ? label : void 0;
+}
+function installStandardWerewolfChildBudgets(agentCtx, parent, decisionOptions, discussionOptions) {
+	if (decisionOptions === void 0 && discussionOptions === void 0) return;
+	agentCtx.on("agent/request", async ({ agent: subject }, next) => {
+		const config = await next();
+		if (subject.session.header.parentSession !== parent.session.header.id) return config;
+		const label = standardWerewolfChildLabel(subject);
+		if (label === void 0) return config;
+		const options = label.startsWith("standard Werewolf discussion ") ? discussionOptions : decisionOptions;
+		return options === void 0 ? config : {
+			...config,
+			...options
+		};
+	}, {
+		global: true,
+		prepend: true
+	});
+}
 function followsCoordinatorCall(parent, turn, step) {
 	const call = parent.session.events.findLast((event) => event.type === "tool/call" && event.data.turn === turn && event.data.step < step);
 	return call?.type === "tool/call" && COORDINATOR_TOOL_NAMES.has(call.data.name);
@@ -14527,7 +14549,9 @@ function installStandardWerewolfCoordinator(agentCtx, subagents, providerName, o
 		humanActorId: options.humanActorId ?? HUMAN
 	};
 	const childAgentOptions = decisionAgentOptions(resolvedOptions);
-	installApplicationActionCommand(agentCtx, subagents, providerName, parent, resolvedOptions, childAgentOptions, discussionAgentOptions(resolvedOptions, childAgentOptions));
+	const publicDiscussionAgentOptions = discussionAgentOptions(resolvedOptions, childAgentOptions);
+	installStandardWerewolfChildBudgets(agentCtx, parent, childAgentOptions, publicDiscussionAgentOptions);
+	installApplicationActionCommand(agentCtx, subagents, providerName, parent, resolvedOptions, childAgentOptions, publicDiscussionAgentOptions);
 	if (resolvedOptions.applicationOnly === true) return;
 	const stagedPlans = /* @__PURE__ */ new WeakMap();
 	let authorizedPlan;
@@ -15342,9 +15366,9 @@ const PUBLIC_DISCUSSION_MAX_TOKENS = 2048;
 const Config = Schema.object({
 	decisionTimeoutMs: Schema.number().step(1).min(1).max(2147483647).default(DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS),
 	decisionMaxTokens: Schema.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(STRUCTURED_DECISION_MAX_TOKENS),
-	decisionReasoningEffort: Schema.string().default("high"),
+	decisionReasoningEffort: Schema.string().default("off"),
 	discussionMaxTokens: Schema.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(PUBLIC_DISCUSSION_MAX_TOKENS),
-	discussionReasoningEffort: Schema.string().default("high")
+	discussionReasoningEffort: Schema.string().default("off")
 });
 function reasoningEffortId(value) {
 	return value;
@@ -15388,9 +15412,9 @@ async function apply(ctx, config) {
 			installStandardWerewolfCoordinator(agentCtx, webCtx.subagents, "spawn", {
 				decisionTimeoutMs: config.decisionTimeoutMs ?? 3e4,
 				decisionMaxTokens: config.decisionMaxTokens ?? STRUCTURED_DECISION_MAX_TOKENS,
-				decisionReasoningEffort: reasoningEffortId(config.decisionReasoningEffort ?? "high"),
+				decisionReasoningEffort: reasoningEffortId(config.decisionReasoningEffort ?? "off"),
 				discussionMaxTokens: config.discussionMaxTokens ?? PUBLIC_DISCUSSION_MAX_TOKENS,
-				discussionReasoningEffort: reasoningEffortId(config.discussionReasoningEffort ?? "high"),
+				discussionReasoningEffort: reasoningEffortId(config.discussionReasoningEffort ?? "off"),
 				applicationOnly: true,
 				humanActorId
 			});
