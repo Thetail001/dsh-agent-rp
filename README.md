@@ -1,10 +1,10 @@
-# Portable Roleplay repository Plugin
+# DSH Roleplay portable preview
 
-This private repository tests one delivery property: one `.dsh-plugin` package can carry the Roleplay Host runtime, standard Werewolf coordinator and presenter, and Chinese browser UI without resolving unpublished DSH packages at installation or runtime.
+This private internal-testing repository packages the Roleplay Host runtime, a complete twelve-player single-player Werewolf benchmark, and its Chinese browser UI as one portable `.dsh-plugin`. Installation and runtime do not resolve unpublished DSH packages.
 
 On a Web Host that provides the application Agent-setup registry, the Host entry registers one complete standard Werewolf setup. A fresh Session receives its random role layout, human seat, observer binding, scoped persona, coordinator, and Roleplay tools before the Session or Agent is published. Headless compositions load the generic runtime but do not create a scenario.
 
-Local single-player testing is ready. Public redistribution remains blocked only by the license decision below.
+The single-player benchmark is ready for internal testing. It supports random human seats and roles, complete night and day phases, Sheriff election, public discussion, voting, special-role actions, victory resolution, and a developer-facing endgame review. Model dialogue remains experimental, and multiplayer is outside this preview.
 
 ## Delivery route
 
@@ -17,12 +17,14 @@ Development builds run from the repository root after `pnpm install` and require
 - The prepared package must install from an exact Git source with no registry lookup for `@deepseek-ai/*` packages.
 - The installed Host entry and browser bundle must load, unload, and load again from a fresh DSH home.
 - Headless startup must activate the Host entry without waiting for Web-only services.
-- Acceptance runs set `DSH_TELEMETRY_DISABLED=1` and do not call a real model API.
+- Packaging acceptance is keyless; interactive benchmark acceptance uses the configured model provider and sets `DSH_TELEMETRY_DISABLED=1`.
+- The assembled browser application completes a full match through automatic spectator play, special-role resolution, victory detection, and endgame review without a blocking command failure.
 - Packaged files must contain no local path, credential name or value, telemetry value, distribution fingerprint, or private transcript content.
 
 ## Distribution status
 
-- No redistribution license has been selected for this extracted package. It remains `private: true` and version `0.0.0` until that decision is explicit.
+- This preview may be shared only through the private `dsh-external` internal-testing organization.
+- No public redistribution license has been selected for this extracted package. It remains `private: true` and version `0.0.0` until that decision is explicit.
 
 ## Future multiplayer hardening
 
