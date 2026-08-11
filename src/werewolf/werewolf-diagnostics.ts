@@ -11,6 +11,7 @@ export type StandardWerewolfDecisionValidationIssue =
   | 'ballot-reference'
   | 'commit-grounding'
   | 'evidence'
+  | 'future-explanation'
   | 'hunter-target-corroboration'
   | 'hold-grounding'
   | 'identity-reveal'

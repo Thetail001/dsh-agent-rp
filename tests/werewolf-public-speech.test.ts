@@ -8,6 +8,7 @@ import {
   finalPublicSpeechTargetId,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
+  prematurePublicBallotExplanationTarget,
   publicBallotTargetIds,
   publicHoldTargetIssue,
   publicSpeechJudgmentFamily,
@@ -313,6 +314,26 @@ test('finds response requests directed at players whose speaking turn already en
   assert.equal(unavailablePublicTargetResponseRequest(
     '5号昨天投给8号，这条公开记录还可以回看。',
     unavailable,
+  ), undefined)
+})
+
+test('rejects a missing ballot explanation before the voter has a speaking turn', () => {
+  const future = ['seat-10', 'seat-11', 'seat-12']
+  assert.equal(prematurePublicBallotExplanationTarget(
+    '11号那票一直没给过理由，我心里记着这条线。',
+    future,
+  ), 'seat-11')
+  assert.equal(prematurePublicBallotExplanationTarget(
+    '11号那票至今没给过理由，这个我记着。',
+    future,
+  ), 'seat-11')
+  assert.equal(prematurePublicBallotExplanationTarget(
+    '11号轮到你时，只说清楚你这张警长票的理由。',
+    future,
+  ), undefined)
+  assert.equal(prematurePublicBallotExplanationTarget(
+    '11号那票一直没给过理由，我心里记着这条线。',
+    ['seat-12'],
   ), undefined)
 })
 

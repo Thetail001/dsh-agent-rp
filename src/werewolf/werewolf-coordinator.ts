@@ -102,6 +102,7 @@ import {
   finalPublicSpeechTargetId,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
+  prematurePublicBallotExplanationTarget,
   publicBallotTargetIds,
   publicAcknowledgementClaimActorIds,
   publicHoldTargetIssue,
@@ -1417,6 +1418,21 @@ function assertPublicDiscussionStatement(
       ...options.pendingPublicStatements?.flatMap(statement =>
         statement.evidence_id.startsWith(speechPrefix) ? [statement.actor_id] : []) ?? [],
     ])
+    const futureSpeakerIds = options.world.actors
+      .filter(actor => standardWerewolfLocationIsLiving(actor.location)
+        && actor.id !== options.actorId
+        && !priorSpeakers.has(actor.id))
+      .map(actor => String(actor.id))
+    const prematureExplanationTarget = prematurePublicBallotExplanationTarget(
+      statement,
+      futureSpeakerIds,
+    )
+    if (prematureExplanationTarget !== undefined) {
+      throw new DecisionValidationError(
+        'future-explanation',
+        `${options.label} treated a future speaker as already lacking a ballot explanation`,
+      )
+    }
     if (speechMove === 'hold') {
       const priorStatements = [
         ...options.world.choices.flatMap((choice) => {
@@ -1431,11 +1447,7 @@ function assertPublicDiscussionStatement(
       ]
       const issue = publicHoldTargetIssue({
         statement,
-        legalFutureTargetIds: options.world.actors
-          .filter(actor => standardWerewolfLocationIsLiving(actor.location)
-            && actor.id !== options.actorId
-            && !priorSpeakers.has(actor.id))
-          .map(actor => String(actor.id)),
+        legalFutureTargetIds: futureSpeakerIds,
         priorStatements,
       })
       if (issue !== undefined) {
@@ -2328,29 +2340,31 @@ function publicSpeechRetryInstruction(failure: DecisionFailure): string {
       ? '“你／他承认了”只能指 target_id 本人的公开原话；若承认来自其他玩家，明确写出真正说话的座位，或删去这项归因。'
       : failure.issue === 'target-reference'
         ? '若 speech_move 带有 target_id，statement 最后点名的玩家必须回到该目标；提供证据的人不是自动的判断目标。'
-        : failure.issue === 'hold-grounding'
-          ? 'hold 必须只点一名本轮尚未发言的玩家，并请他解释一项已经发生的公开行动；没有这样具体的等待目标时直接选择 pass。'
-          : failure.issue === 'no-death-corroboration'
-            ? '平安夜不能验证预言家宣称或查验结果，也不是查验应当具备的支撑。不要说“没有平安夜所以无法印证”；若查验只有当事人的宣称，直接说尚无其他公开记录可核对。'
-            : failure.issue === 'night-outcome-corroboration'
-              ? '预言家验谁与狼人刀谁是两项独立行动。查验目标存活、死亡或另一名玩家夜间死亡都不能印证或反驳查验；只根据查验宣称本身与后续公开发言、票型或身份事实判断。'
-              : failure.issue === 'stance-text'
-                ? 'observe 只能写中性观察；若 statement 明确表达空洞、可疑或不放心，应把 stance 改成 question 或 suspect，并让 target_id 与最后点名一致。'
-                : failure.issue === 'seer-prior-basis'
-                  ? '预言家的首夜查验不需要“前置依据”。可以说这项查验目前只有本人宣称，或指出它与后续公开记录不符；不得把查验发生前没有公开支撑当作疑点。'
-                  : failure.issue === 'public-grounding'
-                    ? '公开发言只能依赖 public_evidence_ids 中实际出现的事实；删去由沉默、未报名、私密身份或尚未发生的回应推导出的判断。'
-                    : failure.issue === 'commit-grounding'
-                      ? 'commit 的 target_id 必须是 covered_public_judgments 已有目标；若想评价另一个目标，改用 assess，若没有独立判断则直接 pass。'
-                      : failure.issue === 'self-ballot'
-                        ? '说“投我／票给我”时只能描述公开记录中确实投给自己的选票，并在 evidence_ids 引用对应票型；否则删去这项票型归因。'
-                        : failure.issue === 'identity-reveal'
-                          ? '没有公开翻牌事实时，不得把任何座位写成已经确认的身份；预言家宣称应明确写成自己的查验主张，不等于全桌已确认。'
-                          : failure.issue === 'public-claim-contradiction'
-                            ? '重新核对警长竞选与公开发言，不得否认记录中已经出现的预言家查验宣称。可以质疑这项宣称，但不能说它从未出现。'
-                            : failure.issue === 'wolf-disclosure'
-                              ? '引用别人对你的狼人判断时，明确写成“某号说我／点我／查杀我”，不得写成自我承认。'
-                              : '严格核对 speech_move、target_id、stance、公开 evidence_ids 与 statement，只保留一个符合当前麦序的桌面动作。'
+        : failure.issue === 'future-explanation'
+          ? '尚未轮到的玩家还没有解释机会。可以中性地请他轮到时说明一张公开选票，但不得说他“至今没解释、一直没给理由”，也不能据此下判断。'
+          : failure.issue === 'hold-grounding'
+            ? 'hold 必须只点一名本轮尚未发言的玩家，并请他解释一项已经发生的公开行动；没有这样具体的等待目标时直接选择 pass。'
+            : failure.issue === 'no-death-corroboration'
+              ? '平安夜不能验证预言家宣称或查验结果，也不是查验应当具备的支撑。不要说“没有平安夜所以无法印证”；若查验只有当事人的宣称，直接说尚无其他公开记录可核对。'
+              : failure.issue === 'night-outcome-corroboration'
+                ? '预言家验谁与狼人刀谁是两项独立行动。查验目标存活、死亡或另一名玩家夜间死亡都不能印证或反驳查验；只根据查验宣称本身与后续公开发言、票型或身份事实判断。'
+                : failure.issue === 'stance-text'
+                  ? 'observe 只能写中性观察；若 statement 明确表达空洞、可疑或不放心，应把 stance 改成 question 或 suspect，并让 target_id 与最后点名一致。'
+                  : failure.issue === 'seer-prior-basis'
+                    ? '预言家的首夜查验不需要“前置依据”。可以说这项查验目前只有本人宣称，或指出它与后续公开记录不符；不得把查验发生前没有公开支撑当作疑点。'
+                    : failure.issue === 'public-grounding'
+                      ? '公开发言只能依赖 public_evidence_ids 中实际出现的事实；删去由沉默、未报名、私密身份或尚未发生的回应推导出的判断。'
+                      : failure.issue === 'commit-grounding'
+                        ? 'commit 的 target_id 必须是 covered_public_judgments 已有目标；若想评价另一个目标，改用 assess，若没有独立判断则直接 pass。'
+                        : failure.issue === 'self-ballot'
+                          ? '说“投我／票给我”时只能描述公开记录中确实投给自己的选票，并在 evidence_ids 引用对应票型；否则删去这项票型归因。'
+                          : failure.issue === 'identity-reveal'
+                            ? '没有公开翻牌事实时，不得把任何座位写成已经确认的身份；预言家宣称应明确写成自己的查验主张，不等于全桌已确认。'
+                            : failure.issue === 'public-claim-contradiction'
+                              ? '重新核对警长竞选与公开发言，不得否认记录中已经出现的预言家查验宣称。可以质疑这项宣称，但不能说它从未出现。'
+                              : failure.issue === 'wolf-disclosure'
+                                ? '引用别人对你的狼人判断时，明确写成“某号说我／点我／查杀我”，不得写成自我承认。'
+                                : '严格核对 speech_move、target_id、stance、公开 evidence_ids 与 statement，只保留一个符合当前麦序的桌面动作。'
   return `上一次输出未通过桌面规则，请重新完成同一次发言。${correction}不要解释修正过程，只返回所需结构。`
 }
 
@@ -2457,6 +2471,7 @@ async function coordinateDiscussion(
       + turnBoundary
       + lifeBoundary
       + '先按顺序阅读 pending_public_statements；只能回应已经公开的原话，尚未出现的玩家还没有发言。'
+      + '可以请尚未发言的玩家轮到时解释公开选票，但在其发言机会到来前不得说他“至今没解释、一直没给理由”，也不能据此判断。'
       + '先定 speech_move、公开 evidence_ids 和 confidence，再写 statement；这一轮只完成下面一个动作：'
       + 'assess 从一项尚未覆盖的公开信息提出新判断；respond 引用并回应本轮指向自己的具体质疑；'
       + 'revise 先承认自己此前的判断，再指出哪项新公开信息触发目标或立场改变；'

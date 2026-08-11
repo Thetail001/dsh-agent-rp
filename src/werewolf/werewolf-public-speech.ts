@@ -413,6 +413,40 @@ export function unavailablePublicTargetResponseRequest(
   return undefined
 }
 
+const MISSING_BALLOT_EXPLANATION = new RegExp([
+  '(?:票|投票)[^。！？]{0,20}(?:没(?:有)?|未|从未)[^。！？]{0,10}(?:理由|原因|解释|交代|为什么)',
+  '(?:没(?:有)?|未|从未)[^。！？]{0,10}(?:理由|原因|解释|交代)[^。！？]{0,12}(?:票|投票)',
+].join('|'), 'iu')
+
+/**
+ * Return a later speaker described as already lacking a ballot explanation. A later player may be
+ * asked to explain when their turn arrives, but has not yet had a public opportunity to do so.
+ * @param statement - current public utterance.
+ * @param futureActorIds - living players whose speaking turns have not begun.
+ * @returns the prematurely judged player, or `undefined`.
+ */
+export function prematurePublicBallotExplanationTarget(
+  statement: string,
+  futureActorIds: readonly string[],
+): string | undefined {
+  for (const match of statement.matchAll(/(?<!\d)(\d{1,2})\s*号(?:玩家)?/gu)) {
+    const value = Number(match[1])
+    if (!Number.isSafeInteger(value) || value < 1 || value > 12 || match.index === undefined) continue
+    const actorId = `seat-${String(value)}`
+    if (!futureActorIds.includes(actorId)) continue
+    const sentenceStart = Math.max(
+      statement.lastIndexOf('。', match.index),
+      statement.lastIndexOf('！', match.index),
+      statement.lastIndexOf('？', match.index),
+    ) + 1
+    const remaining = statement.slice(match.index)
+    const ending = remaining.search(/[。！？]/u)
+    const sentenceEnd = ending === -1 ? statement.length : match.index + ending
+    if (MISSING_BALLOT_EXPLANATION.test(statement.slice(sentenceStart, sentenceEnd))) return actorId
+  }
+  return undefined
+}
+
 const CURRENT_SHERIFF_SELF_AUTHORITY = /(?:^|[，。！？；])\s*(?:现在|已经)?(?:警徽在我(?:这里|手里|手上|这边)|我是(?:本局)?警长)(?:[，。！？；]|$)/u
 
 /**
