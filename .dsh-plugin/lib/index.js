@@ -12393,11 +12393,11 @@ function sheriffRegistrationOutputSchema(forcedStand) {
 }
 const PUBLIC_STATEMENT_SCHEMA = {
 	type: "string",
-	description: "首选的一段自然中文桌面发言。substantive 只回应一两个具体矛盾并带来新判断，通常一至两个短句；brief 固定填写“过”。不要逐号点评、总结发言顺序、写分析报告或堆叠句号。字段值只能包含玩家真正说出口的一段正文，不得换行或包含改写过程、主句、备选、自检与安全分析。只能依据公开记录；不得透露自己的私密身份或阵营，不得把平安夜、私密信息或真实身份当作预言家查验的印证，也不得声称尚未发言的玩家已经说过某段内容。"
+	description: "首选的一段自然中文桌面发言。substantive 只提出一条新判断；response 直接回应本轮别人对自己的质疑；brief 固定填写“过”。通常一至两个短句，不要逐号点评、总结发言顺序、写分析报告或堆叠句号。字段值只能包含玩家真正说出口的一段正文，不得换行或包含改写过程、主句、备选、自检与安全分析。只能依据公开记录；不得透露自己的私密身份或阵营，不得把平安夜、私密信息或真实身份当作预言家查验的印证，也不得声称尚未发言的玩家已经说过某段内容。"
 };
 const PUBLIC_FALLBACK_STATEMENT_SCHEMA = {
 	type: "string",
-	description: "substantive 在首选发言越过公开边界时使用的独立替代发言；brief 固定填写“过”。字段值只能包含玩家真正说出口的一段正文，不得自称主句、备选或候选，也不得包含改写过程、自检与安全分析。substantive 优先保留已有公开信息支持的核心判断，可以省略不确定的旁支；不得复制首选发言，也必须满足全部公开边界。"
+	description: "substantive 或 response 在首选发言越过公开边界时使用的独立替代发言；brief 固定填写“过”。字段值只能包含玩家真正说出口的一段正文，不得自称主句、备选或候选，也不得包含改写过程、自检与安全分析。优先保留已有公开信息支持的核心内容，可以省略不确定的旁支；不得复制首选发言，也必须满足全部公开边界。"
 };
 const statementOutputSchema = (targets) => ({
 	type: "object",
@@ -12405,22 +12405,26 @@ const statementOutputSchema = (targets) => ({
 	properties: {
 		speech_mode: {
 			type: "string",
-			enum: ["substantive", "brief"],
-			description: "有一条此前没有出现的具体判断时选 substantive；没有新增信息时选 brief。"
+			enum: [
+				"substantive",
+				"response",
+				"brief"
+			],
+			description: "有一条此前没有出现的具体判断时选 substantive；本轮有人怀疑或追问自己时可选 response；两者都不适用时选 brief。"
 		},
 		target_id: {
 			oneOf: [{
 				type: "string",
 				enum: [...targets]
 			}, { type: "null" }],
-			description: "substantive 的当前焦点玩家；brief 必须为 null。"
+			description: "substantive 的当前焦点玩家；response 或 brief 必须为 null。"
 		},
 		stance: {
 			oneOf: [{
 				type: "string",
 				enum: [...STANDARD_WEREWOLF_PUBLIC_STANCES]
 			}, { type: "null" }],
-			description: "substantive 的临时立场摘要；brief 必须为 null。"
+			description: "substantive 的临时立场摘要；response 或 brief 必须为 null。"
 		},
 		statement: PUBLIC_STATEMENT_SCHEMA,
 		fallback_statement: PUBLIC_FALLBACK_STATEMENT_SCHEMA,
@@ -12445,22 +12449,26 @@ const wolfStatementOutputSchema = (targets) => ({
 		},
 		speech_mode: {
 			type: "string",
-			enum: ["substantive", "brief"],
-			description: "正常发言有新增判断时选 substantive；没有新增信息或选择自爆时选 brief。"
+			enum: [
+				"substantive",
+				"response",
+				"brief"
+			],
+			description: "正常发言有新增判断时选 substantive；本轮有人怀疑或追问自己时可选 response；没有内容或选择自爆时选 brief。"
 		},
 		target_id: {
 			oneOf: [{
 				type: "string",
 				enum: [...targets]
 			}, { type: "null" }],
-			description: "substantive 的当前焦点玩家；brief 或自爆时必须为 null。"
+			description: "substantive 的当前焦点玩家；response、brief 或自爆时必须为 null。"
 		},
 		stance: {
 			oneOf: [{
 				type: "string",
 				enum: [...STANDARD_WEREWOLF_PUBLIC_STANCES]
 			}, { type: "null" }],
-			description: "substantive 的临时立场摘要；brief 或自爆时必须为 null。"
+			description: "substantive 的临时立场摘要；response、brief 或自爆时必须为 null。"
 		},
 		statement: PUBLIC_STATEMENT_SCHEMA,
 		fallback_statement: PUBLIC_FALLBACK_STATEMENT_SCHEMA,
@@ -12755,9 +12763,13 @@ function assertDecisionTrace(value, options, visibleIds, committedMemory) {
 	if (trace.action !== "explode" && options.publicDiscussionContext !== void 0 && options.publicEvidenceIds !== void 0 && (options.publicEvidenceIds.length === 0 ? trace.speech_mode !== "brief" : !evidenceIds.some((id) => options.publicEvidenceIds?.includes(id)))) throw new DecisionValidationError("public-grounding", `${options.label} cited no public evidence for its table statement`);
 	let repeatedPublicJudgment = false;
 	if (options.publicJudgmentTargets !== void 0) {
-		if (trace.speech_mode !== "substantive" && trace.speech_mode !== "brief") throw new DecisionValidationError("shape", `${options.label} returned an invalid public speech mode`);
-		if (trace.speech_mode === "brief" || trace.action === "explode") {
-			if (trace.target_id !== null || trace.stance !== null) throw new DecisionValidationError("shape", `${options.label} attached a public judgment to a brief statement or explosion`);
+		if (trace.speech_mode !== "substantive" && trace.speech_mode !== "response" && trace.speech_mode !== "brief") throw new DecisionValidationError("shape", `${options.label} returned an invalid public speech mode`);
+		if (trace.speech_mode === "brief" || trace.speech_mode === "response" || trace.action === "explode") {
+			if (trace.target_id !== null || trace.stance !== null) throw new DecisionValidationError("shape", `${options.label} attached a public judgment to a response, brief statement, or explosion`);
+			if (trace.speech_mode === "response" && trace.action !== "explode") {
+				const context = options.publicDiscussionContext;
+				if (!(context?.coveredJudgments.some((judgment) => judgment.targetId === options.actorId && publicJudgmentKind(judgment.stance) === "attention" && evidenceIds.includes(`day:${String(context.round)}:speech:${String(judgment.actorId)}`)) === true)) throw new DecisionValidationError("response-grounding", `${options.label} used response mode without citing a public concern directed at itself`);
+			}
 		} else {
 			if (typeof trace.target_id !== "string" || !options.publicJudgmentTargets.includes(asRoleplayActorId(trace.target_id))) throw new DecisionValidationError("shape", `${options.label} returned an invalid public judgment target`);
 			if (!STANDARD_WEREWOLF_PUBLIC_STANCES.includes(trace.stance)) throw new DecisionValidationError("shape", `${options.label} returned an invalid public judgment stance`);
@@ -12854,6 +12866,7 @@ const PRIVATE_IDENTITY_CORROBORATION_REFERENCE = /(?:与|和)我(?:的)?(?:真�
 const HUNTER_SHOT_EVIDENCE_ID = /^day:\d+:hunter-shot:seat-\d+$/u;
 const HUNTER_TARGET_CORROBORATION_REFERENCE = /证死|实锤|印证|证明|证实|坐实|所实/iu;
 const HUNTER_TARGET_IDENTITY_REFERENCE = /狼(?:人)?|查杀|查验|身份|阵营|这条线|结论/iu;
+const HUNTER_SHOT_IDENTITY_LINK_REFERENCE = /(?:猎人[^。！？]{0,16}(?:带走|枪口|开枪)|被猎人[^。！？]{0,8}(?:带走|击中))/iu;
 const QUOTED_HUNTER_CORROBORATION_REBUTTAL = /(?:你|他|\d+\s*号)[^。！？]{0,12}(?:说|声称)[^。！？]{0,48}(?:可|但|只是|不过)/iu;
 const PUBLIC_IDENTITY = "(?:狼(?:人)?|好人|预言家|女巫|猎人|白痴|村民|平民)";
 const PUBLIC_IDENTITY_CERTAINTY = "(?:结果|已经|现已|确认|证实|坐实|实锤|翻牌)";
@@ -12866,7 +12879,7 @@ function isBarePassEvidence(id, options) {
 	return options.world.choices.find((candidate) => String(candidate.id) === id)?.text.trim() === `${actorId}: 过`;
 }
 function publicJudgmentKind(stance) {
-	return stance === "trust" ? "trust" : stance === "observe" ? "observe" : "concern";
+	return stance === "trust" ? "trust" : "attention";
 }
 function assertPublicDiscussionStatement(statement, evidenceIds, targetId, options) {
 	assertCitedBallotReferences(statement, evidenceIds, targetId, options);
@@ -12876,7 +12889,7 @@ function assertPublicDiscussionStatement(statement, evidenceIds, targetId, optio
 	}
 	if (ABSENCE_REFERENCE.test(statement) && SUSPICION_REFERENCE.test(statement)) throw new DecisionValidationError("public-grounding", `${options.label} treated non-registration or silence as suspicious public evidence`);
 	if (NO_DEATH_REFERENCE.test(statement) && SEER_RESULT_REFERENCE.test(statement) && CORROBORATION_REFERENCE.test(statement) && !NEGATED_CORROBORATION_REFERENCE.test(statement)) throw new DecisionValidationError("no-death-corroboration", `${options.label} treated a no-death night as corroboration for a Seer claim or result`);
-	if (evidenceIds.some((id) => HUNTER_SHOT_EVIDENCE_ID.test(id)) && HUNTER_TARGET_CORROBORATION_REFERENCE.test(statement) && HUNTER_TARGET_IDENTITY_REFERENCE.test(statement) && !NEGATED_CORROBORATION_REFERENCE.test(statement) && !QUOTED_HUNTER_CORROBORATION_REBUTTAL.test(statement)) throw new DecisionValidationError("hunter-target-corroboration", `${options.label} treated a Hunter's target as proof of that target's identity or alignment`);
+	if (evidenceIds.some((id) => HUNTER_SHOT_EVIDENCE_ID.test(id)) && (HUNTER_TARGET_CORROBORATION_REFERENCE.test(statement) || HUNTER_SHOT_IDENTITY_LINK_REFERENCE.test(statement)) && HUNTER_TARGET_IDENTITY_REFERENCE.test(statement) && !NEGATED_CORROBORATION_REFERENCE.test(statement) && !QUOTED_HUNTER_CORROBORATION_REBUTTAL.test(statement)) throw new DecisionValidationError("hunter-target-corroboration", `${options.label} treated a Hunter's target as proof of that target's identity or alignment`);
 	if (standardWerewolfRoleIn(options.world, options.actorId) !== "seer" && SEER_RESULT_REFERENCE.test(statement) && (PRIVATE_INFORMATION_CORROBORATION_REFERENCE.test(statement) || PRIVATE_IDENTITY_CORROBORATION_REFERENCE.test(statement)) && !NEGATED_CORROBORATION_REFERENCE.test(statement)) throw new DecisionValidationError("private-corroboration", `${options.label} treated unspecified private information as corroboration for a Seer claim or result`);
 	if (SELF_BALLOT_REFERENCE.test(statement)) {
 		const actorId = String(options.actorId).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -12897,6 +12910,11 @@ function seatActorId(number) {
 }
 function assertCitedBallotReferences(statement, evidenceIds, targetId, options) {
 	const positiveTarget = "(?<![没未不])投(?:给|了|的(?:却)?是)?\\s*(\\d+)\\s*号";
+	for (const match of statement.matchAll(/* @__PURE__ */ new RegExp("(?:把票(?:投)?给|投(?:给|了)?)\\s*(\\d+)\\s*号(?:玩家)?的(?:有|包括)\\s*((?:\\d+\\s*(?:号(?:玩家)?)?)(?:\\s*[、,，和及]\\s*\\d+\\s*(?:号(?:玩家)?)?)*)", "gu"))) {
+		if (match[1] === void 0 || match[2] === void 0) continue;
+		const ballotTarget = seatActorId(match[1]);
+		for (const voter of match[2].matchAll(/\\d+/gu)) assertCitedBallot(evidenceIds, options, seatActorId(voter[0]), ballotTarget);
+	}
 	for (const match of statement.matchAll(new RegExp(`我(?:本人)?[^。！？]{0,10}${positiveTarget}`, "gu"))) if (match[1] !== void 0) assertCitedBallot(evidenceIds, options, options.actorId, seatActorId(match[1]));
 	for (const match of statement.matchAll(new RegExp(`${positiveTarget}[^。！？]{0,12}包括我(?:本人)?`, "gu"))) if (match[1] !== void 0) assertCitedBallot(evidenceIds, options, options.actorId, seatActorId(match[1]));
 	const publicTarget = typeof targetId === "string" && options.publicJudgmentTargets?.includes(asRoleplayActorId(targetId)) === true ? asRoleplayActorId(targetId) : void 0;
@@ -13440,7 +13458,7 @@ async function coordinateDiscussion(options, world, humanActorId, humanStatement
 		const alreadySpoke = [...existing, ...pendingPublicStatements.map((statement) => statement.actor_id)];
 		const canStillSpeak = remaining.slice(remaining.indexOf(actorId) + 1);
 		const turnBoundary = `本轮已经发言且不能再次回应的玩家：${alreadySpoke.length === 0 ? "无" : alreadySpoke.map(seatLabel$2).join("、")}。本轮尚可发言的玩家：${canStillSpeak.length === 0 ? "无" : canStillSpeak.map(seatLabel$2).join("、")}。对已经发言的玩家只能回应、反驳或把矛盾留作投票依据，不能追问、要求解释或等待其回答；问题只能留给本轮尚可发言的玩家。`;
-		const task = `进行第 ${String(round)} 天公开发言。你是${seatLabel$2(actorId)}。${positionInstruction}` + noveltyInstruction + turnBoundary + "先按顺序阅读 pending_public_statements；只能回应已经公开的原话，尚未出现的玩家还没有发言。真人桌面发言通常只接住一两个具体矛盾，直接表示同意、反对或留下明确判断，不会重新汇报整张桌子。有一条此前没人说过的具体判断时选择 substantive，并填写 target_id 与 stance；没有新增信息时选择 brief，target_id 与 stance 都填 null，statement 与 fallback_statement 都只填“过”。public_discussion_context.covered_public_judgments 列出本轮已有的结构化判断；对同一目标的怀疑与追问属于同一类关注，只有被评价玩家随后说出的新内容，或后来出现的选票与阶段事实，才足以继续这个判断；其他玩家的附和与改写不算新证据。否则必须改用 brief，不能换词复述。statement 不得提及前置位、后置位、发言顺序、输出字段、证据 ID 或系统规则，也不要逐号点评、使用“依据公开记录”一类报告式开头或在结尾重复总结。直接说出自己的判断，不要使用“是……还是……”“而不是……”或“我想问一句”这类采访式对照句。一句能说清就停，短分句用逗号连接，不要用一串句号制造停顿。警长竞选已经结束，不得继续竞选或复述竞选词；具体描述自己或别人把票投给谁时，必须引用并核对对应的公开选票；不要凭别人的转述补出票型。出局、夜间死亡或被猎人带走都不会自动公开目标身份；没有公开身份事实时，不得把推测写成“结果、坐实、证实某号是狼人”等翻牌结论。未报名和沉默本身不是可疑证据。只有真实预言家可以延续已经公开的预言家身份；不得自称女巫、猎人、白痴或村民。平安夜不能印证预言家或查验结论，非预言家也不能用私密信息或真实身份为公开结论背书。猎人开枪只公开猎人本人的身份，枪口不证明目标的身份或阵营，也不能核验预言家的查验。描述跨日记录时使用“第 N 天”。" + (publicEvidenceIds.length === 0 ? "当前 public_evidence_ids 为空，evidence_ids 填空数组。" : "evidence_ids 至少引用 public_evidence_ids 中一项；substantive 的正文要指向一名具体玩家或一处具体冲突。") + "若 committed_decision_memory 中对同一目标的立场不同，还必须增加一项此前未引用的公开依据。fallback_statement 是独立的安全替代表达，不能复制 statement；两个字段都只写玩家真正说出口的一段正文，不得换行，不得包含改写过程、自检、安全分析或给主持人的说明。";
+		const task = `进行第 ${String(round)} 天公开发言。你是${seatLabel$2(actorId)}。${positionInstruction}` + noveltyInstruction + turnBoundary + "先按顺序阅读 pending_public_statements；只能回应已经公开的原话，尚未出现的玩家还没有发言。真人桌面发言通常只接住一两个具体矛盾，直接表示同意、反对或留下明确判断，不会重新汇报整张桌子。有一条此前没人说过的具体判断时选择 substantive，并填写 target_id 与 stance；如果本轮已有玩家明确怀疑或追问你，可以选择 response，target_id 与 stance 都填 null，引用那条发言并直接澄清自己的选择；response 只回应指向自己的具体问题，不要为了反击而强行评价别人。两种情形都不适用时选择 brief，target_id 与 stance 都填 null，statement 与 fallback_statement 都只填“过”。public_discussion_context.covered_public_judgments 列出本轮已有的结构化判断；对同一目标的怀疑、追问与观察属于同一类关注，只有被评价玩家随后说出的新内容，或后来出现的选票与阶段事实，才足以继续这个判断；其他玩家的附和与改写不算新证据。否则必须改用 brief，不能换词复述。statement 不得提及前置位、后置位、发言顺序、输出字段、证据 ID 或系统规则，也不要逐号点评、使用“依据公开记录”一类报告式开头或在结尾重复总结。直接说出自己的判断，不要使用“是……还是……”“而不是……”或“我想问一句”这类采访式对照句。一句能说清就停，短分句用逗号连接，不要用一串句号制造停顿。警长竞选已经结束，不得继续竞选或复述竞选词；具体描述自己或别人把票投给谁时，必须引用并核对对应的公开选票；不要凭别人的转述补出票型。出局、夜间死亡或被猎人带走都不会自动公开目标身份；没有公开身份事实时，不得把推测写成“结果、坐实、证实某号是狼人”等翻牌结论。未报名和沉默本身不是可疑证据。只有真实预言家可以延续已经公开的预言家身份；不得自称女巫、猎人、白痴或村民。平安夜不能印证预言家或查验结论，非预言家也不能用私密信息或真实身份为公开结论背书。猎人开枪只公开猎人本人的身份，枪口不证明目标的身份或阵营，也不能核验预言家的查验。描述跨日记录时使用“第 N 天”。" + (publicEvidenceIds.length === 0 ? "当前 public_evidence_ids 为空，evidence_ids 填空数组。" : "evidence_ids 至少引用 public_evidence_ids 中一项；substantive 的正文要指向一名具体玩家或一处具体冲突。") + "若 committed_decision_memory 中对同一目标的立场不同，还必须增加一项此前未引用的公开依据。fallback_statement 是独立的安全替代表达，不能复制 statement；两个字段都只写玩家真正说出口的一段正文，不得换行，不得包含改写过程、自检、安全分析或给主持人的说明。";
 		const spec = actorId === explosionDecider ? {
 			actorId,
 			world,
