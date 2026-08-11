@@ -113,6 +113,7 @@ import {
   publicSpeechMoveShapeIssue,
   publicResponseIsGrounded,
   publicRoleClaimsForPrivateRole,
+  publicSpeechJudgmentCapacity,
   publicSeerCampaignClaimIssue,
   publicSeerClaimTargetIds,
   publicStatementClaimsCurrentSheriffAuthority,
@@ -1049,9 +1050,9 @@ function assertDecisionTrace(
           options.publicDiscussionContext?.coveredJudgments ?? [],
           trace.target_id,
           trace.stance,
+          publicSpeechJudgmentCapacity(speechMove),
         )
-      if (speechMove !== 'commit'
-        && repeated !== undefined
+      if (repeated !== undefined
         && !evidenceIds.some((id) => {
           if (!options.publicEvidenceIds?.includes(id) || repeated.availableEvidenceIds.includes(id)) return false
           const speechActor = /^day:\d+:speech:(seat-\d+)$/u.exec(id)?.[1]
@@ -2422,7 +2423,7 @@ async function coordinateDiscussion(
       + 'respond、hold、pass 的 target_id 与 stance 都填 null。public_discussion_context.covered_public_judgments 是本轮已有判断。'
       + 'hold 只能点一名仍可发言的存活玩家，并要求他解释一项已经发生的公开行动；同一个等待目标已经有人点过、无法点出目标或只能泛泛等信息时，直接选择 pass。'
       + 'question、observe、suspect 都属于对目标的关注；换一个 stance 名称不算新判断。'
-      + '同一目标的同类关注最多保留两位玩家的独立看法；第三位没有目标本人的新发言、后来的公开票型或阶段事实时直接 pass。'
+      + '同一目标的同类关注最多保留两位玩家的独立看法，之后最多再由一位后位玩家承接收口；已有收口且没有目标本人的新发言、后来的公开票型或阶段事实时直接 pass。'
       + '对同一目标重复关注，只有目标后续的新发言、后来的公开票型或阶段事实才能触发 revise；其他人的附和不算新信息。'
       + 'statement 是玩家此刻真正说出口的话：先说当前结论或缺口，再给一条公开事实，通常一两句就停。'
       + '回应只接一项具体质疑，改判点明新出现的信息，归票直接落今天的去向；不要逐号点评、复述全桌、解释输出字段或汇报推理步骤。'

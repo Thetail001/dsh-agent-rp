@@ -455,6 +455,17 @@ export function publicSpeechJudgmentFamily(stance: unknown): PublicSpeechJudgmen
 }
 
 /**
+ * Maximum same-family judgments admitted before a move needs target-owned new evidence.
+ * A closing move may follow two independent reads once, but cannot turn every late seat into
+ * another summary of the same table consensus.
+ * @param move - structured public speech move.
+ * @returns allowed same-family judgment count before saturation.
+ */
+export function publicSpeechJudgmentCapacity(move: unknown): number {
+  return move === 'commit' ? 3 : 2
+}
+
+/**
  * Whether a response addresses an existing concern instead of inventing an unheard challenge.
  * @param history - structured judgments already spoken in the current round.
  * @param actorId - player producing the response.

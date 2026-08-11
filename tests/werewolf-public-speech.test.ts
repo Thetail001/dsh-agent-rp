@@ -11,6 +11,7 @@ import {
   publicBallotTargetIds,
   publicHoldTargetIssue,
   publicSpeechJudgmentFamily,
+  publicSpeechJudgmentCapacity,
   publicSpeechMovesForPosition,
   publicTargetPronounBallotClaims,
   publicSpeechMoveCarriesJudgment,
@@ -390,6 +391,35 @@ test('keeps two table perspectives before requiring new evidence on one judgment
     judgments[1],
   )
   assert.equal(selectSaturatedPublicJudgment(judgments, 'seat-9', 'trust'), undefined)
+})
+
+test('admits one closing judgment after two independent table perspectives', () => {
+  const judgments = [
+    { actorId: 'seat-1', targetId: 'seat-9', stance: 'observe' },
+    { actorId: 'seat-2', targetId: 'seat-9', stance: 'question' },
+    { actorId: 'seat-3', targetId: 'seat-9', stance: 'suspect' },
+  ]
+
+  assert.equal(publicSpeechJudgmentCapacity('assess'), 2)
+  assert.equal(publicSpeechJudgmentCapacity('commit'), 3)
+  assert.equal(
+    selectSaturatedPublicJudgment(
+      judgments.slice(0, 2),
+      'seat-9',
+      'suspect',
+      publicSpeechJudgmentCapacity('commit'),
+    ),
+    undefined,
+  )
+  assert.deepEqual(
+    selectSaturatedPublicJudgment(
+      judgments,
+      'seat-9',
+      'suspect',
+      publicSpeechJudgmentCapacity('commit'),
+    ),
+    judgments[2],
+  )
 })
 
 test('accepts a response to an existing structured concern', () => {
