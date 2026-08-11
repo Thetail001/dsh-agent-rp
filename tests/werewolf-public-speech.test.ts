@@ -476,7 +476,7 @@ test('revise compares the latest judgment while other moves preserve the same ta
   assert.equal(selectPublicSpeechPrior('assess', 'seat-2', history), oldTarget)
 })
 
-test('keeps two table perspectives before requiring new evidence on one judgment family', () => {
+test('keeps one table perspective before requiring new evidence on one judgment family', () => {
   const judgments = [
     { actorId: 'seat-1', targetId: 'seat-9', stance: 'observe' },
     { actorId: 'seat-2', targetId: 'seat-9', stance: 'question' },
@@ -484,26 +484,25 @@ test('keeps two table perspectives before requiring new evidence on one judgment
   ]
 
   assert.equal(publicSpeechJudgmentFamily('suspect'), 'attention')
-  assert.equal(selectSaturatedPublicJudgment(judgments.slice(0, 1), 'seat-9', 'suspect'), undefined)
   assert.deepEqual(
-    selectSaturatedPublicJudgment(judgments, 'seat-9', 'suspect'),
-    judgments[1],
+    selectSaturatedPublicJudgment(judgments.slice(0, 1), 'seat-9', 'suspect'),
+    judgments[0],
   )
-  assert.equal(selectSaturatedPublicJudgment(judgments, 'seat-9', 'trust'), undefined)
+  assert.deepEqual(selectSaturatedPublicJudgment(judgments, 'seat-9', 'trust'), judgments[2])
 })
 
-test('admits one closing judgment after two independent table perspectives', () => {
+test('admits one closing judgment after the opening table perspective', () => {
   const judgments = [
     { actorId: 'seat-1', targetId: 'seat-9', stance: 'observe' },
     { actorId: 'seat-2', targetId: 'seat-9', stance: 'question' },
     { actorId: 'seat-3', targetId: 'seat-9', stance: 'suspect' },
   ]
 
-  assert.equal(publicSpeechJudgmentCapacity('assess'), 2)
-  assert.equal(publicSpeechJudgmentCapacity('commit'), 3)
+  assert.equal(publicSpeechJudgmentCapacity('assess'), 1)
+  assert.equal(publicSpeechJudgmentCapacity('commit'), 2)
   assert.equal(
     selectSaturatedPublicJudgment(
-      judgments.slice(0, 2),
+      judgments.slice(0, 1),
       'seat-9',
       'suspect',
       publicSpeechJudgmentCapacity('commit'),
@@ -512,12 +511,12 @@ test('admits one closing judgment after two independent table perspectives', () 
   )
   assert.deepEqual(
     selectSaturatedPublicJudgment(
-      judgments,
+      judgments.slice(0, 2),
       'seat-9',
       'suspect',
       publicSpeechJudgmentCapacity('commit'),
     ),
-    judgments[2],
+    judgments[1],
   )
 })
 

@@ -587,13 +587,13 @@ export function publicSpeechJudgmentFamily(stance: unknown): PublicSpeechJudgmen
 
 /**
  * Maximum same-family judgments admitted before a move needs target-owned new evidence.
- * A closing move may follow two independent reads once, but cannot turn every late seat into
- * another summary of the same table consensus.
+ * One speaker opens a table read and one closing speaker may convert it into a vote; additional
+ * paraphrases do not become independent information merely because another seat authored them.
  * @param move - structured public speech move.
  * @returns allowed same-family judgment count before saturation.
  */
 export function publicSpeechJudgmentCapacity(move: unknown): number {
-  return move === 'commit' ? 3 : 2
+  return move === 'commit' ? 2 : 1
 }
 
 /**
@@ -727,7 +727,7 @@ export function selectSaturatedPublicJudgment<T extends {
   history: readonly T[],
   targetId: unknown,
   stance: unknown,
-  capacity = 2,
+  capacity = 1,
 ): T | undefined {
   const family = publicSpeechJudgmentFamily(stance)
   if (family === undefined) return undefined
