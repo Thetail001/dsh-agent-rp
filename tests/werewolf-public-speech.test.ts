@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  certainPublicIdentityActorIds,
   publicAcknowledgementClaimActorIds,
   deniedPublicSeerClaims,
   directedPublicFocusTargetIds,
   finalPublicSpeechTargetId,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
+  publicBallotTargetIds,
   publicHoldTargetIssue,
   publicSpeechJudgmentFamily,
   publicSpeechMovesForPosition,
@@ -131,6 +133,28 @@ test('lets hold and pass omit evidence and normalizes pass to one table word', (
     'assess',
     '我先把警长交给8号，他竞选时给出了明确的带队思路，这个态度我认可。',
   ), '他竞选时给出了明确的带队思路，这个态度我认可。')
+  assert.equal(normalizePublicSpeechStatement(
+    'assess',
+    '我暂时看不清10号这套,先记下。',
+  ), '我暂时看不清10号这套，先记下。')
+})
+
+test('does not join identity certainty across separate clauses', () => {
+  assert.deepEqual(certainPublicIdentityActorIds('结果已经确认8号是狼人。'), ['seat-8'])
+  assert.deepEqual(certainPublicIdentityActorIds('1号已经确认是好人。'), ['seat-1'])
+  assert.deepEqual(certainPublicIdentityActorIds(
+    '我尊重投票结果，但我的查验就在那里：1号是好人。',
+  ), [])
+})
+
+test('reads self-targets from every public ballot phase', () => {
+  assert.deepEqual(publicBallotTargetIds([
+    'sheriff-election:1:seat-1:seat-10',
+    'sheriff-pk:1:seat-2:seat-10',
+    'day:1:exile-vote:seat-3:seat-8',
+    'day:1:pk-vote:seat-4:seat-8',
+    'day:1:speech:seat-5',
+  ]), ['seat-10', 'seat-8'])
 })
 
 test('recognizes a concrete question even when its target and request are separated by ballot detail', () => {

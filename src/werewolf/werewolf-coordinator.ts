@@ -96,11 +96,13 @@ import {
   type StandardWerewolfDecisionValidationIssue as DecisionValidationIssue,
 } from './werewolf-diagnostics.ts'
 import {
+  certainPublicIdentityActorIds,
   deniedPublicSeerClaims,
   directedPublicFocusTargetIds,
   finalPublicSpeechTargetId,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
+  publicBallotTargetIds,
   publicAcknowledgementClaimActorIds,
   publicHoldTargetIssue,
   publicSpeechMovesForPosition,
@@ -1278,13 +1280,6 @@ const HUNTER_TARGET_CORROBORATION_REFERENCE = /证死|实锤|印证|证明|证�
 const HUNTER_TARGET_IDENTITY_REFERENCE = /狼(?:人)?|查杀|查验|身份|阵营|这条线|结论/iu
 const HUNTER_SHOT_IDENTITY_LINK_REFERENCE = /(?:猎人[^。！？]{0,16}(?:带走|枪口|开枪)|被猎人[^。！？]{0,8}(?:带走|击中))/iu
 const QUOTED_HUNTER_CORROBORATION_REBUTTAL = /(?:你|他|\d+\s*号)[^。！？]{0,12}(?:说|声称)[^。！？]{0,48}(?:可|但|只是|不过)/iu
-const PUBLIC_IDENTITY = '(?:狼(?:人)?|好人|预言家|女巫|猎人|白痴|村民|平民)'
-const PUBLIC_IDENTITY_CERTAINTY = '(?:结果|已经|现已|确认|证实|坐实|实锤|翻牌)'
-const CERTAIN_PUBLIC_IDENTITY_REFERENCES = [
-  new RegExp(`${PUBLIC_IDENTITY_CERTAINTY}[^。！？]{0,12}(\\d+)\\s*号(?:玩家)?[^。！？]{0,8}(?:是|为|属于)?\\s*${PUBLIC_IDENTITY}`, 'giu'),
-  new RegExp(`(\\d+)\\s*号(?:玩家)?[^。！？]{0,12}${PUBLIC_IDENTITY_CERTAINTY}[^。！？]{0,8}(?:是|为|属于)?\\s*${PUBLIC_IDENTITY}`, 'giu'),
-]
-
 function isBarePassEvidence(id: string, options: DecisionOptions): boolean {
   const pending = options.pendingPublicStatements?.find(statement => statement.evidence_id === id)
   if (pending !== undefined) return pending.statement.trim() === '过'
@@ -1312,17 +1307,13 @@ function assertPublicDiscussionStatement(
       }
     }
   }
-  for (const pattern of CERTAIN_PUBLIC_IDENTITY_REFERENCES) {
-    for (const match of statement.matchAll(pattern)) {
-      const seat = match[1]
-      if (seat !== undefined
-        && !evidenceIds.includes(`seat-${seat}-role`)
-        && !evidenceIds.includes(`seat-${seat}-alignment`)) {
-        throw new DecisionValidationError(
-          'identity-reveal',
-          `${options.label} described an identity as publicly confirmed without a public reveal`,
-        )
-      }
+  for (const actorId of certainPublicIdentityActorIds(statement)) {
+    if (!evidenceIds.includes(`${actorId}-role`)
+      && !evidenceIds.includes(`${actorId}-alignment`)) {
+      throw new DecisionValidationError(
+        'identity-reveal',
+        `${options.label} described an identity as publicly confirmed without a public reveal`,
+      )
     }
   }
   if (ABSENCE_REFERENCE.test(statement) && SUSPICION_REFERENCE.test(statement)) {
@@ -1362,9 +1353,8 @@ function assertPublicDiscussionStatement(
     )
   }
   if (SELF_BALLOT_REFERENCE.test(statement)) {
-    const actorId = String(options.actorId).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
-    const selfBallot = new RegExp(`^day:\\d+:(?:exile-vote|pk-vote):seat-\\d+:${actorId}$`, 'u')
-    if (!evidenceIds.some(id => selfBallot.test(id))) {
+    const targets = publicBallotTargetIds([...evidenceIds, ...(options.publicEvidenceIds ?? [])])
+    if (!targets.includes(String(options.actorId))) {
       throw new DecisionValidationError(
         'self-ballot',
         `${options.label} described another player's ballot target as itself`,
@@ -2312,11 +2302,15 @@ function publicSpeechRetryInstruction(failure: DecisionFailure): string {
                 ? '公开发言只能依赖 public_evidence_ids 中实际出现的事实；删去由沉默、未报名、私密身份或尚未发生的回应推导出的判断。'
                 : failure.issue === 'commit-grounding'
                   ? 'commit 的 target_id 必须是 covered_public_judgments 已有目标；若想评价另一个目标，改用 assess，若没有独立判断则直接 pass。'
-                  : failure.issue === 'public-claim-contradiction'
-                    ? '重新核对警长竞选与公开发言，不得否认记录中已经出现的预言家查验宣称。可以质疑这项宣称，但不能说它从未出现。'
-                    : failure.issue === 'wolf-disclosure'
-                      ? '引用别人对你的狼人判断时，明确写成“某号说我／点我／查杀我”，不得写成自我承认。'
-                      : '严格核对 speech_move、target_id、stance、公开 evidence_ids 与 statement，只保留一个符合当前麦序的桌面动作。'
+                  : failure.issue === 'self-ballot'
+                    ? '说“投我／票给我”时只能描述公开记录中确实投给自己的选票，并在 evidence_ids 引用对应票型；否则删去这项票型归因。'
+                    : failure.issue === 'identity-reveal'
+                      ? '没有公开翻牌事实时，不得把任何座位写成已经确认的身份；预言家宣称应明确写成自己的查验主张，不等于全桌已确认。'
+                      : failure.issue === 'public-claim-contradiction'
+                        ? '重新核对警长竞选与公开发言，不得否认记录中已经出现的预言家查验宣称。可以质疑这项宣称，但不能说它从未出现。'
+                        : failure.issue === 'wolf-disclosure'
+                          ? '引用别人对你的狼人判断时，明确写成“某号说我／点我／查杀我”，不得写成自我承认。'
+                          : '严格核对 speech_move、target_id、stance、公开 evidence_ids 与 statement，只保留一个符合当前麦序的桌面动作。'
   return `上一次输出未通过桌面规则，请重新完成同一次发言。${correction}不要解释修正过程，只返回所需结构。`
 }
 

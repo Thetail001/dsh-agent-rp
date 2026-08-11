@@ -161,13 +161,52 @@ export function normalizePublicSpeechStatement(move: unknown, statement: string)
       && (GENERIC_INFORMATION_HOLD.test(statement) || EXPLICIT_PASS_ENDING.test(statement.trim())))) {
     return '过'
   }
-  const withoutFalseSheriffHandoff = statement.replace(FALSE_SHERIFF_HANDOFF_PREFIX, '')
+  const normalizedPunctuation = statement.replaceAll(',', '，')
+  const withoutFalseSheriffHandoff = normalizedPunctuation.replace(FALSE_SHERIFF_HANDOFF_PREFIX, '')
   const withoutWaitTail = withoutFalseSheriffHandoff.replace(REDUNDANT_FUTURE_WAIT_TAIL, '').trimEnd()
   return withoutWaitTail !== statement
     && /[。！？]$/u.test(statement)
     && !/[。！？]$/u.test(withoutWaitTail)
     ? `${withoutWaitTail}。`
     : withoutWaitTail
+}
+
+const PUBLIC_IDENTITY = '(?:狼(?:人)?|好人|预言家|女巫|猎人|白痴|村民|平民)'
+const PUBLIC_IDENTITY_CERTAINTY = '(?:结果|已经|现已|确认|证实|坐实|实锤|翻牌)'
+const CERTAIN_PUBLIC_IDENTITY_REFERENCES = [
+  new RegExp(`${PUBLIC_IDENTITY_CERTAINTY}[^，,；;：:。！？]{0,12}(\\d+)\\s*号(?:玩家)?[^，,；;：:。！？]{0,8}(?:是|为|属于)?\\s*${PUBLIC_IDENTITY}`, 'giu'),
+  new RegExp(`(\\d+)\\s*号(?:玩家)?[^，,；;：:。！？]{0,12}${PUBLIC_IDENTITY_CERTAINTY}[^，,；;：:。！？]{0,8}(?:是|为|属于)?\\s*${PUBLIC_IDENTITY}`, 'giu'),
+] as const
+
+/**
+ * Find identities stated as public certainty without joining separate clauses.
+ * @param statement - public table utterance.
+ * @returns deduplicated standard seat ids in textual order.
+ */
+export function certainPublicIdentityActorIds(statement: string): readonly string[] {
+  const actors = new Set<string>()
+  for (const pattern of CERTAIN_PUBLIC_IDENTITY_REFERENCES) {
+    for (const match of statement.matchAll(pattern)) {
+      if (match[1] !== undefined) actors.add(`seat-${match[1]}`)
+    }
+  }
+  return [...actors]
+}
+
+const PUBLIC_BALLOT_REFERENCE = /^(?:sheriff-(?:election|pk):\d+|day:\d+:(?:exile-vote|pk-vote)):(seat-\d+):(seat-\d+|abstain)$/u
+
+/**
+ * Find targets from public Sheriff and exile ballot evidence.
+ * @param evidenceIds - evidence ids available in the public table record.
+ * @returns deduplicated target ids in evidence order.
+ */
+export function publicBallotTargetIds(evidenceIds: readonly string[]): readonly string[] {
+  const targets = new Set<string>()
+  for (const evidenceId of evidenceIds) {
+    const targetId = PUBLIC_BALLOT_REFERENCE.exec(evidenceId)?.[2]
+    if (targetId !== undefined) targets.add(targetId)
+  }
+  return [...targets]
 }
 
 const GENERIC_INFORMATION_HOLD = new RegExp([
