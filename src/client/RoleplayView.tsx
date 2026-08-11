@@ -696,9 +696,14 @@ function runningStatus(surface: RoleplayPlayerSurface): string {
   return '场景处理中'
 }
 
-function waitingGuidance(surface: RoleplayPlayerSurface, submittedActionLabel: string | null): string {
+function waitingGuidance(
+  surface: RoleplayPlayerSurface,
+  submittedActionLabel: string | null,
+  automaticWaiting: boolean,
+): string {
   if (surface.progress !== undefined) return surface.progress.detail
   if (submittedActionLabel !== null) return `已提交：${submittedActionLabel}`
+  if (automaticWaiting) return surface.guidance
   return '请稍候'
 }
 
@@ -852,7 +857,6 @@ export function RoleplayView({
     })
   }, [sessionKey])
 
-  const waiting = pending || running
   const visibleError = error ?? agentError
   if (surface === undefined) {
     return (
@@ -866,6 +870,9 @@ export function RoleplayView({
   }
   if (surface === null) return <Preparation kind="unmatched" error={visibleError} />
 
+  const automaticAction = surface.actions.find(action => action.automatic === true)
+  const automaticWaiting = automaticAction !== undefined && visibleError === null
+  const waiting = pending || running || automaticWaiting
   const locked = waiting || surface.status === 'complete'
   const surfaceInput = surface.input
   const inputNeedsChoice = surfaceInput !== undefined && surface.actions.length > 0
@@ -914,7 +921,11 @@ export function RoleplayView({
                 ? '正在开局'
                 : waiting && surface.progress !== undefined
                   ? surface.progress.title
-                  : pending ? '正在提交行动' : running ? runningStatus(surface) : '等待你的行动'}
+                  : pending
+                    ? '正在提交行动'
+                    : running
+                      ? runningStatus(surface)
+                      : automaticWaiting ? surface.guidance : '等待你的行动'}
           </span>
         </div>
       </header>
@@ -959,7 +970,7 @@ export function RoleplayView({
               <div className={css.controlIntro}>
                 <p className={css.guidance} aria-live="polite">
                   {waiting
-                    ? waitingGuidance(surface, submittedActionLabel)
+                    ? waitingGuidance(surface, submittedActionLabel, automaticWaiting)
                     : surface.guidance}
                 </p>
                 {!waiting && surface.guidanceDetail !== undefined && (
