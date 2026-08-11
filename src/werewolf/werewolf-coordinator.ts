@@ -111,6 +111,7 @@ import {
   publicRoleClaimsForPrivateRole,
   publicSeerCampaignClaimIssue,
   publicSeerClaimTargetIds,
+  publicStatementClaimsCurrentSheriffAuthority,
   publicStatementDisclosesWolfAlignment,
   publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
@@ -1201,6 +1202,13 @@ function assertPublicStatementCandidate(
       )
     }
   }
+  if (options.publicDiscussionContext === undefined
+    && publicStatementClaimsCurrentSheriffAuthority(statement)) {
+    throw new DecisionValidationError(
+      'public-claim-contradiction',
+      `${options.label} claimed unsettled Sheriff authority before the ballot`,
+    )
+  }
   if (trace.action !== 'explode'
     && standardWerewolfRoleIn(options.world, options.actorId) === 'wolf'
     && publicStatementDisclosesWolfAlignment(statement)) {
@@ -1742,7 +1750,7 @@ function sheriffRegistrationTask(
   actorId: RoleplayActorId,
   wolfRepresentative: RoleplayActorId,
 ): string {
-  const campaignBoundary = '只有预言家可以在竞选发言中主动公开其身份和首夜唯一一次查验的最终结果；写完后核对查验对象，只保留一个号码，不得保留草稿、改口或自我修正。其他身份即使竞选，也不得提及、暗示或复述私密身份、夜间能力、夜间行动或仅凭私密身份可知的信息；必须只使用公开信息和公开可验证的带队方法。若竞选，给出一句简短、自然的中文竞选发言。只返回所需结构。'
+  const campaignBoundary = '报名时仍是候选人，不得把警徽或警长身份说成已经属于自己。只有预言家可以在竞选发言中主动公开其身份和首夜唯一一次查验的最终结果；写完后核对查验对象，只保留一个号码，不得保留草稿、改口或自我修正。其他身份即使竞选，也不得提及、暗示或复述私密身份、夜间能力、夜间行动或仅凭私密身份可知的信息；必须只使用公开信息和公开可验证的带队方法。若竞选，给出一句简短、自然的中文竞选发言。只返回所需结构。'
   if (forcedStand === true) {
     return '同时进行警长报名。本局明确启用了三候选试玩预设，你是其中一名指定候选人。本预设只规定报名人，不替你写发言，也不影响后续投票。必须返回 stand: true，并根据你掌握的信息自行给出竞选发言。' + campaignBoundary
   }

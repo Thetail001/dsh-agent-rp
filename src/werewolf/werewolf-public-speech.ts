@@ -188,6 +188,7 @@ const DIRECT_PUBLIC_FOCUS_REFERENCES = [
   /(?:还)?缺\s*(\d+)\s*号(?:玩家)?[^。！？]{0,12}(?:解释|表态|票型|理由|判断|说法)/gu,
   /(\d+)\s*号(?:玩家)?[^。！？]{0,48}(?:(?:轮到你(?:时)?|请你|你(?:先|得|要|需要|应该))[^。！？]{0,24}|(?<!已经)把[^。！？]{0,20}(?:这票|理由|判断|说法)[^。！？]{0,12})(?:说清楚|讲清楚|解释(?:一下)?|给出(?:理由|判断|说法))(?!了|过)/gu,
 ] as const
+const DIRECT_PUBLIC_FOCUS_LIST_REFERENCE = /(?:想|要)?听(?:听)?\s*((?:\d+\s*号(?:玩家)?\s*[、,，和及]\s*)+\d+\s*号(?:玩家)?)/gu
 
 /**
  * Find players whom one public statement directly asks to address a concrete point.
@@ -196,6 +197,9 @@ const DIRECT_PUBLIC_FOCUS_REFERENCES = [
  */
 export function directedPublicFocusTargetIds(statement: string): readonly string[] {
   const targets = new Set<string>()
+  for (const list of statement.matchAll(DIRECT_PUBLIC_FOCUS_LIST_REFERENCE)) {
+    for (const seat of list[1]?.matchAll(/\d+/gu) ?? []) targets.add(`seat-${seat[0]}`)
+  }
   for (const pattern of DIRECT_PUBLIC_FOCUS_REFERENCES) {
     for (const match of statement.matchAll(pattern)) {
       if (match[1] !== undefined) targets.add(`seat-${match[1]}`)
@@ -330,6 +334,9 @@ export function unavailablePublicTargetResponseRequest(
   unavailableActorIds: readonly string[],
 ): string | undefined {
   const unavailable = new Set(unavailableActorIds)
+  const directedUnavailable = directedPublicFocusTargetIds(statement)
+    .find(actorId => unavailable.has(actorId))
+  if (directedUnavailable !== undefined) return directedUnavailable
   for (const pattern of PUBLIC_RESPONSE_REQUEST_REFERENCES) {
     for (const match of statement.matchAll(pattern)) {
       const seat = match[1]
@@ -337,6 +344,18 @@ export function unavailablePublicTargetResponseRequest(
     }
   }
   return undefined
+}
+
+const CURRENT_SHERIFF_SELF_AUTHORITY = /(?:^|[，。！？；])\s*(?:现在|已经)?(?:警徽在我(?:这里|手里|手上|这边)|我是(?:本局)?警长)(?:[，。！？；]|$)/u
+
+/**
+ * Whether a candidate states that the unsettled Sheriff authority already belongs to itself.
+ * Conditional plans such as “如果我拿到警徽” remain legal campaign speech.
+ * @param statement - first-day Sheriff campaign statement.
+ * @returns whether the statement asserts current authority before the ballot.
+ */
+export function publicStatementClaimsCurrentSheriffAuthority(statement: string): boolean {
+  return CURRENT_SHERIFF_SELF_AUTHORITY.test(statement)
 }
 
 /**

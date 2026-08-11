@@ -18,6 +18,7 @@ import {
   publicRoleClaimsForPrivateRole,
   publicSeerCampaignClaimIssue,
   publicSeerClaimTargetIds,
+  publicStatementClaimsCurrentSheriffAuthority,
   publicStatementDisclosesWolfAlignment,
   publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
@@ -144,6 +145,9 @@ test('recognizes a concrete question even when its target and request are separa
   assert.deepEqual(directedPublicFocusTargetIds(
     '我是预言家，昨晚查验3号是好人。',
   ), [])
+  assert.deepEqual(directedPublicFocusTargetIds(
+    '我想听听3号、9号、12号，你们那三票当时认了哪一点？',
+  ), ['seat-3', 'seat-9', 'seat-12'])
 })
 
 test('keeps the final named player aligned with the structured judgment target', () => {
@@ -261,6 +265,13 @@ test('finds response requests directed at players whose speaking turn already en
     '5号昨天投给8号，这条公开记录还可以回看。',
     unavailable,
   ), undefined)
+})
+
+test('rejects one unavailable player inside a directed seat list', () => {
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '我想听听3号、9号、12号，你们那三票当时认了哪一点？',
+    ['seat-1', 'seat-2', 'seat-3', 'seat-4'],
+  ), 'seat-3')
 })
 
 test('requires revise to change an earlier judgment on newly cited public information', () => {
@@ -384,4 +395,13 @@ test('requires one final first-night inspection in a Seer campaign claim', () =>
   assert.equal(publicSeerCampaignClaimIssue(
     '我是预言家，昨晚查验6号……不，我查验了3号，3号是好人。',
   ), 'multiple-targets')
+})
+
+test('distinguishes current Sheriff authority from a conditional campaign plan', () => {
+  assert.equal(publicStatementClaimsCurrentSheriffAuthority(
+    '警徽在我这里，预言家可以安全报查验。',
+  ), true)
+  assert.equal(publicStatementClaimsCurrentSheriffAuthority(
+    '如果我拿到警徽，我会先听完一轮再归票。',
+  ), false)
 })
