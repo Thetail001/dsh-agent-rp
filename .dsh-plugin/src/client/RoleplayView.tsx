@@ -809,12 +809,13 @@ export function RoleplayView({
     if (action === undefined) return
     const attemptKey = `${sessionKey}:${String(surface.revision)}:${String(action.id)}`
     if (automaticAttemptRef.current === attemptKey) return
-    automaticAttemptRef.current = attemptKey
     const value = action.submission.kind === 'prompt' ? action.submission.text : action.submission.line
     // The client can receive the idle status immediately before the Host releases
     // the preceding maintenance admission. Cross that event-loop boundary before
     // starting the next application-owned turn.
     const timer = window.setTimeout(() => {
+      if (automaticAttemptRef.current === attemptKey) return
+      automaticAttemptRef.current = attemptKey
       void submit(value, false, action.submission.kind, action.label)
     }, 0)
     return () => { window.clearTimeout(timer) }

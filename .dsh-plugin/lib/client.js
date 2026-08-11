@@ -749,9 +749,10 @@ window.__ModuleLoader__.load({
 				if (action === void 0) return;
 				const attemptKey = `${sessionKey}:${String(surface.revision)}:${String(action.id)}`;
 				if (automaticAttemptRef.current === attemptKey) return;
-				automaticAttemptRef.current = attemptKey;
 				const value = action.submission.kind === "prompt" ? action.submission.text : action.submission.line;
 				const timer = window.setTimeout(() => {
+					if (automaticAttemptRef.current === attemptKey) return;
+					automaticAttemptRef.current = attemptKey;
 					submit(value, false, action.submission.kind, action.label);
 				}, 0);
 				return () => {
