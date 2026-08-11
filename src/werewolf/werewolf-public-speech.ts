@@ -234,6 +234,20 @@ export function publicResponseIsGrounded<T extends {
     judgment.targetId === actorId && publicSpeechJudgmentFamily(judgment.stance) === 'attention')
 }
 
+const NEGATED_CORROBORATION_REFERENCE = new RegExp([
+  '(?:不能|无法|不代表|并不|不是|不足以|不)[^。！？]{0,12}(?:吻合|印证|证明|支持|佐证|相符|一致|对应)',
+  '(?:吻合|印证|证明|支持|佐证|相符|一致|对应)不(?:了|到|能|成立)?',
+].join('|'), 'iu')
+
+/**
+ * Whether Chinese table speech explicitly denies that one fact corroborates another.
+ * @param statement - public statement whose corroboration wording may use preposed or postposed negation.
+ * @returns whether the statement contains an explicit denial of corroboration.
+ */
+export function publicStatementNegatesCorroboration(statement: string): boolean {
+  return NEGATED_CORROBORATION_REFERENCE.test(statement)
+}
+
 /**
  * Return the latest matching judgment only after a target/family has filled its table capacity.
  * @param history - public judgments in chronological order.

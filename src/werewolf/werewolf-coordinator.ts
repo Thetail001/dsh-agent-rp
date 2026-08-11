@@ -95,6 +95,7 @@ import {
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
   publicResponseIsGrounded,
+  publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
@@ -1203,7 +1204,6 @@ const SEER_RESULT_REFERENCE = new RegExp([
   '(?:查|验)(?:了)?\\s*\\d+\\s*号(?:玩家)?[^。！？]{0,8}(?:好人|狼人)',
 ].join('|'), 'iu')
 const CORROBORATION_REFERENCE = /吻合|印证|证明|支持|佐证|相符|一致|对应/iu
-const NEGATED_CORROBORATION_REFERENCE = /(?:不能|无法|不代表|并不|不是|不足以|不)[^。！？]{0,12}(?:吻合|印证|证明|支持|佐证|相符|一致|对应)/iu
 const PRIVATE_INFORMATION_CORROBORATION_REFERENCE = new RegExp([
   '(?:我(?:这边)?(?:所)?(?:掌握|知道|了解|持有)|我手中)(?:的)?(?:信息|情况)',
   '[^。！？]{0,12}(?:吻合|印证|证明|支持|佐证|相符|一致|对应)',
@@ -1259,7 +1259,7 @@ function assertPublicDiscussionStatement(
   if (NO_DEATH_REFERENCE.test(statement)
     && SEER_RESULT_REFERENCE.test(statement)
     && CORROBORATION_REFERENCE.test(statement)
-    && !NEGATED_CORROBORATION_REFERENCE.test(statement)) {
+    && !publicStatementNegatesCorroboration(statement)) {
     throw new DecisionValidationError(
       'no-death-corroboration',
       `${options.label} treated a no-death night as corroboration for a Seer claim or result`,
@@ -1269,7 +1269,7 @@ function assertPublicDiscussionStatement(
     && (HUNTER_TARGET_CORROBORATION_REFERENCE.test(statement)
       || HUNTER_SHOT_IDENTITY_LINK_REFERENCE.test(statement))
     && HUNTER_TARGET_IDENTITY_REFERENCE.test(statement)
-    && !NEGATED_CORROBORATION_REFERENCE.test(statement)
+    && !publicStatementNegatesCorroboration(statement)
     && !QUOTED_HUNTER_CORROBORATION_REBUTTAL.test(statement)) {
     throw new DecisionValidationError(
       'hunter-target-corroboration',
@@ -1280,7 +1280,7 @@ function assertPublicDiscussionStatement(
     && SEER_RESULT_REFERENCE.test(statement)
     && (PRIVATE_INFORMATION_CORROBORATION_REFERENCE.test(statement)
       || PRIVATE_IDENTITY_CORROBORATION_REFERENCE.test(statement))
-    && !NEGATED_CORROBORATION_REFERENCE.test(statement)) {
+    && !publicStatementNegatesCorroboration(statement)) {
     throw new DecisionValidationError(
       'private-corroboration',
       `${options.label} treated unspecified private information as corroboration for a Seer claim or result`,

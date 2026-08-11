@@ -11,6 +11,7 @@ import {
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
   publicResponseIsGrounded,
+  publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
@@ -272,4 +273,10 @@ test('accepts a response to an existing structured concern', () => {
   assert.equal(publicResponseIsGrounded(judgments, 'seat-11', false), true)
   assert.equal(publicResponseIsGrounded(judgments, 'seat-5', false), false)
   assert.equal(publicResponseIsGrounded([], 'seat-11', true), true)
+})
+
+test('recognizes corroboration negated before or after the verb', () => {
+  assert.equal(publicStatementNegatesCorroboration('平安夜不能证明8号是预言家。'), true)
+  assert.equal(publicStatementNegatesCorroboration('平安夜也证明不了8号的预言家身份。'), true)
+  assert.equal(publicStatementNegatesCorroboration('平安夜证明了8号是预言家。'), false)
 })
