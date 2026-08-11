@@ -10,6 +10,7 @@ import {
   publicSpeechMoveContextIssue,
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
+  publicResponseIsGrounded,
   selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
@@ -260,4 +261,15 @@ test('keeps two table perspectives before requiring new evidence on one judgment
     judgments[1],
   )
   assert.equal(selectSaturatedPublicJudgment(judgments, 'seat-9', 'trust'), undefined)
+})
+
+test('accepts a response to an existing structured concern', () => {
+  const judgments = [
+    { targetId: 'seat-11', stance: 'question' },
+    { targetId: 'seat-5', stance: 'trust' },
+  ]
+
+  assert.equal(publicResponseIsGrounded(judgments, 'seat-11', false), true)
+  assert.equal(publicResponseIsGrounded(judgments, 'seat-5', false), false)
+  assert.equal(publicResponseIsGrounded([], 'seat-11', true), true)
 })

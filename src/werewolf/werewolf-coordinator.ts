@@ -88,13 +88,13 @@ import {
 import {
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
-  publicSpeechJudgmentFamily,
   publicSpeechMovesForPosition,
   publicTargetPronounBallotClaims,
   publicSpeechMoveCarriesJudgment,
   publicSpeechMoveContextIssue,
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
+  publicResponseIsGrounded,
   selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
@@ -976,17 +976,17 @@ function assertDecisionTrace(
     if (!publicSpeechMoveCarriesJudgment(speechMove) || trace.action === 'explode') {
       if (speechMove === 'respond' && trace.action !== 'explode') {
         const context = options.publicDiscussionContext
-        const groundedByJudgment = context?.coveredJudgments.some(judgment =>
-          judgment.targetId === options.actorId
-          && publicSpeechJudgmentFamily(judgment.stance) === 'attention'
-          && evidenceIds.includes(`day:${String(context.round)}:speech:${String(judgment.actorId)}`)) === true
         const groundedByCitedStatement = evidenceIds.some(id =>
           options.publicEvidenceIds?.includes(id) === true
           && publicEvidenceReferencesActor(id, options.actorId, options))
-        if (!groundedByJudgment && !groundedByCitedStatement) {
+        if (!publicResponseIsGrounded(
+          context?.coveredJudgments ?? [],
+          options.actorId,
+          groundedByCitedStatement,
+        )) {
           throw new DecisionValidationError(
             'response-grounding',
-            `${options.label} used respond without citing a public concern directed at itself`,
+            `${options.label} used respond without a public concern directed at itself`,
           )
         }
       }

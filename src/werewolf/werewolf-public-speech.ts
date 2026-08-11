@@ -216,6 +216,25 @@ export function publicSpeechJudgmentFamily(stance: unknown): PublicSpeechJudgmen
 }
 
 /**
+ * Whether a response addresses an existing concern instead of inventing an unheard challenge.
+ * @param history - structured judgments already spoken in the current round.
+ * @param actorId - player producing the response.
+ * @param citesDirectedStatement - whether cited public text independently names the speaker.
+ * @returns whether the response has one table-public reason to exist.
+ */
+export function publicResponseIsGrounded<T extends {
+  readonly targetId: string
+  readonly stance: string
+}>(
+  history: readonly T[],
+  actorId: string,
+  citesDirectedStatement: boolean,
+): boolean {
+  return citesDirectedStatement || history.some(judgment =>
+    judgment.targetId === actorId && publicSpeechJudgmentFamily(judgment.stance) === 'attention')
+}
+
+/**
  * Return the latest matching judgment only after a target/family has filled its table capacity.
  * @param history - public judgments in chronological order.
  * @param targetId - target proposed by the current speaker.
