@@ -1712,11 +1712,11 @@ function sheriffRegistrationTask(
   }
   if (standardWerewolfRoleIn(world, actorId) === 'wolf') {
     return actorId === wolfRepresentative
-      ? '同时进行警长报名。你是狼队在本局内部选出的唯一竞选代表；结合首夜局势判断是否值得竞选，不要因为获得代表资格就机械报名。若不竞选，返回 stand: false 和空发言。' + campaignBoundary
+      ? '同时进行警长报名。你是狼队唯一可以公开竞选的人。狼队通常需要一名玩家争夺警徽并扰乱预言家视野；除非你的整局取舍明确偏向潜伏且当前公开局面已有更好的掩护，优先报名。公开理由必须能从好人视角成立。若仍决定不竞选，返回 stand: false 和空发言。' + campaignBoundary
       : '同时进行警长报名。你不是狼队在本局内部选出的竞选代表，必须返回 stand: false 和空发言。只返回所需结构。'
   }
   if (standardWerewolfRoleIn(world, actorId) === 'seer') {
-    return '同时进行警长报名。竞选是少数玩家的主动战略，不是默认动作。你可以结合首夜信息判断竞选能否建立清晰的带队方案；若没有可公开说明的方案，不竞选并返回空发言。' + campaignBoundary
+    return '同时进行警长报名。警长竞选是公开首夜查验并建立警徽流的主要窗口；通常报名，先报查验结果，再用一句话交代后续验人方向。只有已经形成明确的隐藏身份策略时才不竞选并返回空发言。' + campaignBoundary
   }
   return '同时进行警长报名。竞选是少数玩家的主动战略，不是默认动作；不要因为收到报名问题就自动竞选。只有当自己能提出明确、独特且可公开验证的带队方案时才竞选，否则不竞选并返回空发言。' + campaignBoundary
 }
