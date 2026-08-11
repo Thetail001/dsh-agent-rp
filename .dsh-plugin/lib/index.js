@@ -13433,6 +13433,24 @@ function committedDiscussionJudgments(parent, world, round, publicEvidenceIds) {
 	}
 	return judgments;
 }
+function explicitHumanQuestionJudgments(statement, actorId, livingActorIds, availableEvidenceIds) {
+	if (statement === void 0) return [];
+	const legalTargets = new Set(livingActorIds.filter((candidate) => candidate !== actorId));
+	const targets = /* @__PURE__ */ new Set();
+	for (const focus of statement.matchAll(DIRECT_PUBLIC_FOCUS_REFERENCE)) {
+		const seat = focus[1] ?? focus[2];
+		if (seat === void 0) continue;
+		const targetId = asRoleplayActorId(`seat-${seat}`);
+		if (legalTargets.has(targetId)) targets.add(targetId);
+	}
+	return [...targets].map((targetId) => ({
+		actorId,
+		targetId,
+		stance: "question",
+		evidenceIds: [],
+		availableEvidenceIds
+	}));
+}
 async function coordinateDiscussion(options, world, humanActorId, humanStatement, progress) {
 	const round = discussionRound(world);
 	const living = livingSeats(world);
@@ -13464,6 +13482,7 @@ async function coordinateDiscussion(options, world, humanActorId, humanStatement
 	const committedPublicEvidenceIds = tablePublicEvidenceIds(world, living);
 	const decisions = [];
 	const coveredJudgments = committedDiscussionJudgments(options.parent, world, round, committedPublicEvidenceIds);
+	coveredJudgments.push(...explicitHumanQuestionJudgments(humanStatement, humanActorId, living, committedPublicEvidenceIds));
 	for (const [index, actorId] of actors.entries()) {
 		options.signal.throwIfAborted();
 		const visiblePending = [...pendingPublicStatements];

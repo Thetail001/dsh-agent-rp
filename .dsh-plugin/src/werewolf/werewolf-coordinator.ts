@@ -2055,6 +2055,30 @@ function committedDiscussionJudgments(
   return judgments
 }
 
+function explicitHumanQuestionJudgments(
+  statement: string | undefined,
+  actorId: RoleplayActorId,
+  livingActorIds: readonly RoleplayActorId[],
+  availableEvidenceIds: readonly string[],
+): PublicDiscussionContext['coveredJudgments'] {
+  if (statement === undefined) return []
+  const legalTargets = new Set(livingActorIds.filter(candidate => candidate !== actorId))
+  const targets = new Set<RoleplayActorId>()
+  for (const focus of statement.matchAll(DIRECT_PUBLIC_FOCUS_REFERENCE)) {
+    const seat = focus[1] ?? focus[2]
+    if (seat === undefined) continue
+    const targetId = asRoleplayActorId(`seat-${seat}`)
+    if (legalTargets.has(targetId)) targets.add(targetId)
+  }
+  return [...targets].map(targetId => ({
+    actorId,
+    targetId,
+    stance: 'question',
+    evidenceIds: [],
+    availableEvidenceIds,
+  }))
+}
+
 async function coordinateDiscussion(
   options: DecisionBatchOptions,
   world: Storyworld,
@@ -2109,6 +2133,12 @@ async function coordinateDiscussion(
     round,
     committedPublicEvidenceIds,
   )
+  coveredJudgments.push(...explicitHumanQuestionJudgments(
+    humanStatement,
+    humanActorId,
+    living,
+    committedPublicEvidenceIds,
+  ))
   for (const [index, actorId] of actors.entries()) {
     options.signal.throwIfAborted()
     const visiblePending = [...pendingPublicStatements]
