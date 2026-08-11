@@ -17,6 +17,11 @@ interface RoleplayDefaultViewProps {
   }
 }
 
+function comparableWorkspacePath(value: string): string {
+  const normalized = value.replace(/[\\/]+$/u, '').replaceAll('\\', '/')
+  return /^[A-Za-z]:\//u.test(normalized) ? normalized.toLocaleLowerCase('en-US') : normalized
+}
+
 /** Narrow action declaration needed from the conversation package's shared store. */
 // The rc.2 client runtime does not re-export its ActionsDecl constraint; this
 // erased index reproduces that boundary while the named action stays exact.
@@ -100,12 +105,17 @@ export function apply(ctx: Context): void {
         }
         return {
           startScene: async () => {
-            const workspace = ctx.workspaces.list.getSnapshot().items
-              .find(candidate => candidate.sessionIds.includes(sessionId))
+            const workspaces = ctx.workspaces.list.getSnapshot().items
+            const sessionCwd = ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd
+            // A reconnect can briefly restore the session row before its workspace
+            // membership. The canonical cwd still identifies the visible owner.
+            const workspace = workspaces.find(candidate => candidate.sessionIds.includes(sessionId))
+              ?? (sessionCwd === undefined
+                ? undefined
+                : workspaces.find(candidate =>
+                  comparableWorkspacePath(candidate.path) === comparableWorkspacePath(sessionCwd)))
             if (workspace === undefined) {
-              ctx.workspaces.startSession()
-              await ctx.workspaces.archiveSession(sessionId)
-              return
+              throw new Error('当前会话未绑定工作区，无法新开一局。')
             }
             const nextSessionId = await ctx.workspaces.connectWorkspace(workspace.workspaceId)
             ctx.sessions.open(nextSessionId)
