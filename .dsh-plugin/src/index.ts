@@ -8,7 +8,7 @@ import type {} from '@deepseek-ai/dsh-subagent'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import RoleplayService from './runtime/index.ts'
-import type { RoleplayActorId, RoleplaySeed } from './runtime/index.ts'
+import type { RoleplayActorId } from './runtime/index.ts'
 import {
   DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS,
   installStandardWerewolfCoordinator,
@@ -20,8 +20,6 @@ import {
   humanActorForObserver,
   humanActorForSession,
   observerOf,
-  standardWerewolfRoleIn,
-  standardWerewolfRoleLabel,
 } from './werewolf/werewolf.ts'
 
 /** Cordis plugin identity. */
@@ -29,16 +27,7 @@ export const name = 'dsh-roleplay-portable-spike'
 /** Base Host services required by the bundled runtime. */
 export const inject = ['systemPrompt', 'tools']
 
-function persona(humanSeat: RoleplayActorId, seed: RoleplaySeed): string {
-  const number = /^seat-(\d+)$/u.exec(humanSeat)?.[1]
-  if (number === undefined) throw new Error(`invalid standard Werewolf human seat ${JSON.stringify(humanSeat)}`)
-  const role = standardWerewolfRoleLabel(standardWerewolfRoleIn(seed, humanSeat))
-  return `你负责主持一局标准十二人狼人杀。真人玩家是 ${number} 号，身份是${role}。
-每次玩家输入只推进一个连贯阶段；绝不能替真人编造、替换或补全行动。
-夜间、警长报名和警长投票由专用阶段协调器处理；真人拥有主动技能时，只能采用页面明确提交的选择。
-其他非真人行动来自全新的 Character 咨询。
-只提交 resolver 接受的行动，只叙述真人观察者可见的事实，并使用自然的简体中文。`
-}
+const APPLICATION_HANDOFF_INSTRUCTION = '这是由“角色扮演”页面驱动的标准十二人狼人杀。普通对话不得推进对局、调用游戏工具或询问玩家行动。收到开局消息时，只回复“对局已创建，请切换到角色扮演页面。”，然后结束本轮。'
 
 /**
  * Install the generic runtime and register standard Werewolf setup for Web-owned Agents.
@@ -71,17 +60,17 @@ export async function apply(ctx: Context): Promise<void> {
       const setup = webCtx.roleplay.setup({
         observerId: observerOf(humanActorId),
         seed,
-        proposalProvider: 'spawn',
-        maxCorrectionAttempts: 1,
+        applicationOnly: true,
       })
       agentCtx.tools.restrict({ allow: [] })
       agentCtx.systemPrompt.section({
         name: 'deployment:persona',
         order: 0,
-        text: persona(humanActorId, seed),
+        text: APPLICATION_HANDOFF_INSTRUCTION,
       })
       installStandardWerewolfCoordinator(agentCtx, webCtx.subagents, 'spawn', {
         decisionTimeoutMs: DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS,
+        applicationOnly: true,
         humanActorId,
       })
       return setup(agentCtx)

@@ -2256,7 +2256,7 @@ function isJsonValue(value) {
 *
 * Unsupported or misplaced keywords reject rather than being accepted without
 * enforcement. Consumers that require an object root apply
-* {@link assertObjectJsonSchema} before accepting input.
+* {@link assertObjectJsonSchema} at their own boundary.
 * @module dsh-tools/json-schema
 */
 /**
@@ -9527,6 +9527,19 @@ var RoleplayService = class extends Service {
 			agentCtx.effect(() => () => {
 				this.attachedAgents.delete(agent);
 			});
+			agentCtx.on("internal/dispatch", (_mode, eventName, args) => {
+				if (eventName !== "session/event") return;
+				const [session, event] = args;
+				if (session === agent.session) validateRoleplayAppend(session, event);
+			});
+			const freshSetup = freshSeed === void 0 ? void 0 : { commit() {
+				agent.session.append("rp/seed", freshSeed);
+				agent.session.append("rp/observer", {
+					version: 0,
+					observerId: options.observerId
+				});
+			} };
+			if (options.applicationOnly === true) return freshSetup;
 			const proposalProvider = options.proposalProvider;
 			const subagents = proposalProvider === void 0 ? void 0 : agentCtx.get("subagents");
 			const stagedProposals = /* @__PURE__ */ new WeakMap();
@@ -9549,11 +9562,6 @@ var RoleplayService = class extends Service {
 					}));
 				});
 			}
-			agentCtx.on("internal/dispatch", (_mode, eventName, args) => {
-				if (eventName !== "session/event") return;
-				const [session, event] = args;
-				if (session === agent.session) validateRoleplayAppend(session, event);
-			});
 			if (maxCorrectionAttempts > 0) {
 				let correctionTurn;
 				let correctionAttempts = 0;
@@ -9697,13 +9705,7 @@ var RoleplayService = class extends Service {
 				presentCall: presentConsult,
 				isConcurrencySafe: () => false
 			}));
-			if (freshSeed !== void 0) return { commit() {
-				agent.session.append("rp/seed", freshSeed);
-				agent.session.append("rp/observer", {
-					version: 0,
-					observerId: options.observerId
-				});
-			} };
+			return freshSetup;
 		};
 	}
 };
@@ -13817,6 +13819,7 @@ function installStandardWerewolfCoordinator(agentCtx, subagents, providerName, o
 	};
 	const childAgentOptions = decisionAgentOptions(resolvedOptions);
 	installApplicationActionCommand(agentCtx, subagents, providerName, parent, resolvedOptions, childAgentOptions, discussionAgentOptions(resolvedOptions, childAgentOptions));
+	if (resolvedOptions.applicationOnly === true) return;
 	const stagedPlans = /* @__PURE__ */ new WeakMap();
 	let authorizedPlan;
 	let pendingModelMemory;
@@ -14623,15 +14626,7 @@ const STANDARD_WEREWOLF_PRESENTER = {
 const name = "dsh-roleplay-portable-spike";
 /** Base Host services required by the bundled runtime. */
 const inject = ["systemPrompt", "tools"];
-function persona(humanSeat, seed) {
-	const number = /^seat-(\d+)$/u.exec(humanSeat)?.[1];
-	if (number === void 0) throw new Error(`invalid standard Werewolf human seat ${JSON.stringify(humanSeat)}`);
-	return `你负责主持一局标准十二人狼人杀。真人玩家是 ${number} 号，身份是${standardWerewolfRoleLabel(standardWerewolfRoleIn(seed, humanSeat))}。
-每次玩家输入只推进一个连贯阶段；绝不能替真人编造、替换或补全行动。
-夜间、警长报名和警长投票由专用阶段协调器处理；真人拥有主动技能时，只能采用页面明确提交的选择。
-其他非真人行动来自全新的 Character 咨询。
-只提交 resolver 接受的行动，只叙述真人观察者可见的事实，并使用自然的简体中文。`;
-}
+const APPLICATION_HANDOFF_INSTRUCTION = "这是由“角色扮演”页面驱动的标准十二人狼人杀。普通对话不得推进对局、调用游戏工具或询问玩家行动。收到开局消息时，只回复“对局已创建，请切换到角色扮演页面。”，然后结束本轮。";
 /**
 * Install the generic runtime and register standard Werewolf setup for Web-owned Agents.
 * Headless compositions receive the runtime without a scenario because they omit the application setup registry.
@@ -14660,17 +14655,17 @@ async function apply(ctx) {
 			const setup = webCtx.roleplay.setup({
 				observerId: observerOf(humanActorId),
 				seed,
-				proposalProvider: "spawn",
-				maxCorrectionAttempts: 1
+				applicationOnly: true
 			});
 			agentCtx.tools.restrict({ allow: [] });
 			agentCtx.systemPrompt.section({
 				name: "deployment:persona",
 				order: 0,
-				text: persona(humanActorId, seed)
+				text: APPLICATION_HANDOFF_INSTRUCTION
 			});
 			installStandardWerewolfCoordinator(agentCtx, webCtx.subagents, "spawn", {
 				decisionTimeoutMs: DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS,
+				applicationOnly: true,
 				humanActorId
 			});
 			return setup(agentCtx);

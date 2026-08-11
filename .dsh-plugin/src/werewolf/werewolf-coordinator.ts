@@ -649,6 +649,8 @@ interface StagedCoordinatorPlan extends AuthorizedCoordinatorPlan {
 export interface StandardWerewolfCoordinatorOptions {
   /** Full wall-clock window for one simultaneous batch or dependency-ordered night decision wave. */
   readonly decisionTimeoutMs: number
+  /** Register only application commands; omit model-facing coordinator tools and instructions. */
+  readonly applicationOnly?: boolean
   /** Human-controlled playable seat; omission preserves the fixed CLI fixture. */
   readonly humanActorId?: RoleplayActorId
   /** Optional output-token cap applied only to structured Character decisions. */
@@ -3501,6 +3503,7 @@ export function installStandardWerewolfCoordinator(
     childAgentOptions,
     publicDiscussionAgentOptions,
   )
+  if (resolvedOptions.applicationOnly === true) return
   const stagedPlans = new WeakMap<ToolExecution, StagedCoordinatorPlan>()
   let authorizedPlan: AuthorizedCoordinatorPlan | undefined
   let pendingModelMemory: {

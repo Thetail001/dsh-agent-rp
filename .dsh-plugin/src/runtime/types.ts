@@ -370,6 +370,11 @@ export interface RoleplayAgentOptions {
   readonly observerId: RoleplayObserverId
   readonly seed?: RoleplaySeed
   /**
+   * Attach durable application state without exposing model-facing Roleplay prompts or tools.
+   * Application commands remain available through the owning Host integration.
+   */
+  readonly applicationOnly?: boolean
+  /**
    * Maximum same-turn reminders after the narrator stops without a commit.
    * Omit or set to zero to disable correction.
    */

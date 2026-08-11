@@ -613,6 +613,21 @@ export class RoleplayService extends Service {
       this.attachedAgents.add(agent)
       agentCtx.effect(() => () => { this.attachedAgents.delete(agent) })
 
+      agentCtx.on('internal/dispatch', (_mode, eventName, args) => {
+        if (eventName !== 'session/event') return
+        const [session, event] = args as [typeof agent.session, SessionEvent]
+        if (session === agent.session) validateRoleplayAppend(session, event)
+      })
+      const freshSetup = freshSeed === undefined
+        ? undefined
+        : {
+            commit() {
+              agent.session.append('rp/seed', freshSeed)
+              agent.session.append('rp/observer', { version: 0, observerId: options.observerId })
+            },
+          }
+      if (options.applicationOnly === true) return freshSetup
+
       const proposalProvider = options.proposalProvider
       const subagents = proposalProvider === undefined ? undefined : agentCtx.get('subagents')
       const stagedProposals = new WeakMap<
@@ -641,11 +656,6 @@ export class RoleplayService extends Service {
         })
       }
 
-      agentCtx.on('internal/dispatch', (_mode, eventName, args) => {
-        if (eventName !== 'session/event') return
-        const [session, event] = args as [typeof agent.session, SessionEvent]
-        if (session === agent.session) validateRoleplayAppend(session, event)
-      })
       if (maxCorrectionAttempts > 0) {
         let correctionTurn: number | undefined
         let correctionAttempts = 0
@@ -809,14 +819,7 @@ export class RoleplayService extends Service {
           isConcurrencySafe: () => false,
         }))
       }
-      if (freshSeed !== undefined) {
-        return {
-          commit() {
-            agent.session.append('rp/seed', freshSeed)
-            agent.session.append('rp/observer', { version: 0, observerId: options.observerId })
-          },
-        }
-      }
+      return freshSetup
     }
   }
 }
