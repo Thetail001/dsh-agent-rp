@@ -67,6 +67,10 @@ import {
   wolfKill,
 } from './werewolf.ts'
 import {
+  standardWerewolfLocationCanVote,
+  standardWerewolfLocationIsLiving,
+} from './werewolf-life.ts'
+import {
   createStandardWerewolfProgressReporter,
   type StandardWerewolfProgressReporter,
 } from './werewolf-progress.ts'
@@ -889,10 +893,10 @@ async function startDecision<T extends DecisionTrace>(options: DecisionOptions):
             speaker_id: options.actorId,
             position: options.publicDiscussionContext.position,
             living_player_ids: view.actors
-              .filter(actor => actor.location === 'alive')
+              .filter(actor => standardWerewolfLocationIsLiving(actor.location))
               .map(actor => actor.id),
             eliminated_player_ids: view.actors
-              .filter(actor => actor.location !== 'alive')
+              .filter(actor => !standardWerewolfLocationIsLiving(actor.location))
               .map(actor => actor.id),
             covered_public_judgments: options.publicDiscussionContext.coveredJudgments.map(judgment => ({
               actor_id: judgment.actorId,
@@ -1346,7 +1350,7 @@ function assertPublicDiscussionStatement(
   const inactiveFutureSource = inactivePublicTargetFutureReference(
     statement,
     options.world.actors
-      .filter(actor => actor.location !== 'alive')
+      .filter(actor => !standardWerewolfLocationIsLiving(actor.location))
       .map(actor => String(actor.id)),
   )
   if (inactiveFutureSource !== undefined) {
@@ -1378,7 +1382,7 @@ function assertPublicDiscussionStatement(
       const issue = publicHoldTargetIssue({
         statement,
         legalFutureTargetIds: options.world.actors
-          .filter(actor => actor.location === 'alive'
+          .filter(actor => standardWerewolfLocationIsLiving(actor.location)
             && actor.id !== options.actorId
             && !priorSpeakers.has(actor.id))
           .map(actor => String(actor.id)),
@@ -1721,7 +1725,7 @@ function eligibleSheriffVoters(
   candidates: readonly RoleplayActorId[],
 ): RoleplayActorId[] {
   return world.actors
-    .filter(actor => actor.location === 'alive' && !candidates.includes(actor.id))
+    .filter(actor => standardWerewolfLocationCanVote(actor.location) && !candidates.includes(actor.id))
     .map(actor => actor.id)
 }
 
@@ -2304,7 +2308,7 @@ async function coordinateDiscussion(
       ...visiblePending.map(statement => statement.evidence_id),
     ])]
     const publicJudgmentTargets = world.actors
-      .filter(candidate => candidate.location === 'alive' && candidate.id !== actorId)
+      .filter(candidate => standardWerewolfLocationCanVote(candidate.location) && candidate.id !== actorId)
       .map(candidate => candidate.id)
     const tableIndex = living.indexOf(actorId)
     const position = tableIndex < Math.ceil(living.length / 3)
@@ -2329,7 +2333,7 @@ async function coordinateDiscussion(
       + '不要让后位替已经发言的玩家补身份、接查验或解释；'
       + '问题只能留给本轮尚可发言的玩家。'
     const eliminated = world.actors
-      .filter(candidate => candidate.location !== 'alive')
+      .filter(candidate => !standardWerewolfLocationIsLiving(candidate.location))
       .map(candidate => candidate.id)
     const lifeBoundary = eliminated.length === 0
       ? '当前没有出局玩家。'
@@ -2585,7 +2589,7 @@ async function coordinateExileVote(
 ): Promise<CoordinatedPlan<ExileVotePlan>> {
   const { isPk } = exileRound(world)
   const activeSeats = world.actors
-    .filter(actor => actor.location === 'alive')
+    .filter(actor => standardWerewolfLocationCanVote(actor.location))
     .map(actor => actor.id)
   const candidates = isPk ? [...world.scene.participantIds] : activeSeats
   const voters = activeSeats

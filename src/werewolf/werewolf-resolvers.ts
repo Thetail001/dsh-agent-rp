@@ -35,6 +35,10 @@ import {
   wolfKill,
 } from './werewolf.ts'
 import { STANDARD_WEREWOLF_STATEMENT_MAX_LENGTH } from './werewolf-decision-limits.ts'
+import {
+  standardWerewolfLocationCanVote,
+  standardWerewolfLocationIsLiving,
+} from './werewolf-life.ts'
 
 /** Resolver name for the player's private pre-game role acknowledgement. */
 export const STANDARD_CONFIRM_ROLE = asRoleplayResolverName('standard_confirm_role')
@@ -92,11 +96,12 @@ function boundedPublicStatement(value: string, key: string, allowBlank: boolean)
 
 function isLiving(world: Storyworld, actorId: RoleplayActorId): boolean {
   return world.actors.some(actor =>
-    actor.id === actorId && (actor.location === 'alive' || actor.location === 'revealed-idiot'))
+    actor.id === actorId && standardWerewolfLocationIsLiving(actor.location))
 }
 
 function canVote(world: Storyworld, actorId: RoleplayActorId): boolean {
-  return world.actors.some(actor => actor.id === actorId && actor.location === 'alive')
+  return world.actors.some(actor =>
+    actor.id === actorId && standardWerewolfLocationCanVote(actor.location))
 }
 
 function canBeExiled(world: Storyworld, actorId: RoleplayActorId): boolean {
@@ -551,7 +556,7 @@ const SHERIFF_VOTE_RESOLVER: RoleplayActionResolver = {
       )
       const ballotIds = choiceIds(recorded, `${prefix}:`)
       const expected = recorded.actors.filter(actor =>
-        actor.location === 'alive' && !candidates.includes(actor.id)).length
+        standardWerewolfLocationCanVote(actor.location) && !candidates.includes(actor.id)).length
       if (ballotIds.length !== expected) return recorded
       const ballots = ballotIds.map(choiceId => ballotFromChoice(prefix, choiceId))
       const base = withoutChoices(recorded, `${prefix}:`)
@@ -637,7 +642,7 @@ const EXILE_VOTE_RESOLVER: RoleplayActionResolver = {
       )
       const ballotIds = choiceIds(recorded, `${prefix}:`)
       const expected = recorded.actors.filter(actor =>
-        actor.location === 'alive' && !candidates.includes(actor.id)).length
+        standardWerewolfLocationCanVote(actor.location) && !candidates.includes(actor.id)).length
       if (ballotIds.length !== expected) return recorded
       const ballots = ballotIds.map(choiceId => ballotFromChoice(prefix, choiceId))
       return resolveExile(withoutChoices(recorded, `${prefix}:`), ballots)

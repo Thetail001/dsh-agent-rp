@@ -9,6 +9,7 @@ import {
   type RoleplayView,
 } from '../runtime/index.ts'
 import { STANDARD_WEREWOLF_STATEMENT_MAX_LENGTH } from './werewolf-decision-limits.ts'
+import { standardWerewolfLocationIsLiving } from './werewolf-life.ts'
 import { completeDiscussionProgress } from './werewolf-progress-counts.ts'
 import { observerOf, SEATS, standardWerewolfRoleIn } from './werewolf.ts'
 
@@ -325,7 +326,9 @@ export function presentStandardWerewolfProgress(
   }
   const completeCounts = state.kind === 'discussion'
     ? completeDiscussionProgress(
-        view.actors.filter(actor => actor.location === 'alive').map(actor => String(actor.id)),
+        view.actors
+          .filter(actor => standardWerewolfLocationIsLiving(actor.location))
+          .map(actor => String(actor.id)),
         view.choices.flatMap((choice) => {
           const actorId = new RegExp(`^day:${String(state.round)}:speech:(seat-\\d+)$`, 'u')
             .exec(String(choice.id))?.[1]

@@ -6,7 +6,7 @@ Every top-level Session created in a profile that enables this bundle becomes a 
 
 The Web profile opens new top-level Sessions directly on the Roleplay view. Creating a game does not require a start phrase or spend a model turn.
 
-The benchmark supports night and day phases, Sheriff election, sequential public discussion, voting, special-role actions, victory resolution, and a developer-facing endgame review. Model dialogue remains experimental. Multiplayer is outside this preview.
+The benchmark supports night and day phases, Sheriff election, sequential public discussion, voting, special-role actions, victory resolution, and a developer-facing endgame review. A revealed Idiot remains in the speaking order and can still be targeted at night, but cannot cast or receive an exile ballot. Model dialogue remains experimental. Multiplayer is outside this preview.
 
 Character choices and public discussion default to thinking disabled with a 2,048-token output cap and a 30-second decision window. The bundle accepts the DeepSeek adapter's `off`, `high`, and `max` reasoning efforts; unsupported values fail during profile loading.
 
@@ -34,7 +34,7 @@ The rc.2 runtime exports its persistence event vocabulary but does not yet provi
 
 ## Acceptance evidence
 
-- `pnpm run test:focused` covers equal wolf ballots and the public-speech move contract.
+- `pnpm run test:focused` covers equal wolf ballots, revealed-Idiot participation, and the public-speech move contract.
 - `pnpm run build` must leave only DSH and Node imports in `lib/index.js`; it must not embed a DSH checkout.
 - `pnpm pack --dry-run` must list only the manifest, patch, README, and built Host/browser entries.
 - A fresh isolated profile must load, unload, and reload the bundle, then create a playable game without a blocking command failure.

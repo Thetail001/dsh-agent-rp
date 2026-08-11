@@ -28,6 +28,10 @@ import {
   standardWerewolfRoleIn,
   standardWerewolfWolfProposals,
 } from './werewolf.ts'
+import {
+  standardWerewolfLocationCanVote,
+  standardWerewolfLocationIsLiving,
+} from './werewolf-life.ts'
 import { presentStandardWerewolfProgress } from './werewolf-progress.ts'
 import { presentStandardWerewolfReview } from './werewolf-review.ts'
 import { STANDARD_WEREWOLF_STATEMENT_MAX_LENGTH } from './werewolf-decision-limits.ts'
@@ -264,7 +268,7 @@ function pendingBadgeHolder(view: RoleplayView): RoleplayActorId | undefined {
   if (marker === undefined || marker.id === 'sheriff:destroyed') return undefined
   const holder = asRoleplayActorId(String(marker.id).slice('sheriff:holder:'.length))
   const actor = view.actors.find(candidate => candidate.id === holder)
-  return actor !== undefined && actor.location !== 'alive' && actor.location !== 'revealed-idiot'
+  return actor !== undefined && !standardWerewolfLocationIsLiving(actor.location)
     ? holder
     : undefined
 }
@@ -363,7 +367,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
   if (hunterShot !== undefined) {
     if (humanRole === 'hunter') {
       const targets = view.actors
-        .filter(actor => actor.location === 'alive' || actor.location === 'revealed-idiot')
+        .filter(actor => standardWerewolfLocationIsLiving(actor.location))
         .map(actor => actor.id)
       return guide(
         hunterShot.origin === 'night'
@@ -412,7 +416,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       )
     }
     const targets = view.actors
-      .filter(actor => actor.location === 'alive' || actor.location === 'revealed-idiot')
+      .filter(actor => standardWerewolfLocationIsLiving(actor.location))
       .map(actor => actor.id)
     return guide(
       '警徽流转',
@@ -437,7 +441,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
     const role = humanRole
     if (human.location === 'alive' && role === 'seer') {
       const targets = view.actors
-        .filter(actor => actor.location === 'alive' && actor.id !== human.id)
+        .filter(actor => standardWerewolfLocationIsLiving(actor.location) && actor.id !== human.id)
         .map(actor => actor.id)
       return guide(
         `第 ${night} 夜`,
@@ -456,7 +460,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
     }
     if (human.location === 'alive' && role === 'wolf') {
       const targets = view.actors
-        .filter(actor => actor.location === 'alive')
+        .filter(actor => standardWerewolfLocationIsLiving(actor.location))
         .map(actor => actor.id)
       const proposals = standardWerewolfWolfProposals(view, night)
       if (proposals.length > 0) {
@@ -512,7 +516,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       const canSave = !potionSpent(view, 'save') && (wolfTarget !== human.id || night === 1)
       const canPoison = !potionSpent(view, 'poison')
       const poisonTargets = view.actors
-        .filter(actor => actor.location === 'alive' && actor.id !== human.id)
+        .filter(actor => standardWerewolfLocationIsLiving(actor.location) && actor.id !== human.id)
         .map(actor => actor.id)
       return guide(
         `第 ${night} 夜`,
@@ -549,7 +553,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       )],
       undefined,
       'active',
-      human.location === 'alive'
+      standardWerewolfLocationIsLiving(human.location)
         ? `${standardWerewolfRoleLabel(role)}夜间没有可执行的技能`
         : '出局玩家不再参与夜间行动',
     )
@@ -667,7 +671,8 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
     const spoken = new Set(view.choices.flatMap(choice => String(choice.id).startsWith(speechPrefix)
       ? [String(choice.id).slice(speechPrefix.length)]
       : []))
-    const nextSpeaker = view.actors.find(actor => actor.location === 'alive' && !spoken.has(String(actor.id)))
+    const nextSpeaker = view.actors.find(actor =>
+      standardWerewolfLocationIsLiving(actor.location) && !spoken.has(String(actor.id)))
     if (nextSpeaker === undefined) {
       throw new Error('standard Werewolf player presentation found no remaining discussion speaker')
     }
@@ -691,12 +696,12 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       )
       : guide(
         `第 ${discussion} 天 · 公开发言`,
-        human.location === 'alive'
+        standardWerewolfLocationIsLiving(human.location)
           ? `${seatLabel(nextSpeaker.id)}先发言`
           : '你已出局，可旁观本轮发言',
         [coordinatedAction(
           'discussion-continue',
-          human.location !== 'alive'
+          !standardWerewolfLocationIsLiving(human.location)
             ? '听其他玩家发言'
             : spoken.has(String(human.id)) ? '开始后续发言' : '开始发言',
           view.revision,
@@ -705,7 +710,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
         )],
         undefined,
         'active',
-        human.location === 'alive'
+        standardWerewolfLocationIsLiving(human.location)
           ? spoken.has(String(human.id))
             ? '其他玩家按座位顺序发言'
             : '轮到你时，输入框会自动出现'
@@ -729,9 +734,7 @@ function standardWerewolfGuide(view: RoleplayView): StandardWerewolfGuide {
       )
     }
     const candidates = view.actors
-      .filter(actor => (
-        actor.location === 'alive' || actor.location === 'revealed-idiot'
-      ) && actor.id !== human.id)
+      .filter(actor => standardWerewolfLocationCanVote(actor.location) && actor.id !== human.id)
       .map(actor => actor.id)
     firstSeat(candidates, 'exile vote')
     return guide(
@@ -896,7 +899,7 @@ export function presentStandardWerewolfPlayerSurface(view: RoleplayView): Rolepl
     ...(current.nextActionDetail === undefined ? {} : { guidanceDetail: current.nextActionDetail }),
     status: current.status,
     actors: view.actors.map((actor) => {
-      const living = actor.location === 'alive' || actor.location === 'revealed-idiot'
+      const living = standardWerewolfLocationIsLiving(actor.location)
       const knownDetail = visibleActorDetail(view, actor.id, human.id)
       const selfDetail = knownDetail ?? standardWerewolfRoleLabel(standardWerewolfRoleIn(view, human.id))
       const badges = [

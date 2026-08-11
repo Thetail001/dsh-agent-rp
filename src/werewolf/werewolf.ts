@@ -17,6 +17,10 @@ import {
   type Storyworld,
 } from '../runtime/index.ts'
 import { STANDARD_WEREWOLF_STATEMENT_MAX_LENGTH } from './werewolf-decision-limits.ts'
+import {
+  standardWerewolfLocationCanVote,
+  standardWerewolfLocationIsLiving,
+} from './werewolf-life.ts'
 
 /** Hidden role assigned to one seat in the standard scenario. */
 export type StandardWerewolfRole =
@@ -528,25 +532,23 @@ function phaseRound(world: Storyworld, phase: string): number {
   return Number(match[1])
 }
 
-function isLivingLocation(location: string): boolean {
-  return location === 'alive' || location === 'revealed-idiot'
-}
-
 /**
  * List seats still participating in the match.
  * @param world - canonical match state.
  * @returns living seats, including a revealed Idiot.
  */
 export function livingSeats(world: Storyworld): RoleplayActorId[] {
-  return world.actors.filter(actor => isLivingLocation(actor.location)).map(actor => actor.id)
+  return world.actors.filter(actor => standardWerewolfLocationIsLiving(actor.location)).map(actor => actor.id)
 }
 
 function isLiving(world: Storyworld, actorId: RoleplayActorId): boolean {
-  return world.actors.some(actor => actor.id === actorId && isLivingLocation(actor.location))
+  return world.actors.some(actor =>
+    actor.id === actorId && standardWerewolfLocationIsLiving(actor.location))
 }
 
 function canVote(world: Storyworld, actorId: RoleplayActorId): boolean {
-  return world.actors.some(actor => actor.id === actorId && actor.location === 'alive')
+  return world.actors.some(actor =>
+    actor.id === actorId && standardWerewolfLocationCanVote(actor.location))
 }
 
 function canBeExiled(world: Storyworld, actorId: RoleplayActorId): boolean {
