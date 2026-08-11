@@ -14,6 +14,7 @@ import {
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
   publicResponseIsGrounded,
+  publicStatementDisclosesWolfAlignment,
   publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
@@ -331,4 +332,13 @@ test('recognizes corroboration negated before or after the verb', () => {
   assert.equal(publicStatementNegatesCorroboration('平安夜不能证明8号是预言家。'), true)
   assert.equal(publicStatementNegatesCorroboration('平安夜也证明不了8号的预言家身份。'), true)
   assert.equal(publicStatementNegatesCorroboration('平安夜证明了8号是预言家。'), false)
+})
+
+test('distinguishes a reported wolf accusation from direct self-disclosure', () => {
+  assert.equal(publicStatementDisclosesWolfAlignment(
+    '8号在警上自称预言家直接点我是狼，可他的查验我不认。',
+  ), false)
+  assert.equal(publicStatementDisclosesWolfAlignment('其实我是狼，今天我认出。'), true)
+  assert.equal(publicStatementDisclosesWolfAlignment('我属于狼人阵营。'), true)
+  assert.equal(publicStatementDisclosesWolfAlignment('我得保护我的狼队友。'), true)
 })

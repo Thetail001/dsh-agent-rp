@@ -60,6 +60,24 @@ export function publicSpeechMoveNeedsPublicEvidence(move: unknown): boolean {
   return move !== 'hold' && move !== 'pass'
 }
 
+const DIRECT_WOLF_SELF_CLAIM = new RegExp([
+  '(?:^|[，。！？；,:：])\\s*(?:好吧|其实|坦白说|说实话)?\\s*(?:我是|我\\s*\\d+\\s*号(?:玩家)?\\s*是|我(?:承认|就是|确实是)|作为|身为)\\s*(?:一名)?\\s*狼(?:人)?(?:阵营)?',
+  '(?:^|[，。！？；,:：])\\s*(?:我|本人)\\s*(?:属于|来自)\\s*狼(?:人)?阵营',
+  '(?:保护|帮助|掩护)\\s*(?:我的)?\\s*狼(?:队友|队)',
+  '狼队友',
+  '\\bour\\s+wolf(?:\\s+team|\\s+pack)?\\b',
+].join('|'), 'iu')
+
+/**
+ * Whether a wolf's public statement directly reveals its own hidden alignment.
+ * Reported accusations such as “8 号点我是狼” remain legal table speech.
+ * @param statement - public statement authored by a hidden wolf.
+ * @returns whether the speaker directly claims or exposes wolf membership.
+ */
+export function publicStatementDisclosesWolfAlignment(statement: string): boolean {
+  return DIRECT_WOLF_SELF_CLAIM.test(statement)
+}
+
 /**
  * Normalize the only fixed public utterance while preserving authored moves.
  * @param move - structured public speech move.

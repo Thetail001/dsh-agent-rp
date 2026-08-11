@@ -107,6 +107,7 @@ import {
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
   publicResponseIsGrounded,
+  publicStatementDisclosesWolfAlignment,
   publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
@@ -150,9 +151,6 @@ const CHARACTER_DECISION_STYLES = [
   '会明确改口：新发言或新票型推翻旧判断时，先承认自己前面怎么看，再说现在为何改变。',
   '重视当轮行动：中段只接一个具体矛盾，末段需要收口时只落一个去向。',
 ] as const
-// This auditable denylist is intentionally kept as one literal so its alternatives cannot acquire different flags.
-// oxlint-disable-next-line @stylistic/max-len
-const WOLF_SELF_DISCLOSURE = /(?:我是|我\s*\d+\s*号(?:玩家)?\s*是|作为|身为)\s*(?:一名)?\s*狼(?:人)?(?:阵营)?|(?:我|本人)\s*(?:属于|来自)\s*狼(?:人)?阵营|(?:保护|帮助|掩护)\s*(?:我的)?\s*狼(?:队友|队)|狼队友|\bour\s+wolf(?:\s+team|\s+pack)?\b/iu
 type PrivateRoleClaim = 'seer' | 'witch' | 'hunter' | 'idiot' | 'villager'
 const PRIVATE_ROLE_SELF_CLAIMS: readonly {
   readonly role: PrivateRoleClaim
@@ -1191,7 +1189,7 @@ function assertPublicStatementCandidate(
   }
   if (trace.action !== 'explode'
     && standardWerewolfRoleIn(options.world, options.actorId) === 'wolf'
-    && WOLF_SELF_DISCLOSURE.test(statement)) {
+    && publicStatementDisclosesWolfAlignment(statement)) {
     throw new DecisionValidationError(
       'wolf-disclosure',
       `${options.label} disclosed its hidden wolf alignment in public text`,
@@ -2213,6 +2211,17 @@ function explicitHumanQuestionJudgments(
   }))
 }
 
+function publicSpeechRetryInstruction(failure: DecisionFailure): string {
+  const correction = failure.issue === 'response-grounding'
+    ? '本轮每人只发言一次。不要向已经发言的玩家提问、要求补充或等待后续回应；可以直接评价他已经留下的发言，并落下当前判断。'
+    : failure.issue === 'target-reference'
+      ? '若 speech_move 带有 target_id，statement 最后点名的玩家必须回到该目标；提供证据的人不是自动的判断目标。'
+      : failure.issue === 'wolf-disclosure'
+        ? '引用别人对你的狼人判断时，明确写成“某号说我／点我／查杀我”，不得写成自我承认。'
+        : '严格核对 speech_move、target_id、stance、公开 evidence_ids 与 statement，只保留一个符合当前麦序的桌面动作。'
+  return `上一次输出未通过桌面规则，请重新完成同一次发言。${correction}不要解释修正过程，只返回所需结构。`
+}
+
 async function coordinateDiscussion(
   options: DecisionBatchOptions,
   world: Storyworld,
@@ -2378,10 +2387,28 @@ async function coordinateDiscussion(
         publicDiscussionContext: { round, position, coveredJudgments: [...coveredJudgments] },
         publicJudgmentTargets,
       }
-    const [decision] = await decideTogether<StatementDecision | WolfStatementDecision>({
+    const attemptFailures: DecisionFailure[] = []
+    const [initialDecision] = await decideTogether<StatementDecision | WolfStatementDecision>({
       ...options,
       allowAllFailures: true,
+      onFailure(failure) {
+        attemptFailures.push(failure)
+        options.onFailure?.(failure)
+      },
     }, [spec])
+    let decision = initialDecision
+    const firstFailure = attemptFailures[0]
+    if (decision === undefined && firstFailure?.kind === 'invalid') {
+      const [retriedDecision] = await decideTogether<StatementDecision | WolfStatementDecision>({
+        ...options,
+        allowAllFailures: true,
+      }, [{
+        ...spec,
+        label: `${spec.label} retry`,
+        task: `${spec.task}\n\n${publicSpeechRetryInstruction(firstFailure)}`,
+      }])
+      decision = retriedDecision
+    }
     decisions.push(decision)
     if (decision !== undefined
       && publicSpeechMoveCarriesJudgment(decision.speech_move)
