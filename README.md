@@ -6,7 +6,7 @@ Every top-level Session created in a profile that enables this bundle becomes a 
 
 The Web profile opens new top-level Sessions directly on the Roleplay view. Creating a game does not require a start phrase or spend a model turn.
 
-The benchmark supports night and day phases, Sheriff election, sequential public discussion, voting, special-role actions, victory resolution, and a developer-facing endgame review. A revealed Idiot remains in the speaking order and can still be targeted at night, but cannot cast or receive an exile ballot. Model dialogue remains experimental. Multiplayer is outside this preview.
+The benchmark supports night and day phases, Sheriff election, sequential public discussion, voting, special-role actions, victory resolution, and a developer-facing endgame review. A revealed Idiot remains in the speaking order and can still be targeted at night, but cannot cast or receive an exile ballot. Good Characters may reveal their assigned role when table strategy warrants it; wolves may bluff any good role without exposing their private alignment. Model dialogue remains experimental. Multiplayer is outside this preview.
 
 Character choices and public discussion default to thinking disabled with a 2,048-token output cap and a 30-second decision window. The bundle accepts the DeepSeek adapter's `off`, `high`, and `max` reasoning efforts; unsupported values fail during profile loading.
 

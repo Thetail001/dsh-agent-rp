@@ -15,6 +15,7 @@ import {
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
   publicResponseIsGrounded,
+  publicRoleClaimsForPrivateRole,
   publicSeerClaimTargetIds,
   publicStatementDisclosesWolfAlignment,
   publicStatementNegatesCorroboration,
@@ -38,6 +39,18 @@ test('accepts all six speech moves with only their owned judgment fields', () =>
       stances,
     }), undefined, move)
   }
+})
+
+test('lets good roles reveal themselves and wolves bluff any good role', () => {
+  assert.deepEqual(publicRoleClaimsForPrivateRole('witch'), ['witch'])
+  assert.deepEqual(publicRoleClaimsForPrivateRole('villager'), ['villager'])
+  assert.deepEqual(publicRoleClaimsForPrivateRole('wolf'), [
+    'seer',
+    'witch',
+    'hunter',
+    'idiot',
+    'villager',
+  ])
 })
 
 test('reserves commit for closing speakers', () => {

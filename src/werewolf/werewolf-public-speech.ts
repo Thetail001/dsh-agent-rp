@@ -16,6 +16,30 @@ export type StandardWerewolfPublicSpeechMove = typeof STANDARD_WEREWOLF_PUBLIC_S
 /** Speaker position used to expose only moves that are timely at the table. */
 export type StandardWerewolfPublicSpeechPosition = 'early' | 'middle' | 'late'
 
+/** Good-aligned identity names that may appear as strategic public claims. */
+export const STANDARD_WEREWOLF_PUBLIC_ROLE_CLAIMS = [
+  'seer',
+  'witch',
+  'hunter',
+  'idiot',
+  'villager',
+] as const
+
+/** One good-aligned identity that a player may claim at the table. */
+export type StandardWerewolfPublicRoleClaim = typeof STANDARD_WEREWOLF_PUBLIC_ROLE_CLAIMS[number]
+
+/**
+ * List public identities available to one private role's table strategy.
+ * Good players may reveal only their role; wolves may bluff any good role.
+ * @param role - speaker's private standard Werewolf role.
+ * @returns legal public role claims for the speaker.
+ */
+export function publicRoleClaimsForPrivateRole(
+  role: StandardWerewolfPublicRoleClaim | 'wolf',
+): readonly StandardWerewolfPublicRoleClaim[] {
+  return role === 'wolf' ? STANDARD_WEREWOLF_PUBLIC_ROLE_CLAIMS : [role]
+}
+
 /**
  * List speech moves available at one table position.
  * @param position - speaker position in the living order.

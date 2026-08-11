@@ -108,12 +108,14 @@ import {
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
   publicResponseIsGrounded,
+  publicRoleClaimsForPrivateRole,
   publicSeerClaimTargetIds,
   publicStatementDisclosesWolfAlignment,
   publicStatementNegatesCorroboration,
   selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
+  type StandardWerewolfPublicRoleClaim,
   type StandardWerewolfPublicSpeechMove,
   unavailablePublicTargetResponseRequest,
 } from './werewolf-public-speech.ts'
@@ -153,9 +155,8 @@ const CHARACTER_DECISION_STYLES = [
   '会明确改口：新发言或新票型推翻旧判断时，先承认自己前面怎么看，再说现在为何改变。',
   '重视当轮行动：中段只接一个具体矛盾，末段需要收口时只落一个去向。',
 ] as const
-type PrivateRoleClaim = 'seer' | 'witch' | 'hunter' | 'idiot' | 'villager'
 const PRIVATE_ROLE_SELF_CLAIMS: readonly {
-  readonly role: PrivateRoleClaim
+  readonly role: StandardWerewolfPublicRoleClaim
   readonly pattern: RegExp
 }[] = [
   { role: 'seer', pattern: /(?:我是|我\s*\d+\s*号(?:玩家)?\s*是|作为|身为|我的身份(?:是|为)|我(?:跳|自称)|我)\s*(?:一名)?\s*预言家|\b(?:i am|i'm|as)\s+(?:(?:an?|the)\s+)?(?:seer|prophet)\b/iu },
@@ -432,7 +433,7 @@ interface DecisionOptions {
   /** Public fact or choice ids of which a normal table statement must cite at least one. */
   readonly publicEvidenceIds?: readonly string[]
   /** Private role claims admitted in this public phase; absence leaves identity claims to table strategy. */
-  readonly allowedPublicRoleClaims?: readonly PrivateRoleClaim[]
+  readonly allowedPublicRoleClaims?: readonly StandardWerewolfPublicRoleClaim[]
   /** Speaker identity and day for one public discussion request. */
   readonly publicDiscussionContext?: PublicDiscussionContext
   /** Legal non-self targets for one structured public judgment. */
@@ -517,7 +518,7 @@ interface DecisionSpec {
   /** Public fact or choice ids of which a normal table statement must cite at least one. */
   readonly publicEvidenceIds?: readonly string[]
   /** Private role claims admitted in this public phase; absence leaves identity claims to table strategy. */
-  readonly allowedPublicRoleClaims?: readonly PrivateRoleClaim[]
+  readonly allowedPublicRoleClaims?: readonly StandardWerewolfPublicRoleClaim[]
   /** Speaker identity and day for one public discussion request. */
   readonly publicDiscussionContext?: PublicDiscussionContext
   /** Legal non-self targets for one structured public judgment. */
@@ -1741,7 +1742,7 @@ function sheriffRegistrationTask(
   }
   if (standardWerewolfRoleIn(world, actorId) === 'wolf') {
     return actorId === wolfRepresentative
-      ? '同时进行警长报名。你是狼队唯一可以公开竞选的人。狼队通常需要一名玩家争夺警徽并扰乱预言家视野；除非你的整局取舍明确偏向潜伏且当前公开局面已有更好的掩护，优先报名。公开理由必须能从好人视角成立。若仍决定不竞选，返回 stand: false 和空发言。' + campaignBoundary
+      ? '同时进行警长报名。你是狼队唯一可以公开竞选的人。狼队通常需要一名玩家争夺警徽并扰乱预言家视野；可以用普通好人视角提出一项具体带队方案，也可以悍跳预言家并给出一项具体的虚构查验。不要只说整理信息或理清逻辑。除非你的整局取舍明确偏向潜伏且当前公开局面已有更好的掩护，优先报名。若仍决定不竞选，返回 stand: false 和空发言。' + campaignBoundary
       : '同时进行警长报名。你不是狼队在本局内部选出的竞选代表，必须返回 stand: false 和空发言。只返回所需结构。'
   }
   if (standardWerewolfRoleIn(world, actorId) === 'seer') {
@@ -1811,7 +1812,7 @@ async function coordinateSheriffRegistration(
         '你是狼人杀中独立作出警长报名决定的玩家。不得等待或参考其他玩家尚未公开的决定。',
       ),
       outputSchema: sheriffRegistrationOutputSchema(standConstraint),
-      allowedPublicRoleClaims: standardWerewolfRoleIn(world, actorId) === 'seer' ? ['seer'] as const : [],
+      allowedPublicRoleClaims: publicRoleClaimsForPrivateRole(standardWerewolfRoleIn(world, actorId)),
     }
   }))
   for (const presetCandidate of presetCandidates ?? []) {
@@ -2370,7 +2371,7 @@ async function coordinateDiscussion(
       + '自然问句、对照和口语重复可以使用，但必须由当前具体矛盾触发。警长竞选已经结束，不得继续竞选或复述竞选词；'
       + '具体描述自己或别人把票投给谁时，必须引用并核对对应的公开选票；不要凭别人的转述补出票型。'
       + '出局、夜间死亡或被猎人带走都不会自动公开目标身份；没有公开身份事实时，不得把推测写成“结果、坐实、证实某号是狼人”等翻牌结论。'
-      + '未报名和沉默本身不是可疑证据。只有真实预言家可以延续已经公开的预言家身份；不得自称女巫、猎人、白痴或村民。'
+      + '未报名和沉默本身不是可疑证据。身份声称属于公开策略：好人只能声称自己的真实身份；狼人可以伪装成任一好人身份，但已经公开的声称应保持连续。'
       + '可以质疑公开的预言家宣称，但不得说一项已经出现在竞选或发言记录中的查验从未出现。'
       + '平安夜不能印证预言家或查验结论，非预言家也不能用私密信息或真实身份为公开结论背书。'
       + '猎人开枪只公开猎人本人的身份，枪口不证明目标的身份或阵营，也不能核验预言家的查验。描述跨日记录时使用“第 N 天”。'
@@ -2395,7 +2396,7 @@ async function coordinateDiscussion(
         outputSchema: wolfStatementOutputSchema(publicJudgmentTargets, speechMoves),
         pendingPublicStatements: visiblePending,
         publicEvidenceIds,
-        allowedPublicRoleClaims: standardWerewolfRoleIn(world, actorId) === 'seer' ? ['seer'] : [],
+        allowedPublicRoleClaims: publicRoleClaimsForPrivateRole(standardWerewolfRoleIn(world, actorId)),
         publicDiscussionContext: { round, position, coveredJudgments: [...coveredJudgments] },
         publicJudgmentTargets,
       }
@@ -2412,7 +2413,7 @@ async function coordinateDiscussion(
         outputSchema: statementOutputSchema(publicJudgmentTargets, speechMoves),
         pendingPublicStatements: visiblePending,
         publicEvidenceIds,
-        allowedPublicRoleClaims: standardWerewolfRoleIn(world, actorId) === 'seer' ? ['seer'] : [],
+        allowedPublicRoleClaims: publicRoleClaimsForPrivateRole(standardWerewolfRoleIn(world, actorId)),
         publicDiscussionContext: { round, position, coveredJudgments: [...coveredJudgments] },
         publicJudgmentTargets,
       }
