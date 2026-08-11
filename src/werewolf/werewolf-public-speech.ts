@@ -51,7 +51,11 @@ export function publicSpeechMoveNeedsPublicEvidence(move: unknown): boolean {
  * @returns the accepted table utterance.
  */
 export function normalizePublicSpeechStatement(move: unknown, statement: string): string {
-  if (move === 'pass' || (move === 'hold' && GENERIC_INFORMATION_HOLD.test(statement))) return '过'
+  if (move === 'pass'
+    || (move === 'hold'
+      && (GENERIC_INFORMATION_HOLD.test(statement) || EXPLICIT_PASS_ENDING.test(statement.trim())))) {
+    return '过'
+  }
   const withoutWaitTail = statement.replace(REDUNDANT_FUTURE_WAIT_TAIL, '').trimEnd()
   return withoutWaitTail !== statement
     && /[。！？]$/u.test(statement)
@@ -65,6 +69,7 @@ const GENERIC_INFORMATION_HOLD = new RegExp([
   '(?:没有|没|还没有|还没)(?:能|有)?[^。！？]{0,16}(?:新(?:的)?(?:依据|信息|线索)|线索|逻辑点|能落定的点|能指认谁的点|能指人的点)',
   '(?:暂时|目前)[^。！？]{0,12}(?:判断不出来|无法判断|没法判断)',
 ].join('|'), 'u')
+const EXPLICIT_PASS_ENDING = /(?:^|[，。！？\s])过[。！？]?$/u
 const REDUNDANT_FUTURE_WAIT_TAIL = new RegExp([
   '[，,](?:我)?(?:先)?(?:等|等待|看|听)(?:一等|一下)?后面[^。！？]{0,48}(?:发言|回应|表态|收口)[^。！？]*[。！？]?$',
   '[，,]后面[^。！？]{0,48}(?:发言|回应|表态|收口)[^。！？]*[。！？]?$',

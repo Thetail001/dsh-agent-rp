@@ -81,6 +81,10 @@ test('lets hold and pass omit evidence and normalizes pass to one table word', (
     '我前面怀疑过3号，但今天还没有能对上的新依据，我等后面发言再看。',
   ), '过')
   assert.equal(normalizePublicSpeechStatement(
+    'hold',
+    '前面几位都是过，我没拿到更多信号，先定不下来这一票投谁。过。',
+  ), '过')
+  assert.equal(normalizePublicSpeechStatement(
     'assess',
     '5号昨天说先留判断，票却给了3号，这个前后对不太上，我先记下来，后面7号、11号发言再对照看。',
   ), '5号昨天说先留判断，票却给了3号，这个前后对不太上，我先记下来。')

@@ -9,6 +9,7 @@ import {
   type RoleplayView,
 } from '../runtime/index.ts'
 import { STANDARD_WEREWOLF_STATEMENT_MAX_LENGTH } from './werewolf-decision-limits.ts'
+import { completeDiscussionProgress } from './werewolf-progress-counts.ts'
 import { observerOf, SEATS, standardWerewolfRoleIn } from './werewolf.ts'
 
 /** One already validated public statement exposed while the rest of the speaking order continues. */
@@ -132,9 +133,11 @@ function validateInitialState(state: StandardWerewolfProgressState): void {
     }
     return
   }
-  const directBallotAlreadyCompleted = (state.kind === 'sheriff-vote' || state.kind === 'exile-vote')
+  const directActionAlreadyCompleted = (state.kind === 'sheriff-registration'
+    || state.kind === 'sheriff-vote'
+    || state.kind === 'exile-vote')
     && state.completed === 1
-  if (state.completed !== 0 && !directBallotAlreadyCompleted) {
+  if (state.completed !== 0 && !directActionAlreadyCompleted) {
     throw new Error('standard Werewolf counted progress must start before Character attempts')
   }
 }
@@ -320,7 +323,18 @@ export function presentStandardWerewolfProgress(
       total: 3,
     }
   }
-  const settled = state.completed === state.total
+  const completeCounts = state.kind === 'discussion'
+    ? completeDiscussionProgress(
+        view.actors.filter(actor => actor.location === 'alive').map(actor => String(actor.id)),
+        view.choices.flatMap((choice) => {
+          const actorId = new RegExp(`^day:${String(state.round)}:speech:(seat-\\d+)$`, 'u')
+            .exec(String(choice.id))?.[1]
+          return actorId === undefined ? [] : [actorId]
+        }),
+        state.statements.map(statement => String(statement.actorId)),
+      )
+    : { completed: state.completed, total: state.total }
+  const settled = completeCounts.completed === completeCounts.total
   if (state.kind === 'sheriff-registration') {
     return {
       title: settled ? '即将公布报名结果' : '其他玩家正在决定是否参选',
@@ -357,7 +371,7 @@ export function presentStandardWerewolfProgress(
             ? { title: '本轮发言结束', detail: '正在进入投票' }
             : {
               title: `${state.currentActorId === undefined ? '下一位玩家' : `${String(state.currentActorId).slice(5)} 号玩家`}正在发言`,
-              detail: `已发言 ${state.completed}/${state.total}`,
+              detail: `已发言 ${completeCounts.completed}/${completeCounts.total}`,
             }
           : settled
             ? { title: '正在公布放逐投票结果', detail: '投票已经结束' }
@@ -367,8 +381,7 @@ export function presentStandardWerewolfProgress(
             }
   return {
     ...copy,
-    completed: state.completed,
-    total: state.total,
+    ...completeCounts,
     ...state.kind === 'discussion'
       ? {
         records: state.statements.map(statement => ({

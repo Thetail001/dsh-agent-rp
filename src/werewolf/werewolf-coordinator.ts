@@ -98,7 +98,7 @@ import {
   type StandardWerewolfPublicSpeechMove,
 } from './werewolf-public-speech.ts'
 import { completeWolfBallotTargets } from './wolf-ballot.ts'
-import { completeVoteProgress } from './werewolf-vote-progress.ts'
+import { completeDirectProgress } from './werewolf-progress-counts.ts'
 
 export { DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS } from './werewolf-constants.ts'
 
@@ -1638,6 +1638,7 @@ async function coordinateSheriffRegistration(
     throw new Error('an eliminated human player cannot stand for Sheriff')
   }
   const actors = livingSeats(world).filter(actorId => actorId !== humanActorId)
+  const directParticipantIncluded = isLiving(world, humanActorId)
   const wolfRepresentative = decisionTargetOrder(
     options.parent,
     world,
@@ -1653,16 +1654,14 @@ async function coordinateSheriffRegistration(
   }
   progress?.update({
     kind: 'sheriff-registration',
-    completed: 0,
-    total: actors.length,
+    ...completeDirectProgress(directParticipantIncluded, 0, actors.length),
   })
   const batchOptions = progress === undefined ? options : {
     ...options,
     onProgress: (completed: number, total: number) => {
       progress.update({
         kind: 'sheriff-registration',
-        completed,
-        total,
+        ...completeDirectProgress(directParticipantIncluded, completed, total),
       })
     },
   }
@@ -1809,7 +1808,7 @@ async function coordinateSheriffVote(
     throw new Error('the human Sheriff ballot must name an active candidate')
   }
   const agentVoters = voters.filter(actorId => actorId !== humanActorId)
-  const initialProgress = completeVoteProgress(humanCanVote, 0, agentVoters.length)
+  const initialProgress = completeDirectProgress(humanCanVote, 0, agentVoters.length)
   if (agentVoters.length > 0) {
     progress?.update({ kind: 'sheriff-vote', ...initialProgress })
   }
@@ -1818,7 +1817,7 @@ async function coordinateSheriffVote(
     onProgress: (completed: number, total: number) => {
       progress.update({
         kind: 'sheriff-vote',
-        ...completeVoteProgress(humanCanVote, completed, total),
+        ...completeDirectProgress(humanCanVote, completed, total),
       })
     },
   }
@@ -2472,7 +2471,7 @@ async function coordinateExileVote(
   }
   const agentVoters = voters.filter(actorId => actorId !== humanActorId)
   const publicEvidenceIds = tablePublicEvidenceIds(world, livingSeats(world))
-  const initialProgress = completeVoteProgress(humanCanVote, 0, agentVoters.length)
+  const initialProgress = completeDirectProgress(humanCanVote, 0, agentVoters.length)
   if (agentVoters.length > 0) {
     progress?.update({ kind: 'exile-vote', ...initialProgress })
   }
@@ -2481,7 +2480,7 @@ async function coordinateExileVote(
     onProgress: (completed: number, total: number) => {
       progress.update({
         kind: 'exile-vote',
-        ...completeVoteProgress(humanCanVote, completed, total),
+        ...completeDirectProgress(humanCanVote, completed, total),
       })
     },
   }
