@@ -97,7 +97,7 @@ export const STANDARD_WEREWOLF_ACTION_COMMAND = 'roleplay-action'
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 /** Default deadline for one coordinated standard Werewolf decision window. */
-export const DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS = 30_000
+export const DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS = 12_000
 const COORDINATOR_TOOL_NAMES = new Set([
   STANDARD_WEREWOLF_NIGHT_TOOL,
   STANDARD_WEREWOLF_SHERIFF_REGISTRATION_TOOL,
@@ -1367,6 +1367,8 @@ async function coordinateSheriffRegistration(
     throw new Error('an eliminated human player cannot stand for Sheriff')
   }
   const actors = livingSeats(world).filter(actorId => actorId !== humanActorId)
+  const participantTotal = actors.length + (isLiving(world, humanActorId) ? 1 : 0)
+  const submittedParticipantCount = isLiving(world, humanActorId) ? 1 : 0
   const wolfRepresentative = decisionTargetOrder(
     options.parent,
     world,
@@ -1380,11 +1382,19 @@ async function coordinateSheriffRegistration(
   if (unavailablePresetCandidate !== undefined) {
     throw new Error(`standard Werewolf Sheriff trial candidate ${unavailablePresetCandidate} is unavailable`)
   }
-  progress?.update({ kind: 'sheriff-registration', completed: 0, total: actors.length })
+  progress?.update({
+    kind: 'sheriff-registration',
+    completed: submittedParticipantCount,
+    total: participantTotal,
+  })
   const batchOptions = progress === undefined ? options : {
     ...options,
-    onProgress: (completed: number, total: number) => {
-      progress.update({ kind: 'sheriff-registration', completed, total })
+    onProgress: (completed: number) => {
+      progress.update({
+        kind: 'sheriff-registration',
+        completed: submittedParticipantCount + completed,
+        total: participantTotal,
+      })
     },
   }
   const decisions = await decideTogether<SheriffRegistrationDecision>(batchOptions, actors.map((actorId) => {
@@ -1530,13 +1540,22 @@ async function coordinateSheriffVote(
     throw new Error('the human Sheriff ballot must name an active candidate')
   }
   const agentVoters = voters.filter(actorId => actorId !== humanActorId)
+  const submittedBallotCount = humanCanVote ? 1 : 0
   if (agentVoters.length > 0) {
-    progress?.update({ kind: 'sheriff-vote', completed: 0, total: agentVoters.length })
+    progress?.update({
+      kind: 'sheriff-vote',
+      completed: submittedBallotCount,
+      total: voters.length,
+    })
   }
   const batchOptions = progress === undefined || agentVoters.length === 0 ? options : {
     ...options,
-    onProgress: (completed: number, total: number) => {
-      progress.update({ kind: 'sheriff-vote', completed, total })
+    onProgress: (completed: number) => {
+      progress.update({
+        kind: 'sheriff-vote',
+        completed: submittedBallotCount + completed,
+        total: voters.length,
+      })
     },
   }
   const decisions = await decideTogether<TargetDecision>(
@@ -1824,7 +1843,6 @@ async function coordinateDiscussion(
       ...committedPublicEvidenceIds,
       ...visiblePending.map(statement => statement.evidence_id),
     ])]
-    let failureKind: DecisionFailureKind | undefined
     const publicJudgmentTargets = living.filter(candidate => candidate !== actorId)
     const tableIndex = living.indexOf(actorId)
     const position = tableIndex < Math.ceil(living.length / 3)
@@ -1905,11 +1923,7 @@ async function coordinateDiscussion(
     const [decision] = await decideTogether<StatementDecision | WolfStatementDecision>({
       ...options,
       allowAllFailures: true,
-      onFailure: (_decisionIndex, kind) => { failureKind = kind },
     }, [spec])
-    if (decision === undefined && failureKind === 'timeout') {
-      throw new Error(`standard Werewolf discussion speaker ${String(actorId)} exceeded the decision deadline`)
-    }
     decisions.push(decision)
     if (decision?.speech_mode === 'substantive'
       && decision.target_id !== null
@@ -1931,7 +1945,7 @@ async function coordinateDiscussion(
       evidence_id: `day:${String(round)}:speech:${actorId}`,
       actor_id: actorId,
       statement: statement === undefined || statement.length === 0
-        ? '（未能形成有效发言）'
+        ? '过'
         : statement,
     })
     progress?.update({
@@ -1958,7 +1972,7 @@ async function coordinateDiscussion(
       precedingStatements.set(
         actorId,
         statement === undefined || statement.length === 0
-          ? '（未能形成有效发言）'
+          ? '过'
           : statement,
       )
     }
@@ -2002,7 +2016,7 @@ async function coordinateDiscussion(
     statements.set(
       actorId,
       statement === undefined || statement.length === 0
-        ? '（未能形成有效发言）'
+        ? '过'
         : statement,
     )
   }
@@ -2102,12 +2116,23 @@ async function coordinateExileVote(
     throw new Error('the human exile ballot must name one visible eligible target')
   }
   const agentVoters = voters.filter(actorId => actorId !== humanActorId)
+  const submittedBallotCount = humanCanVote ? 1 : 0
   const publicEvidenceIds = tablePublicEvidenceIds(world, livingSeats(world))
-  if (agentVoters.length > 0) progress?.update({ kind: 'exile-vote', completed: 0, total: agentVoters.length })
+  if (agentVoters.length > 0) {
+    progress?.update({
+      kind: 'exile-vote',
+      completed: submittedBallotCount,
+      total: voters.length,
+    })
+  }
   const batchOptions = progress === undefined || agentVoters.length === 0 ? options : {
     ...options,
-    onProgress: (completed: number, total: number) => {
-      progress.update({ kind: 'exile-vote', completed, total })
+    onProgress: (completed: number) => {
+      progress.update({
+        kind: 'exile-vote',
+        completed: submittedBallotCount + completed,
+        total: voters.length,
+      })
     },
   }
   const decisions = await decideTogether<TargetDecision>(batchOptions, agentVoters.map((actorId) => {

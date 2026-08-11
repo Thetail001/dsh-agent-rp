@@ -72,7 +72,7 @@ export function apply(ctx: Context): void {
         runCommand: async (line) => {
           const result = await session.command(line)
           if (!result.ok) {
-            throw new Error('本轮未完成，请重试')
+            throw new Error(result.error.message)
           }
           if (!result.value.matched) {
             throw new Error('当前行动已失效，请刷新页面后重试。')

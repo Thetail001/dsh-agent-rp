@@ -299,15 +299,22 @@ export function presentStandardWerewolfProgress(
     const observerActor = SEATS.find(actorId => observerOf(actorId) === view.observerId)
     const wolfObserver = observerActor !== undefined
       && standardWerewolfRoleIn(view, observerActor) === 'wolf'
+    const stage = state.stage === 'independent'
+      ? { completed: 1, detail: '首轮行动 1/3' }
+      : state.stage === 'dependent'
+        ? { completed: 2, detail: '后续行动 2/3' }
+        : { completed: 3, detail: '夜间结算 3/3' }
     if (wolfObserver && state.stage === 'independent') {
       return {
         title: '狼队正在商议',
-        detail: '等待所有存活狼人确认目标',
+        ...stage,
+        total: 3,
       }
     }
     return {
-      title: '夜间行动进行中',
-      detail: '等待天亮',
+      title: state.stage === 'settling' ? '正在结算本夜' : '夜间行动进行中',
+      ...stage,
+      total: 3,
     }
   }
   const settled = state.completed === state.total

@@ -770,7 +770,7 @@ window.__ModuleLoader__.load({
 				});
 			}, [sessionKey]);
 			const waiting = pending || running;
-			const visibleError = error ?? (agentError === null ? null : "本轮未完成，请重试");
+			const visibleError = error ?? agentError;
 			if (surface === void 0) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Preparation, {
 				kind: launching ? "preparing" : "absent",
 				disabled: launching || running,
@@ -905,7 +905,7 @@ window.__ModuleLoader__.load({
 											onClick: () => {
 												submitAction(action);
 											},
-											children: action.label
+											children: action.automatic === true ? "重试" : action.label
 										}, action.id))]
 									}),
 									surfaceInput !== void 0 && (!inputNeedsChoice || inputExpanded) && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("form", {
@@ -1017,7 +1017,7 @@ window.__ModuleLoader__.load({
 						sendPrompt: (prompt) => conversation.send(prompt),
 						runCommand: async (line) => {
 							const result = await session.command(line);
-							if (!result.ok) throw new Error("本轮未完成，请重试");
+							if (!result.ok) throw new Error(result.error.message);
 							if (!result.value.matched) throw new Error("当前行动已失效，请刷新页面后重试。");
 						}
 					};

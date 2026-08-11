@@ -816,7 +816,7 @@ export function RoleplayView({
   }, [sessionKey])
 
   const waiting = pending || running
-  const visibleError = error ?? (agentError === null ? null : '本轮未完成，请重试')
+  const visibleError = error ?? agentError
   if (surface === undefined) {
     return (
       <Preparation
@@ -955,7 +955,7 @@ export function RoleplayView({
                       disabled={locked}
                       onClick={() => { submitAction(action) }}
                     >
-                      {action.label}
+                      {action.automatic === true ? '重试' : action.label}
                     </button>
                   ))}
                 </div>
