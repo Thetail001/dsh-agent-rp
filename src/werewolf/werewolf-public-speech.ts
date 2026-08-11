@@ -94,6 +94,26 @@ const REDUNDANT_FUTURE_WAIT_TAIL = new RegExp([
   '[，,]后面[^。！？]{0,48}(?:发言|回应|表态|收口)[^。！？]*[。！？]?$',
 ].join('|'), 'u')
 
+const DIRECT_PUBLIC_FOCUS_REFERENCES = [
+  /(?:想|要)?听(?:听)?\s*(\d+)\s*号/gu,
+  /(\d+)\s*号(?:玩家)?[^。！？]{0,48}(?:(?:轮到你(?:时)?|请你|你(?:先|得|要|需要|应该))[^。！？]{0,24}|(?<!已经)把[^。！？]{0,20}(?:这票|理由|判断|说法)[^。！？]{0,12})(?:说清楚|讲清楚|解释(?:一下)?|给出(?:理由|判断|说法))(?!了|过)/gu,
+] as const
+
+/**
+ * Find players whom one public statement directly asks to address a concrete point.
+ * @param statement - public table utterance that may address later speakers.
+ * @returns deduplicated seat ids in textual order.
+ */
+export function directedPublicFocusTargetIds(statement: string): readonly string[] {
+  const targets = new Set<string>()
+  for (const pattern of DIRECT_PUBLIC_FOCUS_REFERENCES) {
+    for (const match of statement.matchAll(pattern)) {
+      if (match[1] !== undefined) targets.add(`seat-${match[1]}`)
+    }
+  }
+  return [...targets]
+}
+
 /** One ballot claim whose pronoun is bound to the structured public target. */
 export interface PublicTargetPronounBallotClaim {
   readonly voterId: string

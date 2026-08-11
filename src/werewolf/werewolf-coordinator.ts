@@ -86,6 +86,7 @@ import {
   STANDARD_WEREWOLF_STATEMENT_MAX_LENGTH,
 } from './werewolf-decision-limits.ts'
 import {
+  directedPublicFocusTargetIds,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
   publicSpeechMovesForPosition,
@@ -1239,10 +1240,6 @@ const PUBLIC_STATEMENT_AUTHORING_ARTIFACT = new RegExp([
   '(?:私密泄露|公开边界|安全分析|所需结构)',
   '(?:某某|某\\s*号|某位玩家)',
 ].join('|'), 'u')
-const DIRECT_PUBLIC_FOCUS_REFERENCE = new RegExp([
-  '(?:想|要)?听(?:听)?\\s*(\\d+)\\s*号',
-  '(\\d+)\\s*号(?:玩家)?[^。！？]{0,18}(?:说清楚|讲清楚|解释(?:一下)?|给出(?:理由|判断|说法))',
-].join('|'), 'gu')
 const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下|卸力|遮掩|找台阶|回避|矛盾|没(?:有)?给出|空洞|摇摆|改口|转向/iu
 const SELF_BALLOT_REFERENCE = /(?:投|上)我|票给我|我(?:被|让)[^。！？]{0,8}(?:投|票|上)/iu
 const NO_DEATH_REFERENCE = /平安夜|昨夜平安|夜里?平安|(?:没有|无)玩家死亡|无人死亡/iu
@@ -2195,10 +2192,8 @@ function explicitHumanQuestionJudgments(
   if (statement === undefined) return []
   const legalTargets = new Set(livingActorIds.filter(candidate => candidate !== actorId))
   const targets = new Set<RoleplayActorId>()
-  for (const focus of statement.matchAll(DIRECT_PUBLIC_FOCUS_REFERENCE)) {
-    const seat = focus[1] ?? focus[2]
-    if (seat === undefined) continue
-    const targetId = asRoleplayActorId(`seat-${seat}`)
+  for (const focusTargetId of directedPublicFocusTargetIds(statement)) {
+    const targetId = asRoleplayActorId(focusTargetId)
     if (legalTargets.has(targetId)) targets.add(targetId)
   }
   return [...targets].map(targetId => ({

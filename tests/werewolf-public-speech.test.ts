@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  directedPublicFocusTargetIds,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
   publicSpeechJudgmentFamily,
@@ -108,6 +109,18 @@ test('lets hold and pass omit evidence and normalizes pass to one table word', (
     'assess',
     '我先把警长交给8号，他竞选时给出了明确的带队思路，这个态度我认可。',
   ), '他竞选时给出了明确的带队思路，这个态度我认可。')
+})
+
+test('recognizes a concrete question even when its target and request are separated by ballot detail', () => {
+  assert.deepEqual(directedPublicFocusTargetIds(
+    '10号把警长票投给了5号，轮到你时把这票的理由讲清楚，我先听这一点。',
+  ), ['seat-10'])
+  assert.deepEqual(directedPublicFocusTargetIds(
+    '我想听10号解释一下这张警长票，其他位置暂时不展开。',
+  ), ['seat-10'])
+  assert.deepEqual(directedPublicFocusTargetIds(
+    '10号已经把这张警长票的理由讲清楚了，我不再重复。',
+  ), [])
 })
 
 test('binds ambiguous ballot pronouns to the structured public target', () => {
