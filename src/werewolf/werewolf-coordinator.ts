@@ -96,6 +96,7 @@ import {
 } from './werewolf-diagnostics.ts'
 import {
   directedPublicFocusTargetIds,
+  finalPublicSpeechTargetId,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
   publicHoldTargetIssue,
@@ -1170,12 +1171,10 @@ function assertPublicStatementCandidate(
     )
   }
   if (publicSpeechMoveCarriesJudgment(trace.speech_move) && typeof trace.target_id === 'string') {
-    const targetSeat = /^seat-(\d+)$/u.exec(trace.target_id)?.[1]
-    if (targetSeat !== undefined
-      && !new RegExp(`(?<!\\d)${targetSeat}\\s*号(?:玩家)?`, 'u').test(statement)) {
+    if (finalPublicSpeechTargetId(statement) !== trace.target_id) {
       throw new DecisionValidationError(
         'target-reference',
-        `${options.label} omitted its structured public judgment target from the spoken text`,
+        `${options.label} did not finish its spoken judgment on the structured target`,
       )
     }
   }
@@ -2322,7 +2321,7 @@ async function coordinateDiscussion(
       + 'revise 先承认自己此前的判断，再指出哪项新公开信息触发目标或立场改变；'
       + 'hold 明确判断停在哪个尚缺的信息，不硬点身份；commit 承接桌上已有候选，只落当前去向；pass 只说“过”。'
       + 'commit 只用于 late 位置，target_id 必须已经出现在 covered_public_judgments 中且不能是自己；没有合法候选时使用 assess、hold 或 pass。'
-      + 'assess、revise、commit 填写 target_id 与 stance，statement 明确说出对应“N号”；'
+      + 'assess、revise、commit 填写 target_id 与 stance；target_id 是被判断的人，不是提供证据的人，statement 最后一个点名必须回到对应“N号”；'
       + 'respond、hold、pass 的 target_id 与 stance 都填 null。public_discussion_context.covered_public_judgments 是本轮已有判断。'
       + 'hold 只能点一名仍可发言的存活玩家，并要求他解释一项已经发生的公开行动；同一个等待目标已经有人点过、无法点出目标或只能泛泛等信息时，直接选择 pass。'
       + 'question、observe、suspect 都属于对目标的关注；换一个 stance 名称不算新判断。'

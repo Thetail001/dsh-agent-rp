@@ -115,6 +115,20 @@ export function directedPublicFocusTargetIds(statement: string): readonly string
   return [...targets]
 }
 
+/**
+ * Read the final explicitly numbered player in one public statement.
+ * @param statement - public table utterance.
+ * @returns the final standard seat id, or `undefined` when no seat is named.
+ */
+export function finalPublicSpeechTargetId(statement: string): string | undefined {
+  const seats = [...statement.matchAll(/(?<!\d)(\d{1,2})\s*号(?:玩家)?/gu)]
+    .flatMap((match) => {
+      const value = Number(match[1])
+      return Number.isSafeInteger(value) && value >= 1 && value <= 12 ? [`seat-${String(value)}`] : []
+    })
+  return seats.at(-1)
+}
+
 /** Context problem that makes a hold repeat or wait for an unavailable answer. */
 export type PublicHoldTargetIssue =
   | 'missing-future-target'

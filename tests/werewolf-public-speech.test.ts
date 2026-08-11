@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   directedPublicFocusTargetIds,
+  finalPublicSpeechTargetId,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
   publicHoldTargetIssue,
@@ -123,6 +124,17 @@ test('recognizes a concrete question even when its target and request are separa
     '10号已经把这张警长票的理由讲清楚了，我不再重复。',
   ), [])
   assert.deepEqual(directedPublicFocusTargetIds('我还缺3号的解释。'), ['seat-3'])
+})
+
+test('keeps the final named player aligned with the structured judgment target', () => {
+  assert.equal(finalPublicSpeechTargetId(
+    '8号先点出了7号照抄，我核对后也认为今天该出7号。',
+  ), 'seat-7')
+  assert.equal(finalPublicSpeechTargetId(
+    '6号说验了1号，但这段查验没有接上公开票型，我今天不认6号。',
+  ), 'seat-6')
+  assert.equal(finalPublicSpeechTargetId('今天没有新的公开信息，过。'), undefined)
+  assert.equal(finalPublicSpeechTargetId('13号不属于这张桌。'), undefined)
 })
 
 test('allows one actionable hold without repeating an earlier waiting target', () => {
