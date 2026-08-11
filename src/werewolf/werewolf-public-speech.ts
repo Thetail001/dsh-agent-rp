@@ -342,6 +342,20 @@ export function directedPublicFocusTargetIds(statement: string): readonly string
   return [...targets]
 }
 
+const EXPLICIT_FIRST_PERSON_ATTENTION_REFERENCE = /我(?:先|暂时|现在|更|会)?\s*(?:重点)?\s*(?:关注|怀疑|质疑|警惕|看|盯)(?:着)?\s*(\d{1,2})\s*号(?:玩家)?/gu
+
+/**
+ * Read an explicit first-person human table concern without guessing sentiment from arbitrary prose.
+ * This narrow form lets Character turns treat “我先关注 1 号” like the same structured judgment
+ * they would have produced themselves.
+ * @param statement - human-authored public statement.
+ * @returns deduplicated target ids in textual order.
+ */
+export function explicitPublicAttentionTargetIds(statement: string): readonly string[] {
+  return [...new Set([...statement.matchAll(EXPLICIT_FIRST_PERSON_ATTENTION_REFERENCE)]
+    .flatMap(match => match[1] === undefined ? [] : [`seat-${match[1]}`]))]
+}
+
 /**
  * Read the final explicitly numbered player in one public statement.
  * @param statement - public table utterance.

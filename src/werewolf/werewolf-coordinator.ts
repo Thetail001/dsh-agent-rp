@@ -99,6 +99,7 @@ import {
   certainPublicIdentityActorIds,
   deniedPublicSeerClaims,
   directedPublicFocusTargetIds,
+  explicitPublicAttentionTargetIds,
   finalPublicSpeechTargetId,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
@@ -2337,7 +2338,7 @@ function committedDiscussionJudgments(
   return judgments
 }
 
-function explicitHumanQuestionJudgments(
+function explicitHumanAttentionJudgments(
   statement: string | undefined,
   actorId: RoleplayActorId,
   livingActorIds: readonly RoleplayActorId[],
@@ -2346,7 +2347,10 @@ function explicitHumanQuestionJudgments(
   if (statement === undefined) return []
   const legalTargets = new Set(livingActorIds.filter(candidate => candidate !== actorId))
   const targets = new Set<RoleplayActorId>()
-  for (const focusTargetId of directedPublicFocusTargetIds(statement)) {
+  for (const focusTargetId of [
+    ...directedPublicFocusTargetIds(statement),
+    ...explicitPublicAttentionTargetIds(statement),
+  ]) {
     const targetId = asRoleplayActorId(focusTargetId)
     if (legalTargets.has(targetId)) targets.add(targetId)
   }
@@ -2450,7 +2454,7 @@ async function coordinateDiscussion(
     round,
     committedPublicEvidenceIds,
   )
-  coveredJudgments.push(...explicitHumanQuestionJudgments(
+  coveredJudgments.push(...explicitHumanAttentionJudgments(
     humanStatement,
     humanActorId,
     living,

@@ -5,6 +5,7 @@ import {
   publicAcknowledgementClaimActorIds,
   deniedPublicSeerClaims,
   directedPublicFocusTargetIds,
+  explicitPublicAttentionTargetIds,
   finalPublicSpeechTargetId,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
@@ -243,6 +244,15 @@ test('recognizes a concrete question even when its target and request are separa
   assert.deepEqual(directedPublicFocusTargetIds(
     '我想听听3号、9号、12号，你们那三票当时认了哪一点？',
   ), ['seat-3', 'seat-9', 'seat-12'])
+})
+
+test('recognizes an explicit first-person human concern without inferring negated advice', () => {
+  assert.deepEqual(
+    explicitPublicAttentionTargetIds('1号这个理由我不认，我先关注1号。'),
+    ['seat-1'],
+  )
+  assert.deepEqual(explicitPublicAttentionTargetIds('我现在重点盯着8号。'), ['seat-8'])
+  assert.deepEqual(explicitPublicAttentionTargetIds('我不关注3号，先听发言。'), [])
 })
 
 test('keeps the final named player aligned with the structured judgment target', () => {
