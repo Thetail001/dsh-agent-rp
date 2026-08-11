@@ -520,6 +520,27 @@ export function publicStatementMisusesNoDeathCorroboration(statement: string): b
     || !publicStatementNegatesCorroboration(statement)
 }
 
+const SEER_PRIOR_BASIS_REFERENCE = new RegExp([
+  '(?:预言家|查验|验人|金水|查杀)[^。！？]{0,32}',
+  '(?:(?:没有|没|缺少|缺乏|拿不出|给不出)[^。！？]{0,8}(?:前置|事前|此前|之前)(?:依据|支撑|实据)',
+  '|(?:前置|事前|此前|之前)(?:依据|支撑|实据)[^。！？]{0,8}(?:没有|不足|不够))',
+].join(''), 'iu')
+const SEER_PRIOR_BASIS_REBUTTAL = new RegExp([
+  '(?:查验|预言家)[^。！？]{0,40}(?:不(?:需要|该要求)|无需|本来就是|查验本身)',
+  '(?:可|但|不过|其实)[^。！？]{0,28}(?:查验本身|预言家首夜给出的就是查验)',
+].join('|'), 'iu')
+
+/**
+ * Whether a statement treats the lack of evidence preceding a Seer inspection as a reason to
+ * reject it. A player may demand later public corroboration, but an inspection does not need a
+ * public premise before the Seer performs it.
+ * @param statement - public table utterance.
+ * @returns whether the statement imposes the invalid prior-basis requirement.
+ */
+export function publicStatementRequiresPriorBasisForSeerClaim(statement: string): boolean {
+  return SEER_PRIOR_BASIS_REFERENCE.test(statement) && !SEER_PRIOR_BASIS_REBUTTAL.test(statement)
+}
+
 /**
  * Return the latest matching judgment only after a target/family has filled its table capacity.
  * @param history - public judgments in chronological order.

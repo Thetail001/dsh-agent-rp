@@ -22,6 +22,7 @@ export type StandardWerewolfDecisionValidationIssue =
   | 'public-grounding'
   | 'rationale'
   | 'response-grounding'
+  | 'seer-prior-basis'
   | 'self-ballot'
   | 'shape'
   | 'ballot-continuity'

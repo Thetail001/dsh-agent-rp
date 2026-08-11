@@ -27,6 +27,7 @@ import {
   publicStatementDisclosesWolfAlignment,
   publicStatementMisusesNoDeathCorroboration,
   publicStatementNegatesCorroboration,
+  publicStatementRequiresPriorBasisForSeerClaim,
   selectSaturatedPublicJudgment,
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
@@ -453,6 +454,21 @@ test('rejects listing an absent no-death night as missing Seer corroboration', (
   ), false)
   assert.equal(publicStatementMisusesNoDeathCorroboration(
     '这项查验目前只有12号自己的宣称，尚无其他公开记录可核对。',
+  ), false)
+})
+
+test('rejects demands for evidence before a first-night Seer inspection', () => {
+  assert.equal(publicStatementRequiresPriorBasisForSeerClaim(
+    '2号这句查验没有任何前置依据便能说出口，我先不认。',
+  ), true)
+  assert.equal(publicStatementRequiresPriorBasisForSeerClaim(
+    '除了那句查验，他没有给出任何前置支撑。',
+  ), true)
+  assert.equal(publicStatementRequiresPriorBasisForSeerClaim(
+    '1号说查验没有前置依据，可预言家首夜给出的就是查验本身。',
+  ), false)
+  assert.equal(publicStatementRequiresPriorBasisForSeerClaim(
+    '这项查验目前只有2号自己的宣称，尚无其他公开记录可核对。',
   ), false)
 })
 
