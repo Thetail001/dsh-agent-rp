@@ -1,7 +1,7 @@
 /** Experimental Storyworld service, resolver registry, and scoped commit runtime. @module @deepseek-ai/dsh-roleplay */
 
 import { isDeepStrictEqual } from 'node:util'
-import { Context, Service } from 'cordis'
+import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent, AgentSetup } from '@deepseek-ai/dsh-agent'
 import { assertNever, createUserMessage, deepFreeze } from '@deepseek-ai/dsh-llm'
 import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
@@ -115,7 +115,7 @@ const ROLEPLAY_CORRECTION_INSTRUCTION = 'No roleplay transaction was committed. 
   + 'one roleplay_commit tool call and no visible text. Use the current Storyworld revision and revise or replace any '
   + 'rejected intent.'
 
-declare module 'cordis' {
+declare module '@deepseek-ai/cordis' {
   interface Context {
     roleplay: RoleplayService
   }

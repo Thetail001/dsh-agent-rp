@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "files": [
+    "src/index.ts",
+    "tests/werewolf-public-speech.test.ts",
+    "tests/wolf-ballot.test.ts",
+    "tsdown.config.ts"
+  ]
+}

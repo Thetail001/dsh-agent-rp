@@ -2,7 +2,7 @@
  * Browser Roleplay view: renders one host-computed observer-safe projection
  * and sends only presenter-supplied prompts, commands, or explicit player text.
  */
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import type { IConversation } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -12,8 +12,8 @@ import { RoleplayView } from './RoleplayView.tsx'
 /** Player-input face bound to the session-scoped conversation service. */
 export interface RoleplayViewInjected {
   /**
-   * Create and open a fresh Session, then archive the superseded source Session.
-   * @returns completion after the new Session is opened and the old one is hidden recoverably.
+   * Open a fresh game through the shared Workspace flow, then archive the superseded Session.
+   * @returns completion after the Workspace-owned transition is requested and the old Session is hidden recoverably.
    */
   startScene: () => Promise<void>
   /**
@@ -31,15 +31,15 @@ export interface RoleplayViewInjected {
   runCommand: (line: string) => Promise<void>
 }
 
-/** Required services: slot ownership, session and Workspace addressing, and prompt admission. */
-export const inject = ['slots', 'sessions', 'workspaces', 'conversation']
+/** Root services required before the deferred Roleplay view registration can be installed. */
+export const inject = ['slots', 'sessions', 'workspaces']
 
 /**
  * Register the generic Roleplay view before ordinary chat in the tab order.
  * @param ctx - browser root context.
  */
 export function apply(ctx: Context): void {
-  ctx.slots.register({
+  ctx.slots.inject('conversation.view', () => ctx.slots.register({
     name: 'conversation.view',
     id: 'roleplay',
     order: -10,
@@ -59,12 +59,14 @@ export function apply(ctx: Context): void {
       }
       return {
         startScene: async () => {
-          const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
           const workspace = ctx.workspaces.list.getSnapshot().items
             .find(candidate => candidate.sessionIds.includes(sessionId))
-          const nextSessionId = await ctx.sessions.create(workspace === undefined
-            ? summary?.cwd === undefined ? {} : { cwd: summary.cwd }
-            : { workspaceId: workspace.workspaceId })
+          if (workspace === undefined) {
+            ctx.workspaces.startSession()
+            await ctx.workspaces.archiveSession(sessionId)
+            return
+          }
+          const nextSessionId = await ctx.workspaces.connectWorkspace(workspace.workspaceId)
           ctx.sessions.open(nextSessionId)
           await ctx.workspaces.archiveSession(sessionId)
         },
@@ -80,5 +82,5 @@ export function apply(ctx: Context): void {
         },
       }
     },
-  }, RoleplayView)
+  }, RoleplayView))
 }

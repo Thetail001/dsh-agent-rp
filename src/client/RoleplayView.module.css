@@ -19,10 +19,6 @@
   display: none;
 }
 
-:global([data-phase]:has([data-conversation-view='exclusive']) [role='tablist']) {
-  display: none;
-}
-
 .header,
 .activity,
 .playerDesk,

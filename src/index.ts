@@ -1,16 +1,17 @@
 /** Host half of the local single-package Roleplay delivery probe. */
 
 import { randomInt } from 'node:crypto'
-import type { Context } from 'cordis'
-import z from 'schemastery'
-import type { AgentSetup } from '@deepseek-ai/dsh-agent'
-import type {} from '@deepseek-ai/dsh-agent-setup'
+import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
+import type {} from '@deepseek-ai/dsh-agent'
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-subagent'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import RoleplayService from './runtime/index.ts'
 import type { RoleplayActorId } from './runtime/index.ts'
+import { registerRoleplaySessionEventTypes } from './runtime/session-event-vocabulary.ts'
 import {
   DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS,
   installStandardWerewolfCoordinator,
@@ -64,11 +65,11 @@ function reasoningEffortId(value: string): ReasoningEffortId {
 }
 
 /**
- * Install the generic runtime and register standard Werewolf setup for Web-owned Agents.
- * Headless compositions receive the runtime without a scenario because they omit the application setup registry.
+ * Install the generic runtime and attach standard Werewolf to top-level Agents.
  * @param ctx - settled Web Host context.
  */
 export async function apply(ctx: Context, config: Config): Promise<void> {
+  ctx.effect(() => registerRoleplaySessionEventTypes(KNOWN_SESSION_EVENT_TYPES))
   await ctx.plugin(RoleplayService)
   const roleplay = ctx.get('roleplay')
   if (roleplay === undefined) throw new Error('portable Roleplay probe loaded without its bundled runtime')
@@ -77,16 +78,15 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
   ctx.effect(() => roleplay.registerPresenter(STANDARD_WEREWOLF_PRESENTER))
 
-  ctx.inject(['agentSetups', 'roleplay', 'subagents'], (webCtx) => {
+  ctx.inject(['agents', 'roleplay', 'subagents'], (webCtx) => {
     let previousHumanActorId: RoleplayActorId | undefined
-    const compose: AgentSetup = (agentCtx) => {
-      const parent = agentCtx.agent
-      if (parent === undefined) throw new Error('portable standard Werewolf setup requires an Agent scope')
-      const recordedSeed = parent.session.events.find(event => event.type === 'rp/seed')
-      const recordedObserver = parent.session.events.find(event => event.type === 'rp/observer')
+    webCtx.on('agent/created', ({ agent }) => {
+      if (agent.session.header.origin === 'subagent') return
+      const recordedSeed = agent.session.events.find(event => event.type === 'rp/seed')
+      const recordedObserver = agent.session.events.find(event => event.type === 'rp/observer')
       const humanActorId = recordedObserver?.type === 'rp/observer'
         ? humanActorForObserver(recordedObserver.data.observerId)
-        : humanActorForSession(String(parent.id), previousHumanActorId)
+        : humanActorForSession(String(agent.id), previousHumanActorId)
       previousHumanActorId = humanActorId
       const seed = recordedSeed?.type === 'rp/seed'
         ? recordedSeed.data
@@ -96,13 +96,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         seed,
         applicationOnly: true,
       })
-      agentCtx.tools.restrict({ allow: [] })
-      agentCtx.systemPrompt.section({
+      agent.ctx.tools.restrict({ allow: [] })
+      agent.ctx.systemPrompt.section({
         name: 'deployment:persona',
         order: 0,
         text: APPLICATION_HANDOFF_INSTRUCTION,
       })
-      installStandardWerewolfCoordinator(agentCtx, webCtx.subagents, 'spawn', {
+      installStandardWerewolfCoordinator(agent.ctx, webCtx.subagents, 'spawn', {
         decisionTimeoutMs: config.decisionTimeoutMs ?? DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS,
         decisionMaxTokens: config.decisionMaxTokens ?? STRUCTURED_DECISION_MAX_TOKENS,
         decisionReasoningEffort: reasoningEffortId(config.decisionReasoningEffort ?? 'off'),
@@ -111,11 +111,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         applicationOnly: true,
         humanActorId,
       })
-      return setup(agentCtx)
-    }
-    webCtx.effect(
-      () => webCtx.agentSetups.register(compose),
-      'portable Roleplay: pre-publication standard Werewolf setup',
-    )
+      const commit = setup(agent.ctx)
+      if (commit instanceof Promise) {
+        throw new Error('portable standard Werewolf setup must remain synchronous')
+      }
+      commit?.commit()
+    })
   })
 }

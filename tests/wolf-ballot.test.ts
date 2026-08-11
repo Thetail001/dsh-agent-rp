@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { RoleplayActorId } from '../.dsh-plugin/src/runtime/index.ts'
-import { completeWolfBallotTargets } from '../.dsh-plugin/src/werewolf/wolf-ballot.ts'
+import type { RoleplayActorId } from '../src/runtime/index.ts'
+import { completeWolfBallotTargets } from '../src/werewolf/wolf-ballot.ts'
 
 const actor = (value: string): RoleplayActorId => value as RoleplayActorId
 

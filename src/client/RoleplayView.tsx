@@ -94,7 +94,6 @@ function Preparation({
     <main
       className={css.preparationShell}
       data-conversation-composer="hidden"
-      data-conversation-view="exclusive"
       aria-busy={disabled}
     >
       <section className={css.preparation} aria-live="polite">
@@ -891,7 +890,6 @@ export function RoleplayView({
       className={css.view}
       data-roleplay-kind={surface.kind}
       data-conversation-composer="hidden"
-      data-conversation-view="exclusive"
       aria-busy={waiting}
     >
       <header className={css.header}>

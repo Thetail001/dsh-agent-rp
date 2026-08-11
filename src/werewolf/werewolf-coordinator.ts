@@ -2,7 +2,7 @@
 
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands'
 import type { ContentBlock, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
@@ -432,6 +432,7 @@ interface DecisionBatchOptions {
 type DecisionFailureKind = 'invalid' | 'timeout'
 type DecisionValidationIssue =
   | 'ballot-reference'
+  | 'commit-grounding'
   | 'evidence'
   | 'hunter-target-corroboration'
   | 'identity-reveal'

@@ -8,7 +8,7 @@ import {
   publicSpeechMoveShapeIssue,
   selectPublicSpeechPrior,
   STANDARD_WEREWOLF_PUBLIC_SPEECH_MOVES,
-} from '../.dsh-plugin/src/werewolf/werewolf-public-speech.ts'
+} from '../src/werewolf/werewolf-public-speech.ts'
 
 const targets = ['seat-2', 'seat-3']
 const stances = ['trust', 'suspect', 'question', 'observe']
