@@ -18,6 +18,7 @@ Development builds run from the repository root after `pnpm install` and require
 - The installed Host entry and browser bundle must load, unload, and load again from a fresh DSH home.
 - Headless startup must activate the Host entry without waiting for Web-only services.
 - Packaging acceptance is keyless; interactive benchmark acceptance uses the configured model provider and sets `DSH_TELEMETRY_DISABLED=1`.
+- Every living werewolf retains one equal ballot. An invalid or expired Character ballot uses that seat's replay-stable fallback; an expired final ballot retains the seat's recorded proposal, so one Character cannot strand the night or promote the human seat into a pack leader.
 - The assembled browser application completes a full match through automatic spectator play, special-role resolution, victory detection, and endgame review without a blocking command failure.
 - Packaged files must contain no local path, credential name or value, telemetry value, distribution fingerprint, or private transcript content.
 

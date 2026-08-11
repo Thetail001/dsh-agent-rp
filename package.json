@@ -5,7 +5,8 @@
   "type": "module",
   "packageManager": "pnpm@11.16.0",
   "scripts": {
-    "build": "pnpm --dir .dsh-plugin run build"
+    "build": "pnpm --dir .dsh-plugin run build",
+    "test:focused": "tsdown tests/wolf-ballot.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-dist --clean && node --test .test-dist/wolf-ballot.test.mjs"
   },
   "devDependencies": {
     "@types/react": "18.3.31",

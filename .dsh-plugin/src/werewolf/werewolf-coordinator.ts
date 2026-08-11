@@ -85,6 +85,7 @@ import {
   STANDARD_WEREWOLF_RATIONALE_MAX_LENGTH,
   STANDARD_WEREWOLF_STATEMENT_MAX_LENGTH,
 } from './werewolf-decision-limits.ts'
+import { completeWolfBallotTargets } from './wolf-ballot.ts'
 
 /** Model-facing tool that prepares one complete standard Werewolf night. */
 export const STANDARD_WEREWOLF_NIGHT_TOOL = 'standard_werewolf_night'
@@ -444,6 +445,7 @@ type DecisionValidationIssue =
   | 'stance-text'
   | 'statement-form'
   | 'statement-length'
+  | 'target-reference'
   | 'wolf-disclosure'
 
 class DecisionValidationError extends Error {
@@ -2563,49 +2565,6 @@ function wolfPackDecisionSpec(
   }
 }
 
-async function startRequiredDecisionBatch<T extends DecisionTrace>(
-  options: DecisionBatchOptions,
-  specs: readonly DecisionSpec[],
-  label: string,
-): Promise<DecisionRun<readonly T[]>> {
-  options.signal.throwIfAborted()
-  const deadline = AbortSignal.timeout(options.decisionTimeoutMs)
-  const signal = AbortSignal.any([options.signal, deadline])
-  const starts = await Promise.allSettled(specs.map(spec => startDecision<T>({
-    subagents: options.subagents,
-    providerName: options.providerName,
-    parent: options.parent,
-    signal,
-    agentOptions: options.agentOptions,
-    ...spec,
-  })))
-  const runs = starts.flatMap(outcome => outcome.status === 'fulfilled' ? [outcome.value] : [])
-  const startFailures = starts.flatMap(outcome => outcome.status === 'rejected' ? [outcome.reason as unknown] : [])
-  const result = startFailures.length === 0
-    ? Promise.all(runs.map(run => run.result))
-    : Promise.reject(new AggregateError(startFailures, `${label} could not start every required decision`))
-  const cleanup = Promise.allSettled(runs.map(run => run.cleanup)).then((outcomes) => {
-    const failures = outcomes.flatMap(outcome => outcome.status === 'rejected' ? [outcome.reason as unknown] : [])
-    if (failures.length > 0) throw new AggregateError(failures, `${label} cleanup failed`)
-  })
-  void result.catch(() => undefined)
-  void cleanup.catch(() => undefined)
-  return {
-    result,
-    cleanup,
-    async settle() {
-      const [decisions, disposal] = await Promise.allSettled([result, cleanup])
-      const failures: unknown[] = []
-      if (decisions.status === 'rejected') failures.push(decisions.reason)
-      if (disposal.status === 'rejected') failures.push(disposal.reason)
-      if (failures.length > 0) throw new AggregateError(failures, `${label} failed or did not dispose cleanly`)
-      /* v8 ignore next -- a rejected result was included in the AggregateError above. */
-      if (decisions.status !== 'fulfilled') throw decisions.reason
-      return decisions.value
-    },
-  }
-}
-
 /**
  * Start an equal-ballot batch in which an invalid or expired Character simply
  * casts no ballot. Parent cancellation and child cleanup failures still reject
@@ -2689,18 +2648,34 @@ function wolfSelectionContext(
   }
 }
 
+function fallbackWolfTarget(
+  parent: Agent,
+  world: Storyworld,
+  actorId: RoleplayActorId,
+): RoleplayActorId {
+  const targetId = decisionTargetOrder(
+    parent,
+    world,
+    `night-wolf-fallback:${String(nightRound(world))}:${String(actorId)}`,
+    livingSeats(world),
+  )[0]
+  if (targetId === undefined) throw new Error('a living werewolf has no replay-stable fallback target')
+  return targetId
+}
+
 function resolveWolfPackBallot(
   parent: Agent,
   world: Storyworld,
   context: WolfSelectionContext,
   decisions: readonly (TargetDecision | undefined)[],
+  fallbackByActor: ReadonlyMap<RoleplayActorId, RoleplayActorId> = new Map(),
 ): WolfPackDecision {
-  const targetByActor = new Map(context.directByActor)
-  for (const [index, actorId] of context.agentWolves.entries()) {
-    const decision = decisions[index]
-    if (decision !== undefined) targetByActor.set(actorId, decision.target_id)
-  }
-  if (targetByActor.size === 0) throw new Error('the living werewolves produced no pack ballot')
+  const targetByActor = completeWolfBallotTargets(
+    context.directByActor,
+    context.agentWolves,
+    decisions.map(decision => decision?.target_id),
+    actorId => fallbackByActor.get(actorId) ?? fallbackWolfTarget(parent, world, actorId),
+  )
   const votes = new Map<RoleplayActorId, number>()
   for (const targetId of targetByActor.values()) {
     votes.set(targetId, (votes.get(targetId) ?? 0) + 1)
@@ -2775,7 +2750,7 @@ async function startWolfPack(
       'standard Werewolf pack ballot batch',
     )
     const result = ballotRun.result.then(decisions =>
-      resolveWolfPackBallot(options.parent, world, context, decisions))
+      resolveWolfPackBallot(options.parent, world, context, decisions, proposalContext.directByActor))
     const cleanup = ballotRun.cleanup
     void result.catch(() => undefined)
     void cleanup.catch(() => undefined)
@@ -2801,13 +2776,14 @@ async function startWolfPack(
     context.agentWolves.map(actorId => wolfPackDecisionSpec(options.parent, world, actorId, proposalTask)),
     'standard Werewolf pack proposal batch',
   )
-  let ballotRun: DecisionRun<readonly TargetDecision[]> | undefined
+  let ballotRun: DecisionRun<readonly (TargetDecision | undefined)[]> | undefined
   const result = proposalRun.result.then(async (proposals) => {
-    const targetByActor = new Map(context.directByActor)
-    for (const [index, actorId] of context.agentWolves.entries()) {
-      const proposal = proposals[index]
-      if (proposal !== undefined) targetByActor.set(actorId, proposal.target_id)
-    }
+    const targetByActor = completeWolfBallotTargets(
+      context.directByActor,
+      context.agentWolves,
+      proposals.map(proposal => proposal?.target_id),
+      actorId => fallbackWolfTarget(options.parent, world, actorId),
+    )
     // All-Character packs are asynchronous. Their independent proposals are
     // already equal ballots; a second synthetic consultation wave doubles the
     // latency without adding authority or information from a human teammate.
@@ -2837,7 +2813,7 @@ async function startWolfPack(
         if (ballot !== undefined) targetByActor.set(actorId, ballot.target_id)
       }
     }
-    return resolveWolfPackBallot(options.parent, world, context, finalDecisions)
+    return resolveWolfPackBallot(options.parent, world, context, finalDecisions, targetByActor)
   })
   const cleanup = (async () => {
     await result.catch(() => undefined)
@@ -2881,7 +2857,7 @@ async function coordinateHumanWolfProposals(
   const context = wolfSelectionContext(world, [humanSelection])
   progress.update({ kind: 'night', stage: 'independent' })
   const teammateProposal = `${seatLabel(humanSelection.actorId)}提议${seatLabel(humanSelection.targetId)}`
-  const proposalRun = await startRequiredDecisionBatch<TargetDecision>(options, context.agentWolves.map(actorId => wolfPackDecisionSpec(
+  const proposalRun = await startPartialDecisionBatch<TargetDecision>(options, context.agentWolves.map(actorId => wolfPackDecisionSpec(
     options.parent,
     world,
     actorId,
@@ -2889,12 +2865,12 @@ async function coordinateHumanWolfProposals(
       + 'A directly controlled teammate is not the pack leader and its proposal is not an order.',
   )), 'standard Werewolf pack proposal batch')
   const decisions = await proposalRun.settle()
-  const targetByActor = new Map(context.directByActor)
-  for (const [index, actorId] of context.agentWolves.entries()) {
-    const decision = decisions[index]
-    if (decision === undefined) throw new Error(`${String(actorId)} produced no wolf-pack proposal`)
-    targetByActor.set(actorId, decision.target_id)
-  }
+  const targetByActor = completeWolfBallotTargets(
+    context.directByActor,
+    context.agentWolves,
+    decisions.map(decision => decision?.target_id),
+    actorId => fallbackWolfTarget(options.parent, world, actorId),
+  )
   if (targetByActor.size !== context.livingWolves.length) {
     throw new Error('standard Werewolf pack proposal stage requires one proposal per living wolf')
   }
