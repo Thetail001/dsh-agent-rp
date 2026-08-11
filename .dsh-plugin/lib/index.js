@@ -12755,7 +12755,7 @@ function assertDecisionTrace(value, options, visibleIds, committedMemory) {
 			if (repeated !== void 0 && !evidenceIds.some((id) => {
 				if (!options.publicEvidenceIds?.includes(id) || repeated.availableEvidenceIds.includes(id)) return false;
 				const speechActor = /^day:\d+:speech:(seat-\d+)$/u.exec(id)?.[1];
-				return speechActor === void 0 || speechActor === trace.target_id;
+				return speechActor === void 0 || speechActor === trace.target_id && !isBarePassEvidence(id, options);
 			})) repeatedPublicJudgment = true;
 			const prior = committedMemory.findLast((decision) => decision.action.name === "speak" && decision.publicJudgment?.targetId === trace.target_id);
 			if (prior?.publicJudgment?.stance !== void 0 && prior.publicJudgment.stance !== trace.stance && !evidenceIds.some((id) => options.publicEvidenceIds?.includes(id) && !prior.evidenceIds.includes(id))) throw new DecisionValidationError("stance-change", `${options.label} changed public stance without newly cited public evidence`);
@@ -12830,9 +12830,21 @@ const CORROBORATION_REFERENCE = /吻合|印证|证明|支持|佐证|相符|一�
 const NEGATED_CORROBORATION_REFERENCE = /(?:不能|无法|不代表|并不|不是|不足以|不)[^。！？]{0,12}(?:吻合|印证|证明|支持|佐证|相符|一致|对应)/iu;
 const PRIVATE_INFORMATION_CORROBORATION_REFERENCE = new RegExp(["(?:我(?:这边)?(?:所)?(?:掌握|知道|了解|持有)|我手中)(?:的)?(?:信息|情况)", "[^。！？]{0,12}(?:吻合|印证|证明|支持|佐证|相符|一致|对应)"].join(""), "iu");
 const PRIVATE_IDENTITY_CORROBORATION_REFERENCE = /(?:与|和)我(?:的)?(?:真实)?身份(?:相互)?(?:吻合|印证|相符|一致)/iu;
+const HUNTER_SHOT_EVIDENCE_ID = /^day:\d+:hunter-shot:seat-\d+$/u;
+const HUNTER_TARGET_CORROBORATION_REFERENCE = /证死|实锤|印证|证明|证实|坐实|所实/iu;
+const HUNTER_TARGET_IDENTITY_REFERENCE = /狼(?:人)?|查杀|查验|身份|阵营|这条线|结论/iu;
+const QUOTED_HUNTER_CORROBORATION_REBUTTAL = /(?:你|他|\d+\s*号)[^。！？]{0,12}(?:说|声称)[^。！？]{0,48}(?:可|但|只是|不过)/iu;
+function isBarePassEvidence(id, options) {
+	const pending = options.pendingPublicStatements?.find((statement) => statement.evidence_id === id);
+	if (pending !== void 0) return pending.statement.trim() === "过";
+	const actorId = /^day:\d+:speech:(seat-\d+)$/u.exec(id)?.[1];
+	if (actorId === void 0) return false;
+	return options.world.choices.find((candidate) => String(candidate.id) === id)?.text.trim() === `${actorId}: 过`;
+}
 function assertPublicDiscussionStatement(statement, evidenceIds, options) {
 	if (ABSENCE_REFERENCE.test(statement) && SUSPICION_REFERENCE.test(statement)) throw new DecisionValidationError("public-grounding", `${options.label} treated non-registration or silence as suspicious public evidence`);
 	if (NO_DEATH_REFERENCE.test(statement) && SEER_RESULT_REFERENCE.test(statement) && CORROBORATION_REFERENCE.test(statement) && !NEGATED_CORROBORATION_REFERENCE.test(statement)) throw new DecisionValidationError("no-death-corroboration", `${options.label} treated a no-death night as corroboration for a Seer claim or result`);
+	if (evidenceIds.some((id) => HUNTER_SHOT_EVIDENCE_ID.test(id)) && HUNTER_TARGET_CORROBORATION_REFERENCE.test(statement) && HUNTER_TARGET_IDENTITY_REFERENCE.test(statement) && !NEGATED_CORROBORATION_REFERENCE.test(statement) && !QUOTED_HUNTER_CORROBORATION_REBUTTAL.test(statement)) throw new DecisionValidationError("hunter-target-corroboration", `${options.label} treated a Hunter's target as proof of that target's identity or alignment`);
 	if (standardWerewolfRoleIn(options.world, options.actorId) !== "seer" && SEER_RESULT_REFERENCE.test(statement) && (PRIVATE_INFORMATION_CORROBORATION_REFERENCE.test(statement) || PRIVATE_IDENTITY_CORROBORATION_REFERENCE.test(statement)) && !NEGATED_CORROBORATION_REFERENCE.test(statement)) throw new DecisionValidationError("private-corroboration", `${options.label} treated unspecified private information as corroboration for a Seer claim or result`);
 	if (SELF_BALLOT_REFERENCE.test(statement)) {
 		const actorId = String(options.actorId).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -13303,6 +13315,32 @@ function existingDiscussionSpeakers(world, round) {
 		return id.startsWith(prefix) ? [asRoleplayActorId(id.slice(prefix.length))] : [];
 	}));
 }
+function committedDiscussionJudgments(parent, world, round, publicEvidenceIds) {
+	const speechPrefix = `day:${String(round)}:speech:`;
+	const choiceIndex = new Map(world.choices.map((choice, index) => [String(choice.id), index]));
+	const judgments = [];
+	for (const choice of world.choices) {
+		const choiceId = String(choice.id);
+		if (!choiceId.startsWith(speechPrefix)) continue;
+		const actorId = asRoleplayActorId(choiceId.slice(speechPrefix.length));
+		const memory = standardWerewolfDecisionHistory(parent.session.events, actorId).findLast((decision) => decision.phase === `discussion-${String(round)}` && decision.action.name === "speak" && decision.publicJudgment !== void 0);
+		const judgment = memory?.publicJudgment;
+		if (memory === void 0 || judgment === void 0) continue;
+		const acceptedAt = choiceIndex.get(choiceId);
+		if (acceptedAt === void 0) throw new Error(`standard Werewolf discussion cannot place committed speech ${JSON.stringify(choiceId)}`);
+		judgments.push({
+			actorId,
+			targetId: judgment.targetId,
+			stance: judgment.stance,
+			evidenceIds: memory.evidenceIds,
+			availableEvidenceIds: publicEvidenceIds.filter((id) => {
+				const index = choiceIndex.get(id);
+				return index === void 0 || index < acceptedAt;
+			})
+		});
+	}
+	return judgments;
+}
 async function coordinateDiscussion(options, world, humanActorId, humanStatement, progress) {
 	const round = discussionRound(world);
 	const living = livingSeats(world);
@@ -13333,7 +13371,7 @@ async function coordinateDiscussion(options, world, humanActorId, humanStatement
 	});
 	const committedPublicEvidenceIds = tablePublicEvidenceIds(world, living);
 	const decisions = [];
-	const coveredJudgments = [];
+	const coveredJudgments = committedDiscussionJudgments(options.parent, world, round, committedPublicEvidenceIds);
 	for (const [index, actorId] of actors.entries()) {
 		options.signal.throwIfAborted();
 		const visiblePending = [...pendingPublicStatements];
@@ -13346,7 +13384,7 @@ async function coordinateDiscussion(options, world, humanActorId, humanStatement
 		const alreadySpoke = [...existing, ...pendingPublicStatements.map((statement) => statement.actor_id)];
 		const canStillSpeak = remaining.slice(remaining.indexOf(actorId) + 1);
 		const turnBoundary = `本轮已经发言且不能再次回应的玩家：${alreadySpoke.length === 0 ? "无" : alreadySpoke.map(seatLabel$2).join("、")}。本轮尚可发言的玩家：${canStillSpeak.length === 0 ? "无" : canStillSpeak.map(seatLabel$2).join("、")}。对已经发言的玩家只能回应、反驳或把矛盾留作投票依据，不能追问、要求解释或等待其回答；问题只能留给本轮尚可发言的玩家。`;
-		const task = `进行第 ${String(round)} 天公开发言。你是${seatLabel$2(actorId)}。${positionInstruction}` + noveltyInstruction + turnBoundary + "先按顺序阅读 pending_public_statements；只能回应已经公开的原话，尚未出现的玩家还没有发言。真人桌面发言通常只接住一两个具体矛盾，直接表示同意、反对或留下明确判断，不会重新汇报整张桌子。有一条此前没人说过的具体判断时选择 substantive，并填写 target_id 与 stance；没有新增信息时选择 brief，target_id 与 stance 都填 null，statement 与 fallback_statement 都只填“过”。public_discussion_context.covered_public_judgments 列出本轮已有的结构化判断；同一目标和立场已经反复出现时，只有被评价玩家随后说出的新内容，或后来出现的选票与阶段事实，才足以继续这个判断；其他玩家的附和与改写不算新证据。否则必须改用 brief，不能换词复述。statement 不得提及前置位、后置位、发言顺序、输出字段、证据 ID 或系统规则，也不要逐号点评、使用“依据公开记录”一类报告式开头或在结尾重复总结。一句能说清就停，短分句用逗号连接，不要用一串句号制造停顿。警长竞选已经结束，不得继续竞选或复述竞选词；未报名和沉默本身不是可疑证据。只有真实预言家可以延续已经公开的预言家身份；不得自称女巫、猎人、白痴或村民。平安夜不能印证预言家或查验结论，非预言家也不能用私密信息或真实身份为公开结论背书。描述跨日记录时使用“第 N 天”。" + (publicEvidenceIds.length === 0 ? "当前 public_evidence_ids 为空，evidence_ids 填空数组。" : "evidence_ids 至少引用 public_evidence_ids 中一项；substantive 的正文要指向一名具体玩家或一处具体冲突。") + "若 committed_decision_memory 中对同一目标的立场不同，还必须增加一项此前未引用的公开依据。fallback_statement 是独立的安全替代表达，不能复制 statement；两个字段都只写玩家真正说出口的一段正文，不得换行，不得包含改写过程、自检、安全分析或给主持人的说明。";
+		const task = `进行第 ${String(round)} 天公开发言。你是${seatLabel$2(actorId)}。${positionInstruction}` + noveltyInstruction + turnBoundary + "先按顺序阅读 pending_public_statements；只能回应已经公开的原话，尚未出现的玩家还没有发言。真人桌面发言通常只接住一两个具体矛盾，直接表示同意、反对或留下明确判断，不会重新汇报整张桌子。有一条此前没人说过的具体判断时选择 substantive，并填写 target_id 与 stance；没有新增信息时选择 brief，target_id 与 stance 都填 null，statement 与 fallback_statement 都只填“过”。public_discussion_context.covered_public_judgments 列出本轮已有的结构化判断；同一目标和立场已经反复出现时，只有被评价玩家随后说出的新内容，或后来出现的选票与阶段事实，才足以继续这个判断；其他玩家的附和与改写不算新证据。否则必须改用 brief，不能换词复述。statement 不得提及前置位、后置位、发言顺序、输出字段、证据 ID 或系统规则，也不要逐号点评、使用“依据公开记录”一类报告式开头或在结尾重复总结。一句能说清就停，短分句用逗号连接，不要用一串句号制造停顿。警长竞选已经结束，不得继续竞选或复述竞选词；未报名和沉默本身不是可疑证据。只有真实预言家可以延续已经公开的预言家身份；不得自称女巫、猎人、白痴或村民。平安夜不能印证预言家或查验结论，非预言家也不能用私密信息或真实身份为公开结论背书。猎人开枪只公开猎人本人的身份，枪口不证明目标的身份或阵营，也不能核验预言家的查验。描述跨日记录时使用“第 N 天”。" + (publicEvidenceIds.length === 0 ? "当前 public_evidence_ids 为空，evidence_ids 填空数组。" : "evidence_ids 至少引用 public_evidence_ids 中一项；substantive 的正文要指向一名具体玩家或一处具体冲突。") + "若 committed_decision_memory 中对同一目标的立场不同，还必须增加一项此前未引用的公开依据。fallback_statement 是独立的安全替代表达，不能复制 statement；两个字段都只写玩家真正说出口的一段正文，不得换行，不得包含改写过程、自检、安全分析或给主持人的说明。";
 		const spec = actorId === explosionDecider ? {
 			actorId,
 			world,
