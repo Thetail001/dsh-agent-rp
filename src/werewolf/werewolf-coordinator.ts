@@ -90,6 +90,11 @@ import {
   STANDARD_WEREWOLF_STATEMENT_MAX_LENGTH,
 } from './werewolf-decision-limits.ts'
 import {
+  appendStandardWerewolfDecisionFailure,
+  type StandardWerewolfDecisionFailure as DecisionFailure,
+  type StandardWerewolfDecisionValidationIssue as DecisionValidationIssue,
+} from './werewolf-diagnostics.ts'
+import {
   directedPublicFocusTargetIds,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
@@ -447,37 +452,6 @@ interface DecisionBatchOptions {
   readonly onFailure?: (failure: DecisionFailure) => void
   /** Permit an optional-action batch to return only missing decisions instead of rejecting. */
   readonly allowAllFailures?: boolean
-}
-
-type DecisionFailureKind = 'invalid' | 'timeout'
-type DecisionValidationIssue =
-  | 'ballot-reference'
-  | 'commit-grounding'
-  | 'evidence'
-  | 'hunter-target-corroboration'
-  | 'hold-grounding'
-  | 'identity-reveal'
-  | 'no-death-corroboration'
-  | 'private-corroboration'
-  | 'private-role-disclosure'
-  | 'public-grounding'
-  | 'rationale'
-  | 'response-grounding'
-  | 'self-ballot'
-  | 'shape'
-  | 'ballot-continuity'
-  | 'stance-change'
-  | 'stance-text'
-  | 'statement-form'
-  | 'statement-length'
-  | 'target-reference'
-  | 'wolf-disclosure'
-
-interface DecisionFailure {
-  readonly actorId: RoleplayActorId
-  readonly kind: DecisionFailureKind
-  readonly issue?: DecisionValidationIssue
-  readonly message: string
 }
 
 class DecisionValidationError extends Error {
@@ -4028,6 +4002,13 @@ function installApplicationActionCommand(
               publicDiscussionAgentOptions,
               progress,
               (failure) => {
+                appendStandardWerewolfDecisionFailure(
+                  parent.session,
+                  sourceEventSeq,
+                  action.revision,
+                  world.scene.location,
+                  failure,
+                )
                 const issue = failure.issue === undefined ? '' : ` (${failure.issue})`
                 agentCtx.logger.warn(
                   `standard Werewolf Character ${String(failure.actorId)} ${failure.kind}${issue}: ${failure.message}`,

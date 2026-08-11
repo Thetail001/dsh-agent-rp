@@ -5,6 +5,7 @@ export const ROLEPLAY_SESSION_EVENT_TYPES = [
   'rp/seed',
   'rp/observer',
   'rp/proposal',
+  'werewolf/decision-failure',
   'werewolf/decision-memory',
   'werewolf/progress',
 ] as const

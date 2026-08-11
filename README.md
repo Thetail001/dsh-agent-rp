@@ -32,6 +32,8 @@ The package manifest contributes `cordis.patch.yml` and the browser client entry
 
 The rc.2 runtime exports its persistence event vocabulary but does not yet provide a downstream registration service. While this bundle is active, it registers the required `rp/*` and `werewolf/*` records with that vocabulary; it does not mark identity, world state, or Character memory as ignorable data.
 
+Discarded Character attempts are retained as log-only `werewolf/decision-failure` classifications for developer inspection. These records identify the phase, seat, timeout, or validation category without storing rejected model text or private reasoning.
+
 ## Acceptance evidence
 
 - `pnpm run test:focused` covers equal wolf ballots, revealed-Idiot participation, and the public-speech move contract.
