@@ -4,7 +4,7 @@ import { randomInt } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-agent'
-import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-subagent'
 import type {} from '@deepseek-ai/dsh-system-prompt'
@@ -31,6 +31,7 @@ export const name = 'dsh-roleplay-portable-spike'
 export const inject = ['systemPrompt', 'tools']
 
 const APPLICATION_HANDOFF_INSTRUCTION = '这是由“角色扮演”页面驱动的标准十二人狼人杀。普通对话不得推进对局、调用游戏工具或询问玩家行动。收到开局消息时，只回复“对局已创建，请切换到角色扮演页面。”，然后结束本轮。'
+const ROLEPLAY_SESSION_NOTICE = '狼人杀对局已创建'
 const STRUCTURED_DECISION_MAX_TOKENS = 2_048
 const PUBLIC_DISCUSSION_MAX_TOKENS = 2_048
 
@@ -116,6 +117,17 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         throw new Error('portable standard Werewolf setup must remain synchronous')
       }
       commit?.commit()
+      if (agent.session.surface.nodes.length === 0) {
+        agent.session.append('user/message', createUserMessage({
+          content: [{ type: 'text', text: ROLEPLAY_SESSION_NOTICE }],
+          source: {
+            kind: 'plugin',
+            plugin: name,
+            form: 'notice',
+            summary: ROLEPLAY_SESSION_NOTICE,
+          },
+        }), { surfaceOp: 'append' })
+      }
     })
   })
 }

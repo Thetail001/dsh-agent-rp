@@ -4,6 +4,8 @@ This private internal-testing package adds a Chinese Roleplay surface and a comp
 
 Every top-level Session created in a profile that enables this bundle becomes a new Werewolf game. Subagent Sessions remain Character workers and are never initialized as separate games. A resumed game keeps its recorded observer and seed, while a fresh game receives a shuffled role layout and human seat before its first turn starts.
 
+The Web profile opens new top-level Sessions directly on the Roleplay view. Creating a game does not require a start phrase or spend a model turn.
+
 The benchmark supports night and day phases, Sheriff election, sequential public discussion, voting, special-role actions, victory resolution, and a developer-facing endgame review. Model dialogue remains experimental. Multiplayer is outside this preview.
 
 ## Build and install
