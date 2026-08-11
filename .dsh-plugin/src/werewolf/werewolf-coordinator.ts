@@ -427,8 +427,10 @@ interface DecisionBatchOptions {
 
 type DecisionFailureKind = 'invalid' | 'timeout'
 type DecisionValidationIssue =
+  | 'ballot-reference'
   | 'evidence'
   | 'hunter-target-corroboration'
+  | 'identity-reveal'
   | 'no-death-corroboration'
   | 'private-corroboration'
   | 'private-role-disclosure'
@@ -438,6 +440,7 @@ type DecisionValidationIssue =
   | 'shape'
   | 'ballot-continuity'
   | 'stance-change'
+  | 'stance-text'
   | 'statement-form'
   | 'statement-length'
   | 'wolf-disclosure'
@@ -745,6 +748,20 @@ interface DecisionRun<T> {
   settle(): Promise<T>
 }
 
+/**
+ * Preserve a replay-safe game decision when one non-human Character response is invalid or expires.
+ * Child cleanup remains authoritative: a lifecycle failure still rejects instead of being mistaken for a pass.
+ */
+async function settleDecisionWithFallback<T>(
+  run: DecisionRun<T> | undefined,
+  fallback: T | undefined,
+): Promise<T | undefined> {
+  if (run === undefined) return fallback
+  const result = await run.result.catch(() => fallback)
+  await run.cleanup
+  return result
+}
+
 /** Bind decision evidence to the exact ids present in one Character's projected view. */
 function bindDecisionEvidenceSchema(
   schema: ObjectJsonSchema,
@@ -930,8 +947,13 @@ function assertDecisionTrace(
       if (!(STANDARD_WEREWOLF_PUBLIC_STANCES as readonly unknown[]).includes(trace.stance)) {
         throw new DecisionValidationError('shape', `${options.label} returned an invalid public judgment stance`)
       }
-      const repeated = options.publicDiscussionContext?.coveredJudgments.find(judgment =>
-        judgment.targetId === trace.target_id && judgment.stance === trace.stance)
+      const repeated = standardWerewolfRoleIn(options.world, options.actorId) === 'seer'
+        ? undefined
+        : options.publicDiscussionContext?.coveredJudgments.find(judgment =>
+          judgment.targetId === trace.target_id
+          && publicJudgmentKind(judgment.stance) === publicJudgmentKind(
+            trace.stance as StandardWerewolfPublicStance,
+          ))
       if (repeated !== undefined
         && !evidenceIds.some((id) => {
           if (!options.publicEvidenceIds?.includes(id) || repeated.availableEvidenceIds.includes(id)) return false
@@ -989,7 +1011,12 @@ function assertDecisionTrace(
   let firstFailure: DecisionValidationError | undefined
   for (const statement of candidates) {
     try {
-      assertPublicStatementCandidate(statement, { action: trace.action, evidence_ids: evidenceIds }, options)
+      assertPublicStatementCandidate(statement, {
+        action: trace.action,
+        evidence_ids: evidenceIds,
+        stance: trace.stance,
+        target_id: trace.target_id,
+      }, options)
       if (repeatedPublicJudgment) {
         return {
           ...normalizedValue,
@@ -1012,7 +1039,12 @@ function assertDecisionTrace(
 
 function assertPublicStatementCandidate(
   statement: string,
-  trace: { readonly action?: unknown; readonly evidence_ids: readonly string[] },
+  trace: {
+    readonly action?: unknown
+    readonly evidence_ids: readonly string[]
+    readonly stance?: unknown
+    readonly target_id?: unknown
+  },
   options: DecisionOptions,
 ): void {
   if (statement.trim().length === 0 && options.publicDiscussionContext !== undefined) {
@@ -1028,6 +1060,12 @@ function assertPublicStatementCandidate(
     throw new DecisionValidationError(
       'statement-form',
       `${options.label} returned drafting or self-review text instead of one public statement`,
+    )
+  }
+  if (PUBLIC_STATEMENT_INTERVIEW_ARTIFACT.test(statement)) {
+    throw new DecisionValidationError(
+      'statement-form',
+      `${options.label} returned an interview template instead of one direct table statement`,
     )
   }
   const forbiddenRoleClaim = options.allowedPublicRoleClaims === undefined
@@ -1049,8 +1087,14 @@ function assertPublicStatementCandidate(
       `${options.label} disclosed its hidden wolf alignment in public text`,
     )
   }
+  if (trace.stance === 'observe' && SUSPICION_REFERENCE.test(statement)) {
+    throw new DecisionValidationError(
+      'stance-text',
+      `${options.label} labeled an accusatory statement as a neutral observation`,
+    )
+  }
   if (options.publicDiscussionContext !== undefined) {
-    assertPublicDiscussionStatement(statement, trace.evidence_ids, options)
+    assertPublicDiscussionStatement(statement, trace.evidence_ids, trace.target_id, options)
   }
 }
 
@@ -1064,7 +1108,13 @@ const PUBLIC_STATEMENT_AUTHORING_ARTIFACT = new RegExp([
   '(?:两|这两)句都(?:没有|符合)',
   '(?:私密泄露|公开边界|安全分析|所需结构)',
 ].join('|'), 'u')
-const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下/iu
+const PUBLIC_STATEMENT_INTERVIEW_ARTIFACT = new RegExp([
+  '我想问(?:一句|一下)?',
+  '还是说[^。！？]{0,60}(?:思路|说法|判断|解释)',
+  '[^，。！？]{0,24}是[^，。！？]{0,24}还是[^，。！？]{0,24}',
+  '而不是',
+].join('|'), 'u')
+const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下|卸力|遮掩|找台阶/iu
 const SELF_BALLOT_REFERENCE = /(?:投|票|上)(?:给)?我|我(?:被|让)[^。！？]{0,8}(?:投|票|上)/iu
 const NO_DEATH_REFERENCE = /平安夜|昨夜平安|夜里?平安|(?:没有|无)玩家死亡|无人死亡/iu
 const SEER_RESULT_REFERENCE = new RegExp([
@@ -1082,6 +1132,12 @@ const HUNTER_SHOT_EVIDENCE_ID = /^day:\d+:hunter-shot:seat-\d+$/u
 const HUNTER_TARGET_CORROBORATION_REFERENCE = /证死|实锤|印证|证明|证实|坐实|所实/iu
 const HUNTER_TARGET_IDENTITY_REFERENCE = /狼(?:人)?|查杀|查验|身份|阵营|这条线|结论/iu
 const QUOTED_HUNTER_CORROBORATION_REBUTTAL = /(?:你|他|\d+\s*号)[^。！？]{0,12}(?:说|声称)[^。！？]{0,48}(?:可|但|只是|不过)/iu
+const PUBLIC_IDENTITY = '(?:狼(?:人)?|好人|预言家|女巫|猎人|白痴|村民|平民)'
+const PUBLIC_IDENTITY_CERTAINTY = '(?:结果|已经|现已|确认|证实|坐实|实锤|翻牌)'
+const CERTAIN_PUBLIC_IDENTITY_REFERENCES = [
+  new RegExp(`${PUBLIC_IDENTITY_CERTAINTY}[^。！？]{0,12}(\\d+)\\s*号(?:玩家)?[^。！？]{0,8}(?:是|为|属于)?\\s*${PUBLIC_IDENTITY}`, 'giu'),
+  new RegExp(`(\\d+)\\s*号(?:玩家)?[^。！？]{0,12}${PUBLIC_IDENTITY_CERTAINTY}[^。！？]{0,8}(?:是|为|属于)?\\s*${PUBLIC_IDENTITY}`, 'giu'),
+]
 
 function isBarePassEvidence(id: string, options: DecisionOptions): boolean {
   const pending = options.pendingPublicStatements?.find(statement => statement.evidence_id === id)
@@ -1092,11 +1148,30 @@ function isBarePassEvidence(id: string, options: DecisionOptions): boolean {
   return choice?.text.trim() === `${actorId}: 过`
 }
 
+function publicJudgmentKind(stance: StandardWerewolfPublicStance): 'trust' | 'concern' | 'observe' {
+  return stance === 'trust' ? 'trust' : stance === 'observe' ? 'observe' : 'concern'
+}
+
 function assertPublicDiscussionStatement(
   statement: string,
   evidenceIds: readonly string[],
+  targetId: unknown,
   options: DecisionOptions,
 ): void {
+  assertCitedBallotReferences(statement, evidenceIds, targetId, options)
+  for (const pattern of CERTAIN_PUBLIC_IDENTITY_REFERENCES) {
+    for (const match of statement.matchAll(pattern)) {
+      const seat = match[1]
+      if (seat !== undefined
+        && !evidenceIds.includes(`seat-${seat}-role`)
+        && !evidenceIds.includes(`seat-${seat}-alignment`)) {
+        throw new DecisionValidationError(
+          'identity-reveal',
+          `${options.label} described an identity as publicly confirmed without a public reveal`,
+        )
+      }
+    }
+  }
   if (ABSENCE_REFERENCE.test(statement) && SUSPICION_REFERENCE.test(statement)) {
     throw new DecisionValidationError(
       'public-grounding',
@@ -1141,6 +1216,77 @@ function assertPublicDiscussionStatement(
         `${options.label} described another player's ballot target as itself`,
       )
     }
+  }
+}
+
+function hasCitedBallot(
+  evidenceIds: readonly string[],
+  voterId: RoleplayActorId,
+  targetId: RoleplayActorId | 'abstain',
+): boolean {
+  const suffix = `:${String(voterId)}:${String(targetId)}`
+  return evidenceIds.some(id => (id.startsWith('sheriff-election:')
+    || id.startsWith('sheriff-pk:')
+    || /^day:\d+:(?:exile-vote|pk-vote):/u.test(id)) && id.endsWith(suffix))
+}
+
+function assertCitedBallot(
+  evidenceIds: readonly string[],
+  options: DecisionOptions,
+  voterId: RoleplayActorId,
+  targetId: RoleplayActorId | 'abstain',
+): void {
+  if (hasCitedBallot(evidenceIds, voterId, targetId)) return
+  throw new DecisionValidationError(
+    'ballot-reference',
+    `${options.label} described a ballot without citing the matching public ballot record`,
+  )
+}
+
+function seatActorId(number: string): RoleplayActorId {
+  return asRoleplayActorId(`seat-${number}`)
+}
+
+function assertCitedBallotReferences(
+  statement: string,
+  evidenceIds: readonly string[],
+  targetId: unknown,
+  options: DecisionOptions,
+): void {
+  const positiveTarget = '(?<![没未不])投(?:给|了|的(?:却)?是)?\\s*(\\d+)\\s*号'
+  for (const match of statement.matchAll(new RegExp(`我(?:本人)?[^。！？]{0,10}${positiveTarget}`, 'gu'))) {
+    if (match[1] !== undefined) assertCitedBallot(evidenceIds, options, options.actorId, seatActorId(match[1]))
+  }
+  for (const match of statement.matchAll(new RegExp(`${positiveTarget}[^。！？]{0,12}包括我(?:本人)?`, 'gu'))) {
+    if (match[1] !== undefined) assertCitedBallot(evidenceIds, options, options.actorId, seatActorId(match[1]))
+  }
+  const publicTarget = typeof targetId === 'string'
+    && options.publicJudgmentTargets?.includes(asRoleplayActorId(targetId)) === true
+    ? asRoleplayActorId(targetId)
+    : undefined
+  if (publicTarget !== undefined) {
+    for (const match of statement.matchAll(new RegExp(`你[^。！？]{0,18}${positiveTarget}`, 'gu'))) {
+      if (match[1] !== undefined) {
+        assertCitedBallot(evidenceIds, options, publicTarget, seatActorId(match[1]))
+      }
+    }
+    if (new RegExp(`(?:你|他)[^。！？]{0,18}(?<![没未不])投(?:给|了|的(?:却)?是)?\\s*我`, 'u').test(statement)) {
+      assertCitedBallot(evidenceIds, options, publicTarget, options.actorId)
+    }
+  }
+  for (const match of statement.matchAll(new RegExp(
+    `(\\d+)\\s*号[^。！？]{0,12}(?:自己|本人)[^。！？]{0,8}${positiveTarget}`,
+    'gu',
+  ))) {
+    if (match[1] !== undefined && match[2] !== undefined) {
+      assertCitedBallot(evidenceIds, options, seatActorId(match[1]), seatActorId(match[2]))
+    }
+  }
+  for (const match of statement.matchAll(/(\d+)\s*号[^。！？]{0,10}弃(?:了)?票/gu)) {
+    if (match[1] !== undefined) assertCitedBallot(evidenceIds, options, seatActorId(match[1]), 'abstain')
+  }
+  if (/我(?:本人)?[^。！？]{0,10}弃(?:了)?票/u.test(statement)) {
+    assertCitedBallot(evidenceIds, options, options.actorId, 'abstain')
   }
 }
 
@@ -1932,11 +2078,14 @@ async function coordinateDiscussion(
       + '真人桌面发言通常只接住一两个具体矛盾，直接表示同意、反对或留下明确判断，不会重新汇报整张桌子。'
       + '有一条此前没人说过的具体判断时选择 substantive，并填写 target_id 与 stance；'
       + '没有新增信息时选择 brief，target_id 与 stance 都填 null，statement 与 fallback_statement 都只填“过”。'
-      + 'public_discussion_context.covered_public_judgments 列出本轮已有的结构化判断；同一目标和立场已经反复出现时，'
+      + 'public_discussion_context.covered_public_judgments 列出本轮已有的结构化判断；对同一目标的怀疑与追问属于同一类关注，'
       + '只有被评价玩家随后说出的新内容，或后来出现的选票与阶段事实，才足以继续这个判断；其他玩家的附和与改写不算新证据。'
       + '否则必须改用 brief，不能换词复述。statement 不得提及前置位、后置位、发言顺序、'
       + '输出字段、证据 ID 或系统规则，也不要逐号点评、使用“依据公开记录”一类报告式开头或在结尾重复总结。'
+      + '直接说出自己的判断，不要使用“是……还是……”“而不是……”或“我想问一句”这类采访式对照句。'
       + '一句能说清就停，短分句用逗号连接，不要用一串句号制造停顿。警长竞选已经结束，不得继续竞选或复述竞选词；'
+      + '具体描述自己或别人把票投给谁时，必须引用并核对对应的公开选票；不要凭别人的转述补出票型。'
+      + '出局、夜间死亡或被猎人带走都不会自动公开目标身份；没有公开身份事实时，不得把推测写成“结果、坐实、证实某号是狼人”等翻牌结论。'
       + '未报名和沉默本身不是可疑证据。只有真实预言家可以延续已经公开的预言家身份；不得自称女巫、猎人、白痴或村民。'
       + '平安夜不能印证预言家或查验结论，非预言家也不能用私密信息或真实身份为公开结论背书。'
       + '猎人开枪只公开猎人本人的身份，枪口不证明目标的身份或阵营，也不能核验预言家的查验。描述跨日记录时使用“第 N 天”。'
@@ -2798,10 +2947,30 @@ async function coordinateNight(
       agentOptions,
     })
     : Promise.resolve(undefined)
+  const seerFallbackTarget = humanSeerTarget === undefined ? seerTargets[0] : undefined
+  const seerFallback: TargetDecision | undefined = isLiving(world, seerId)
+    && humanSeerTarget === undefined
+    && seerFallbackTarget !== undefined
+    ? {
+      target_id: seerFallbackTarget,
+      rationale: '本夜未形成可执行的查验选择，按本局稳定顺序完成查验。',
+      confidence: 'low',
+      evidence_ids: [],
+    }
+    : undefined
+  const witchFallback: WitchDecision | undefined = isLiving(world, witchId)
+    ? {
+      action: 'pass',
+      poison_target_id: null,
+      rationale: '本夜未形成可执行的用药决定，保留毒药。',
+      confidence: 'low',
+      evidence_ids: [],
+    }
+    : undefined
   const decisionResults = await Promise.allSettled([
     wolfRun.result,
-    seerDecision.then(run => run?.result),
-    witchDecision.then(run => run?.result),
+    seerDecision.then(run => run?.result.catch(() => seerFallback)),
+    witchDecision.then(run => run?.result.catch(() => witchFallback)),
   ] as const)
   let progressFailure: { readonly value: unknown } | undefined
   if (decisionResults.every(result => result.status === 'fulfilled')) {
@@ -2813,8 +2982,8 @@ async function coordinateNight(
   }
   const [wolfSettlement, seerResult, witchResult] = await Promise.allSettled([
     wolfRun.settle(),
-    seerDecision.then(run => run?.settle()),
-    witchDecision.then(run => run?.settle()),
+    seerDecision.then(run => settleDecisionWithFallback(run, seerFallback)),
+    witchDecision.then(run => settleDecisionWithFallback(run, witchFallback)),
   ] as const)
   signal.throwIfAborted()
   const dependentFailures: unknown[] = progressFailure === undefined ? [] : [progressFailure.value]
