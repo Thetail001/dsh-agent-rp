@@ -1,8 +1,10 @@
 # Portable Roleplay repository Plugin
 
-This private repository tests one delivery property: one `.dsh-plugin` package can carry the Roleplay Host runtime, standard Werewolf presenter, and Chinese browser UI without resolving unpublished DSH packages at installation or runtime.
+This private repository tests one delivery property: one `.dsh-plugin` package can carry the Roleplay Host runtime, standard Werewolf coordinator and presenter, and Chinese browser UI without resolving unpublished DSH packages at installation or runtime.
 
-It intentionally provides no Agent creation or conversion entry. Do not publish or treat it as a playable plugin until the Web Host provides both pre-publication application setup and projection-only transcript protection.
+On a Web Host that provides the application Agent-setup registry, the Host entry registers one complete standard Werewolf setup. A fresh Session receives its random role layout, human seat, observer binding, scoped persona, coordinator, and Roleplay tools before the Session or Agent is published. Headless compositions load the generic runtime but do not create a scenario.
+
+Do not publish this package until the remaining release blockers below are resolved.
 
 ## Delivery route
 
@@ -20,6 +22,5 @@ Development builds run from the repository root after `pnpm install` and require
 
 ## Release blockers
 
-- [dsh-external/issues#500](https://github.com/dsh-external/issues/issues/500): an external Web application cannot finish scenario setup before publishing a newly created Agent.
-- [dsh-external/issues#501](https://github.com/dsh-external/issues/issues/501): a projection-only application cannot prevent the browser from retrieving the canonical Session transcript.
+- [dsh-external/issues#501](https://github.com/dsh-external/issues/issues/501): a projection-only application cannot prevent the browser from retrieving canonical parent or Character transcripts. Hosts advertising internal child-session visibility receive that stronger boundary automatically; the current target snapshot does not yet advertise it.
 - No redistribution license has been selected for this extracted package. It remains `private: true` and version `0.0.0` until that decision is explicit.

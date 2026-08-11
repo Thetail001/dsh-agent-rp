@@ -1008,7 +1008,10 @@ window.__ModuleLoader__.load({
 					if (session === void 0) throw new Error(`ui-roleplay: session ${JSON.stringify(sessionId)} resolved no binding`);
 					return {
 						startScene: async () => {
-							await ctx.workspaces.startFreshSession();
+							const summary = ctx.sessions.list.getSnapshot().byId[sessionId];
+							const workspace = ctx.workspaces.list.getSnapshot().items.find((candidate) => candidate.sessionIds.includes(sessionId));
+							const nextSessionId = await ctx.sessions.create(workspace === void 0 ? summary?.cwd === void 0 ? {} : { cwd: summary.cwd } : { workspaceId: workspace.workspaceId });
+							ctx.sessions.open(nextSessionId);
 							await ctx.workspaces.archiveSession(sessionId);
 						},
 						sendPrompt: (prompt) => conversation.send(prompt),

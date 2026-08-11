@@ -254,7 +254,6 @@ export function assertRoleplayProposalProvider(subagents: SubagentService, name:
     'depthLimit',
     'toolFilter',
     'persona',
-    'sessionVisibility',
   ] as const
   const missing = required.filter(capability => !provider.capabilities[capability])
   if (missing.length > 0) {
@@ -263,6 +262,15 @@ export function assertRoleplayProposalProvider(subagents: SubagentService, name:
       'ROLEPLAY_PROPOSAL_UNAVAILABLE',
     )
   }
+}
+
+function internalSessionVisibility(
+  subagents: SubagentService,
+  name: string,
+): {} | { readonly sessionVisibility: 'internal' } {
+  const provider = subagents.getProvider(name)
+  const capabilities = provider?.capabilities as { readonly sessionVisibility?: boolean } | undefined
+  return capabilities?.sessionVisibility === true ? { sessionVisibility: 'internal' } : {}
 }
 
 /** Child-visible request with no parent transcript or canonical authority. */
@@ -544,7 +552,7 @@ export async function consultRoleplay(options: RoleplayConsultOptions): Promise<
     maxDepth,
     toolFilter: { allow: [] },
     persona: composition.persona,
-    sessionVisibility: 'internal',
+    ...internalSessionVisibility(options.subagents, options.providerName),
   })
   const child = await settleChild(run)
   if (child.stopReason !== 'completed' || child.structured === undefined) {

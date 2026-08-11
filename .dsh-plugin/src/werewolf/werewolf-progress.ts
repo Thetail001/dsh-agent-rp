@@ -205,6 +205,9 @@ export function validateStandardWerewolfProgressHistory(events: readonly Session
       || source.data.name !== 'roleplay-action') {
       throw new Error('standard Werewolf progress does not reference a roleplay-action command')
     }
+    if (source.data.args === undefined) {
+      throw new Error('standard Werewolf progress command has no arguments')
+    }
     const commandRevision = Number(source.data.args.trim().split(/\s+/u)[0])
     if (commandRevision !== record.baseRevision) {
       throw new Error('standard Werewolf progress base revision does not match its command')

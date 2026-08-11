@@ -709,7 +709,6 @@ function assertProposalProvider(subagents: SubagentService, providerName: string
     'depthLimit',
     'toolFilter',
     'persona',
-    'sessionVisibility',
   ] as const
   const missing = required.filter(capability => !provider.capabilities[capability])
   if (provider.inheritsParentContext || missing.length > 0) {
@@ -718,6 +717,15 @@ function assertProposalProvider(subagents: SubagentService, providerName: string
       + required.join(', '),
     )
   }
+}
+
+function internalSessionVisibility(
+  subagents: SubagentService,
+  providerName: string,
+): {} | { readonly sessionVisibility: 'internal' } {
+  const provider = subagents.getProvider(providerName)
+  const capabilities = provider?.capabilities as { readonly sessionVisibility?: boolean } | undefined
+  return capabilities?.sessionVisibility === true ? { sessionVisibility: 'internal' } : {}
 }
 
 interface DecisionRun<T> {
@@ -805,7 +813,7 @@ async function startDecision<T extends DecisionTrace>(options: DecisionOptions):
     maxDepth,
     toolFilter: { allow: [] },
     persona: CHARACTER_DECISION_PERSONA,
-    sessionVisibility: 'internal',
+    ...internalSessionVisibility(options.subagents, options.providerName),
     ...options.agentOptions === undefined ? {} : { agentOptions: options.agentOptions },
   })
   const result = run.result.then((value) => {
@@ -3529,8 +3537,8 @@ export function installStandardWerewolfCoordinator(
       memories: authorizedPlan.memories,
     }
   })
-  agentCtx.on('agent/settled', (subject) => {
-    if (subject !== parent) return
+  agentCtx.on('agent/status', ({ agent: subject, status }) => {
+    if (subject !== parent || status !== 'idle') return
     const pending = pendingModelMemory
     pendingModelMemory = undefined
     authorizedPlan = undefined
@@ -3543,7 +3551,7 @@ export function installStandardWerewolfCoordinator(
     )
   })
   if (childAgentOptions !== undefined) {
-    agentCtx.on('agent/request', async (subject, turn, step, _signal, next) => {
+    agentCtx.on('agent/request', async ({ agent: subject, turn, step }, next) => {
       const config = await next()
       if (subject !== parent || !followsCoordinatorCall(parent, turn, step)) return config
       return { ...config, ...childAgentOptions }

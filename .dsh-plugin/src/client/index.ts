@@ -59,7 +59,13 @@ export function apply(ctx: Context): void {
       }
       return {
         startScene: async () => {
-          await ctx.workspaces.startFreshSession()
+          const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
+          const workspace = ctx.workspaces.list.getSnapshot().items
+            .find(candidate => candidate.sessionIds.includes(sessionId))
+          const nextSessionId = await ctx.sessions.create(workspace === undefined
+            ? summary?.cwd === undefined ? {} : { cwd: summary.cwd }
+            : { workspaceId: workspace.workspaceId })
+          ctx.sessions.open(nextSessionId)
           await ctx.workspaces.archiveSession(sessionId)
         },
         sendPrompt: prompt => conversation.send(prompt),

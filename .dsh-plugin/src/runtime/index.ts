@@ -502,10 +502,12 @@ export class RoleplayService extends Service {
   }
 
   /**
-   * Reserve an idle Agent, let trusted application code prepare one revision, and append it atomically.
-   * @param agent - attached Roleplay Agent whose next ordinary turn remains reserved until settlement.
+   * Run one application-owned revision from true Agent idle and append it atomically.
+   * Later waking input remains queued until preparation and publication settle.
+   * @param agent - attached Roleplay Agent that must have no active turn or maintenance task.
    * @param options - durable application provenance and caller cancellation.
    * @param prepare - domain coordinator that receives the exact immutable starting Storyworld.
+   * @throws a `ROLEPLAY_BUSY` error when the Agent is not idle at admission.
    * @returns the accepted canonical commit after its observer-safe message enters the Session.
    */
   async runApplicationTurn(
@@ -532,36 +534,40 @@ export class RoleplayService extends Service {
     if (sourceEvent === undefined || sourceEvent.seq !== options.sourceEventSeq) {
       throw new RoleplayError('roleplay application source event does not exist', 'ROLEPLAY_INVALID_DATA')
     }
-    const release = agent.reserveTurnAdmission()
-    if (release === undefined) {
-      throw new RoleplayError('roleplay application turn requires an idle unreserved Agent', 'ROLEPLAY_BUSY')
-    }
+    let started = false
     try {
-      options.signal.throwIfAborted()
-      const initial = validateRoleplayHistory(agent.session.events)
-      if (initial === undefined) throw new RoleplayError('roleplay Session has no seed', 'ROLEPLAY_NO_SEED')
-      const draft = await prepare(initial)
-      options.signal.throwIfAborted()
-      const current = validateRoleplayHistory(agent.session.events)
-      if (current === undefined) throw new RoleplayError('roleplay Session has no seed', 'ROLEPLAY_NO_SEED')
-      if (current.revision !== initial.revision || draft.baseRevision !== current.revision) {
-        throw new RoleplayError(
-          `stale roleplay application revision ${draft.baseRevision}; current revision is ${current.revision}`,
-          'ROLEPLAY_STALE_REVISION',
-        )
-      }
-      const { record: commit } = this.resolveCommit(current, draft.intents, draft.narration, {
-        kind: 'application',
-        source: options.source,
-        sourceEventSeq: options.sourceEventSeq,
+      return await agent.runMaintenance(async (maintenanceSignal) => {
+        started = true
+        const signal = AbortSignal.any([options.signal, maintenanceSignal])
+        signal.throwIfAborted()
+        const initial = validateRoleplayHistory(agent.session.events)
+        if (initial === undefined) throw new RoleplayError('roleplay Session has no seed', 'ROLEPLAY_NO_SEED')
+        const draft = await prepare(initial)
+        signal.throwIfAborted()
+        const current = validateRoleplayHistory(agent.session.events)
+        if (current === undefined) throw new RoleplayError('roleplay Session has no seed', 'ROLEPLAY_NO_SEED')
+        if (current.revision !== initial.revision || draft.baseRevision !== current.revision) {
+          throw new RoleplayError(
+            `stale roleplay application revision ${draft.baseRevision}; current revision is ${current.revision}`,
+            'ROLEPLAY_STALE_REVISION',
+          )
+        }
+        const { record: commit } = this.resolveCommit(current, draft.intents, draft.narration, {
+          kind: 'application',
+          source: options.source,
+          sourceEventSeq: options.sourceEventSeq,
+        })
+        agent.session.append('user/message', createUserMessage({
+          content: renderRoleplayCommitContext(commit),
+          source: { kind: 'roleplay', commit },
+        }), { surfaceOp: 'append', sourceEventSeqs: [options.sourceEventSeq] })
+        return commit
       })
-      agent.session.append('user/message', createUserMessage({
-        content: renderRoleplayCommitContext(commit),
-        source: { kind: 'roleplay', commit },
-      }), { surfaceOp: 'append', sourceEventSeqs: [options.sourceEventSeq] })
-      return commit
-    } finally {
-      release()
+    } catch (error: unknown) {
+      if (!started) {
+        throw new RoleplayError('roleplay application turn requires an idle Agent', 'ROLEPLAY_BUSY')
+      }
+      throw error
     }
   }
 
@@ -643,7 +649,8 @@ export class RoleplayService extends Service {
       if (maxCorrectionAttempts > 0) {
         let correctionTurn: number | undefined
         let correctionAttempts = 0
-        agentCtx.on('agent/turn-stopping', (_subject, turn, signal) => {
+        agentCtx.on('agent/turn-stopping', ({ agent: subject, turn, signal }) => {
+          if (subject !== agent) return
           signal.throwIfAborted()
           if (correctionTurn !== turn) {
             correctionTurn = turn
