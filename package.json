@@ -31,7 +31,7 @@
   "scripts": {
     "build": "tsdown",
     "prepack": "pnpm run build",
-    "test:focused": "tsdown tests/config.test.ts tests/session-event-vocabulary.test.ts tests/werewolf-progress-counts.test.ts tests/wolf-ballot.test.ts tests/werewolf-public-speech.test.ts tests/werewolf-life.test.ts tests/werewolf-diagnostics.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-dist --clean && node --test .test-dist/config.test.mjs .test-dist/session-event-vocabulary.test.mjs .test-dist/werewolf-progress-counts.test.mjs .test-dist/wolf-ballot.test.mjs .test-dist/werewolf-public-speech.test.mjs .test-dist/werewolf-life.test.mjs .test-dist/werewolf-diagnostics.test.mjs",
+    "test:focused": "tsdown tests/config.test.ts tests/session-event-vocabulary.test.ts tests/werewolf-progress-counts.test.ts tests/wolf-ballot.test.ts tests/werewolf-public-speech.test.ts tests/werewolf-life.test.ts tests/werewolf-diagnostics.test.ts tests/werewolf-terminal-reveal.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-dist --clean && node --test .test-dist/config.test.mjs .test-dist/session-event-vocabulary.test.mjs .test-dist/werewolf-progress-counts.test.mjs .test-dist/wolf-ballot.test.mjs .test-dist/werewolf-public-speech.test.mjs .test-dist/werewolf-life.test.mjs .test-dist/werewolf-diagnostics.test.mjs .test-dist/werewolf-terminal-reveal.test.mjs",
     "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit"
   },
   "devDependencies": {

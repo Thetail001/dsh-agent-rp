@@ -21,6 +21,7 @@ import {
   standardWerewolfLocationCanVote,
   standardWerewolfLocationIsLiving,
 } from './werewolf-life.ts'
+import { terminalRoleFactIds } from './werewolf-terminal-reveals.ts'
 
 /** Hidden role assigned to one seat in the standard scenario. */
 export type StandardWerewolfRole =
@@ -798,12 +799,11 @@ function terminalEvents(
   world: Storyworld,
   eliminated: ReadonlySet<RoleplayActorId>,
   fallbackLocation: string,
-  extraParticipants: readonly RoleplayActorId[] = [],
+  alreadyRevealedFactIds: readonly RoleplayFactId[] = [],
 ): RoleplayWorldEvent[] {
   const survivors = livingSeats(world).filter(seat => !eliminated.has(seat))
   const winner = winnerAfter(world, eliminated)
-  const roleReveals = SEATS.flatMap((actorId) => {
-    const factId = roleFactOf(actorId)
+  const roleReveals = terminalRoleFactIds(SEATS.map(roleFactOf), alreadyRevealedFactIds).flatMap((factId) => {
     const observerIds = ALL_OBSERVERS.filter(observerId =>
       !projectStoryworld(world, observerId).facts.some(fact => fact.id === factId))
     return observerIds.length === 0 ? [] : [{ kind: 'fact/reveal' as const, factId, observerIds }]
@@ -825,7 +825,7 @@ function terminalEvents(
   return [{
     kind: 'scene/advance',
     location: fallbackLocation,
-    participantIds: [...survivors, ...extraParticipants.filter(seat => !survivors.includes(seat))],
+    participantIds: survivors,
   }]
 }
 
@@ -913,6 +913,7 @@ export function hunterShoot(
       world,
       eliminated,
       origin === 'night' ? nextDayLocation(round) : nextNightLocation(round),
+      [roleFactOf(hunterId)],
     ),
   ]
   return apply(world, events)
@@ -1276,6 +1277,6 @@ export function wolfExplode(
       `${wolfId} exploded as a werewolf and ended the day.`,
       publicVisibility(),
     ),
-    ...terminalEvents(world, eliminated, nextNightLocation(round)),
+    ...terminalEvents(world, eliminated, nextNightLocation(round), [roleFactOf(wolfId)]),
   ])
 }
