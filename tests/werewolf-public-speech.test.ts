@@ -147,7 +147,23 @@ test('finds response requests directed at players whose speaking turn already en
     unavailable,
   ), 'seat-5')
   assert.equal(unavailablePublicTargetResponseRequest(
+    '4号后续有实际动作我再判断，现在先不下结论。',
+    ['seat-4'],
+  ), 'seat-4')
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '我先看看9号和4号后面怎么走。',
+    ['seat-4'],
+  ), 'seat-4')
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '4号自己得出面接住这条查验。',
+    ['seat-4'],
+  ), 'seat-4')
+  assert.equal(unavailablePublicTargetResponseRequest(
     '我想听后位8号说说这张票。',
+    unavailable,
+  ), undefined)
+  assert.equal(unavailablePublicTargetResponseRequest(
+    '我想看看4号自己怎么接。',
     unavailable,
   ), undefined)
   assert.equal(unavailablePublicTargetResponseRequest(

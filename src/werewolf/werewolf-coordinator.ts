@@ -2246,7 +2246,8 @@ async function coordinateDiscussion(
     const canStillSpeak = remaining.slice(remaining.indexOf(actorId) + 1)
     const turnBoundary = `本轮已经发言且不能再次回应的玩家：${alreadySpoke.length === 0 ? '无' : alreadySpoke.map(seatLabel).join('、')}。`
       + `本轮尚可发言的玩家：${canStillSpeak.length === 0 ? '无' : canStillSpeak.map(seatLabel).join('、')}。`
-      + '对已经发言的玩家只能回应、反驳或把矛盾留作投票依据，不能追问、要求解释或等待其回答；'
+      + '对已经发言的玩家只能依据其现有发言形成当前判断，不能追问、要求解释、等待其回答或把判断推迟到其后续动作；'
+      + '不要让后位替已经发言的玩家补身份、接查验或解释；'
       + '问题只能留给本轮尚可发言的玩家。'
     const eliminated = world.actors
       .filter(candidate => candidate.location !== 'alive')
@@ -2266,8 +2267,11 @@ async function coordinateDiscussion(
       + 'assess、revise、commit 填写 target_id 与 stance，statement 明确说出对应“N号”；'
       + 'respond、hold、pass 的 target_id 与 stance 都填 null。public_discussion_context.covered_public_judgments 是本轮已有判断。'
       + 'hold 必须指出一个仍可从存活且尚未发言的玩家处获得的具体缺口；若只能说“信息太少”“没有线索”或泛泛等待后位，直接选择 pass。'
-      + '对同一目标重复怀疑、追问或观察，只有目标后续的新发言、后来的公开票型或阶段事实才能触发 revise；其他人的附和不算新信息。'
-      + 'statement 是玩家此刻真正说出口的话，只接一个具体点，说清就停；不要逐号点评、复述全桌、解释输出字段或汇报推理步骤。'
+      + 'question、observe、suspect 都属于对目标的关注；换一个 stance 名称不算新判断。'
+      + '对同一目标重复关注，只有目标后续的新发言、后来的公开票型或阶段事实才能触发 revise；其他人的附和不算新信息。'
+      + 'statement 是玩家此刻真正说出口的话：先说当前结论或缺口，再给一条公开事实，通常一两句就停。'
+      + '回应只接一项具体质疑，改判点明新出现的信息，归票直接落今天的去向；不要逐号点评、复述全桌、解释输出字段或汇报推理步骤。'
+      + '不要把“先记下”“没有反证”“听后面怎么接”拼成每个人都重复的固定开头。'
       + '自然问句、对照和口语重复可以使用，但必须由当前具体矛盾触发。警长竞选已经结束，不得继续竞选或复述竞选词；'
       + '具体描述自己或别人把票投给谁时，必须引用并核对对应的公开选票；不要凭别人的转述补出票型。'
       + '出局、夜间死亡或被猎人带走都不会自动公开目标身份；没有公开身份事实时，不得把推测写成“结果、坐实、证实某号是狼人”等翻牌结论。'
