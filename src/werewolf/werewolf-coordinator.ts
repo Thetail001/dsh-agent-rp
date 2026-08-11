@@ -920,9 +920,10 @@ function assertDecisionTrace(
   if (evidenceIds.length > STANDARD_WEREWOLF_EVIDENCE_MAX_ITEMS) {
     throw new DecisionValidationError('evidence', `${options.label} returned too many evidence ids`)
   }
-  const normalizedValue = evidenceIds.length === trace.evidence_ids.length
+  let normalizedValue = evidenceIds.length === trace.evidence_ids.length
     ? value
     : { ...value, evidence_ids: evidenceIds }
+  let speechMove = trace.speech_move
   const invisible = evidenceIds.find(id => !visibleIds.has(id))
   if (invisible !== undefined) {
     throw new DecisionValidationError(
@@ -942,7 +943,7 @@ function assertDecisionTrace(
   if (trace.action !== 'explode'
     && options.publicDiscussionContext !== undefined
     && options.publicEvidenceIds !== undefined
-    && publicSpeechMoveNeedsPublicEvidence(trace.speech_move)
+    && publicSpeechMoveNeedsPublicEvidence(speechMove)
     && (options.publicEvidenceIds.length === 0
       || !evidenceIds.some(id => options.publicEvidenceIds?.includes(id)))) {
     throw new DecisionValidationError(
@@ -954,7 +955,7 @@ function assertDecisionTrace(
   if (options.publicJudgmentTargets !== undefined) {
     const shapeIssue = publicSpeechMoveShapeIssue({
       action: trace.action,
-      move: trace.speech_move,
+      move: speechMove,
       targetId: trace.target_id,
       stance: trace.stance,
       targets: options.publicJudgmentTargets,
@@ -963,14 +964,17 @@ function assertDecisionTrace(
     if (shapeIssue !== undefined) {
       throw new DecisionValidationError('shape', `${options.label} returned invalid public speech shape: ${shapeIssue}`)
     }
-    if (!publicSpeechMoveCarriesJudgment(trace.speech_move) || trace.action === 'explode') {
-      if (trace.speech_move === 'respond' && trace.action !== 'explode') {
+    if (!publicSpeechMoveCarriesJudgment(speechMove) || trace.action === 'explode') {
+      if (speechMove === 'respond' && trace.action !== 'explode') {
         const context = options.publicDiscussionContext
-        const grounded = context?.coveredJudgments.some(judgment =>
+        const groundedByJudgment = context?.coveredJudgments.some(judgment =>
           judgment.targetId === options.actorId
           && publicJudgmentKind(judgment.stance) === 'attention'
           && evidenceIds.includes(`day:${String(context.round)}:speech:${String(judgment.actorId)}`)) === true
-        if (!grounded) {
+        const groundedByCitedStatement = evidenceIds.some(id =>
+          options.publicEvidenceIds?.includes(id) === true
+          && publicEvidenceReferencesActor(id, options.actorId, options))
+        if (!groundedByJudgment && !groundedByCitedStatement) {
           throw new DecisionValidationError(
             'response-grounding',
             `${options.label} used respond without citing a public concern directed at itself`,
@@ -988,7 +992,7 @@ function assertDecisionTrace(
           && publicJudgmentKind(judgment.stance) === publicJudgmentKind(
             trace.stance as StandardWerewolfPublicStance,
           ))
-      if (trace.speech_move !== 'commit'
+      if (speechMove !== 'commit'
         && repeated !== undefined
         && !evidenceIds.some((id) => {
           if (!options.publicEvidenceIds?.includes(id) || repeated.availableEvidenceIds.includes(id)) return false
@@ -999,7 +1003,7 @@ function assertDecisionTrace(
         repeatedPublicJudgment = true
       }
       const prior = selectPublicSpeechPrior(
-        trace.speech_move,
+        speechMove,
         trace.target_id,
         committedMemory.flatMap(decision => decision.action.name === 'speak'
           && decision.publicJudgment !== undefined
@@ -1010,8 +1014,8 @@ function assertDecisionTrace(
           }]
           : []),
       )
-      const contextIssue = publicSpeechMoveContextIssue({
-        move: trace.speech_move,
+      let contextIssue = publicSpeechMoveContextIssue({
+        move: speechMove,
         targetId: trace.target_id,
         stance: trace.stance,
         evidenceIds,
@@ -1020,6 +1024,20 @@ function assertDecisionTrace(
         coveredTargetIds: options.publicDiscussionContext?.coveredJudgments.map(judgment =>
           String(judgment.targetId)) ?? [],
       })
+      if (speechMove === 'revise' && contextIssue === 'revise-without-prior-change') {
+        speechMove = 'assess'
+        normalizedValue = { ...normalizedValue, speech_move: speechMove }
+        contextIssue = publicSpeechMoveContextIssue({
+          move: speechMove,
+          targetId: trace.target_id,
+          stance: trace.stance,
+          evidenceIds,
+          publicEvidenceIds: options.publicEvidenceIds ?? [],
+          ...(prior === undefined ? {} : { prior }),
+          coveredTargetIds: options.publicDiscussionContext?.coveredJudgments.map(judgment =>
+            String(judgment.targetId)) ?? [],
+        })
+      }
       if (contextIssue !== undefined) {
         throw new DecisionValidationError(
           contextIssue === 'commit-without-candidate' ? 'commit-grounding' : 'stance-change',
@@ -1047,8 +1065,8 @@ function assertDecisionTrace(
       )
     }
   }
-  if (trace.speech_move === 'pass' && trace.action !== 'explode') {
-    return { ...normalizedValue, statement: normalizePublicSpeechStatement(trace.speech_move, '') }
+  if (speechMove === 'pass' && trace.action !== 'explode') {
+    return { ...normalizedValue, statement: normalizePublicSpeechStatement(speechMove, '') }
   }
   if (trace.statement === undefined) return normalizedValue
   if (typeof trace.statement !== 'string') {
@@ -1057,12 +1075,15 @@ function assertDecisionTrace(
   assertPublicStatementCandidate(trace.statement, {
     action: trace.action,
     evidence_ids: evidenceIds,
-    speech_move: trace.speech_move,
+    speech_move: speechMove,
     stance: trace.stance,
     target_id: trace.target_id,
   }, options)
-  const normalizedStatement = normalizePublicSpeechStatement(trace.speech_move, trace.statement)
+  const normalizedStatement = normalizePublicSpeechStatement(speechMove, trace.statement)
   if (normalizedStatement !== trace.statement) {
+    if (normalizedStatement !== '过') {
+      return { ...normalizedValue, statement: normalizedStatement }
+    }
     return {
       ...normalizedValue,
       speech_move: 'pass',
@@ -1118,15 +1139,6 @@ function assertPublicStatementCandidate(
         'target-reference',
         `${options.label} omitted its structured public judgment target from the spoken text`,
       )
-    }
-    for (const focus of statement.matchAll(DIRECT_PUBLIC_FOCUS_REFERENCE)) {
-      const focusSeat = focus[1] ?? focus[2]
-      if (targetSeat !== undefined && focusSeat !== undefined && focusSeat !== targetSeat) {
-        throw new DecisionValidationError(
-          'target-reference',
-          `${options.label} addressed a different player than its structured public judgment target`,
-        )
-      }
     }
   }
   const forbiddenRoleClaim = options.allowedPublicRoleClaims === undefined
@@ -1329,11 +1341,26 @@ function assertCitedBallot(
   voterId: RoleplayActorId,
   targetId: RoleplayActorId | 'abstain',
 ): void {
-  if (hasCitedBallot(evidenceIds, voterId, targetId)) return
+  if (hasCitedBallot(evidenceIds, voterId, targetId)
+    || hasCitedBallot(options.publicEvidenceIds ?? [], voterId, targetId)) return
   throw new DecisionValidationError(
     'ballot-reference',
     `${options.label} described a ballot without citing the matching public ballot record`,
   )
+}
+
+function publicEvidenceReferencesActor(
+  evidenceId: string,
+  actorId: RoleplayActorId,
+  options: DecisionOptions,
+): boolean {
+  const statement = options.pendingPublicStatements
+    ?.find(candidate => candidate.evidence_id === evidenceId)?.statement
+    ?? options.world.choices.find(choice => String(choice.id) === evidenceId)?.text
+  const seat = /^seat-(\d+)$/u.exec(actorId)?.[1]
+  return statement !== undefined
+    && seat !== undefined
+    && new RegExp(`(?<!\\d)${seat}\\s*号(?:玩家)?`, 'u').test(statement)
 }
 
 function seatActorId(number: string): RoleplayActorId {
