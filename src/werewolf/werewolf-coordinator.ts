@@ -437,8 +437,8 @@ interface DecisionBatchOptions {
   readonly decisionTimeoutMs: number
   readonly agentOptions: AgentOptions | undefined
   readonly onProgress?: (completed: number, total: number) => void
-  /** Optional observer for distinguishing an expired attempt from an invalid completed result. */
-  readonly onFailure?: (index: number, kind: DecisionFailureKind) => void
+  /** Best-effort observer for one Character attempt that cannot contribute a decision. */
+  readonly onFailure?: (failure: DecisionFailure) => void
   /** Permit an optional-action batch to return only missing decisions instead of rejecting. */
   readonly allowAllFailures?: boolean
 }
@@ -466,6 +466,13 @@ type DecisionValidationIssue =
   | 'target-reference'
   | 'wolf-disclosure'
 
+interface DecisionFailure {
+  readonly actorId: RoleplayActorId
+  readonly kind: DecisionFailureKind
+  readonly issue?: DecisionValidationIssue
+  readonly message: string
+}
+
 class DecisionValidationError extends Error {
   constructor(
     readonly issue: DecisionValidationIssue,
@@ -473,6 +480,46 @@ class DecisionValidationError extends Error {
   ) {
     super(message)
     this.name = 'DecisionValidationError'
+  }
+}
+
+function decisionFailure(
+  spec: DecisionSpec,
+  error: unknown,
+  deadlineExpired: boolean,
+): DecisionFailure {
+  if (deadlineExpired) {
+    return {
+      actorId: spec.actorId,
+      kind: 'timeout',
+      message: `${spec.label} reached the shared decision deadline`,
+    }
+  }
+  if (error instanceof DecisionValidationError) {
+    return {
+      actorId: spec.actorId,
+      kind: 'invalid',
+      issue: error.issue,
+      message: error.message,
+    }
+  }
+  return {
+    actorId: spec.actorId,
+    kind: 'invalid',
+    message: `${spec.label} did not return a usable decision`,
+  }
+}
+
+function reportDecisionFailure(
+  options: Pick<DecisionBatchOptions, 'onFailure'>,
+  spec: DecisionSpec,
+  error: unknown,
+  deadlineExpired: boolean,
+): void {
+  try {
+    options.onFailure?.(decisionFailure(spec, error, deadlineExpired))
+  } catch {
+    // Best-effort diagnostics cannot replace the owned decision failure or its fallback.
   }
 }
 
@@ -1453,7 +1500,7 @@ async function decideTogether<T extends DecisionTrace>(
   let completed = 0
   const progressFailures: unknown[] = []
   const cleanups: Promise<void>[] = []
-  const resultOutcomes = await Promise.allSettled(specs.map(async (spec, index) => {
+  const resultOutcomes = await Promise.allSettled(specs.map(async (spec) => {
     try {
       const run = await startDecision<T>({
         subagents: options.subagents,
@@ -1466,7 +1513,7 @@ async function decideTogether<T extends DecisionTrace>(
       cleanups.push(run.cleanup)
       return await run.result
     } catch (error) {
-      options.onFailure?.(index, deadline.aborted ? 'timeout' : 'invalid')
+      reportDecisionFailure(options, spec, error, deadline.aborted)
       throw error
     } finally {
       completed += 1
@@ -2686,10 +2733,18 @@ async function startPartialDecisionBatch<T extends DecisionTrace>(
     agentOptions: options.agentOptions,
     ...spec,
   })))
+  for (const [index, outcome] of starts.entries()) {
+    if (outcome.status === 'rejected') {
+      reportDecisionFailure(options, specs[index]!, outcome.reason, deadline.aborted)
+    }
+  }
   const runs = starts.map(outcome => outcome.status === 'fulfilled' ? outcome.value : undefined)
-  const result = Promise.all(runs.map(async (run) => {
+  const result = Promise.all(runs.map(async (run, index) => {
     if (run === undefined) return undefined
-    return run.result.catch(() => undefined)
+    return run.result.catch((error: unknown) => {
+      reportDecisionFailure(options, specs[index]!, error, deadline.aborted)
+      return undefined
+    })
   })).then((decisions) => {
     options.signal.throwIfAborted()
     return decisions
@@ -2826,6 +2881,7 @@ async function startWolfPack(
     signal: options.signal,
     decisionTimeoutMs: options.decisionTimeoutMs,
     agentOptions: options.agentOptions,
+    ...options.onFailure === undefined ? {} : { onFailure: options.onFailure },
   }
   if (recordedProposals !== undefined) {
     const proposalContext = wolfSelectionContext(world, recordedProposals)
@@ -3631,6 +3687,7 @@ async function coordinateApplicationAction(
   agentOptions: AgentOptions | undefined,
   publicDiscussionAgentOptions: AgentOptions | undefined,
   progress: StandardWerewolfProgressReporter,
+  onDecisionFailure: (failure: DecisionFailure) => void,
 ): Promise<CoordinatedPlan<RoleplayApplicationCommitDraft>> {
   if (action.revision !== world.revision) {
     throw new Error(
@@ -3644,6 +3701,7 @@ async function coordinateApplicationAction(
     signal,
     decisionTimeoutMs: options.decisionTimeoutMs,
     agentOptions,
+    onFailure: onDecisionFailure,
   }
   if (action.actionId === 'role-confirm') {
     if (action.payload !== undefined) throw new Error('role-confirm does not accept a payload')
@@ -3939,6 +3997,12 @@ function installApplicationActionCommand(
               agentOptions,
               publicDiscussionAgentOptions,
               progress,
+              (failure) => {
+                const issue = failure.issue === undefined ? '' : ` (${failure.issue})`
+                agentCtx.logger.warn(
+                  `standard Werewolf Character ${String(failure.actorId)} ${failure.kind}${issue}: ${failure.message}`,
+                )
+              },
             )
             return prepared.plan
           })
