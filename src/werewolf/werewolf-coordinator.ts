@@ -2916,13 +2916,12 @@ async function coordinateHumanWolfProposals(
   }
   const context = wolfSelectionContext(world, [humanSelection])
   progress.update({ kind: 'night', stage: 'independent' })
-  const teammateProposal = `${seatLabel(humanSelection.actorId)}提议${seatLabel(humanSelection.targetId)}`
   const proposalRun = await startPartialDecisionBatch<TargetDecision>(options, context.agentWolves.map(actorId => wolfPackDecisionSpec(
     options.parent,
     world,
     actorId,
-    `Propose one victim after considering this equal teammate proposal: ${teammateProposal}. `
-      + 'A directly controlled teammate is not the pack leader and its proposal is not an order.',
+    'Propose one victim independently before the pack consultation. '
+      + 'You cannot see another seat\'s proposal yet, and this is not a pack-representative decision.',
   )), 'standard Werewolf pack proposal batch')
   const decisions = await proposalRun.settle()
   const targetByActor = completeWolfBallotTargets(
