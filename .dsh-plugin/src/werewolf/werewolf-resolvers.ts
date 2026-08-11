@@ -99,6 +99,10 @@ function canVote(world: Storyworld, actorId: RoleplayActorId): boolean {
   return world.actors.some(actor => actor.id === actorId && actor.location === 'alive')
 }
 
+function canBeExiled(world: Storyworld, actorId: RoleplayActorId): boolean {
+  return canVote(world, actorId)
+}
+
 function assertLiving(world: Storyworld, actorId: RoleplayActorId, label: string): void {
   if (!isLiving(world, actorId)) throw new Error(`${label} must be living`)
 }
@@ -615,7 +619,9 @@ const EXILE_VOTE_RESOLVER: RoleplayActionResolver = {
       }
       const target = optionalTextArgument(args, 'target_id')
       const targetId = target === undefined ? undefined : asRoleplayActorId(target)
-      if (targetId !== undefined) assertLiving(world, targetId, 'exile target')
+      if (targetId !== undefined && !canBeExiled(world, targetId)) {
+        throw new Error('an exile target must still be eligible for exile')
+      }
       if (targetId !== undefined && isPk && !candidates.includes(targetId)) {
         throw new Error('an exile PK ballot must name a tied candidate')
       }

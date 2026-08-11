@@ -1033,6 +1033,7 @@ function assertDecisionTrace(
       assertPublicStatementCandidate(statement, {
         action: trace.action,
         evidence_ids: evidenceIds,
+        speech_mode: trace.speech_mode,
         stance: trace.stance,
         target_id: trace.target_id,
       }, options)
@@ -1061,6 +1062,7 @@ function assertPublicStatementCandidate(
   trace: {
     readonly action?: unknown
     readonly evidence_ids: readonly string[]
+    readonly speech_mode?: unknown
     readonly stance?: unknown
     readonly target_id?: unknown
   },
@@ -1086,6 +1088,25 @@ function assertPublicStatementCandidate(
       'statement-form',
       `${options.label} returned an interview template instead of one direct table statement`,
     )
+  }
+  if (trace.speech_mode === 'substantive' && typeof trace.target_id === 'string') {
+    const targetSeat = /^seat-(\d+)$/u.exec(trace.target_id)?.[1]
+    if (targetSeat !== undefined
+      && !new RegExp(`(?<!\\d)${targetSeat}\\s*号(?:玩家)?`, 'u').test(statement)) {
+      throw new DecisionValidationError(
+        'target-reference',
+        `${options.label} omitted its structured public judgment target from the spoken text`,
+      )
+    }
+    for (const focus of statement.matchAll(DIRECT_PUBLIC_FOCUS_REFERENCE)) {
+      const focusSeat = focus[1] ?? focus[2]
+      if (targetSeat !== undefined && focusSeat !== undefined && focusSeat !== targetSeat) {
+        throw new DecisionValidationError(
+          'target-reference',
+          `${options.label} addressed a different player than its structured public judgment target`,
+        )
+      }
+    }
   }
   const forbiddenRoleClaim = options.allowedPublicRoleClaims === undefined
     ? undefined
@@ -1126,6 +1147,7 @@ const PUBLIC_STATEMENT_AUTHORING_ARTIFACT = new RegExp([
   '(?:主句|备选(?:句|版本)?|候选(?:句|版本)?)\\s*[：:]',
   '(?:两|这两)句都(?:没有|符合)',
   '(?:私密泄露|公开边界|安全分析|所需结构)',
+  '(?:某某|某\\s*号|某位玩家)',
 ].join('|'), 'u')
 const PUBLIC_STATEMENT_INTERVIEW_ARTIFACT = new RegExp([
   '我想问(?:一句|一下)?',
@@ -1134,6 +1156,10 @@ const PUBLIC_STATEMENT_INTERVIEW_ARTIFACT = new RegExp([
   '[^，。！？]{0,24}是[^，。！？]{0,24}还是[^，。！？]{0,24}',
   '而不是',
 ].join('|'), 'u')
+const DIRECT_PUBLIC_FOCUS_REFERENCE = new RegExp([
+  '(?:想|要)?听(?:听)?\\s*(\\d+)\\s*号',
+  '(\\d+)\\s*号(?:玩家)?[^。！？]{0,18}(?:说清楚|解释(?:一下)?|给出(?:理由|判断|说法))',
+].join('|'), 'gu')
 const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下|卸力|遮掩|找台阶|回避|矛盾|没(?:有)?给出|空洞|摇摆|改口|转向/iu
 const SELF_BALLOT_REFERENCE = /(?:投|票|上)(?:给)?我|我(?:被|让)[^。！？]{0,8}(?:投|票|上)/iu
 const NO_DEATH_REFERENCE = /平安夜|昨夜平安|夜里?平安|(?:没有|无)玩家死亡|无人死亡/iu
@@ -1298,6 +1324,13 @@ function assertCitedBallotReferences(
     ? asRoleplayActorId(targetId)
     : undefined
   if (publicTarget !== undefined) {
+    for (const match of statement.matchAll(
+      /(?<![没未不])投(?:过|给|了|的(?:却)?是)?\s*(\d+)\s*号(?:玩家)?[^。！？]{0,32}只剩(?:下)?你/gu,
+    )) {
+      if (match[1] !== undefined) {
+        assertCitedBallot(evidenceIds, options, publicTarget, seatActorId(match[1]))
+      }
+    }
     for (const match of statement.matchAll(new RegExp(`你[^。！？]{0,18}${positiveTarget}`, 'gu'))) {
       if (match[1] !== undefined) {
         assertCitedBallot(evidenceIds, options, publicTarget, seatActorId(match[1]))
@@ -2083,7 +2116,9 @@ async function coordinateDiscussion(
       ...committedPublicEvidenceIds,
       ...visiblePending.map(statement => statement.evidence_id),
     ])]
-    const publicJudgmentTargets = living.filter(candidate => candidate !== actorId)
+    const publicJudgmentTargets = world.actors
+      .filter(candidate => candidate.location === 'alive' && candidate.id !== actorId)
+      .map(candidate => candidate.id)
     const tableIndex = living.indexOf(actorId)
     const position = tableIndex < Math.ceil(living.length / 3)
       ? 'early'
@@ -2110,6 +2145,7 @@ async function coordinateDiscussion(
       + '先按顺序阅读 pending_public_statements；只能回应已经公开的原话，尚未出现的玩家还没有发言。'
       + '真人桌面发言通常只接住一两个具体矛盾，直接表示同意、反对或留下明确判断，不会重新汇报整张桌子。'
       + '有一条此前没人说过的具体判断时选择 substantive，并填写 target_id 与 stance；'
+      + 'substantive 的正文必须明确写出 target_id 对应的“N号”，不能只用“你、他、某某”代替；'
       + '如果本轮已有玩家明确怀疑或追问你，可以选择 response，target_id 与 stance 都填 null，引用那条发言并直接澄清自己的选择；'
       + 'response 只回应指向自己的具体问题，不要为了反击而强行评价别人。两种情形都不适用时选择 brief，'
       + 'target_id 与 stance 都填 null，statement 与 fallback_statement 都只填“过”。'
@@ -2348,8 +2384,12 @@ async function coordinateExileVote(
   progress?: StandardWerewolfProgressReporter,
 ): Promise<CoordinatedPlan<ExileVotePlan>> {
   const { isPk } = exileRound(world)
-  const candidates = isPk ? [...world.scene.participantIds] : livingSeats(world)
-  const voters = livingSeats(world).filter(actorId => !isPk || !candidates.includes(actorId))
+  const activeSeats = world.actors
+    .filter(actor => actor.location === 'alive')
+    .map(actor => actor.id)
+  const candidates = isPk ? [...world.scene.participantIds] : activeSeats
+  const voters = activeSeats
+    .filter(actorId => !isPk || !candidates.includes(actorId))
   const humanCanVote = voters.includes(humanActorId)
   const legalHumanTargets = isPk ? candidates : candidates.filter(actorId => actorId !== humanActorId)
   if (humanCanVote && humanSelection.kind === 'ineligible') {

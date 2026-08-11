@@ -10762,6 +10762,9 @@ function isLiving$2(world, actorId) {
 function canVote$1(world, actorId) {
 	return world.actors.some((actor) => actor.id === actorId && actor.location === "alive");
 }
+function canBeExiled$1(world, actorId) {
+	return canVote$1(world, actorId);
+}
 function choiceIds$1(world, prefix) {
 	return world.choices.map((choice) => String(choice.id)).filter((id) => id.startsWith(prefix));
 }
@@ -11019,7 +11022,7 @@ function tally(world, ballots, weighted) {
 		if (seen.has(ballot.voterId)) throw new Error(`${ballot.voterId} voted more than once`);
 		seen.add(ballot.voterId);
 		if (ballot.targetId === void 0) continue;
-		assertLiving$1(world, ballot.targetId, "vote target");
+		if (!canBeExiled$1(world, ballot.targetId)) throw new Error(`${ballot.targetId} cannot be exiled`);
 		const weight = ballot.voterId === sheriff ? STANDARD_WEREWOLF_RULES.sheriff.voteWeight : 1;
 		result.set(ballot.targetId, (result.get(ballot.targetId) ?? 0) + weight);
 	}
@@ -11323,6 +11326,9 @@ function isLiving$1(world, actorId) {
 }
 function canVote(world, actorId) {
 	return world.actors.some((actor) => actor.id === actorId && actor.location === "alive");
+}
+function canBeExiled(world, actorId) {
+	return canVote(world, actorId);
 }
 function assertLiving(world, actorId, label) {
 	if (!isLiving$1(world, actorId)) throw new Error(`${label} must be living`);
@@ -11777,7 +11783,7 @@ const STANDARD_WEREWOLF_RESOLVERS = [
 				if (!canVote(world, actorId) || candidates.includes(actorId)) throw new Error(`${actorId} is not eligible to vote for exile`);
 				const target = optionalTextArgument(args, "target_id");
 				const targetId = target === void 0 ? void 0 : asRoleplayActorId(target);
-				if (targetId !== void 0) assertLiving(world, targetId, "exile target");
+				if (targetId !== void 0 && !canBeExiled(world, targetId)) throw new Error("an exile target must still be eligible for exile");
 				if (targetId !== void 0 && isPk && !candidates.includes(targetId)) throw new Error("an exile PK ballot must name a tied candidate");
 				const prefix = `day:${round}:${isPk ? "pk-vote" : "exile-vote"}`;
 				if (choiceIds(world, `${prefix}:${actorId}:`).length > 0) throw new Error(`${actorId} already voted for exile`);
@@ -12805,6 +12811,7 @@ function assertDecisionTrace(value, options, visibleIds, committedMemory) {
 		assertPublicStatementCandidate(statement, {
 			action: trace.action,
 			evidence_ids: evidenceIds,
+			speech_mode: trace.speech_mode,
 			stance: trace.stance,
 			target_id: trace.target_id
 		}, options);
@@ -12832,6 +12839,14 @@ function assertPublicStatementCandidate(statement, trace, options) {
 	if (statement.length > 500) throw new DecisionValidationError("statement-length", `${options.label} returned a statement over the length limit`);
 	if (PUBLIC_STATEMENT_AUTHORING_ARTIFACT.test(statement)) throw new DecisionValidationError("statement-form", `${options.label} returned drafting or self-review text instead of one public statement`);
 	if (PUBLIC_STATEMENT_INTERVIEW_ARTIFACT.test(statement)) throw new DecisionValidationError("statement-form", `${options.label} returned an interview template instead of one direct table statement`);
+	if (trace.speech_mode === "substantive" && typeof trace.target_id === "string") {
+		const targetSeat = /^seat-(\d+)$/u.exec(trace.target_id)?.[1];
+		if (targetSeat !== void 0 && !new RegExp(`(?<!\\d)${targetSeat}\\s*号(?:玩家)?`, "u").test(statement)) throw new DecisionValidationError("target-reference", `${options.label} omitted its structured public judgment target from the spoken text`);
+		for (const focus of statement.matchAll(DIRECT_PUBLIC_FOCUS_REFERENCE)) {
+			const focusSeat = focus[1] ?? focus[2];
+			if (targetSeat !== void 0 && focusSeat !== void 0 && focusSeat !== targetSeat) throw new DecisionValidationError("target-reference", `${options.label} addressed a different player than its structured public judgment target`);
+		}
+	}
 	const forbiddenRoleClaim = options.allowedPublicRoleClaims === void 0 ? void 0 : PRIVATE_ROLE_SELF_CLAIMS.find((claim) => claim.pattern.test(statement) && !options.allowedPublicRoleClaims?.includes(claim.role));
 	if (forbiddenRoleClaim !== void 0) throw new DecisionValidationError("private-role-disclosure", `${options.label} disclosed a forbidden private ${forbiddenRoleClaim.role} role in public text`);
 	if (trace.action !== "explode" && standardWerewolfRoleIn(options.world, options.actorId) === "wolf" && WOLF_SELF_DISCLOSURE.test(statement)) throw new DecisionValidationError("wolf-disclosure", `${options.label} disclosed its hidden wolf alignment in public text`);
@@ -12846,7 +12861,8 @@ const PUBLIC_STATEMENT_AUTHORING_ARTIFACT = new RegExp([
 	"最终(?:选择|采用)(?:主句|版本|表述)",
 	"(?:主句|备选(?:句|版本)?|候选(?:句|版本)?)\\s*[：:]",
 	"(?:两|这两)句都(?:没有|符合)",
-	"(?:私密泄露|公开边界|安全分析|所需结构)"
+	"(?:私密泄露|公开边界|安全分析|所需结构)",
+	"(?:某某|某\\s*号|某位玩家)"
 ].join("|"), "u");
 const PUBLIC_STATEMENT_INTERVIEW_ARTIFACT = new RegExp([
 	"我想问(?:一句|一下)?",
@@ -12855,6 +12871,7 @@ const PUBLIC_STATEMENT_INTERVIEW_ARTIFACT = new RegExp([
 	"[^，。！？]{0,24}是[^，。！？]{0,24}还是[^，。！？]{0,24}",
 	"而不是"
 ].join("|"), "u");
+const DIRECT_PUBLIC_FOCUS_REFERENCE = new RegExp(["(?:想|要)?听(?:听)?\\s*(\\d+)\\s*号", "(\\d+)\\s*号(?:玩家)?[^。！？]{0,18}(?:说清楚|解释(?:一下)?|给出(?:理由|判断|说法))"].join("|"), "gu");
 const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下|卸力|遮掩|找台阶|回避|矛盾|没(?:有)?给出|空洞|摇摆|改口|转向/iu;
 const SELF_BALLOT_REFERENCE = /(?:投|票|上)(?:给)?我|我(?:被|让)[^。！？]{0,8}(?:投|票|上)/iu;
 const NO_DEATH_REFERENCE = /平安夜|昨夜平安|夜里?平安|(?:没有|无)玩家死亡|无人死亡/iu;
@@ -12919,6 +12936,7 @@ function assertCitedBallotReferences(statement, evidenceIds, targetId, options) 
 	for (const match of statement.matchAll(new RegExp(`${positiveTarget}[^。！？]{0,12}包括我(?:本人)?`, "gu"))) if (match[1] !== void 0) assertCitedBallot(evidenceIds, options, options.actorId, seatActorId(match[1]));
 	const publicTarget = typeof targetId === "string" && options.publicJudgmentTargets?.includes(asRoleplayActorId(targetId)) === true ? asRoleplayActorId(targetId) : void 0;
 	if (publicTarget !== void 0) {
+		for (const match of statement.matchAll(/(?<![没未不])投(?:过|给|了|的(?:却)?是)?\s*(\d+)\s*号(?:玩家)?[^。！？]{0,32}只剩(?:下)?你/gu)) if (match[1] !== void 0) assertCitedBallot(evidenceIds, options, publicTarget, seatActorId(match[1]));
 		for (const match of statement.matchAll(new RegExp(`你[^。！？]{0,18}${positiveTarget}`, "gu"))) if (match[1] !== void 0) assertCitedBallot(evidenceIds, options, publicTarget, seatActorId(match[1]));
 		if (new RegExp(`(?:你|他)[^。！？]{0,18}(?<![没未不])投(?:给|了|的(?:却)?是)?\\s*我`, "u").test(statement)) assertCitedBallot(evidenceIds, options, publicTarget, options.actorId);
 	}
@@ -13450,7 +13468,7 @@ async function coordinateDiscussion(options, world, humanActorId, humanStatement
 		options.signal.throwIfAborted();
 		const visiblePending = [...pendingPublicStatements];
 		const publicEvidenceIds = [.../* @__PURE__ */ new Set([...committedPublicEvidenceIds, ...visiblePending.map((statement) => statement.evidence_id)])];
-		const publicJudgmentTargets = living.filter((candidate) => candidate !== actorId);
+		const publicJudgmentTargets = world.actors.filter((candidate) => candidate.location === "alive" && candidate.id !== actorId).map((candidate) => candidate.id);
 		const tableIndex = living.indexOf(actorId);
 		const position = tableIndex < Math.ceil(living.length / 3) ? "early" : tableIndex >= living.length - Math.ceil(living.length / 3) ? "late" : "middle";
 		const positionInstruction = position === "early" ? "公开信息还少，只处理一个最值得澄清的点，不急着给全桌结论。" : position === "late" ? "前面的判断已经很多，只处理仍有分歧的一点；没有新增内容就简短保留。" : "接住一条会影响判断的具体发言，并补充此前没有出现的理由。";
@@ -13458,7 +13476,7 @@ async function coordinateDiscussion(options, world, humanActorId, humanStatement
 		const alreadySpoke = [...existing, ...pendingPublicStatements.map((statement) => statement.actor_id)];
 		const canStillSpeak = remaining.slice(remaining.indexOf(actorId) + 1);
 		const turnBoundary = `本轮已经发言且不能再次回应的玩家：${alreadySpoke.length === 0 ? "无" : alreadySpoke.map(seatLabel$2).join("、")}。本轮尚可发言的玩家：${canStillSpeak.length === 0 ? "无" : canStillSpeak.map(seatLabel$2).join("、")}。对已经发言的玩家只能回应、反驳或把矛盾留作投票依据，不能追问、要求解释或等待其回答；问题只能留给本轮尚可发言的玩家。`;
-		const task = `进行第 ${String(round)} 天公开发言。你是${seatLabel$2(actorId)}。${positionInstruction}` + noveltyInstruction + turnBoundary + "先按顺序阅读 pending_public_statements；只能回应已经公开的原话，尚未出现的玩家还没有发言。真人桌面发言通常只接住一两个具体矛盾，直接表示同意、反对或留下明确判断，不会重新汇报整张桌子。有一条此前没人说过的具体判断时选择 substantive，并填写 target_id 与 stance；如果本轮已有玩家明确怀疑或追问你，可以选择 response，target_id 与 stance 都填 null，引用那条发言并直接澄清自己的选择；response 只回应指向自己的具体问题，不要为了反击而强行评价别人。两种情形都不适用时选择 brief，target_id 与 stance 都填 null，statement 与 fallback_statement 都只填“过”。public_discussion_context.covered_public_judgments 列出本轮已有的结构化判断；对同一目标的怀疑、追问与观察属于同一类关注，只有被评价玩家随后说出的新内容，或后来出现的选票与阶段事实，才足以继续这个判断；其他玩家的附和与改写不算新证据。否则必须改用 brief，不能换词复述。statement 不得提及前置位、后置位、发言顺序、输出字段、证据 ID 或系统规则，也不要逐号点评、使用“依据公开记录”一类报告式开头或在结尾重复总结。直接说出自己的判断，不要使用“是……还是……”“而不是……”或“我想问一句”这类采访式对照句。一句能说清就停，短分句用逗号连接，不要用一串句号制造停顿。警长竞选已经结束，不得继续竞选或复述竞选词；具体描述自己或别人把票投给谁时，必须引用并核对对应的公开选票；不要凭别人的转述补出票型。出局、夜间死亡或被猎人带走都不会自动公开目标身份；没有公开身份事实时，不得把推测写成“结果、坐实、证实某号是狼人”等翻牌结论。未报名和沉默本身不是可疑证据。只有真实预言家可以延续已经公开的预言家身份；不得自称女巫、猎人、白痴或村民。平安夜不能印证预言家或查验结论，非预言家也不能用私密信息或真实身份为公开结论背书。猎人开枪只公开猎人本人的身份，枪口不证明目标的身份或阵营，也不能核验预言家的查验。描述跨日记录时使用“第 N 天”。" + (publicEvidenceIds.length === 0 ? "当前 public_evidence_ids 为空，evidence_ids 填空数组。" : "evidence_ids 至少引用 public_evidence_ids 中一项；substantive 的正文要指向一名具体玩家或一处具体冲突。") + "若 committed_decision_memory 中对同一目标的立场不同，还必须增加一项此前未引用的公开依据。fallback_statement 是独立的安全替代表达，不能复制 statement；两个字段都只写玩家真正说出口的一段正文，不得换行，不得包含改写过程、自检、安全分析或给主持人的说明。";
+		const task = `进行第 ${String(round)} 天公开发言。你是${seatLabel$2(actorId)}。${positionInstruction}` + noveltyInstruction + turnBoundary + "先按顺序阅读 pending_public_statements；只能回应已经公开的原话，尚未出现的玩家还没有发言。真人桌面发言通常只接住一两个具体矛盾，直接表示同意、反对或留下明确判断，不会重新汇报整张桌子。有一条此前没人说过的具体判断时选择 substantive，并填写 target_id 与 stance；substantive 的正文必须明确写出 target_id 对应的“N号”，不能只用“你、他、某某”代替；如果本轮已有玩家明确怀疑或追问你，可以选择 response，target_id 与 stance 都填 null，引用那条发言并直接澄清自己的选择；response 只回应指向自己的具体问题，不要为了反击而强行评价别人。两种情形都不适用时选择 brief，target_id 与 stance 都填 null，statement 与 fallback_statement 都只填“过”。public_discussion_context.covered_public_judgments 列出本轮已有的结构化判断；对同一目标的怀疑、追问与观察属于同一类关注，只有被评价玩家随后说出的新内容，或后来出现的选票与阶段事实，才足以继续这个判断；其他玩家的附和与改写不算新证据。否则必须改用 brief，不能换词复述。statement 不得提及前置位、后置位、发言顺序、输出字段、证据 ID 或系统规则，也不要逐号点评、使用“依据公开记录”一类报告式开头或在结尾重复总结。直接说出自己的判断，不要使用“是……还是……”“而不是……”或“我想问一句”这类采访式对照句。一句能说清就停，短分句用逗号连接，不要用一串句号制造停顿。警长竞选已经结束，不得继续竞选或复述竞选词；具体描述自己或别人把票投给谁时，必须引用并核对对应的公开选票；不要凭别人的转述补出票型。出局、夜间死亡或被猎人带走都不会自动公开目标身份；没有公开身份事实时，不得把推测写成“结果、坐实、证实某号是狼人”等翻牌结论。未报名和沉默本身不是可疑证据。只有真实预言家可以延续已经公开的预言家身份；不得自称女巫、猎人、白痴或村民。平安夜不能印证预言家或查验结论，非预言家也不能用私密信息或真实身份为公开结论背书。猎人开枪只公开猎人本人的身份，枪口不证明目标的身份或阵营，也不能核验预言家的查验。描述跨日记录时使用“第 N 天”。" + (publicEvidenceIds.length === 0 ? "当前 public_evidence_ids 为空，evidence_ids 填空数组。" : "evidence_ids 至少引用 public_evidence_ids 中一项；substantive 的正文要指向一名具体玩家或一处具体冲突。") + "若 committed_decision_memory 中对同一目标的立场不同，还必须增加一项此前未引用的公开依据。fallback_statement 是独立的安全替代表达，不能复制 statement；两个字段都只写玩家真正说出口的一段正文，不得换行，不得包含改写过程、自检、安全分析或给主持人的说明。";
 		const spec = actorId === explosionDecider ? {
 			actorId,
 			world,
@@ -13622,8 +13640,9 @@ function exileNarration(before, after, ballots) {
 }
 async function coordinateExileVote(options, world, humanActorId, humanSelection, progress) {
 	const { isPk } = exileRound(world);
-	const candidates = isPk ? [...world.scene.participantIds] : livingSeats(world);
-	const voters = livingSeats(world).filter((actorId) => !isPk || !candidates.includes(actorId));
+	const activeSeats = world.actors.filter((actor) => actor.location === "alive").map((actor) => actor.id);
+	const candidates = isPk ? [...world.scene.participantIds] : activeSeats;
+	const voters = activeSeats.filter((actorId) => !isPk || !candidates.includes(actorId));
 	const humanCanVote = voters.includes(humanActorId);
 	const legalHumanTargets = isPk ? candidates : candidates.filter((actorId) => actorId !== humanActorId);
 	if (humanCanVote && humanSelection.kind === "ineligible") throw new Error("the eligible human exile voter must cast or abstain");

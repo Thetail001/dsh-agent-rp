@@ -549,6 +549,10 @@ function canVote(world: Storyworld, actorId: RoleplayActorId): boolean {
   return world.actors.some(actor => actor.id === actorId && actor.location === 'alive')
 }
 
+function canBeExiled(world: Storyworld, actorId: RoleplayActorId): boolean {
+  return canVote(world, actorId)
+}
+
 function choiceIds(world: Storyworld, prefix: string): string[] {
   return world.choices.map(choice => String(choice.id)).filter(id => id.startsWith(prefix))
 }
@@ -925,7 +929,9 @@ function tally(
     if (seen.has(ballot.voterId)) throw new Error(`${ballot.voterId} voted more than once`)
     seen.add(ballot.voterId)
     if (ballot.targetId === undefined) continue
-    assertLiving(world, ballot.targetId, 'vote target')
+    if (!canBeExiled(world, ballot.targetId)) {
+      throw new Error(`${ballot.targetId} cannot be exiled`)
+    }
     const weight = ballot.voterId === sheriff ? STANDARD_WEREWOLF_RULES.sheriff.voteWeight : 1
     result.set(ballot.targetId, (result.get(ballot.targetId) ?? 0) + weight)
   }
