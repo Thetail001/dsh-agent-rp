@@ -118,8 +118,8 @@ export function apply(ctx: Context): void {
               throw new Error('当前会话未绑定工作区，无法新开一局。')
             }
             const nextSessionId = await ctx.workspaces.connectWorkspace(workspace.workspaceId)
-            ctx.sessions.open(nextSessionId)
             await ctx.workspaces.archiveSession(sessionId)
+            ctx.sessions.open(nextSessionId)
           },
           sendPrompt: prompt => conversation.send(prompt),
           runCommand: async (line) => {
