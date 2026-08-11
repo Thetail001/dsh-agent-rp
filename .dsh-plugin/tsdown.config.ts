@@ -75,6 +75,7 @@ const DSH_SOURCE_BRIDGES = new Map<string, string>([
 /** Map one public DSH package import to its TypeScript source entry. */
 function resolveDshSource(id: string): string | undefined {
   if (id === 'cordis') return resolvePath(DSH_SOURCE_ROOT, 'vendor/cordis/src/index.ts')
+  if (id === 'schemastery') return resolvePath(DSH_SOURCE_ROOT, 'vendor/schemastery/src/index.ts')
   if (id.startsWith('cordis/src/')) return resolvePath(DSH_SOURCE_ROOT, 'vendor/cordis', id.slice('cordis/'.length))
   for (const sourcePackage of DSH_SOURCE_PACKAGES.values()) {
     if (id !== sourcePackage.name && !id.startsWith(`${sourcePackage.name}/`)) continue
