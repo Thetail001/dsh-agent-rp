@@ -12761,7 +12761,7 @@ function assertDecisionTrace(value, options, visibleIds, committedMemory) {
 		} else {
 			if (typeof trace.target_id !== "string" || !options.publicJudgmentTargets.includes(asRoleplayActorId(trace.target_id))) throw new DecisionValidationError("shape", `${options.label} returned an invalid public judgment target`);
 			if (!STANDARD_WEREWOLF_PUBLIC_STANCES.includes(trace.stance)) throw new DecisionValidationError("shape", `${options.label} returned an invalid public judgment stance`);
-			const repeated = standardWerewolfRoleIn(options.world, options.actorId) === "seer" ? void 0 : options.publicDiscussionContext?.coveredJudgments.find((judgment) => judgment.targetId === trace.target_id && publicJudgmentKind(judgment.stance) === publicJudgmentKind(trace.stance));
+			const repeated = standardWerewolfRoleIn(options.world, options.actorId) === "seer" && [trace.statement, trace.fallback_statement].some((candidate) => typeof candidate === "string" && SEER_RESULT_REFERENCE.test(candidate)) ? void 0 : options.publicDiscussionContext?.coveredJudgments.find((judgment) => judgment.targetId === trace.target_id && publicJudgmentKind(judgment.stance) === publicJudgmentKind(trace.stance));
 			if (repeated !== void 0 && !evidenceIds.some((id) => {
 				if (!options.publicEvidenceIds?.includes(id) || repeated.availableEvidenceIds.includes(id)) return false;
 				const speechActor = /^day:\d+:speech:(seat-\d+)$/u.exec(id)?.[1];
@@ -12838,11 +12838,12 @@ const PUBLIC_STATEMENT_AUTHORING_ARTIFACT = new RegExp([
 ].join("|"), "u");
 const PUBLIC_STATEMENT_INTERVIEW_ARTIFACT = new RegExp([
 	"我想问(?:一句|一下)?",
+	"我想请(?:你|他|她)?",
 	"还是说[^。！？]{0,60}(?:思路|说法|判断|解释)",
 	"[^，。！？]{0,24}是[^，。！？]{0,24}还是[^，。！？]{0,24}",
 	"而不是"
 ].join("|"), "u");
-const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下|卸力|遮掩|找台阶/iu;
+const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下|卸力|遮掩|找台阶|回避|矛盾|没(?:有)?给出|空洞|摇摆|改口|转向/iu;
 const SELF_BALLOT_REFERENCE = /(?:投|票|上)(?:给)?我|我(?:被|让)[^。！？]{0,8}(?:投|票|上)/iu;
 const NO_DEATH_REFERENCE = /平安夜|昨夜平安|夜里?平安|(?:没有|无)玩家死亡|无人死亡/iu;
 const SEER_RESULT_REFERENCE = new RegExp(["预言家|查验|验人|金水|查杀|好人身份", "(?:查|验)(?:了)?\\s*\\d+\\s*号(?:玩家)?[^。！？]{0,8}(?:好人|狼人)"].join("|"), "iu");

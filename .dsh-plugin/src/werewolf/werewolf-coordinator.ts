@@ -947,7 +947,10 @@ function assertDecisionTrace(
       if (!(STANDARD_WEREWOLF_PUBLIC_STANCES as readonly unknown[]).includes(trace.stance)) {
         throw new DecisionValidationError('shape', `${options.label} returned an invalid public judgment stance`)
       }
-      const repeated = standardWerewolfRoleIn(options.world, options.actorId) === 'seer'
+      const publishesSeerResult = standardWerewolfRoleIn(options.world, options.actorId) === 'seer'
+        && [trace.statement, trace.fallback_statement].some(candidate =>
+          typeof candidate === 'string' && SEER_RESULT_REFERENCE.test(candidate))
+      const repeated = publishesSeerResult
         ? undefined
         : options.publicDiscussionContext?.coveredJudgments.find(judgment =>
           judgment.targetId === trace.target_id
@@ -1110,11 +1113,12 @@ const PUBLIC_STATEMENT_AUTHORING_ARTIFACT = new RegExp([
 ].join('|'), 'u')
 const PUBLIC_STATEMENT_INTERVIEW_ARTIFACT = new RegExp([
   '我想问(?:一句|一下)?',
+  '我想请(?:你|他|她)?',
   '还是说[^。！？]{0,60}(?:思路|说法|判断|解释)',
   '[^，。！？]{0,24}是[^，。！？]{0,24}还是[^，。！？]{0,24}',
   '而不是',
 ].join('|'), 'u')
-const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下|卸力|遮掩|找台阶/iu
+const SUSPICION_REFERENCE = /可疑|怀疑|狼面|藏狼|狼人|不放心|留意|放不下|卸力|遮掩|找台阶|回避|矛盾|没(?:有)?给出|空洞|摇摆|改口|转向/iu
 const SELF_BALLOT_REFERENCE = /(?:投|票|上)(?:给)?我|我(?:被|让)[^。！？]{0,8}(?:投|票|上)/iu
 const NO_DEATH_REFERENCE = /平安夜|昨夜平安|夜里?平安|(?:没有|无)玩家死亡|无人死亡/iu
 const SEER_RESULT_REFERENCE = new RegExp([
