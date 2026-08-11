@@ -1367,8 +1367,6 @@ async function coordinateSheriffRegistration(
     throw new Error('an eliminated human player cannot stand for Sheriff')
   }
   const actors = livingSeats(world).filter(actorId => actorId !== humanActorId)
-  const participantTotal = actors.length + (isLiving(world, humanActorId) ? 1 : 0)
-  const submittedParticipantCount = isLiving(world, humanActorId) ? 1 : 0
   const wolfRepresentative = decisionTargetOrder(
     options.parent,
     world,
@@ -1384,16 +1382,16 @@ async function coordinateSheriffRegistration(
   }
   progress?.update({
     kind: 'sheriff-registration',
-    completed: submittedParticipantCount,
-    total: participantTotal,
+    completed: 0,
+    total: actors.length,
   })
   const batchOptions = progress === undefined ? options : {
     ...options,
-    onProgress: (completed: number) => {
+    onProgress: (completed: number, total: number) => {
       progress.update({
         kind: 'sheriff-registration',
-        completed: submittedParticipantCount + completed,
-        total: participantTotal,
+        completed,
+        total,
       })
     },
   }
@@ -1540,22 +1538,13 @@ async function coordinateSheriffVote(
     throw new Error('the human Sheriff ballot must name an active candidate')
   }
   const agentVoters = voters.filter(actorId => actorId !== humanActorId)
-  const submittedBallotCount = humanCanVote ? 1 : 0
   if (agentVoters.length > 0) {
-    progress?.update({
-      kind: 'sheriff-vote',
-      completed: submittedBallotCount,
-      total: voters.length,
-    })
+    progress?.update({ kind: 'sheriff-vote', completed: 0, total: agentVoters.length })
   }
   const batchOptions = progress === undefined || agentVoters.length === 0 ? options : {
     ...options,
-    onProgress: (completed: number) => {
-      progress.update({
-        kind: 'sheriff-vote',
-        completed: submittedBallotCount + completed,
-        total: voters.length,
-      })
+    onProgress: (completed: number, total: number) => {
+      progress.update({ kind: 'sheriff-vote', completed, total })
     },
   }
   const decisions = await decideTogether<TargetDecision>(
@@ -2116,23 +2105,14 @@ async function coordinateExileVote(
     throw new Error('the human exile ballot must name one visible eligible target')
   }
   const agentVoters = voters.filter(actorId => actorId !== humanActorId)
-  const submittedBallotCount = humanCanVote ? 1 : 0
   const publicEvidenceIds = tablePublicEvidenceIds(world, livingSeats(world))
   if (agentVoters.length > 0) {
-    progress?.update({
-      kind: 'exile-vote',
-      completed: submittedBallotCount,
-      total: voters.length,
-    })
+    progress?.update({ kind: 'exile-vote', completed: 0, total: agentVoters.length })
   }
   const batchOptions = progress === undefined || agentVoters.length === 0 ? options : {
     ...options,
-    onProgress: (completed: number) => {
-      progress.update({
-        kind: 'exile-vote',
-        completed: submittedBallotCount + completed,
-        total: voters.length,
-      })
+    onProgress: (completed: number, total: number) => {
+      progress.update({ kind: 'exile-vote', completed, total })
     },
   }
   const decisions = await decideTogether<TargetDecision>(batchOptions, agentVoters.map((actorId) => {
