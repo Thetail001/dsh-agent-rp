@@ -111,6 +111,7 @@ import {
   publicSpeechMoveContextIssue,
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
+  publicResponseFinalTargetIsGrounded,
   publicResponseIsGrounded,
   publicRoleClaimsForPrivateRole,
   publicSpeechJudgmentCapacity,
@@ -1298,6 +1299,30 @@ function assertPublicDiscussionStatement(
   options: DecisionOptions,
 ): void {
   assertCitedBallotReferences(statement, evidenceIds, targetId, options)
+  if (speechMove === 'respond') {
+    const responseSourceActorIds = new Set([
+      ...options.publicDiscussionContext?.coveredJudgments.flatMap(judgment =>
+        judgment.targetId === options.actorId ? [String(judgment.actorId)] : []) ?? [],
+      ...evidenceIds.flatMap((evidenceId) => {
+        const evidenceActorId = /^sheriff:candidate:(seat-\d+)$/u.exec(evidenceId)?.[1]
+          ?? /^day:\d+:speech:(seat-\d+)$/u.exec(evidenceId)?.[1]
+        return evidenceActorId !== undefined
+          && publicEvidenceDirectsResponseToActor(evidenceId, options.actorId, options)
+          ? [evidenceActorId]
+          : []
+      }),
+    ])
+    if (!publicResponseFinalTargetIsGrounded(
+      statement,
+      String(options.actorId),
+      [...responseSourceActorIds],
+    )) {
+      throw new DecisionValidationError(
+        'response-grounding',
+        `${options.label} added an unrelated final target to a public response`,
+      )
+    }
+  }
   if (typeof targetId === 'string') {
     for (const actorId of publicAcknowledgementClaimActorIds(statement, targetId)) {
       if (!publicEvidenceContainsAcknowledgement(options, evidenceIds, actorId)) {
@@ -2291,7 +2316,7 @@ function explicitHumanQuestionJudgments(
 
 function publicSpeechRetryInstruction(failure: DecisionFailure): string {
   const correction = failure.issue === 'response-grounding'
-    ? 'respond 只用于回应公开记录中直接指向自己的质疑；仅被提到、被查验或被认可不算。不要向已经发言的玩家追问；可以评价其现有发言后落下判断，或直接过。'
+    ? 'respond 只用于回应公开记录中直接指向自己的质疑；仅被提到、被查验或被认可不算。回应只处理这一项质疑，不得在结尾追加对第三名玩家的新判断。不要向已经发言的玩家追问；可以评价其现有发言后落下判断，或直接过。'
     : failure.issue === 'public-attribution'
       ? '“你／他承认了”只能指 target_id 本人的公开原话；若承认来自其他玩家，明确写出真正说话的座位，或删去这项归因。'
       : failure.issue === 'target-reference'
@@ -2430,6 +2455,7 @@ async function coordinateDiscussion(
       + 'commit 只用于 late 位置，target_id 必须已经出现在 covered_public_judgments 中且不能是自己；没有合法候选时使用 assess、hold 或 pass。'
       + 'assess、revise、commit 填写 target_id 与 stance；target_id 是被判断的人，不是提供证据的人，statement 最后一个点名必须回到对应“N号”；'
       + 'respond、hold、pass 的 target_id 与 stance 都填 null。public_discussion_context.covered_public_judgments 是本轮已有判断。'
+      + 'respond 只处理指向自己的那项公开质疑，结尾只能落回自己或提出质疑的玩家，不得顺带评价第三名玩家。'
       + 'hold 只能点一名仍可发言的存活玩家，并要求他解释一项已经发生的公开行动；同一个等待目标已经有人点过、无法点出目标或只能泛泛等信息时，直接选择 pass。'
       + 'question、observe、suspect 都属于对目标的关注；换一个 stance 名称不算新判断。'
       + '同一目标的同类关注最多保留两位玩家的独立看法，之后最多再由一位后位玩家承接收口；已有收口且没有目标本人的新发言、后来的公开票型或阶段事实时直接 pass。'

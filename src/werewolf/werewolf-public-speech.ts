@@ -484,6 +484,25 @@ export function publicResponseIsGrounded<T extends {
     judgment.targetId === actorId && publicSpeechJudgmentFamily(judgment.stance) === 'attention')
 }
 
+/**
+ * Whether a response ends on itself or the player whose public concern it answers. Ending on an
+ * unrelated seat adds a second table judgment that belongs to a separate speech move.
+ * @param statement - public response text.
+ * @param actorId - responding player.
+ * @param sourceActorIds - players whose public concerns targeted the responder.
+ * @returns whether the response keeps one conversational focus.
+ */
+export function publicResponseFinalTargetIsGrounded(
+  statement: string,
+  actorId: string,
+  sourceActorIds: readonly string[],
+): boolean {
+  const finalTargetId = finalPublicSpeechTargetId(statement)
+  return finalTargetId === undefined
+    || finalTargetId === actorId
+    || sourceActorIds.includes(finalTargetId)
+}
+
 const NEGATED_CORROBORATION_REFERENCE = new RegExp([
   '(?:不能|无法|没法|没有|没|未|不代表|并不|不是|不足以|不)[^。！？]{0,12}(?:吻合|印证|证明|支持|支撑|佐证|相符|一致|对应|背书)',
   '(?:吻合|印证|证明|支持|支撑|佐证|相符|一致|对应|背书)不(?:了|到|能|成立)?',

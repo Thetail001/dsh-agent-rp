@@ -18,6 +18,7 @@ import {
   publicSpeechMoveContextIssue,
   publicSpeechMoveNeedsPublicEvidence,
   publicSpeechMoveShapeIssue,
+  publicResponseFinalTargetIsGrounded,
   publicResponseIsGrounded,
   publicRoleClaimsForPrivateRole,
   publicSeerCampaignClaimIssue,
@@ -432,6 +433,29 @@ test('accepts a response to an existing structured concern', () => {
   assert.equal(publicResponseIsGrounded(judgments, 'seat-11', false), true)
   assert.equal(publicResponseIsGrounded(judgments, 'seat-5', false), false)
   assert.equal(publicResponseIsGrounded([], 'seat-11', true), true)
+})
+
+test('keeps a response on itself or the player whose concern it answers', () => {
+  assert.equal(publicResponseFinalTargetIsGrounded(
+    '4号说我竞选没给可验证的信息，这点我认。',
+    'seat-5',
+    ['seat-4'],
+  ), true)
+  assert.equal(publicResponseFinalTargetIsGrounded(
+    '这项质疑我已经回应完了。',
+    'seat-5',
+    ['seat-4'],
+  ), true)
+  assert.equal(publicResponseFinalTargetIsGrounded(
+    '我不认4号这句话。',
+    'seat-5',
+    ['seat-4'],
+  ), true)
+  assert.equal(publicResponseFinalTargetIsGrounded(
+    '4号说我竞选没给可验证的信息，这点我认；6号的查验仍然只有他自己宣称。',
+    'seat-5',
+    ['seat-4'],
+  ), false)
 })
 
 test('recognizes corroboration negated before or after the verb', () => {
