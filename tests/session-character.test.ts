@@ -157,6 +157,32 @@ test('replays an imported character and greeting from native tool metadata', () 
   assert.deepEqual(cardFromImportMeta(active.meta).raw, raw)
 })
 
+test('retains the imported user identity needed to resolve greeting macros', () => {
+  const card = parseCharacterCardJson(JSON.stringify({
+    ...raw,
+    data: { ...raw.data, first_mes: '{{user}}，门还没锁。' },
+  }))
+  const image = {
+    attachmentId: AttachmentId('sha256:macro-fixture'),
+    mediaType: 'image/png' as const,
+    bytes: 100,
+    width: 1,
+    height: 1,
+    name: 'macro-card.png',
+  }
+
+  const value = prepareCharacterImportResult(
+    card,
+    { transport: 'png', metadataKeyword: 'chara' },
+    0,
+    image,
+    0,
+    '宝宝',
+  )
+  assert.equal(value.selectedGreeting, '{{user}}，门还没锁。')
+  assert.equal(value.userName, '宝宝')
+})
+
 test('rejects import metadata that no longer cites its source image', () => {
   const session = Session.create(SessionId('character-import-tamper'))
   appendImport(session, 'import-1')

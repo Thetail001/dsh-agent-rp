@@ -11,6 +11,8 @@ import {
   renderImportedLorebook,
   renderImportedWorldInfos,
   renderMemoryContext,
+  renderImportedCharacterPrompt,
+  substituteCardMacros,
 } from '../src/prompt.ts'
 import { parseWorldInfoJson } from '../src/import/world-info.ts'
 
@@ -37,6 +39,37 @@ test('continues an imported chat identity without the deployment default persona
   assert.match(prompt, /名为宝宝/u)
   assert.match(prompt, /已导入的对话历史为准/u)
   assert.doesNotMatch(prompt, /岚|旧书修复铺/u)
+})
+
+test('resolves stable SillyTavern identity macros across imported card prose', () => {
+  const card = parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: {
+      name: '白露',
+      description: '{{char}}替{{user}}修表',
+      personality: '<char>很安静',
+      scenario: '<user>刚进门',
+      first_mes: '{{user}}，门还没锁。',
+      mes_example: '<START>\n<bot>: 坐吧，<user>。',
+      creator_notes: '',
+      system_prompt: '',
+      post_history_instructions: '{{char}}不要替{{user}}行动。',
+      alternate_greetings: [],
+      tags: [],
+      creator: '',
+      character_version: '',
+      extensions: {},
+    },
+  }))
+
+  assert.equal(substituteCardMacros(card.firstMessage, card, '宝宝'), '宝宝，门还没锁。')
+  const prompt = renderImportedCharacterPrompt(card, ['{{char}}知道钟楼。'], [], '宝宝')
+  assert.match(prompt, /白露替宝宝修表/u)
+  assert.match(prompt, /宝宝刚进门/u)
+  assert.match(prompt, /白露: 坐吧，宝宝/u)
+  assert.match(prompt, /白露不要替宝宝行动/u)
+  assert.doesNotMatch(prompt, /\{\{(?:char|user)\}\}|<(?:char|bot|user)>/iu)
 })
 
 test('claims one Character Card JSON only for an Agent RP import request', () => {

@@ -53,6 +53,7 @@ import {
   renderImportedLorebook,
   renderImportedWorldInfos,
   renderMemoryContext,
+  substituteCardMacros,
 } from './prompt.ts'
 import { installBundledAgentRpPreset } from './preset.ts'
 
@@ -172,6 +173,7 @@ export const CHARACTER_IMPORT_VALUE_SCHEMA = {
     metadataKeyword: { type: 'string', enum: ['ccv3', 'chara'] },
     greetingIndex: { type: 'integer', required: true },
     selectedGreeting: { type: 'string', required: true },
+    userName: { type: 'string' },
     degradations: { type: 'array', required: true, items: { type: 'string', enum: CHARACTER_IMPORT_DEGRADATIONS } },
     raw: { type: 'json', required: true },
   },
@@ -295,6 +297,7 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
         card,
         [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
         [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
+        readSillyTavernChatIdentity(agent.session.events)?.userName,
       )
     },
     complete: true,
@@ -382,7 +385,11 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
           `已导入 ${value.name}（Character Card V${value.cardVersion}）`,
           value.selectedGreeting.trim().length === 0
             ? '角色卡没有开场白；直接以新角色自然回应。'
-            : `立即以新角色发送这段开场白，不解释导入过程：\n${value.selectedGreeting}`,
+            : `立即以新角色发送这段开场白，不解释导入过程：\n${substituteCardMacros(
+              value.selectedGreeting,
+              parseCharacterCardJson(JSON.stringify(value.raw)),
+              value.userName,
+            )}`,
           value.degradations.length === 0 ? '未发现需要降级的能力。' : `未启用：${value.degradations.join('、')}`,
         ].join('\n'),
       }],
@@ -406,7 +413,14 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
         const reader = ctx.attachments as unknown as FileAttachmentReader
         const stored = await reader.readFile(attachment, exec.signal)
         const card = parseCharacterCardJsonBytes(stored.data)
-        return prepareCharacterImportResult(card, { transport: 'json' }, direct.eventSeq, stored.ref, args.greetingIndex ?? 0)
+        return prepareCharacterImportResult(
+          card,
+          { transport: 'json' },
+          direct.eventSeq,
+          stored.ref,
+          args.greetingIndex ?? 0,
+          readSillyTavernChatIdentity(exec.agent.session.events)?.userName,
+        )
       }
       const stored = await ctx.attachments.readImage(attachment, exec.signal)
       const payload = readCharacterCardPng(stored.data)
@@ -414,7 +428,8 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       return prepareCharacterImportResult(card, {
         transport: 'png',
         metadataKeyword: payload.keyword,
-      }, direct.eventSeq, stored.ref, args.greetingIndex ?? 0)
+      }, direct.eventSeq, stored.ref, args.greetingIndex ?? 0,
+      readSillyTavernChatIdentity(exec.agent.session.events)?.userName)
     },
     presentCall: () => ({ card: 'generic', title: '导入角色卡', kind: 'read' }),
     presentResult: (_args, result) => ({

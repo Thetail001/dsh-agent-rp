@@ -72,9 +72,22 @@ export function renderImportedWorldInfos(
   }, { beforeCharacter: [] as string[], afterCharacter: [] as string[] })
 }
 
-function substituteCardMacros(value: string, card: ImportedCharacterCard): string {
+/**
+ * Resolve the two stable SillyTavern identity macros used throughout Character Card text.
+ * @param value - card-owned prose.
+ * @param card - active Character Card.
+ * @param userName - Session-imported user name, or a neutral fallback when none is known.
+ * @returns prose with character and user identity macros resolved.
+ */
+export function substituteCardMacros(
+  value: string,
+  card: ImportedCharacterCard,
+  userName = '用户',
+): string {
   const name = card.nickname?.trim() || card.name
-  return value.replace(/\{\{char\}\}|<char>|<bot>/giu, name)
+  return value
+    .replace(/\{\{char\}\}|<char>|<bot>/giu, name)
+    .replace(/\{\{user\}\}|<user>/giu, userName)
 }
 
 /**
@@ -88,26 +101,27 @@ export function renderImportedCharacterPrompt(
   card: ImportedCharacterCard,
   loreBefore: readonly string[],
   loreAfter: readonly string[],
+  userName?: string,
 ): string {
   const name = card.nickname?.trim() || card.name
   const original = `你是${name}。直接以${name}的身份与用户相处和交谈。`
   const system = card.systemPrompt.trim().length === 0
     ? original
-    : substituteCardMacros(card.systemPrompt, card).replaceAll('{{original}}', original)
+    : substituteCardMacros(card.systemPrompt, card, userName).replaceAll('{{original}}', original)
   const parts = [
     system,
-    ...loreBefore.map(value => substituteCardMacros(value, card)),
-    `角色描述：${substituteCardMacros(card.description, card)}`,
-    `性格：${substituteCardMacros(card.personality, card)}`,
-    `当前场景：${substituteCardMacros(card.scenario, card)}`,
-    ...(card.messageExample.trim().length === 0 ? [] : [`对话示例：\n${substituteCardMacros(card.messageExample, card)}`]),
-    ...loreAfter.map(value => substituteCardMacros(value, card)),
+    ...loreBefore.map(value => substituteCardMacros(value, card, userName)),
+    `角色描述：${substituteCardMacros(card.description, card, userName)}`,
+    `性格：${substituteCardMacros(card.personality, card, userName)}`,
+    `当前场景：${substituteCardMacros(card.scenario, card, userName)}`,
+    ...(card.messageExample.trim().length === 0 ? [] : [`对话示例：\n${substituteCardMacros(card.messageExample, card, userName)}`]),
+    ...loreAfter.map(value => substituteCardMacros(value, card, userName)),
     CHARACTER_BEHAVIOR,
     MEMORY_BEHAVIOR,
     IMPORT_BEHAVIOR,
   ]
   if (card.postHistoryInstructions.trim().length > 0) {
-    parts.push(substituteCardMacros(card.postHistoryInstructions, card).replaceAll('{{original}}', ''))
+    parts.push(substituteCardMacros(card.postHistoryInstructions, card, userName).replaceAll('{{original}}', ''))
   }
   return parts.join('\n\n')
 }

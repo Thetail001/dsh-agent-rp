@@ -32,6 +32,7 @@ export interface CharacterImportResult {
   readonly metadataKeyword?: CharacterCardPngPayload['keyword']
   readonly greetingIndex: number
   readonly selectedGreeting: string
+  readonly userName?: string
   readonly degradations: Array<ImportedCharacterCard['degradations'][number]>
 }
 
@@ -75,6 +76,7 @@ function parseResult(value: JsonValue | undefined): CharacterImportResult {
     || !validTransport
     || typeof record.greetingIndex !== 'number' || !Number.isSafeInteger(record.greetingIndex) || record.greetingIndex < 0
     || typeof record.selectedGreeting !== 'string'
+    || (record.userName !== undefined && (typeof record.userName !== 'string' || record.userName.trim() === ''))
     || !Array.isArray(record.degradations)
     || record.degradations.some(value => typeof value !== 'string'
       || !CHARACTER_IMPORT_DEGRADATIONS.includes(value as CharacterImportDegradation))) {
@@ -208,6 +210,7 @@ export function prepareCharacterImportResult(
   sourceEventSeq: number,
   attachment: CharacterCardAttachmentRef,
   greetingIndex: number,
+  userName?: string,
 ): CharacterImportValue {
   if (!Number.isSafeInteger(greetingIndex) || greetingIndex < 0) throw new Error('greetingIndex must be a non-negative integer')
   const greetings = [card.firstMessage, ...card.alternateGreetings]
@@ -223,6 +226,7 @@ export function prepareCharacterImportResult(
     ...(transport.transport === 'png' ? { metadataKeyword: transport.metadataKeyword } : {}),
     greetingIndex,
     selectedGreeting,
+    ...(userName === undefined || userName.trim() === '' ? {} : { userName: userName.trim() }),
     degradations: [...card.degradations],
     raw: card.raw,
   }
