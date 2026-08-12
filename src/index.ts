@@ -6,6 +6,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type { ScopeKey } from '@deepseek-ai/dsh-scope'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
@@ -34,6 +35,8 @@ import {
 import { CHARACTER_IMPORT_DEGRADATIONS } from './import/types.ts'
 import { WORLD_INFO_IMPORT_DEGRADATIONS } from './import/types.ts'
 import { parseWorldInfoJsonBytes } from './import/world-info.ts'
+import { parseSillyTavernChatBytes } from './import/sillytavern-chat.ts'
+import { createSillyTavernChatSeed } from './import/sillytavern-chat-seed.ts'
 import {
   isJsonWorldInfoAttachment,
   prepareWorldInfoImportResult,
@@ -66,6 +69,25 @@ interface PromptAttachmentGateway {
         | { readonly type: 'file'; readonly name: string; readonly mediaType?: string }
       >
     }) => { readonly text: string } | undefined,
+  ): () => void
+  registerPromptSessionImporter(
+    name: string,
+    importer: {
+      recognize(offer: {
+        readonly agent: Agent
+        readonly content: ReadonlyArray<
+          | { readonly type: 'text'; readonly text: string }
+          | { readonly type: 'image'; readonly mediaType: string; readonly name?: string }
+          | { readonly type: 'file'; readonly name: string; readonly mediaType?: string }
+        >
+      }): boolean
+      import(input: {
+        readonly source: Agent
+        readonly text: string
+        readonly attachments: readonly FileAttachmentRef[]
+        readFile(ref: FileAttachmentRef, signal?: AbortSignal): Promise<Uint8Array>
+      }, signal?: AbortSignal): Promise<{ readonly seed: readonly SessionEvent[]; readonly title?: string }>
+    },
   ): () => void
 }
 
@@ -103,6 +125,18 @@ export function claimAgentRpPrompt(
   const cards = attachments.filter(isCharacterCardOffer)
   if (cards.length !== 1 || !/(?:角色卡|character\s*card|导入|接管|切换角色)/iu.test(text)) return undefined
   return { text }
+}
+
+/** Recognize one standalone SillyTavern JSONL chat upload. */
+export function isSillyTavernChatOffer(
+  agentRpActive: boolean,
+  content: readonly PromptAttachmentPart[],
+): boolean {
+  if (!agentRpActive) return false
+  const attachments = content.filter(part => part.type !== 'text')
+  return attachments.length === 1
+    && attachments[0]?.type === 'file'
+    && /\.jsonl$/iu.test(attachments[0].name)
 }
 
 /** Canonical output schema for one accepted `remember` call. */
@@ -213,6 +247,22 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
   ctx.effect(() => gateway.registerPromptAttachmentConsumer('dsh-agent-rp', ({ agent, content }) => (
     claimAgentRpPrompt(agentsByScope.get(agent) === agent, content)
   )), 'agent-rp: prompt attachment consumer')
+  ctx.effect(() => gateway.registerPromptSessionImporter('dsh-agent-rp:sillytavern-chat', {
+    recognize: ({ agent, content }) => isSillyTavernChatOffer(agentsByScope.get(agent) === agent, content),
+    async import(input, signal) {
+      if (input.attachments.length !== 1) throw new Error('SillyTavern chat import requires exactly one file')
+      const attachment = input.attachments[0]
+      if (attachment === undefined || !/\.jsonl$/iu.test(attachment.name)) {
+        throw new Error('SillyTavern chat import requires one .jsonl file')
+      }
+      const chat = parseSillyTavernChatBytes(await input.readFile(attachment, signal))
+      const title = chat.header.characterName?.trim()
+      return {
+        seed: createSillyTavernChatSeed(chat, attachment),
+        ...(title === undefined || title === '' ? {} : { title }),
+      }
+    },
+  }), 'agent-rp: SillyTavern chat importer')
   ctx.systemPrompt.section({
     name: 'deployment:persona',
     order: 0,

@@ -7,8 +7,10 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { FileAttachmentRef } from '../src/import/session-character.ts'
 import { resolveConfig } from '../src/config.ts'
-import { installAgentRp } from '../src/index.ts'
+import { installAgentRp, isSillyTavernChatOffer } from '../src/index.ts'
 import { installBundledAgentRpPreset } from '../src/preset.ts'
 
 const SOURCE = resolve('preset')
@@ -64,10 +66,30 @@ test('claims character-card images for every Agent joined to the preset, includi
       | { type: 'file'; name: string; mediaType?: string }
     >
   }) => { text: string } | undefined>()
+  const importers = new Map<string, {
+    recognize(offer: {
+      agent: Agent
+      content: ReadonlyArray<
+        | { type: 'text'; text: string }
+        | { type: 'image'; mediaType: string; name?: string }
+        | { type: 'file'; name: string; mediaType?: string }
+      >
+    }): boolean
+    import(input: {
+      source: Agent
+      text: string
+      attachments: readonly FileAttachmentRef[]
+      readFile(ref: FileAttachmentRef, signal?: AbortSignal): Promise<Uint8Array>
+    }, signal?: AbortSignal): Promise<{ seed: readonly SessionEvent[]; title?: string }>
+  }>()
   root.provide('apiProxy' as never, {
     registerPromptAttachmentConsumer(name: string, consumer: (typeof claims extends Map<string, infer T> ? T : never)) {
       claims.set(name, consumer)
       return () => { claims.delete(name) }
+    },
+    registerPromptSessionImporter(name: string, importer: (typeof importers extends Map<string, infer T> ? T : never)) {
+      importers.set(name, importer)
+      return () => { importers.delete(name) }
     },
   } as never)
   root.provide('systemPrompt' as never, {
@@ -78,7 +100,9 @@ test('claims character-card images for every Agent joined to the preset, includi
   root.provide('attachments' as never, {} as never)
   installAgentRp(preset.ctx, resolveConfig({ mode: 'character' }))
   const consumer = claims.get('dsh-agent-rp')
+  const chatImporter = importers.get('dsh-agent-rp:sillytavern-chat')
   assert.ok(consumer)
+  assert.ok(chatImporter)
 
   const joinedAgent = {
     id: SessionId('joined-character'),
@@ -88,11 +112,18 @@ test('claims character-card images for every Agent joined to the preset, includi
     id: SessionId('sibling-agent'),
     session: Session.create(SessionId('sibling-agent')),
   } as Agent
+  const laterJoinedAgent = {
+    id: SessionId('later-joined-character'),
+    session: Session.create(SessionId('later-joined-character')),
+  } as Agent
   const joined = createScope(root, joinedAgent, { parent: presetKey })
+  const laterJoined = createScope(root, laterJoinedAgent, { parent: presetKey })
   const sibling = createScope(root, siblingAgent)
   Object.assign(joinedAgent, { ctx: joined.ctx })
+  Object.assign(laterJoinedAgent, { ctx: laterJoined.ctx })
   Object.assign(siblingAgent, { ctx: sibling.ctx })
   const disposeJoined = root.agents.register(joinedAgent)
+  const disposeLaterJoined = root.agents.register(laterJoinedAgent)
   const disposeSibling = root.agents.register(siblingAgent)
   const content = [
     { type: 'text' as const, text: '导入这张角色卡' },
@@ -104,13 +135,65 @@ test('claims character-card images for every Agent joined to the preset, includi
     { type: 'text', text: '导入这张角色卡' },
     { type: 'file', name: 'card.json', mediaType: 'application/json' },
   ] }), { text: '导入这张角色卡' })
+  assert.equal(chatImporter.recognize({
+    agent: joinedAgent,
+    content: [{ type: 'file', name: 'history.jsonl', mediaType: 'application/jsonl' }],
+  }), true)
+  assert.equal(chatImporter.recognize({
+    agent: siblingAgent,
+    content: [{ type: 'file', name: 'history.jsonl' }],
+  }), false)
+  assert.equal(chatImporter.recognize({
+    agent: laterJoinedAgent,
+    content: [{ type: 'file', name: 'history.jsonl' }],
+  }), true)
+  const chatBytes = readFileSync('tests/fixtures/manual-sillytavern-chat.jsonl')
+  const chatRef = {
+    kind: 'file' as const,
+    attachmentId: 'sha256:chat' as never,
+    bytes: chatBytes.byteLength,
+    name: 'history.jsonl',
+    mediaType: 'application/x-ndjson',
+  }
+  const imported = await chatImporter.import({
+    source: joinedAgent,
+    text: '',
+    attachments: [chatRef],
+    readFile: async (ref) => {
+      assert.equal(ref, chatRef)
+      return chatBytes
+    },
+  })
+  assert.equal(imported.title, '白露')
+  assert.deepEqual(Session.create(SessionId('imported-chat'), imported.seed).deriveMessages()
+    .map(message => message.content[0]?.type === 'text' ? message.content[0].text : undefined), [
+      '门还没锁。',
+      '那我进来啦。',
+      '窗外响起整点钟声。',
+    ])
 
   context.after(async () => {
     disposeSibling()
+    disposeLaterJoined()
     disposeJoined()
     await joined.dispose()
+    await laterJoined.dispose()
     await sibling.dispose()
     await preset.dispose()
     await root.fiber.dispose()
   })
+})
+
+test('recognizes exactly one JSONL attachment without requiring command text', () => {
+  assert.equal(isSillyTavernChatOffer(true, [{ type: 'file', name: 'history.jsonl' }]), true)
+  assert.equal(isSillyTavernChatOffer(true, [
+    { type: 'text', text: '' },
+    { type: 'file', name: 'HISTORY.JSONL' },
+  ]), true)
+  assert.equal(isSillyTavernChatOffer(true, [
+    { type: 'file', name: 'one.jsonl' },
+    { type: 'file', name: 'two.jsonl' },
+  ]), false)
+  assert.equal(isSillyTavernChatOffer(true, [{ type: 'file', name: 'history.json' }]), false)
+  assert.equal(isSillyTavernChatOffer(false, [{ type: 'file', name: 'history.jsonl' }]), false)
 })
