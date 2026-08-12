@@ -11,6 +11,7 @@
   "files": [
     "lib/index.js",
     "cordis.patch.yml",
+    "docs",
     "preset"
   ],
   "dsh": {
@@ -22,7 +23,7 @@
   "scripts": {
     "build": "tsdown",
     "prepack": "pnpm run build",
-    "test:focused": "tsdown tests/config.test.ts tests/memory.test.ts tests/prompt.test.ts tests/preset.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-dist --clean && node --test .test-dist/config.test.mjs .test-dist/memory.test.mjs .test-dist/prompt.test.mjs .test-dist/preset.test.mjs",
+    "test:focused": "tsdown tests/config.test.ts tests/import.test.ts tests/memory.test.ts tests/prompt.test.ts tests/preset.test.ts tests/session-character.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-dist --clean && node --test .test-dist/config.test.mjs .test-dist/import.test.mjs .test-dist/memory.test.mjs .test-dist/prompt.test.mjs .test-dist/preset.test.mjs .test-dist/session-character.test.mjs",
     "typecheck": "tsc -p tsconfig.host.json --noEmit"
   },
   "devDependencies": {
@@ -43,7 +44,13 @@
     "@deepseek-ai/dsh-user-approval": "0.0.1-rc.2",
     "@deepseek-ai/schemastery": "3.18.1-rc.1",
     "@types/node": "^24.10.0",
+    "@types/png-chunk-text": "1.0.3",
+    "@types/png-chunks-extract": "1.0.2",
     "tsdown": "0.22.2",
     "typescript": "6.0.3"
+  },
+  "dependencies": {
+    "png-chunk-text": "1.0.0",
+    "png-chunks-extract": "1.0.0"
   }
 }

@@ -1,0 +1,224 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { Buffer } from 'node:buffer'
+import { deflateSync } from 'node:zlib'
+import { encode as encodeTextChunk } from 'png-chunk-text'
+import { parseCharacterCardJson } from '../src/import/character-card.ts'
+import { activateLorebook } from '../src/import/lorebook.ts'
+import { readCharacterCardPng } from '../src/import/png.ts'
+
+const base = {
+  name: '白露',
+  description: '住在临海小城的钟表匠。',
+  personality: '沉静，偶尔会开一个很轻的玩笑。',
+  scenario: '傍晚的修理铺刚刚打烊。',
+  first_mes: '门还没锁，你进来吧。',
+  mes_example: '<START>\n{{char}}: 表走快了两分钟。',
+} as const
+
+function v2Data(extra: object = {}): object {
+  return {
+    ...base,
+    creator_notes: '只供读者查看',
+    system_prompt: '',
+    post_history_instructions: '',
+    alternate_greetings: ['今天来得很早。'],
+    tags: ['slow-burn'],
+    creator: 'fixture',
+    character_version: '1.0',
+    extensions: { 'fixture/unknown': { keep: true } },
+    ...extra,
+  }
+}
+
+function pngChunk(name: string, data: Uint8Array): Buffer {
+  const type = Buffer.from(name, 'ascii')
+  const payload = Buffer.from(data)
+  const output = Buffer.alloc(12 + payload.length)
+  output.writeUInt32BE(payload.length, 0)
+  type.copy(output, 4)
+  payload.copy(output, 8)
+  output.writeUInt32BE(crc32(Buffer.concat([type, payload])), 8 + payload.length)
+  return output
+}
+
+function crc32(data: Uint8Array): number {
+  let crc = 0xffffffff
+  for (const byte of data) {
+    crc ^= byte
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) === 1 ? 0xedb88320 : 0)
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+function cardPng(payloads: ReadonlyArray<readonly [keyword: string, card: object]>): Buffer {
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(1, 0)
+  ihdr.writeUInt32BE(1, 4)
+  ihdr[8] = 8
+  ihdr[9] = 2
+  const scanline = Buffer.from([0, 0, 0, 0])
+  return Buffer.concat([
+    signature,
+    pngChunk('IHDR', ihdr),
+    ...payloads.map(([keyword, card]) => {
+      const text = Buffer.from(JSON.stringify(card), 'utf8').toString('base64')
+      const encoded = encodeTextChunk(keyword, text)
+      return pngChunk(encoded.name, encoded.data)
+    }),
+    pngChunk('IDAT', deflateSync(scanline)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+test('imports V1 and preserves unknown JSON fields', () => {
+  const raw = { ...base, custom_future_field: { nested: true } }
+  const card = parseCharacterCardJson(JSON.stringify(raw))
+
+  assert.equal(card.version, 1)
+  assert.equal(card.name, '白露')
+  assert.deepEqual(card.raw, raw)
+  assert.deepEqual(card.alternateGreetings, [])
+})
+
+test('imports V2 lorebook and activates constant, primary, and selective entries', () => {
+  const raw = {
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: v2Data({
+      character_book: {
+        name: '海城',
+        token_budget: 100,
+        recursive_scanning: false,
+        extensions: { 'fixture/book': true },
+        entries: [{
+          keys: [],
+          content: '海城终年多雾。',
+          extensions: {},
+          enabled: true,
+          insertion_order: 10,
+          constant: true,
+          position: 'before_char',
+        }, {
+          keys: ['钟楼'],
+          content: '旧钟楼每天午夜停摆一分钟。',
+          extensions: {},
+          enabled: true,
+          insertion_order: 20,
+        }, {
+          keys: ['港口'],
+          secondary_keys: ['蓝灯'],
+          selective: true,
+          content: '蓝灯是返航信号。',
+          extensions: {},
+          enabled: true,
+          insertion_order: 30,
+        }],
+      },
+    }),
+  }
+  const card = parseCharacterCardJson(JSON.stringify(raw))
+  const active = activateLorebook(card.lorebook!, ['我们去钟楼看看。', '港口亮起了蓝灯。'])
+
+  assert.deepEqual(active.beforeCharacter, ['海城终年多雾。'])
+  assert.deepEqual(active.afterCharacter, ['旧钟楼每天午夜停摆一分钟。', '蓝灯是返航信号。'])
+  assert.deepEqual(card.raw, raw)
+})
+
+test('imports V3 while preserving and disabling unsafe optional behavior', () => {
+  const raw = {
+    spec: 'chara_card_v3',
+    spec_version: '3.1',
+    data: {
+      ...v2Data({
+        nickname: '露露',
+        assets: [{ type: 'icon', uri: 'https://example.invalid/icon.png', name: 'main', ext: 'png' }],
+        group_only_greetings: ['大家好。'],
+        character_book: {
+          extensions: {},
+          recursive_scanning: true,
+          entries: [{
+            keys: ['^秘密$'],
+            content: '正则不应执行。',
+            extensions: {},
+            enabled: true,
+            insertion_order: 1,
+            use_regex: true,
+          }, {
+            keys: ['旧港'],
+            content: '@@depth 2\n装饰器不应执行。',
+            extensions: {},
+            enabled: true,
+            insertion_order: 2,
+            use_regex: false,
+          }],
+        },
+      }),
+      group_only_greetings: ['大家好。'],
+    },
+  }
+  const card = parseCharacterCardJson(JSON.stringify(raw))
+
+  assert.equal(card.version, 3)
+  assert.equal(card.nickname, '露露')
+  assert.deepEqual(card.degradations, [
+    'character-assets',
+    'future-card-version',
+    'group-greetings',
+    'lorebook-decorators',
+    'lorebook-recursion',
+    'lorebook-regex',
+    'remote-assets',
+  ])
+  assert.deepEqual(activateLorebook(card.lorebook!, ['秘密', '旧港']), {
+    beforeCharacter: [],
+    afterCharacter: [],
+  })
+  assert.deepEqual(card.raw, raw)
+})
+
+test('prefers ccv3 over chara in a dual-metadata PNG', () => {
+  const v2 = { spec: 'chara_card_v2', spec_version: '2.0', data: v2Data() }
+  const v3 = {
+    spec: 'chara_card_v3',
+    spec_version: '3.0',
+    data: { ...v2Data({ name: 'V3 角色' }), group_only_greetings: [] },
+  }
+  const payload = readCharacterCardPng(cardPng([['chara', v2], ['ccv3', v3]]))
+  const card = parseCharacterCardJson(payload.json)
+
+  assert.equal(payload.keyword, 'ccv3')
+  assert.equal(card.name, 'V3 角色')
+})
+
+test('rejects malformed transport and schema without partial fallback', () => {
+  assert.throws(() => readCharacterCardPng(Buffer.from('not png')), /not a PNG/u)
+  assert.throws(() => parseCharacterCardJson('{'), /not valid JSON/u)
+  assert.throws(() => parseCharacterCardJson(JSON.stringify({ ...base, name: 3 })), /data.name must be a string/u)
+  assert.throws(() => parseCharacterCardJson(JSON.stringify({ ...base, spec: 'unknown' })), /unsupported character card spec/u)
+})
+
+test('honors zero lorebook scan depth and token budget', () => {
+  const card = parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: v2Data({
+      character_book: {
+        scan_depth: 0,
+        token_budget: 0,
+        extensions: {},
+        entries: [{
+          keys: [],
+          content: '不应进入上下文',
+          extensions: {},
+          enabled: true,
+          insertion_order: 1,
+          constant: true,
+        }],
+      },
+    }),
+  }))
+
+  assert.deepEqual(activateLorebook(card.lorebook!, ['任何对话']), { beforeCharacter: [], afterCharacter: [] })
+})

@@ -2,9 +2,17 @@
 
 This private preview adds a `角色会话` Agent Preset. The top-level Agent is the character: ordinary chat starts immediately, without a narrator, coordinator, start command, or Character subagent.
 
-The profile bundle installs its managed `agent-rp` preset under `$DSH_HOME/.agent-presets` and selects it for new Sessions. That preset contains no workspace context, coding persona, shell, filesystem, Skills, goals, plans, or delegation tools. Its only model-facing tool is `remember`.
+The profile bundle installs its managed `agent-rp` preset under `$DSH_HOME/.agent-presets` and selects it for new Sessions. That preset contains no workspace context, coding persona, shell, filesystem, Skills, goals, plans, or delegation tools. Its model-facing tools import a character card and retain explicit memories.
 
-The character row configures `characterName`, `persona`, `scenario`, and the initial `relationship`. Each field is normalized and must contain text. The bundled preset describes an original test character. To customize it, copy the preset to a new id in DSH, edit that copy's `agent.cordis.yml`, and select the copy; the installer refuses to overwrite local edits under the managed `agent-rp` id.
+The character row configures `characterName`, `persona`, `scenario`, and the initial `relationship`. Each field is normalized and must contain text. The bundled preset describes an original character until the Session imports a card. To customize that fallback, copy the preset to a new id in DSH, edit that copy's `agent.cordis.yml`, and select the copy; the installer refuses to overwrite local edits under the managed `agent-rp` id.
+
+## Import a SillyTavern character
+
+Start a `角色会话`, attach one Character Card PNG to an ordinary message, and ask the character to import it. The current top-level Agent becomes that character, sends the card's selected greeting, and keeps the import through Session restart and resume. A message with several PNGs can name the intended image and greeting; greeting zero is `first_mes`, followed by `alternate_greetings`.
+
+Character Card V1, V2, and V3 JSON data embedded in PNG `tEXt` metadata is accepted. When both `ccv3` and `chara` are present, `ccv3` wins. The importer retains the complete parsed JSON, including unknown fields and extension namespaces, in the native successful tool result metadata.
+
+The supported character lorebook subset covers enabled and constant entries, primary and secondary keywords, selective matching, case sensitivity, scan depth, insertion order, before/after-character placement, priority, and token budget. See [the compatibility reference](docs/sillytavern-compatibility.md) for exact degradation behavior and format sources.
 
 ## Memory contract
 
@@ -30,13 +38,13 @@ npx -p @deepseek-ai/dsh@0.0.1-rc.2 dsh plugin --profile web add .
 npx -p @deepseek-ai/dsh@0.0.1-rc.2 dsh --profile web --port 3091
 ```
 
-Start a new Session after installation. The preset selector shows `角色会话`, and the ordinary Chat UI opens directly into the character conversation. The generic `remember` tool card is the only new in-conversation surface in this milestone.
+Start a new Session after installation. The preset selector shows `角色会话`, and the ordinary Chat UI opens directly into the character conversation.
 
 ## Limitations
 
-- The bundled preset contains one character; additional characters require copied presets.
+- Character import currently accepts PNG attachments; standalone JSON, CHARX, lorebook, and SillyTavern JSONL chat files are the next migration layer.
 - Memory selection is model-initiated and explicit; there is no semantic retrieval or automatic forgetting policy.
-- SillyTavern character-card import, multi-character scenes, multiplayer, and custom RP UI are outside this milestone.
+- Multi-character scenes, multiplayer, and a custom RP UI are outside this milestone.
 - rc.2 does not expose package-owned preset roots, so the Host row installs the bundled preset into the user preset directory. Removing the profile bundle leaves that managed directory behind; without the package its composition is unavailable but other Sessions are unaffected.
 
 This preview remains private because no public redistribution license has been selected.
