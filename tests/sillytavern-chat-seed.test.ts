@@ -4,7 +4,10 @@ import test from 'node:test'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { parseSillyTavernChat, parseSillyTavernChatBytes } from '../src/import/sillytavern-chat.ts'
-import { createSillyTavernChatSeed } from '../src/import/sillytavern-chat-seed.ts'
+import {
+  createSillyTavernChatSeed,
+  readSillyTavernChatIdentity,
+} from '../src/import/sillytavern-chat-seed.ts'
 
 const attachment = {
   kind: 'file' as const,
@@ -45,6 +48,16 @@ test('retains swipes and the original attachment in skippable import metadata', 
   assert.deepEqual(imported.data.messages[0]?.swipes, ['门还没锁。', '你来得正好。'])
   assert.deepEqual((imported.data.header as { chat_metadata: object }).chat_metadata, {
     integrity: 'fixture', unknown: { keep: true },
+  })
+})
+
+test('recovers the imported chat identity for subsequent roleplay turns', () => {
+  const chat = parseSillyTavernChatBytes(readFileSync('tests/fixtures/manual-sillytavern-chat.jsonl'))
+  const seed = createSillyTavernChatSeed(chat, attachment)
+
+  assert.deepEqual(readSillyTavernChatIdentity(seed), {
+    characterName: '白露',
+    userName: '宝宝',
   })
 })
 

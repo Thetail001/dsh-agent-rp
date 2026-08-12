@@ -36,7 +36,10 @@ import { CHARACTER_IMPORT_DEGRADATIONS } from './import/types.ts'
 import { WORLD_INFO_IMPORT_DEGRADATIONS } from './import/types.ts'
 import { parseWorldInfoJsonBytes } from './import/world-info.ts'
 import { parseSillyTavernChatBytes } from './import/sillytavern-chat.ts'
-import { createSillyTavernChatSeed } from './import/sillytavern-chat-seed.ts'
+import {
+  createSillyTavernChatSeed,
+  readSillyTavernChatIdentity,
+} from './import/sillytavern-chat-seed.ts'
 import {
   isJsonWorldInfoAttachment,
   prepareWorldInfoImportResult,
@@ -45,6 +48,7 @@ import {
 } from './import/session-world-info.ts'
 import {
   renderCharacterPrompt,
+  renderImportedChatPrompt,
   renderImportedCharacterPrompt,
   renderImportedLorebook,
   renderImportedWorldInfos,
@@ -274,7 +278,17 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       if (agent === undefined) return renderCharacterPrompt(config)
       const worldInfos = readActiveSessionWorldInfos(agent.session.events).map(imported => imported.worldInfo)
       const standaloneLore = renderImportedWorldInfos(worldInfos, agent.session, pendingMessages)
-      if (active === undefined) return renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter)
+      if (active === undefined) {
+        const importedChat = readSillyTavernChatIdentity(agent.session.events)
+        if (importedChat !== undefined) {
+          return [
+            ...standaloneLore.beforeCharacter,
+            renderImportedChatPrompt(importedChat.characterName, importedChat.userName),
+            ...standaloneLore.afterCharacter,
+          ].join('\n\n')
+        }
+        return renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter)
+      }
       const card = cardFromImportMeta(active.meta)
       const characterLore = renderImportedLorebook(card, agent.session, pendingMessages)
       return renderImportedCharacterPrompt(

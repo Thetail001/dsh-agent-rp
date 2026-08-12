@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["react"]
+  },
+  "files": [
+    "src/client/index.tsx"
+  ]
+}

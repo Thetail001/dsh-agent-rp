@@ -31,6 +31,12 @@ export interface SillyTavernChatImportRecord {
   }[]
 }
 
+/** Character identity recovered from one imported SillyTavern chat header. */
+export interface SillyTavernChatIdentity {
+  readonly characterName: string
+  readonly userName?: string
+}
+
 declare module '@deepseek-ai/dsh-session' {
   interface SessionEventMap {
     /** Skippable SillyTavern provenance; the original file remains authoritative. */
@@ -65,6 +71,30 @@ function metadata(chat: ImportedSillyTavernChat, attachment: FileAttachmentRef):
       ...(message.extra === undefined ? {} : { extra: message.extra }),
     })),
   }
+}
+
+/**
+ * Read the latest usable character identity attached to an imported chat Session.
+ * @param events - current Session history.
+ * @returns imported character and optional user names, when the chat header names a character.
+ */
+export function readSillyTavernChatIdentity(
+  events: readonly SessionEvent[],
+): SillyTavernChatIdentity | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event?.type !== 'agent-rp/sillytavern-chat-import') continue
+    const header = event.data.header
+    if (typeof header !== 'object' || header === null || Array.isArray(header)) return undefined
+    const characterName = typeof header.character_name === 'string' ? header.character_name.trim() : ''
+    if (characterName === '') return undefined
+    const userName = typeof header.user_name === 'string' ? header.user_name.trim() : ''
+    return {
+      characterName,
+      ...(userName === '' ? {} : { userName }),
+    }
+  }
+  return undefined
 }
 
 function appendMessageEvents(

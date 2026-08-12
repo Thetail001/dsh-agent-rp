@@ -35,6 +35,23 @@ export function renderCharacterPrompt(
 }
 
 /**
+ * Render the identity contract for a chat import that has history but no Character Card.
+ * @param characterName - character named by the SillyTavern chat header.
+ * @param userName - optional user name retained by that header.
+ * @returns model-visible prompt that continues imported history without applying the deployment default persona.
+ */
+export function renderImportedChatPrompt(characterName: string, userName?: string): string {
+  return [
+    `你是${characterName}。直接以${characterName}的身份延续当前会话。`,
+    ...(userName === undefined ? [] : [`与您对话的人在导入记录中名为${userName}。`]),
+    '以已导入的对话历史为准；缺少角色卡时，不要补用其他角色的身份、经历、场景或关系设定。',
+    CHARACTER_BEHAVIOR,
+    MEMORY_BEHAVIOR,
+    IMPORT_BEHAVIOR,
+  ].join('\n\n')
+}
+
+/**
  * Activate all Session-owned standalone World Info books for one request.
  * @param worldInfos - validated standalone books in Session import order.
  * @param session - current model-visible conversation history.

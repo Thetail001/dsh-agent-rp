@@ -5,7 +5,13 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
 import { claimAgentRpPrompt } from '../src/index.ts'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
-import { renderCharacterPrompt, renderImportedLorebook, renderImportedWorldInfos, renderMemoryContext } from '../src/prompt.ts'
+import {
+  renderCharacterPrompt,
+  renderImportedChatPrompt,
+  renderImportedLorebook,
+  renderImportedWorldInfos,
+  renderMemoryContext,
+} from '../src/prompt.ts'
 import { parseWorldInfoJson } from '../src/import/world-info.ts'
 
 test('makes the top-level Agent the character and permits concise silence', () => {
@@ -22,6 +28,15 @@ test('makes the top-level Agent the character and permits concise silence', () =
 
 test('renders an explicit empty memory snapshot', () => {
   assert.equal(renderMemoryContext([]), '当前没有已记录的持久记忆。')
+})
+
+test('continues an imported chat identity without the deployment default persona', () => {
+  const prompt = renderImportedChatPrompt('白露', '宝宝')
+
+  assert.match(prompt, /你是白露/u)
+  assert.match(prompt, /名为宝宝/u)
+  assert.match(prompt, /已导入的对话历史为准/u)
+  assert.doesNotMatch(prompt, /岚|旧书修复铺/u)
 })
 
 test('claims one Character Card JSON only for an Agent RP import request', () => {
