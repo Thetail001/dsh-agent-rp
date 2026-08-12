@@ -9,8 +9,9 @@ import { createScope } from '@deepseek-ai/dsh-scope'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { FileAttachmentRef } from '../src/import/session-character.ts'
+import { readActiveSessionCharacter } from '../src/import/session-character.ts'
 import { resolveConfig } from '../src/config.ts'
-import { installAgentRp, isSillyTavernChatOffer } from '../src/index.ts'
+import { installAgentRp, isCharacterCardSessionOffer, isSillyTavernChatOffer } from '../src/index.ts'
 import { installBundledAgentRpPreset } from '../src/preset.ts'
 
 const SOURCE = resolve('preset')
@@ -101,8 +102,10 @@ test('claims character-card images for every Agent joined to the preset, includi
   installAgentRp(preset.ctx, resolveConfig({ mode: 'character' }))
   const consumer = claims.get('dsh-agent-rp')
   const chatImporter = importers.get('dsh-agent-rp:sillytavern-chat')
+  const cardImporter = importers.get('dsh-agent-rp:character-card-json')
   assert.ok(consumer)
   assert.ok(chatImporter)
+  assert.ok(cardImporter)
 
   const joinedAgent = {
     id: SessionId('joined-character'),
@@ -171,6 +174,22 @@ test('claims character-card images for every Agent joined to the preset, includi
       '那我进来啦。',
       '窗外响起整点钟声。',
     ])
+  const cardBytes = readFileSync('tests/fixtures/manual-character-card.json')
+  const cardRef = {
+    kind: 'file' as const,
+    attachmentId: 'sha256:card' as never,
+    bytes: cardBytes.byteLength,
+    name: '白露.json',
+    mediaType: 'application/json',
+  }
+  const importedCard = await cardImporter.import({
+    source: joinedAgent,
+    text: '请导入这张角色卡',
+    attachments: [cardRef],
+    readFile: async () => cardBytes,
+  })
+  assert.equal(importedCard.title, '白露')
+  assert.equal(readActiveSessionCharacter(importedCard.seed)?.result.name, '白露')
 
   context.after(async () => {
     disposeSibling()
@@ -182,6 +201,19 @@ test('claims character-card images for every Agent joined to the preset, includi
     await preset.dispose()
     await root.fiber.dispose()
   })
+})
+
+test('recognizes one explicitly selected Character Card JSON import', () => {
+  const selected = [
+    { type: 'text' as const, text: '请导入这张角色卡' },
+    { type: 'file' as const, name: '白露.json', mediaType: 'application/json' },
+  ]
+  assert.equal(isCharacterCardSessionOffer(true, selected), true)
+  assert.equal(isCharacterCardSessionOffer(false, selected), false)
+  assert.equal(isCharacterCardSessionOffer(true, [
+    { type: 'text', text: '请导入这本世界书' },
+    { type: 'file', name: '白露.json' },
+  ]), false)
 })
 
 test('recognizes exactly one JSONL attachment without requiring command text', () => {

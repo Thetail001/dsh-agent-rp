@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-agent-rp",
-  "version": "0.0.0-rc.6",
+  "version": "0.0.0-rc.7",
   "private": true,
   "type": "module",
   "main": "./lib/index.js",

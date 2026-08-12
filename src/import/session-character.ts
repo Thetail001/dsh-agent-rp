@@ -186,6 +186,24 @@ function validateImport(events: readonly SessionEvent[], resultEvent: SessionEve
 export function readActiveSessionCharacter(events: readonly SessionEvent[]): ActiveSessionCharacter | undefined {
   let active: ActiveSessionCharacter | undefined
   for (const event of events) {
+    if (event.type === 'agent-rp/character-card-seed') {
+      const attachment = event.data.source.attachments[0]
+      const meta = parseMeta(event.data.meta as unknown as JsonValue)
+      const result = meta.result
+      const card = parseCharacterCardJson(JSON.stringify(meta.raw))
+      const expectedGreeting = [card.firstMessage, ...card.alternateGreetings][result.greetingIndex]
+      if (event.data.format !== 0 || event.data.source.attachmentConsumer !== 'dsh-agent-rp'
+        || !isJsonCharacterCardAttachment(attachment)
+        || result.transport !== 'json' || result.sourceEventSeq !== event.seq
+        || result.sourceAttachmentId !== String(attachment.attachmentId)
+        || result.name !== card.name || result.cardVersion !== card.version
+        || result.selectedGreeting !== expectedGreeting
+        || JSON.stringify(result.degradations) !== JSON.stringify(card.degradations)) {
+        throw new Error('agent-rp/character-card-seed has invalid provenance')
+      }
+      active = { result, meta: { ...meta, raw: card.raw } }
+      continue
+    }
     if (event.type !== 'tool/result' || event.data.message.content[0].isError === true) continue
     const callId = String(event.data.message.content[0].toolCallId)
     const call = events.find(candidate => candidate.type === 'tool/call' && String(candidate.data.callId) === callId)

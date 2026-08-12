@@ -21,6 +21,7 @@ import {
   prepareAgentRpMemory,
 } from './memory.ts'
 import { parseCharacterCardJson, parseCharacterCardJsonBytes } from './import/character-card.ts'
+import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
 import { readCharacterCardPng } from './import/png.ts'
 import {
   cardFromImportMeta,
@@ -142,6 +143,20 @@ export function isSillyTavernChatOffer(
   return attachments.length === 1
     && attachments[0]?.type === 'file'
     && /\.jsonl$/iu.test(attachments[0].name)
+}
+
+/** Recognize one explicitly selected standalone Character Card JSON import. */
+export function isCharacterCardSessionOffer(
+  agentRpActive: boolean,
+  content: readonly PromptAttachmentPart[],
+): boolean {
+  if (!agentRpActive) return false
+  const text = content.filter(part => part.type === 'text').map(part => part.text).join('\n')
+  const attachments = content.filter(part => part.type !== 'text')
+  return /^请导入这张角色卡$/u.test(text.trim())
+    && attachments.length === 1
+    && attachments[0]?.type === 'file'
+    && /\.json$/iu.test(attachments[0].name)
 }
 
 /** Canonical output schema for one accepted `remember` call. */
@@ -269,6 +284,22 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       }
     },
   }), 'agent-rp: SillyTavern chat importer')
+  ctx.effect(() => gateway.registerPromptSessionImporter('dsh-agent-rp:character-card-json', {
+    recognize: ({ agent, content }) => isCharacterCardSessionOffer(agentsByScope.get(agent) === agent, content),
+    async import(input, signal) {
+      if (input.attachments.length !== 1) throw new Error('Character Card import requires exactly one file')
+      const attachment = input.attachments[0]
+      if (attachment === undefined || !/\.json$/iu.test(attachment.name)) {
+        throw new Error('Character Card import requires one .json file')
+      }
+      const card = parseCharacterCardJsonBytes(await input.readFile(attachment, signal))
+      const greeting = substituteCardMacros(card.firstMessage, card)
+      return {
+        seed: createCharacterCardSessionSeed(card, attachment, 0, greeting),
+        title: card.nickname?.trim() || card.name,
+      }
+    },
+  }), 'agent-rp: Character Card JSON importer')
   ctx.systemPrompt.section({
     name: 'deployment:persona',
     order: 0,
