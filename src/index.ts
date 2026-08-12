@@ -4,6 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { ScopeKey } from '@deepseek-ai/dsh-scope'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -37,6 +38,7 @@ import { CHARACTER_IMPORT_DEGRADATIONS } from './import/types.ts'
 import { WORLD_INFO_IMPORT_DEGRADATIONS } from './import/types.ts'
 import { parseWorldInfoJsonBytes } from './import/world-info.ts'
 import { parseSillyTavernChatBytes } from './import/sillytavern-chat.ts'
+import { parseSillyTavernPresetBytes, presetJson } from './import/sillytavern-preset.ts'
 import { createSillyTavernMigrationSeed } from './import/sillytavern-migration-seed.ts'
 import {
   createSillyTavernChatSeed,
@@ -49,6 +51,12 @@ import {
   readActiveSessionWorldInfos,
   type WorldInfoImportMeta,
 } from './import/session-world-info.ts'
+import {
+  createPresetSessionSeed,
+  preparePresetImportResult,
+  readActiveSessionPreset,
+  type PresetImportMeta,
+} from './import/session-preset.ts'
 import {
   renderCharacterPrompt,
   renderImportedChatPrompt,
@@ -63,12 +71,14 @@ import type {} from '@deepseek-ai/dsh-session-projection'
 import { agentRpProjectionDefinition } from './projection.ts'
 import { readCurrentMvuState } from './mvu.ts'
 import { installMvuStreamCompletion } from './mvu-stream.ts'
+import { assembleSillyTavernPreset } from './preset-prompt.ts'
+import { configurePresetFromCommand } from './preset-configuration.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
 export { Config }
 /** Host services required by the profile bundle. */
-export const inject = ['agents', 'apiProxy', 'attachments', 'llm', 'systemPrompt', 'tools']
+export const inject = ['agents', 'apiProxy', 'attachments', 'commands', 'llm', 'systemPrompt', 'tools']
 
 interface PromptAttachmentGateway {
   registerPromptAttachmentConsumer(
@@ -103,6 +113,15 @@ interface PromptAttachmentGateway {
   ): () => void
 }
 
+interface HumanCommandGateway {
+  register(definition: {
+    readonly name: string
+    readonly description: string
+    readonly input: { readonly hint: string }
+    readonly handler: typeof configurePresetFromCommand
+  }): () => void
+}
+
 interface FileAttachmentReader {
   readFile(
     ref: FileAttachmentRef,
@@ -128,6 +147,24 @@ function isWorldInfoRequest(text: string): boolean {
   return /(?:世界书|世界信息|world\s*info|lorebook)/iu.test(text) && /(?:导入|加载|使用|接入)/u.test(text)
 }
 
+function isPresetRequest(text: string): boolean {
+  return /(?:预设|preset)/iu.test(text) && /(?:导入|加载|使用|接入)/u.test(text)
+}
+
+/** Recognize one preset attachment before opening a model turn. */
+export function isSillyTavernPresetOffer(
+  agentRpActive: boolean,
+  content: readonly PromptAttachmentPart[],
+): boolean {
+  if (!agentRpActive) return false
+  const text = content.filter(part => part.type === 'text').map(part => part.text).join('\n')
+  const attachments = content.filter(part => part.type !== 'text')
+  return isPresetRequest(text)
+    && attachments.length === 1
+    && attachments[0]?.type === 'file'
+    && /\.json$/iu.test(attachments[0].name)
+}
+
 /** Recognize one explicit Character Card import without exposing attachment bytes to the model. */
 export function claimAgentRpPrompt(
   agentRpActive: boolean,
@@ -137,6 +174,10 @@ export function claimAgentRpPrompt(
   const attachments = content.filter(part => part.type !== 'text')
   const text = content.filter(part => part.type === 'text').map(part => part.text).join('\n')
   if (isWorldInfoRequest(text)) {
+    const files = attachments.filter(part => part.type === 'file' && /\.json$/iu.test(part.name))
+    return files.length === 1 ? { text } : undefined
+  }
+  if (isPresetRequest(text)) {
     const files = attachments.filter(part => part.type === 'file' && /\.json$/iu.test(part.name))
     return files.length === 1 ? { text } : undefined
   }
@@ -233,6 +274,22 @@ export const WORLD_INFO_IMPORT_VALUE_SCHEMA = {
   },
 } as const
 
+/** Canonical output schema for one accepted SillyTavern preset import. */
+export const PRESET_IMPORT_VALUE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    version: { type: 'integer', required: true, const: 0 },
+    name: { type: 'string', required: true },
+    sourceEventSeq: { type: 'integer', required: true },
+    sourceAttachmentId: { type: 'string', required: true },
+    promptCount: { type: 'integer', required: true },
+    enabledCount: { type: 'integer', required: true },
+    regexScriptCount: { type: 'integer', required: true },
+    preset: { type: 'json', required: true },
+  },
+} as const
+
 function rememberCall(subject: string, text: string): GenericCallView {
   return { card: 'generic', title: `记住：${subject}`, kind: 'other', rawInput: text }
 }
@@ -289,7 +346,15 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
   const agentsByScope = new WeakMap<ScopeKey, Agent>()
   const agentsBySession = new Map<string, Agent>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
+  const presetAfterHistoryByAgent = new WeakMap<Agent, string>()
   const gateway = (ctx as Context & { apiProxy: PromptAttachmentGateway }).apiProxy
+  const commands = (ctx as Context & { commands: HumanCommandGateway }).commands
+  commands.register({
+    name: 'rp-preset-configure',
+    description: 'update this roleplay Session preset',
+    input: { hint: '<private preset-manager payload>' },
+    handler: configurePresetFromCommand,
+  })
   ctx.effect(() => gateway.registerPromptAttachmentConsumer('dsh-agent-rp', ({ agent, content }) => (
     claimAgentRpPrompt(agentsByScope.get(agent) === agent, content)
   )), 'agent-rp: prompt attachment consumer')
@@ -370,6 +435,22 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       }
     },
   }), 'agent-rp: Character Card importer')
+  if (registerSessionImporter !== undefined) ctx.effect(() => registerSessionImporter('dsh-agent-rp:sillytavern-preset', {
+    recognize: ({ agent, content }) => isSillyTavernPresetOffer(agentsByScope.get(agent) === agent, content),
+    async import(input, signal) {
+      if (input.attachments.length !== 1) throw new Error('SillyTavern preset import requires exactly one file')
+      const attachment = input.attachments[0]
+      if (attachment === undefined || !('kind' in attachment) || attachment.kind !== 'file'
+        || !/\.json$/iu.test(attachment.name)) {
+        throw new Error('SillyTavern preset import requires one JSON file')
+      }
+      const preset = parseSillyTavernPresetBytes(await input.readFile(attachment, signal), attachment.name)
+      return {
+        seed: createPresetSessionSeed(input.source.session.events, preset, attachment),
+        title: readActiveSessionCharacter(input.source.session.events)?.result.name ?? preset.name,
+      }
+    },
+  }), 'agent-rp: SillyTavern preset importer')
   ctx.systemPrompt.section({
     name: 'deployment:persona',
     order: 0,
@@ -395,6 +476,22 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       const card = cardFromImportMeta(active.meta)
       const mvu = readCurrentMvuState(card, agent.session.events)
       const characterLore = renderImportedLorebook(card, agent.session, pendingMessages, mvu?.statData)
+      const preset = readActiveSessionPreset(agent.session.events)?.preset
+      if (preset !== undefined) {
+        const presetUserName = readSillyTavernChatIdentity(agent.session.events)?.userName
+        const assembled = assembleSillyTavernPreset(preset, {
+          card,
+          ...(presetUserName === undefined ? {} : { userName: presetUserName }),
+          worldInfoBefore: [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
+          worldInfoAfter: [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
+          session: agent.session,
+          pendingMessages,
+          mvuEnabled: mvu !== undefined,
+        })
+        presetAfterHistoryByAgent.set(agent, assembled.afterHistory)
+        return assembled.system
+      }
+      presetAfterHistoryByAgent.delete(agent)
       return renderImportedCharacterPrompt(
         card,
         [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
@@ -429,6 +526,39 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       const agent = agentsByScope.get(scope)
       return agent === undefined ? '' : renderMemoryContext(agent.session.events)
     },
+  })
+  ctx.systemPrompt.context({
+    name: 'agent-rp:preset-after-history',
+    order: 60,
+    text: ({ scope }) => {
+      if (scope === undefined) return ''
+      const agent = agentsByScope.get(scope)
+      if (agent === undefined) return ''
+      const value = presetAfterHistoryByAgent.get(agent) ?? ''
+      presetAfterHistoryByAgent.delete(agent)
+      return value
+    },
+  })
+  ctx.on('agent/request', async ({ agent }, next) => {
+    const config = await next()
+    if (agentsByScope.get(agent) !== agent) return config
+    const generation = readActiveSessionPreset(agent.session.events)?.preset.generation
+    if (generation === undefined) return config
+    const requestedEffort = generation.reasoningEffort
+    const modelInfo = requestedEffort === undefined || requestedEffort === 'auto'
+      ? undefined
+      : await ctx.llm.resolveModelInfo(config.provider, config.model)
+    const supportedEffort = modelInfo?.reasoning?.efforts.some(effort => effort.id === requestedEffort) === true
+      ? requestedEffort
+      : undefined
+    return {
+      ...config,
+      ...generation.temperature === undefined ? {} : { temperature: generation.temperature },
+      ...generation.maxTokens === undefined
+        ? {}
+        : { maxTokens: Math.min(generation.maxTokens, config.maxTokens ?? generation.maxTokens) },
+      ...supportedEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(supportedEffort) },
+    }
   })
   ctx.systemPrompt.context({ name: 'sandbox:policy', order: 0, text: '' })
   ctx.systemPrompt.context({ name: 'approval:policy', order: 0, text: '' })
@@ -468,6 +598,52 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       return Promise.resolve(record)
     },
     presentCall: args => rememberCall(args.subject, args.text),
+    isConcurrencySafe: () => false,
+  }))
+  ctx.tools.register(defineTool({
+    name: 'import_sillytavern_preset',
+    description: 'Import one SillyTavern Chat Completion preset JSON attachment from the latest user message. The complete Prompt Manager module set and order become active for this roleplay Session; extension payloads remain preserved in the original attachment.',
+    parameters: {
+      attachmentIndex: {
+        type: 'integer',
+        description: 'Zero-based JSON attachment index in the latest user message. Omit when it contains exactly one file.',
+      },
+    },
+    output: {
+      schema: PRESET_IMPORT_VALUE_SCHEMA,
+      render: (_args, value) => [{
+        type: 'text',
+        text: `已启用预设 ${value.name}：${value.promptCount} 个提示模块，当前启用 ${value.enabledCount} 个。原始扩展数据已随附件保留。`,
+      }],
+      presentationMeta: (_args, value) => {
+        const { preset, ...result } = value
+        const meta: PresetImportMeta = {
+          format: 0,
+          result,
+          preset: preset as unknown as import('./import/sillytavern-preset.ts').ImportedSillyTavernPreset,
+        }
+        return meta as unknown as import('@deepseek-ai/dsh-session').JsonValue
+      },
+    },
+    async execute(args, exec) {
+      if (exec.agent === undefined) throw new Error('import_sillytavern_preset requires an Agent Session')
+      if (exec.parent !== undefined) throw new Error('import_sillytavern_preset must be called directly by the character Agent')
+      const direct = latestConsumedAttachments(exec.agent)
+      const attachmentIndex = args.attachmentIndex ?? 0
+      if (!Number.isSafeInteger(attachmentIndex) || attachmentIndex < 0 || attachmentIndex >= direct.attachments.length) {
+        throw new Error(`attachmentIndex ${attachmentIndex} is unavailable; the current import source contains ${direct.attachments.length} JSON attachment(s)`)
+      }
+      const reader = ctx.attachments as unknown as FileAttachmentReader
+      const stored = await reader.readFile(direct.attachments[attachmentIndex]!, exec.signal)
+      const preset = parseSillyTavernPresetBytes(stored.data, stored.ref.name)
+      const result = preparePresetImportResult(preset, direct.eventSeq, stored.ref)
+      return { ...result, preset: presetJson(preset) }
+    },
+    presentCall: () => ({ card: 'generic', title: '导入酒馆预设', kind: 'read' }),
+    presentResult: (_args, result) => ({
+      card: 'generic',
+      title: result.isError ? '预设导入失败' : '预设已启用',
+    }),
     isConcurrencySafe: () => false,
   }))
   ctx.tools.register(defineTool({

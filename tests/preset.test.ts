@@ -11,7 +11,14 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { CharacterCardAttachmentRef, FileAttachmentRef } from '../src/import/session-character.ts'
 import { readActiveSessionCharacter } from '../src/import/session-character.ts'
 import { resolveConfig } from '../src/config.ts'
-import { installAgentRp, isCharacterCardSessionOffer, isSillyTavernChatOffer } from '../src/index.ts'
+import {
+  installAgentRp,
+  isCharacterCardSessionOffer,
+  isSillyTavernChatOffer,
+  isSillyTavernPresetOffer,
+} from '../src/index.ts'
+import { parseSillyTavernPresetJson } from '../src/import/sillytavern-preset.ts'
+import { createPresetSessionSeed, readActiveSessionPreset } from '../src/import/session-preset.ts'
 import { installBundledAgentRpPreset } from '../src/preset.ts'
 
 const SOURCE = resolve('preset')
@@ -98,6 +105,7 @@ test('claims character-card images for every Agent joined to the preset, includi
     context: () => () => {},
   } as never)
   root.provide('tools' as never, { register: () => () => {} } as never)
+  root.provide('commands' as never, { register: () => () => {} } as never)
   root.provide('attachments' as never, {} as never)
   installAgentRp(preset.ctx, resolveConfig({ mode: 'character' }))
   const consumer = claims.get('dsh-agent-rp')
@@ -228,4 +236,31 @@ test('recognizes exactly one JSONL attachment without requiring command text', (
   ]), false)
   assert.equal(isSillyTavernChatOffer(true, [{ type: 'file', name: 'history.json' }]), false)
   assert.equal(isSillyTavernChatOffer(false, [{ type: 'file', name: 'history.jsonl' }]), false)
+})
+
+test('imports a preset by forking the current roleplay Session before a model turn', () => {
+  const offer = [
+    { type: 'text' as const, text: '请导入这份预设' },
+    { type: 'file' as const, name: 'V18.json', mediaType: 'application/json' },
+  ]
+  assert.equal(isSillyTavernPresetOffer(true, offer), true)
+  assert.equal(isSillyTavernPresetOffer(false, offer), false)
+
+  const preset = parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [{ identifier: 'main', name: 'Main', role: 'system', content: '角色规则' }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: 'main', enabled: true }] }],
+  }), 'V18.json')
+  const source = Session.create(SessionId('preset-source'))
+  const attachment = {
+    kind: 'file' as const,
+    attachmentId: 'sha256:preset' as never,
+    bytes: 100,
+    name: 'V18.json',
+    mediaType: 'application/json',
+  }
+  const imported = Session.create(SessionId('preset-imported'), createPresetSessionSeed(source.events, preset, attachment))
+
+  assert.equal(readActiveSessionPreset(imported.events)?.preset.name, 'V18')
+  assert.equal(readActiveSessionPreset(imported.events)?.result.enabledCount, 1)
+  assert.equal(imported.deriveMessages().length, 0)
 })

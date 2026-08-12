@@ -10,6 +10,7 @@ import type { IConversation } from '@deepseek-ai/dsh-client-ui-conversation/clie
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
+import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
 import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay } from '../frontend-regex.ts'
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
 
@@ -31,6 +32,7 @@ interface DraftResolver {
 
 type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly loadAvatar: (attachmentId: string) => Promise<string | undefined>
+  readonly configurePreset: (sessionId: SessionId, request: PresetConfigurationRequest) => Promise<void>
 }
 
 type ComposerDockProps = PropsRuntime<'conversation.composer.dock'>
@@ -102,6 +104,7 @@ function characterCapabilitySummary(projection: AgentRpProjection): string {
     projection.worldInfoCount > 0 ? `${projection.worldInfoCount} 条世界书` : undefined,
     (projection.frontend?.regexScripts.length ?? 0) > 0 ? '轻前端' : undefined,
     projection.mvu === undefined ? undefined : '动态状态',
+    projection.preset === undefined ? undefined : `预设 · ${projection.preset.enabledCount} 项启用`,
   ].filter((part): part is string => part !== undefined)
   return parts.length === 0 ? '继续这段对话' : parts.join(' · ')
 }
@@ -192,12 +195,13 @@ function DetailSection({ title, text }: { readonly title: string; readonly text:
   </section>
 }
 
-function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar }: HeaderProps) {
+function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar, configurePreset }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projected = useProjection('agentRp')
   const projection = roleplaySummary(summary, projected)
   const [open, setOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
+  const [presetOpen, setPresetOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
     const root = rootRef.current
@@ -241,6 +245,10 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar }: H
         background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
         color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', marginLeft: '8px', padding: '6px 10px',
       }}>角色信息</button>
+      {projection.preset !== undefined && <button type="button" onClick={() => { setPresetOpen(true) }} style={{
+        background: `color-mix(in srgb, ${color} 10%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
+        borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
+      }}>预设</button>}
       {statusSource !== undefined && <button type="button" onClick={() => { setStatusOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
@@ -274,10 +282,26 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar }: H
           {(projection.frontend?.tavernHelperScriptNames.length ?? 0) > 0 && <span style={chipStyle}>
             {projection.mvu === undefined ? 'MVU · 未初始化' : `MVU · 已接通${projection.mvu.updateCount === 0 ? '' : ` · ${projection.mvu.updateCount} 次更新`}`}
           </span>}
+          {projection.preset !== undefined && <span style={chipStyle}>
+            预设 · {projection.preset.name} · {projection.preset.enabledCount}/{projection.preset.promptCount} 项启用
+          </span>}
         </div>
         <DetailSection title="角色简介" text={projection.description} />
         <DetailSection title="性格" text={projection.personality} />
         <DetailSection title="当前场景" text={projection.scenario} />
+        {projection.preset !== undefined && <DetailSection title="运行预设" text={[
+          `${projection.preset.promptCount} 个提示模块，当前启用 ${projection.preset.enabledCount} 个`,
+          projection.preset.appliedGeneration.length === 0
+            ? '没有可直接映射的生成参数'
+            : `已映射：${projection.preset.appliedGeneration.join('、')}`,
+          projection.preset.preservedGeneration.length === 0
+            ? ''
+            : `已保留但当前 Host 未应用：${projection.preset.preservedGeneration.join('、')}`,
+          projection.preset.degradedRoleCount === 0
+            ? ''
+            : `${projection.preset.degradedRoleCount} 项非 system 角色按 Host 兼容模式注入`,
+          projection.preset.regexScriptCount === 0 ? '' : `${projection.preset.regexScriptCount} 条预设正则等待扩展兼容`,
+        ].filter(Boolean).join('\n')} />}
         {projection.description === '' && projection.personality === '' && projection.scenario === '' && <p style={{ fontSize: '13px', lineHeight: 1.7, marginTop: '22px', opacity: 0.62 }}>
           当前只迁移了聊天记录，没有对应角色卡；再次迁移时可将角色卡和 JSONL 放在同一条消息中
         </p>}
@@ -288,8 +312,260 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar }: H
       source={statusSource}
       onClose={() => { setStatusOpen(false) }}
     />}
+    {presetOpen && projection.preset !== undefined && <PresetManagerDialog
+      preset={projection.preset}
+      onClose={() => { setPresetOpen(false) }}
+      onSave={request => configurePreset(sessionId, request)}
+    />}
   </>
 }
+
+type PresetProjection = NonNullable<AgentRpProjection['preset']>
+type PresetPromptProjection = PresetProjection['prompts'][number]
+
+function roleLabel(role: PresetPromptProjection['role']): string {
+  switch (role) {
+    case 'system': return '系统'
+    case 'user': return '用户'
+    case 'assistant': return '助手'
+  }
+}
+
+function PresetManagerDialog({ preset, onClose, onSave }: {
+  readonly preset: PresetProjection
+  readonly onClose: () => void
+  readonly onSave: (request: PresetConfigurationRequest) => Promise<void>
+}) {
+  const [prompts, setPrompts] = useState(() => preset.prompts.map(prompt => ({ ...prompt })))
+  const [temperature, setTemperature] = useState(preset.generation.temperature?.toString() ?? '')
+  const [maxTokens, setMaxTokens] = useState(preset.generation.maxTokens?.toString() ?? '')
+  const [reasoningEffort, setReasoningEffort] = useState(preset.generation.reasoningEffort ?? '')
+  const [query, setQuery] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string>()
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const visiblePrompts = prompts.filter(prompt => normalizedQuery === ''
+    || prompt.name.toLocaleLowerCase().includes(normalizedQuery)
+    || prompt.identifier.toLocaleLowerCase().includes(normalizedQuery))
+  const attached = prompts.filter(prompt => prompt.attached)
+  const enabledCount = attached.filter(prompt => prompt.enabled).length
+  const setPrompt = (identifier: string, update: (prompt: PresetPromptProjection) => PresetPromptProjection): void => {
+    setPrompts(current => current.map(prompt => prompt.identifier === identifier ? update(prompt) : prompt))
+  }
+  const move = (identifier: string, direction: -1 | 1): void => {
+    setPrompts((current) => {
+      const attachedPrompts = current.filter(prompt => prompt.attached)
+      const detachedPrompts = current.filter(prompt => !prompt.attached)
+      const index = attachedPrompts.findIndex(prompt => prompt.identifier === identifier)
+      const destination = index + direction
+      if (index < 0 || destination < 0 || destination >= attachedPrompts.length) return current
+      const next = [...attachedPrompts]
+      const [entry] = next.splice(index, 1)
+      if (entry === undefined) return current
+      next.splice(destination, 0, entry)
+      return [...next, ...detachedPrompts]
+    })
+  }
+  const save = async (): Promise<void> => {
+    const resolvedTemperature = temperature.trim() === '' ? null : Number(temperature)
+    const resolvedMaxTokens = maxTokens.trim() === '' ? null : Number(maxTokens)
+    if (resolvedTemperature !== null && (!Number.isFinite(resolvedTemperature) || resolvedTemperature < 0 || resolvedTemperature > 2)) {
+      setError('温度需填写 0 到 2 之间的数字')
+      return
+    }
+    if (resolvedMaxTokens !== null && (!Number.isSafeInteger(resolvedMaxTokens) || resolvedMaxTokens < 1)) {
+      setError('最大输出需填写正整数')
+      return
+    }
+    setSaving(true)
+    setError(undefined)
+    try {
+      await onSave({
+        operation: 'replace',
+        revision: preset.revision,
+        order: prompts.filter(prompt => prompt.attached).map(prompt => ({
+          identifier: prompt.identifier,
+          enabled: prompt.enabled,
+        })),
+        generation: {
+          temperature: resolvedTemperature,
+          maxTokens: resolvedMaxTokens,
+          reasoningEffort: reasoningEffort === '' ? null : reasoningEffort,
+        },
+      })
+      onClose()
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : '预设保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+  const reset = async (): Promise<void> => {
+    setSaving(true)
+    setError(undefined)
+    try {
+      await onSave({ operation: 'reset', revision: preset.revision })
+      onClose()
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : '恢复导入值失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+  return <div className="agent-rp-preset-overlay" role="dialog" aria-modal="true" aria-label={`${preset.name}预设管理`} style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1100,
+  }} onMouseDown={event => { if (event.target === event.currentTarget && !saving) onClose() }}>
+    <style>{presetManagerResponsiveStyle}</style>
+    <section className="agent-rp-preset-dialog" style={{
+      background: 'var(--dsw-alias-bg-base, #151518)', border: '1px solid var(--dsw-alias-border-l2, #38383d)',
+      borderRadius: '16px', boxShadow: '0 24px 80px rgba(0,0,0,.45)', display: 'flex', flexDirection: 'column',
+      maxHeight: 'min(900px, 92vh)', maxWidth: '920px', overflow: 'hidden', width: 'min(96vw, 920px)',
+    }}>
+      <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #343438)', display: 'flex', gap: '12px', padding: '18px 20px' }}>
+        <div style={{ minWidth: 0 }}>
+          <h2 style={{ fontSize: '17px', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{preset.name}</h2>
+          <div style={{ fontSize: '12px', marginTop: '4px', opacity: 0.56 }}>{enabledCount} 项启用 · {attached.length} 项已排序 · 会话独立</div>
+        </div>
+        <button type="button" aria-label="关闭预设管理" disabled={saving} onClick={onClose} style={{
+          background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '22px', marginLeft: 'auto', padding: '4px',
+        }}>×</button>
+      </header>
+      <div className="agent-rp-preset-body" style={{ display: 'grid', flex: '1 1 auto', gap: '14px', gridTemplateColumns: 'minmax(0, 1fr) 230px', minHeight: 0, padding: '16px 20px' }}>
+        <div className="agent-rp-preset-list" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <input aria-label="搜索提示模块" placeholder="搜索模块名称或标识…" value={query} onChange={event => { setQuery(event.target.value) }} style={{
+            background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+            borderRadius: '9px', color: 'inherit', font: 'inherit', fontSize: '13px', outline: 'none', padding: '9px 11px',
+          }} />
+          <div style={{ display: 'flex', fontSize: '11px', justifyContent: 'space-between', margin: '10px 3px 7px', opacity: 0.48 }}>
+            <span>提示模块</span><span>顺序与开关</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minHeight: '220px', overflowY: 'auto', paddingRight: '4px' }}>
+            {visiblePrompts.map((prompt) => {
+              const attachedIndex = prompts.filter(item => item.attached).findIndex(item => item.identifier === prompt.identifier)
+              return <div key={prompt.identifier} style={{
+                alignItems: 'center', background: prompt.enabled ? `color-mix(in srgb, ${color} 9%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
+                border: `1px solid ${prompt.enabled ? `color-mix(in srgb, ${color} 24%, transparent)` : 'var(--dsw-alias-border-l2, #34343a)'}`,
+                borderRadius: '10px', display: 'grid', gap: '8px', gridTemplateColumns: 'minmax(0, 1fr) auto', minHeight: '52px', padding: '8px 9px 8px 12px',
+                opacity: prompt.attached ? 1 : 0.62,
+              }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ alignItems: 'center', display: 'flex', gap: '7px', minWidth: 0 }}>
+                    <span style={{ fontSize: '13px', fontWeight: 560, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prompt.name || prompt.identifier}</span>
+                    <span style={{ fontSize: '10px', opacity: 0.48 }}>{prompt.marker ? '结构位' : roleLabel(prompt.role)}</span>
+                  </div>
+                  <div title={prompt.identifier} style={{ fontFamily: 'ui-monospace, monospace', fontSize: '10px', marginTop: '3px', opacity: 0.38, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prompt.identifier}</div>
+                </div>
+                <div style={{ alignItems: 'center', display: 'flex', gap: '5px' }}>
+                  {prompt.attached && <>
+                    <button type="button" aria-label={`上移${prompt.name}`} disabled={attachedIndex <= 0 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, -1) }} style={miniButtonStyle}>↑</button>
+                    <button type="button" aria-label={`下移${prompt.name}`} disabled={attachedIndex >= attached.length - 1 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, 1) }} style={miniButtonStyle}>↓</button>
+                  </>}
+                  {prompt.toggleable ? <button type="button" role="switch" aria-checked={prompt.enabled} onClick={() => {
+                    setPrompt(prompt.identifier, value => ({ ...value, attached: true, enabled: !value.enabled }))
+                  }} style={{
+                    background: prompt.enabled ? color : 'var(--dsw-alias-bg-layer-2, #2b2b30)', border: 0, borderRadius: '999px',
+                    cursor: 'pointer', height: '22px', padding: '2px', position: 'relative', width: '39px',
+                  }}><span style={{
+                    background: '#fff', borderRadius: '50%', display: 'block', height: '18px', transform: `translateX(${prompt.enabled ? 17 : 0}px)`, transition: 'transform .14s ease', width: '18px',
+                  }} /></button> : <span style={{ fontSize: '10px', opacity: 0.44, padding: '0 3px' }}>固定</span>}
+                  {!prompt.attached && <button type="button" onClick={() => { setPrompt(prompt.identifier, value => ({ ...value, attached: true })) }} style={miniButtonStyle}>加入</button>}
+                </div>
+              </div>
+            })}
+            {visiblePrompts.length === 0 && <div style={{ fontSize: '13px', opacity: 0.52, padding: '32px 10px', textAlign: 'center' }}>没有匹配的模块</div>}
+          </div>
+        </div>
+        <aside className="agent-rp-preset-generation" style={{ borderLeft: '1px solid var(--dsw-alias-border-l2, #343438)', paddingLeft: '16px' }}>
+          <h3 style={{ fontSize: '12px', fontWeight: 600, margin: '2px 0 13px', opacity: 0.62 }}>生成参数</h3>
+          <PresetNumberField label="温度" hint="0—2" value={temperature} onChange={setTemperature} />
+          <PresetNumberField label="最大输出" hint="由模型上限约束" value={maxTokens} onChange={setMaxTokens} />
+          <label style={fieldLabelStyle}>推理等级
+            <select value={reasoningEffort} onChange={event => { setReasoningEffort(event.target.value) }} style={fieldInputStyle}>
+              <option value="">跟随会话</option>
+              <option value="auto">自动（跟随模型）</option><option value="off">关闭</option><option value="min">Min</option>
+              <option value="low">Low</option><option value="medium">Medium</option>
+              <option value="high">High</option><option value="xhigh">XHigh</option><option value="max">Max</option>
+              {reasoningEffort !== '' && !['auto', 'off', 'min', 'low', 'medium', 'high', 'xhigh', 'max'].includes(reasoningEffort)
+                && <option value={reasoningEffort}>导入值 · {reasoningEffort}</option>}
+            </select>
+          </label>
+          <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '16px 1px 0', opacity: 0.46 }}>
+            修改只影响当前角色会话。未填写的参数跟随会话与模型设置
+          </p>
+        </aside>
+      </div>
+      <footer className="agent-rp-preset-footer" style={{ alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #343438)', display: 'flex', gap: '9px', justifyContent: 'flex-end', minHeight: '64px', padding: '12px 20px' }}>
+        {error !== undefined && <span role="alert" style={{ color: '#e47a7a', fontSize: '12px', marginRight: 'auto' }}>{error}</span>}
+        <button type="button" disabled={saving} onClick={() => { void reset() }} style={{ ...secondaryButtonStyle, marginRight: error === undefined ? 'auto' : undefined }}>恢复导入值</button>
+        <button type="button" disabled={saving} onClick={onClose} style={secondaryButtonStyle}>取消</button>
+        <button type="button" disabled={saving} onClick={() => { void save() }} style={primaryButtonStyle}>{saving ? '保存中…' : '保存到此会话'}</button>
+      </footer>
+    </section>
+  </div>
+}
+
+function PresetNumberField({ label, hint, value, onChange }: {
+  readonly label: string
+  readonly hint: string
+  readonly value: string
+  readonly onChange: (value: string) => void
+}) {
+  return <label style={fieldLabelStyle}>{label}<span style={{ float: 'right', fontSize: '10px', fontWeight: 400, opacity: 0.45 }}>{hint}</span>
+    <input inputMode="decimal" value={value} onChange={event => { onChange(event.target.value) }} style={fieldInputStyle} />
+  </label>
+}
+
+const fieldLabelStyle = { display: 'block', fontSize: '11px', fontWeight: 560, marginBottom: '13px', opacity: 0.72 } as const
+const fieldInputStyle = {
+  background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+  borderRadius: '8px', color: 'inherit', display: 'block', font: 'inherit', fontSize: '12px', marginTop: '6px', padding: '8px 9px', width: '100%',
+} as const
+const miniButtonStyle = {
+  background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #424248)', borderRadius: '6px', color: 'inherit',
+  cursor: 'pointer', font: 'inherit', fontSize: '11px', height: '25px', minWidth: '25px', padding: '2px 6px',
+} as const
+const secondaryButtonStyle = { ...miniButtonStyle, height: '34px', padding: '5px 14px' } as const
+const primaryButtonStyle = {
+  ...secondaryButtonStyle, background: color, borderColor: color, color: '#fff', fontWeight: 600,
+} as const
+
+const presetManagerResponsiveStyle = `
+@media (max-width: 720px) {
+  .agent-rp-preset-overlay { padding: 8px !important; }
+  .agent-rp-preset-dialog {
+    border-radius: 12px !important;
+    max-height: calc(100dvh - 16px) !important;
+    width: calc(100vw - 16px) !important;
+  }
+  .agent-rp-preset-body {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+    padding: 12px 14px !important;
+  }
+  .agent-rp-preset-generation {
+    border-bottom: 1px solid var(--dsw-alias-border-l2, #343438);
+    border-left: 0 !important;
+    display: grid;
+    gap: 0 10px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    order: -1;
+    padding: 0 0 11px !important;
+  }
+  .agent-rp-preset-generation > h3,
+  .agent-rp-preset-generation > p { grid-column: 1 / -1; }
+  .agent-rp-preset-generation > p { margin-top: 2px !important; }
+  .agent-rp-preset-list { flex: 1 1 auto; }
+  .agent-rp-preset-footer { padding: 10px 14px !important; }
+}
+@media (max-width: 460px) {
+  .agent-rp-preset-generation { grid-template-columns: 1fr 1fr; }
+  .agent-rp-preset-generation > label:last-of-type { grid-column: 1 / -1; }
+  .agent-rp-preset-footer { flex-wrap: wrap; }
+  .agent-rp-preset-footer > button:first-of-type { margin-right: auto !important; }
+}
+`
 
 function RoleplayStatusDialog({ characterName, source, onClose }: {
   readonly characterName: string
@@ -352,7 +628,7 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
       const row = card?.lastElementChild
       const tools = row?.firstElementChild
       const trailing = row?.lastElementChild
-      for (const element of Array.from(tools?.children ?? []).slice(1)) hide(element)
+      for (const element of Array.from(tools?.children ?? [])) hide(element)
       for (const element of Array.from(trailing?.children ?? [])) {
         if (element.tagName !== 'BUTTON') hide(element)
       }
@@ -566,6 +842,7 @@ function importHintComponent(ctx: Context): (props: ImportHintProps) => JSX.Elem
       {!chat && !migration && blank && <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginLeft: 'auto' }}>
         <button type="button" style={actionStyle} onClick={() => { inputActions.setDraft('请导入这张角色卡') }}>角色卡</button>
         {selected.kind === 'json-resource' && <button type="button" style={actionStyle} onClick={() => { inputActions.setDraft('请导入这本世界书') }}>世界书</button>}
+        {selected.kind === 'json-resource' && <button type="button" style={actionStyle} onClick={() => { inputActions.setDraft('请导入这份预设') }}>预设</button>}
       </div>}
     </div>
   }
@@ -588,14 +865,40 @@ function avatarLoader(ctx: ClientContext) {
 }
 
 /** Client services required by the Roleplay shell. */
-export const inject = ['slots', 'sessions']
+export const inject = ['connection', 'slots', 'sessions']
 
 /** Register the Agent RP header, composer presentation, and import affordance. */
 export function apply(ctx: ClientContext): void {
   const loadAvatar = avatarLoader(ctx)
+  const configurePreset = async (sessionId: SessionId, request: PresetConfigurationRequest): Promise<void> => {
+    const connection = ctx.get('connection') as {
+      readonly api: {
+        readonly commands: {
+          execute(input: { readonly sessionId: SessionId; readonly line: string }): Promise<{
+            readonly result: {
+              readonly ok: boolean
+              readonly value?: { readonly matched: boolean }
+              readonly error?: { readonly code: string; readonly message: string }
+            }
+          }>
+        }
+      }
+    }
+    const response = await connection.api.commands.execute({
+      sessionId,
+      line: `/rp-preset-configure ${JSON.stringify(request)}`,
+    })
+    if (!response.result.ok) {
+      throw new Error(response.result.error?.message ?? '预设保存失败')
+    }
+    if (response.result.value?.matched !== true) throw new Error('当前 Host 未启用预设管理命令')
+  }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} configurePreset={configurePreset} />))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-preset-configure',
+  }, () => null))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
   }, roleplayComposerDockComponent(ctx)))

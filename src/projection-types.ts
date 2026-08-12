@@ -20,6 +20,30 @@ export interface AgentRpProjection {
     readonly updateCount: number
     readonly lastError?: string
   }
+  readonly preset?: {
+    readonly name: string
+    readonly promptCount: number
+    readonly enabledCount: number
+    readonly revision: number
+    readonly prompts: readonly {
+      readonly identifier: string
+      readonly name: string
+      readonly role: 'system' | 'user' | 'assistant'
+      readonly marker: boolean
+      readonly attached: boolean
+      readonly enabled: boolean
+      readonly toggleable: boolean
+    }[]
+    readonly generation: {
+      readonly temperature?: number
+      readonly maxTokens?: number
+      readonly reasoningEffort?: string
+    }
+    readonly degradedRoleCount: number
+    readonly regexScriptCount: number
+    readonly appliedGeneration: readonly string[]
+    readonly preservedGeneration: readonly string[]
+  }
   readonly source: 'character-card' | 'sillytavern-chat' | 'preset'
 }
 

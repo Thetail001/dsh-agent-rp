@@ -6,8 +6,12 @@ import { parseCharacterCardJson } from './import/character-card.ts'
 import type { CharacterImportMeta } from './import/session-character.ts'
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import type { WorldInfoImportMeta } from './import/session-world-info.ts'
+import type { ActiveSessionPreset, PresetImportMeta } from './import/session-preset.ts'
+import type { ImportedSillyTavernPreset } from './import/sillytavern-preset.ts'
 import type { AgentRpProjection } from './projection-types.ts'
 import { applyMvuReply, readCurrentMvuState } from './mvu.ts'
+import { canTogglePresetPrompt } from './preset-configuration.ts'
+import { configurePreset, parsePresetConfigurationRequest } from './preset-configuration-core.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -31,12 +35,13 @@ const projectionSchema = {
       || typeof record.worldInfoCount !== 'number' || !Number.isSafeInteger(record.worldInfoCount)
       || record.worldInfoCount < 0
       || (record.frontend !== undefined && (typeof record.frontend !== 'object' || record.frontend === null))
+      || (record.preset !== undefined && (typeof record.preset !== 'object' || record.preset === null))
       || !validSource) throw new Error('invalid agentRp projection')
     return value as AgentRpProjection
   },
 }
 
-type ImportCall = 'character-card' | 'world-info'
+type ImportCall = 'character-card' | 'world-info' | 'preset'
 
 interface AgentRpProjectionState {
   readonly character: Omit<AgentRpProjection, 'worldInfoCount'>
@@ -44,6 +49,8 @@ interface AgentRpProjectionState {
   readonly standaloneWorldInfos: Readonly<Record<string, number>>
   readonly calls: Readonly<Record<string, ImportCall>>
   readonly mvu?: AgentRpProjection['mvu']
+  readonly preset?: AgentRpProjection['preset']
+  readonly presetState?: ActiveSessionPreset
 }
 
 const INITIAL_CHARACTER: AgentRpProjectionState['character'] = {
@@ -112,6 +119,79 @@ function parseWorldInfoMeta(value: JsonValue | undefined): WorldInfoImportMeta |
   return value as unknown as WorldInfoImportMeta
 }
 
+function parsePresetMeta(value: JsonValue | undefined): PresetImportMeta | undefined {
+  const meta = jsonObject(value)
+  const result = jsonObject(meta?.result)
+  const preset = jsonObject(meta?.preset)
+  if (meta?.format !== 0 || result?.version !== 0 || preset?.format !== 0
+    || typeof result.name !== 'string'
+    || typeof result.promptCount !== 'number' || !Number.isSafeInteger(result.promptCount)
+    || typeof result.enabledCount !== 'number' || !Number.isSafeInteger(result.enabledCount)
+    || typeof result.regexScriptCount !== 'number' || !Number.isSafeInteger(result.regexScriptCount)) return undefined
+  return value as unknown as PresetImportMeta
+}
+
+function presetProjection(
+  name: string,
+  preset: ImportedSillyTavernPreset,
+  revision: number,
+): NonNullable<AgentRpProjection['preset']> {
+  const generation = preset.generation
+  const enabled = new Set(preset.order.filter(entry => entry.enabled).map(entry => entry.identifier))
+  const promptsById = new Map(preset.prompts.map(prompt => [prompt.identifier, prompt]))
+  const appliedGeneration = [
+    generation.temperature === undefined ? undefined : 'temperature',
+    generation.maxTokens === undefined ? undefined : 'maxTokens（受模型上限约束）',
+    generation.reasoningEffort === undefined || generation.reasoningEffort === 'auto'
+      ? undefined : 'reasoningEffort（按当前模型能力）',
+  ].filter((value): value is string => value !== undefined)
+  const preservedGeneration = [
+    generation.topP === undefined ? undefined : 'top_p',
+    generation.topK === undefined ? undefined : 'top_k',
+    generation.topA === undefined ? undefined : 'top_a',
+    generation.minP === undefined ? undefined : 'min_p',
+    generation.frequencyPenalty === undefined ? undefined : 'frequency_penalty',
+    generation.presencePenalty === undefined ? undefined : 'presence_penalty',
+    generation.repetitionPenalty === undefined ? undefined : 'repetition_penalty',
+    generation.reasoningEffort === 'auto' ? 'reasoning_effort（auto，跟随模型）' : undefined,
+  ].filter((value): value is string => value !== undefined)
+  return {
+    name,
+    promptCount: preset.prompts.length,
+    enabledCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier)).length,
+    revision,
+    prompts: [...preset.order.flatMap((entry) => {
+      const prompt = promptsById.get(entry.identifier)
+      return prompt === undefined ? [] : [{
+        identifier: prompt.identifier,
+        name: prompt.name,
+        role: prompt.role,
+        marker: prompt.marker,
+        attached: true,
+        enabled: entry.enabled,
+        toggleable: canTogglePresetPrompt(preset, prompt.identifier),
+      }]
+    }), ...preset.prompts.filter(prompt => !preset.order.some(entry => entry.identifier === prompt.identifier)).map(prompt => ({
+      identifier: prompt.identifier,
+      name: prompt.name,
+      role: prompt.role,
+      marker: prompt.marker,
+      attached: false,
+      enabled: false,
+      toggleable: canTogglePresetPrompt(preset, prompt.identifier),
+    }))],
+    generation: {
+      ...(generation.temperature === undefined ? {} : { temperature: generation.temperature }),
+      ...(generation.maxTokens === undefined ? {} : { maxTokens: generation.maxTokens }),
+      ...(generation.reasoningEffort === undefined ? {} : { reasoningEffort: generation.reasoningEffort }),
+    },
+    degradedRoleCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier) && prompt.role !== 'system').length,
+    regexScriptCount: preset.extensionSummary.regexScriptCount,
+    appliedGeneration,
+    preservedGeneration,
+  }
+}
+
 function withoutCall(
   calls: Readonly<Record<string, ImportCall>>,
   callId: string,
@@ -154,6 +234,33 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         mvu: readCurrentMvuState(card, []) ,
       }
     }
+    if (event.type === 'agent-rp/sillytavern-preset-seed') {
+      const presetState = {
+        result: event.data.result,
+        importedPreset: event.data.preset,
+        preset: event.data.preset,
+        revision: 0,
+      }
+      return {
+        ...state,
+        preset: presetProjection(event.data.result.name, event.data.preset, 0),
+        presetState,
+      }
+    }
+    if (event.type === 'command/run' && event.data.name === 'rp-preset-configure' && event.data.args !== undefined) {
+      if (state.preset === undefined || state.presetState === undefined) return state
+      try {
+        const configured = configurePreset(state.presetState, parsePresetConfigurationRequest(event.data.args))
+        const revision = state.presetState.revision + 1
+        return {
+          ...state,
+          preset: presetProjection(state.preset.name, configured, revision),
+          presetState: { ...state.presetState, preset: configured, revision },
+        }
+      } catch {
+        return state
+      }
+    }
     if (event.type === 'assistant/message' && state.mvu !== undefined) {
       const text = event.data.message.content
         .flatMap(block => block.type === 'text' ? [block.text] : [])
@@ -181,7 +288,8 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     if (event.type === 'tool/call') {
       const kind = event.data.name === 'import_character_card'
         ? 'character-card'
-        : event.data.name === 'import_world_info' ? 'world-info' : undefined
+        : event.data.name === 'import_world_info' ? 'world-info'
+          : event.data.name === 'import_sillytavern_preset' ? 'preset' : undefined
       return kind === undefined
         ? state
         : { ...state, calls: { ...state.calls, [String(event.data.callId)]: kind } }
@@ -206,6 +314,22 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         mvu: readCurrentMvuState(card, []),
       }
     }
+    if (kind === 'preset') {
+      const meta = parsePresetMeta(event.data.meta)
+      return meta === undefined
+        ? { ...state, calls }
+        : {
+            ...state,
+            calls,
+            preset: presetProjection(meta.result.name, meta.preset, 0),
+            presetState: {
+              result: meta.result,
+              importedPreset: meta.preset,
+              preset: meta.preset,
+              revision: 0,
+            },
+          }
+    }
     const meta = parseWorldInfoMeta(event.data.meta)
     return meta === undefined
       ? { ...state, calls }
@@ -223,6 +347,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     worldInfoCount: state.cardWorldInfoCount
       + Object.values(state.standaloneWorldInfos).reduce((total, count) => total + count, 0),
     ...(state.mvu === undefined ? {} : { mvu: state.mvu }),
+    ...(state.preset === undefined ? {} : { preset: state.preset }),
   }),
   stateVersion: 0,
 }
