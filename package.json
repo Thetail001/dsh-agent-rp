@@ -2,6 +2,7 @@
   "name": "@dsh-external/dsh-agent-rp",
   "version": "0.0.0-rc.31",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "main": "./lib/index.js",
   "exports": {
@@ -10,6 +11,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "LICENSE",
     "lib/index.js",
     "lib/client.js",
     "lib/client.js.map",
