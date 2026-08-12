@@ -3,7 +3,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent'
-import type {} from '@deepseek-ai/dsh-attachment'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ScopeKey } from '@deepseek-ai/dsh-scope'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -91,7 +91,7 @@ interface PromptAttachmentGateway {
       import(input: {
         readonly source: Agent
         readonly text: string
-        readonly attachments: readonly FileAttachmentRef[]
+        readonly attachments: readonly PromptImportAttachment[]
         readFile(ref: FileAttachmentRef, signal?: AbortSignal): Promise<Uint8Array>
       }, signal?: AbortSignal): Promise<{ readonly seed: readonly SessionEvent[]; readonly title?: string }>
     },
@@ -103,7 +103,13 @@ interface FileAttachmentReader {
     ref: FileAttachmentRef,
     signal?: AbortSignal,
   ): Promise<{ readonly ref: FileAttachmentRef; readonly data: Uint8Array }>
+  readImage(
+    ref: ImageAttachmentRef,
+    signal?: AbortSignal,
+  ): Promise<{ readonly ref: ImageAttachmentRef; readonly data: Uint8Array }>
 }
+
+type PromptImportAttachment = CharacterCardAttachmentRef | FileAttachmentRef
 
 type PromptAttachmentPart = Parameters<Parameters<PromptAttachmentGateway['registerPromptAttachmentConsumer']>[1]>[0]['content'][number]
 
@@ -146,19 +152,19 @@ export function isSillyTavernChatOffer(
     && /\.jsonl$/iu.test(attachments[0].name)
 }
 
-/** Recognize one Character Card JSON and one JSONL chat submitted together. */
+/** Recognize one Character Card and one JSONL chat submitted together. */
 export function isSillyTavernMigrationOffer(
   agentRpActive: boolean,
   content: readonly PromptAttachmentPart[],
 ): boolean {
   if (!agentRpActive) return false
-  const files = content.filter(part => part.type === 'file')
-  return content.filter(part => part.type !== 'text').length === 2
-    && files.filter(part => /\.json$/iu.test(part.name)).length === 1
-    && files.filter(part => /\.jsonl$/iu.test(part.name)).length === 1
+  const attachments = content.filter(part => part.type !== 'text')
+  return attachments.length === 2
+    && attachments.filter(isCharacterCardOffer).length === 1
+    && attachments.filter(part => part.type === 'file' && /\.jsonl$/iu.test(part.name)).length === 1
 }
 
-/** Recognize one explicitly selected standalone Character Card JSON import. */
+/** Recognize one explicitly selected standalone Character Card import. */
 export function isCharacterCardSessionOffer(
   agentRpActive: boolean,
   content: readonly PromptAttachmentPart[],
@@ -168,8 +174,8 @@ export function isCharacterCardSessionOffer(
   const attachments = content.filter(part => part.type !== 'text')
   return /^请导入这张角色卡$/u.test(text.trim())
     && attachments.length === 1
-    && attachments[0]?.type === 'file'
-    && /\.json$/iu.test(attachments[0].name)
+    && attachments[0] !== undefined
+    && isCharacterCardOffer(attachments[0])
 }
 
 /** Canonical output schema for one accepted `remember` call. */
@@ -284,19 +290,32 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
   ctx.effect(() => gateway.registerPromptSessionImporter('dsh-agent-rp:sillytavern-migration', {
     recognize: ({ agent, content }) => isSillyTavernMigrationOffer(agentsByScope.get(agent) === agent, content),
     async import(input, signal) {
-      const cardAttachment = input.attachments.find(attachment => attachment.kind === 'file' && /\.json$/iu.test(attachment.name))
-      const chatAttachment = input.attachments.find(attachment => attachment.kind === 'file' && /\.jsonl$/iu.test(attachment.name))
+      const cardAttachment = input.attachments.find(attachment =>
+        isJsonCharacterCardAttachment(attachment) || isPngCharacterCardAttachment(attachment))
+      const chatAttachment = input.attachments.find((attachment): attachment is FileAttachmentRef =>
+        'kind' in attachment && attachment.kind === 'file' && /\.jsonl$/iu.test(attachment.name))
       if (cardAttachment === undefined || chatAttachment === undefined) {
-        throw new Error('SillyTavern migration requires one Character Card JSON and one chat JSONL')
+        throw new Error('SillyTavern migration requires one Character Card PNG or JSON and one chat JSONL')
       }
-      const [cardBytes, chatBytes] = await Promise.all([
-        input.readFile(cardAttachment, signal),
+      const reader = ctx.attachments as unknown as FileAttachmentReader
+      const [storedCard, chatBytes] = await Promise.all([
+        isJsonCharacterCardAttachment(cardAttachment)
+          ? input.readFile(cardAttachment, signal).then(data => ({ ref: cardAttachment, data }))
+          : reader.readImage(cardAttachment, signal),
         input.readFile(chatAttachment, signal),
       ])
-      const card = parseCharacterCardJsonBytes(cardBytes)
+      const payload = isJsonCharacterCardAttachment(storedCard.ref)
+        ? undefined
+        : readCharacterCardPng(storedCard.data)
+      const card = payload === undefined
+        ? parseCharacterCardJsonBytes(storedCard.data)
+        : parseCharacterCardJson(payload.json)
+      const transport = payload === undefined
+        ? { transport: 'json' as const }
+        : { transport: 'png' as const, metadataKeyword: payload.keyword }
       const chat = parseSillyTavernChatBytes(chatBytes)
       return {
-        seed: createSillyTavernMigrationSeed(card, cardAttachment, chat, chatAttachment),
+        seed: createSillyTavernMigrationSeed(card, storedCard.ref, transport, chat, chatAttachment),
         title: card.nickname?.trim() || card.name,
       }
     },
@@ -306,7 +325,8 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
     async import(input, signal) {
       if (input.attachments.length !== 1) throw new Error('SillyTavern chat import requires exactly one file')
       const attachment = input.attachments[0]
-      if (attachment === undefined || !/\.jsonl$/iu.test(attachment.name)) {
+      if (attachment === undefined || !('kind' in attachment) || attachment.kind !== 'file'
+        || !/\.jsonl$/iu.test(attachment.name)) {
         throw new Error('SillyTavern chat import requires one .jsonl file')
       }
       const chat = parseSillyTavernChatBytes(await input.readFile(attachment, signal))
@@ -317,22 +337,32 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       }
     },
   }), 'agent-rp: SillyTavern chat importer')
-  ctx.effect(() => gateway.registerPromptSessionImporter('dsh-agent-rp:character-card-json', {
+  ctx.effect(() => gateway.registerPromptSessionImporter('dsh-agent-rp:character-card', {
     recognize: ({ agent, content }) => isCharacterCardSessionOffer(agentsByScope.get(agent) === agent, content),
     async import(input, signal) {
       if (input.attachments.length !== 1) throw new Error('Character Card import requires exactly one file')
       const attachment = input.attachments[0]
-      if (attachment === undefined || !/\.json$/iu.test(attachment.name)) {
-        throw new Error('Character Card import requires one .json file')
+      if (attachment === undefined
+        || (!isJsonCharacterCardAttachment(attachment) && !isPngCharacterCardAttachment(attachment))) {
+        throw new Error('Character Card import requires one PNG or JSON card')
       }
-      const card = parseCharacterCardJsonBytes(await input.readFile(attachment, signal))
+      const reader = ctx.attachments as unknown as FileAttachmentReader
+      const stored = isJsonCharacterCardAttachment(attachment)
+        ? { ref: attachment, data: await input.readFile(attachment, signal) }
+        : await reader.readImage(attachment, signal)
+      const payload = isJsonCharacterCardAttachment(stored.ref) ? undefined : readCharacterCardPng(stored.data)
+      const card = payload === undefined
+        ? parseCharacterCardJsonBytes(stored.data)
+        : parseCharacterCardJson(payload.json)
       const greeting = substituteCardMacros(card.firstMessage, card)
       return {
-        seed: createCharacterCardSessionSeed(card, attachment, 0, greeting),
+        seed: createCharacterCardSessionSeed(card, stored.ref, 0, greeting, payload === undefined
+          ? { transport: 'json' }
+          : { transport: 'png', metadataKeyword: payload.keyword }),
         title: card.nickname?.trim() || card.name,
       }
     },
-  }), 'agent-rp: Character Card JSON importer')
+  }), 'agent-rp: Character Card importer')
   ctx.systemPrompt.section({
     name: 'deployment:persona',
     order: 0,

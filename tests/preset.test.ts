@@ -8,7 +8,7 @@ import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import type { FileAttachmentRef } from '../src/import/session-character.ts'
+import type { CharacterCardAttachmentRef, FileAttachmentRef } from '../src/import/session-character.ts'
 import { readActiveSessionCharacter } from '../src/import/session-character.ts'
 import { resolveConfig } from '../src/config.ts'
 import { installAgentRp, isCharacterCardSessionOffer, isSillyTavernChatOffer } from '../src/index.ts'
@@ -79,7 +79,7 @@ test('claims character-card images for every Agent joined to the preset, includi
     import(input: {
       source: Agent
       text: string
-      attachments: readonly FileAttachmentRef[]
+      attachments: readonly CharacterCardAttachmentRef[]
       readFile(ref: FileAttachmentRef, signal?: AbortSignal): Promise<Uint8Array>
     }, signal?: AbortSignal): Promise<{ seed: readonly SessionEvent[]; title?: string }>
   }>()
@@ -102,7 +102,7 @@ test('claims character-card images for every Agent joined to the preset, includi
   installAgentRp(preset.ctx, resolveConfig({ mode: 'character' }))
   const consumer = claims.get('dsh-agent-rp')
   const chatImporter = importers.get('dsh-agent-rp:sillytavern-chat')
-  const cardImporter = importers.get('dsh-agent-rp:character-card-json')
+  const cardImporter = importers.get('dsh-agent-rp:character-card')
   assert.ok(consumer)
   assert.ok(chatImporter)
   assert.ok(cardImporter)

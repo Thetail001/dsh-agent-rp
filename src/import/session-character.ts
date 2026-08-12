@@ -192,9 +192,11 @@ export function readActiveSessionCharacter(events: readonly SessionEvent[]): Act
       const result = meta.result
       const card = parseCharacterCardJson(JSON.stringify(meta.raw))
       const expectedGreeting = [card.firstMessage, ...card.alternateGreetings][result.greetingIndex]
+      const validTransport = result.transport === 'json'
+        ? isJsonCharacterCardAttachment(attachment)
+        : isPngCharacterCardAttachment(attachment)
       if (event.data.format !== 0 || event.data.source.attachmentConsumer !== 'dsh-agent-rp'
-        || !isJsonCharacterCardAttachment(attachment)
-        || result.transport !== 'json' || result.sourceEventSeq !== event.seq
+        || !validTransport || result.sourceEventSeq !== event.seq
         || result.sourceAttachmentId !== String(attachment.attachmentId)
         || result.name !== card.name || result.cardVersion !== card.version
         || result.selectedGreeting !== expectedGreeting

@@ -24,9 +24,11 @@ export function selectSillyTavernDraft(
   attachments: readonly DraftAttachmentLike[],
 ): SillyTavernDraftSelection | undefined {
   if (attachments.length === 2) {
-    const files = attachments.filter(attachment => attachment.kind === 'file')
-    const card = files.find(attachment => /\.json$/iu.test(attachment.file.name.trim()))
-    const chat = files.find(attachment => /\.jsonl$/iu.test(attachment.file.name.trim()))
+    const card = attachments.find(attachment =>
+      (attachment.kind === 'file' && /\.json$/iu.test(attachment.file.name.trim()))
+      || (attachment.kind === 'image' && /\.png$/iu.test(attachment.file.name.trim())))
+    const chat = attachments.find(attachment =>
+      attachment.kind === 'file' && /\.jsonl$/iu.test(attachment.file.name.trim()))
     if (card !== undefined && chat !== undefined) {
       return { kind: 'migration', name: `${card.file.name.trim()} + ${chat.file.name.trim()}` }
     }

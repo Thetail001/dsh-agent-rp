@@ -72,7 +72,7 @@ function importHintComponent(ctx: Context): (props: ImportHintProps) => JSX.Elem
     if (summary?.agentPreset !== 'agent-rp') return null
     const scoped = ctx.sessions.scope(sessionId)
     const conversation = scoped?.get('conversation') as (IConversation & Partial<DraftResolver>) | undefined
-    const ids = input.attachmentIds ?? input.imageIds ?? []
+    const ids = [...new Set([...(input.attachmentIds ?? []), ...(input.imageIds ?? [])])]
     const selected = selectSillyTavernDraft(conversation?.draftAttachments?.(ids) ?? [])
     if (selected === undefined) return null
     const blank = input.draft.trim() === ''

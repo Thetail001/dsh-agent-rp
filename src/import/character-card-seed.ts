@@ -1,10 +1,11 @@
-/** Model-free Character Card JSON import into a native roleplay Session. */
+/** Model-free Character Card import into a native roleplay Session. */
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   prepareCharacterImportResult,
+  type CharacterCardAttachmentRef,
+  type CharacterImportTransport,
   type CharacterImportMeta,
-  type FileAttachmentRef,
 } from './session-character.ts'
 import type { ImportedCharacterCard } from './types.ts'
 
@@ -13,7 +14,7 @@ export interface CharacterCardSeedRecord {
   readonly format: 0
   readonly source: {
     readonly attachmentConsumer: 'dsh-agent-rp'
-    readonly attachments: readonly [FileAttachmentRef]
+    readonly attachments: readonly [CharacterCardAttachmentRef]
   }
   readonly meta: CharacterImportMeta
 }
@@ -32,23 +33,28 @@ type SessionSeedEvent = SessionEvent extends infer Event
 /**
  * Build a native Session that activates one Character Card and opens with its selected greeting.
  * @param card - parsed lossless Character Card.
- * @param attachment - Host-stored original JSON file.
+ * @param attachment - Host-stored original card attachment.
  * @param greetingIndex - selected first or alternate greeting.
  * @param renderedGreeting - selected greeting after stable identity macro substitution.
+ * @param transport - JSON or decoded PNG provenance.
+ * @param userName - optional imported user identity for card macros.
  * @returns validated immutable Session seed.
  */
 export function createCharacterCardSessionSeed(
   card: ImportedCharacterCard,
-  attachment: FileAttachmentRef,
+  attachment: CharacterCardAttachmentRef,
   greetingIndex: number,
   renderedGreeting: string,
+  transport: CharacterImportTransport = { transport: 'json' },
+  userName?: string,
 ): readonly SessionEvent[] {
   const value = prepareCharacterImportResult(
     card,
-    { transport: 'json' },
+    transport,
     0,
     attachment,
     greetingIndex,
+    userName,
   )
   const { raw, ...result } = value
   const meta: CharacterImportMeta = { format: 0, result, raw }
