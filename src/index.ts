@@ -41,6 +41,7 @@ import { createSillyTavernMigrationSeed } from './import/sillytavern-migration-s
 import {
   createSillyTavernChatSeed,
   readSillyTavernChatIdentity,
+  resolveSillyTavernChatIdentity,
 } from './import/sillytavern-chat-seed.ts'
 import {
   isJsonWorldInfoAttachment,
@@ -330,7 +331,7 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
         throw new Error('SillyTavern chat import requires one .jsonl file')
       }
       const chat = parseSillyTavernChatBytes(await input.readFile(attachment, signal))
-      const title = chat.header.characterName?.trim()
+      const title = resolveSillyTavernChatIdentity(chat).characterName
       return {
         seed: createSillyTavernChatSeed(chat, attachment),
         ...(title === undefined || title === '' ? {} : { title }),

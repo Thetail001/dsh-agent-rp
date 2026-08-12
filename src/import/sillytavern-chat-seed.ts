@@ -37,6 +37,25 @@ export interface SillyTavernChatIdentity {
   readonly userName?: string
 }
 
+function usableIdentityName(value: string | undefined): string | undefined {
+  const name = value?.trim()
+  return name === undefined || name === '' || name.toLowerCase() === 'unused' ? undefined : name
+}
+
+/** Recover names from current SillyTavern exports whose legacy header names are `unused`. */
+export function resolveSillyTavernChatIdentity(
+  chat: ImportedSillyTavernChat,
+): { readonly characterName?: string; readonly userName?: string } {
+  const characterName = usableIdentityName(chat.header.characterName)
+    ?? chat.messages.find(message => message.kind === 'assistant' && usableIdentityName(message.name) !== undefined)?.name?.trim()
+  const userName = usableIdentityName(chat.header.userName)
+    ?? chat.messages.find(message => message.kind === 'user' && usableIdentityName(message.name) !== undefined)?.name?.trim()
+  return {
+    ...(characterName === undefined ? {} : { characterName }),
+    ...(userName === undefined ? {} : { userName }),
+  }
+}
+
 declare module '@deepseek-ai/dsh-session' {
   interface SessionEventMap {
     /** Skippable SillyTavern provenance; the original file remains authoritative. */
@@ -86,12 +105,18 @@ export function readSillyTavernChatIdentity(
     if (event?.type !== 'agent-rp/sillytavern-chat-import') continue
     const header = event.data.header
     if (typeof header !== 'object' || header === null || Array.isArray(header)) return undefined
-    const characterName = typeof header.character_name === 'string' ? header.character_name.trim() : ''
-    if (characterName === '') return undefined
-    const userName = typeof header.user_name === 'string' ? header.user_name.trim() : ''
+    const headerCharacterName = typeof header.character_name === 'string' ? header.character_name : undefined
+    const headerUserName = typeof header.user_name === 'string' ? header.user_name : undefined
+    const characterName = usableIdentityName(headerCharacterName)
+      ?? event.data.messages.find(message => message.kind === 'assistant'
+        && usableIdentityName(message.name) !== undefined)?.name?.trim()
+    if (characterName === undefined) return undefined
+    const userName = usableIdentityName(headerUserName)
+      ?? event.data.messages.find(message => message.kind === 'user'
+        && usableIdentityName(message.name) !== undefined)?.name?.trim()
     return {
       characterName,
-      ...(userName === '' ? {} : { userName }),
+      ...(userName === undefined ? {} : { userName }),
     }
   }
   return undefined

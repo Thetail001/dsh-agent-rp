@@ -2,7 +2,7 @@
 
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { createCharacterCardSessionSeed } from './character-card-seed.ts'
-import { createSillyTavernChatSeed } from './sillytavern-chat-seed.ts'
+import { createSillyTavernChatSeed, resolveSillyTavernChatIdentity } from './sillytavern-chat-seed.ts'
 import type {
   CharacterCardAttachmentRef,
   CharacterImportTransport,
@@ -33,7 +33,7 @@ export function createSillyTavernMigrationSeed(
     0,
     '',
     cardTransport,
-    chat.header.userName,
+    resolveSillyTavernChatIdentity(chat).userName,
   )[0]
   if (cardEvent?.type !== 'agent-rp/character-card-seed') throw new Error('Character Card seed is missing')
   const seq = events.length
