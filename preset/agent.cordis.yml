@@ -1,0 +1,4 @@
+- id: agent-rp-character
+  name: '@dsh-external/dsh-agent-rp'
+  config:
+    mode: character

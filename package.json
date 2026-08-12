@@ -1,59 +1,49 @@
 {
-  "name": "@dsh-external/dsh-roleplay-portable-spike",
+  "name": "@dsh-external/dsh-agent-rp",
   "version": "0.0.0-rc.2",
   "private": true,
   "type": "module",
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
-    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/index.js",
-    "lib/client.js",
-    "lib/client.js.map",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "preset"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-conversation"
-      ],
-      "platform": "web"
     }
   },
   "packageManager": "pnpm@11.16.0",
   "scripts": {
     "build": "tsdown",
     "prepack": "pnpm run build",
-    "test:focused": "tsdown tests/config.test.ts tests/session-event-vocabulary.test.ts tests/werewolf-progress-counts.test.ts tests/wolf-ballot.test.ts tests/werewolf-public-speech.test.ts tests/werewolf-life.test.ts tests/werewolf-diagnostics.test.ts tests/werewolf-terminal-reveal.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-dist --clean && node --test .test-dist/config.test.mjs .test-dist/session-event-vocabulary.test.mjs .test-dist/werewolf-progress-counts.test.mjs .test-dist/wolf-ballot.test.mjs .test-dist/werewolf-public-speech.test.mjs .test-dist/werewolf-life.test.mjs .test-dist/werewolf-diagnostics.test.mjs .test-dist/werewolf-terminal-reveal.test.mjs",
-    "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit"
+    "test:focused": "tsdown tests/config.test.ts tests/memory.test.ts tests/prompt.test.ts tests/preset.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-dist --clean && node --test .test-dist/config.test.mjs .test-dist/memory.test.mjs .test-dist/prompt.test.mjs .test-dist/preset.test.mjs",
+    "typecheck": "tsc -p tsconfig.host.json --noEmit"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1-rc.1",
     "@deepseek-ai/dsh-agent": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-attachment": "0.0.1-rc.2",
     "@deepseek-ai/dsh-brand": "0.0.1-rc.2",
-    "@deepseek-ai/dsh-client-runtime": "0.0.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-conversation": "0.0.1-rc.2",
-    "@deepseek-ai/dsh-commands": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-code-runtime": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-invariants": "0.0.1-rc.2",
     "@deepseek-ai/dsh-llm": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-paths": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-scope": "0.0.1-rc.2",
     "@deepseek-ai/dsh-session": "0.0.1-rc.2",
-    "@deepseek-ai/dsh-session-projection": "0.0.1-rc.2",
-    "@deepseek-ai/dsh-subagent": "0.0.1-rc.2",
     "@deepseek-ai/dsh-system-prompt": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-timeout": "0.0.1-rc.2",
     "@deepseek-ai/dsh-tools": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-type-meta": "0.0.1-rc.2",
+    "@deepseek-ai/dsh-user-approval": "0.0.1-rc.2",
     "@deepseek-ai/schemastery": "3.18.1-rc.1",
     "@types/node": "^24.10.0",
-    "@types/react": "18.3.31",
-    "lightningcss": "1.32.0",
-    "react": "18.3.1",
     "tsdown": "0.22.2",
-    "typescript": "6.0.3",
-    "zod": "^4.4.3"
+    "typescript": "6.0.3"
   }
 }

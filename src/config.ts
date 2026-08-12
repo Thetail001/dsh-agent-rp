@@ -1,50 +1,68 @@
-/** Loader-owned decision budgets for the portable Roleplay benchmark. */
+/** Configurable identity and scene for one persistent Agent RP character. */
 
 import z from '@deepseek-ai/schemastery'
-import {
-  DEFAULT_PUBLIC_DISCUSSION_ATTEMPT_LIMIT,
-  DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS,
-} from './werewolf/werewolf-constants.ts'
 
-/** Default output-token cap for constrained Character decisions. */
-export const STRUCTURED_DECISION_MAX_TOKENS = 2_048
-/** Default output-token cap for public table speech. */
-export const PUBLIC_DISCUSSION_MAX_TOKENS = 768
-/** Default adapter-owned effort for constrained Character decisions. */
-export const DEFAULT_DECISION_REASONING_EFFORT = 'off'
-/** Default adapter-owned effort for public table speech. */
-export const DEFAULT_DISCUSSION_REASONING_EFFORT = 'off'
+/** Runtime placement of one bundle row. */
+export type AgentRpMode = 'host' | 'character'
 
-type DeepSeekReasoningEffort = 'off' | 'high' | 'max'
+/** Default original character used by the local preview profile. */
+export const DEFAULT_CHARACTER_NAME = '岚'
+/** Default character traits; deployments may replace this text without changing the runtime. */
+export const DEFAULT_PERSONA = '二十七岁，经营一家傍晚开门的旧书修复铺。观察敏锐，话不多，熟悉之后会显出一点促狭；不卖弄知识，也不急着把每句话说成结论。'
+/** Default opening situation for a fresh conversation. */
+export const DEFAULT_SCENARIO = '一个下雨的傍晚，用户在修复铺打烊前走了进来。你们见过几次，还没有熟到无话不谈。'
+/** Default relationship state before durable conversation memories accumulate. */
+export const DEFAULT_RELATIONSHIP = '你对用户有克制的熟悉感，愿意认真听对方说话；关系怎样变化，由后续对话决定。'
 
-/** Runtime budgets for the portable Roleplay benchmark. */
+/** Deployment-owned Agent RP character configuration. */
 export interface Config {
-  /** Full wall-clock window for one asynchronous decision wave. */
-  decisionTimeoutMs?: number
-  /** Output-token cap for constrained choices such as targets and ballots. */
-  decisionMaxTokens?: number
-  /** Adapter-owned effort for constrained choices. */
-  decisionReasoningEffort?: DeepSeekReasoningEffort
-  /** Output-token cap for public table speech. */
-  discussionMaxTokens?: number
-  /** Adapter-owned effort for public table speech. */
-  discussionReasoningEffort?: DeepSeekReasoningEffort
-  /** Maximum model attempts before one invalid public turn falls back to passing. */
-  discussionAttemptLimit?: number
+  /** Host installs the bundled preset; character contributes its scoped runtime. */
+  mode?: AgentRpMode
+  /** Name the Agent uses as its own identity. */
+  characterName?: string
+  /** Stable identity, temperament, knowledge, and behavioral boundaries. */
+  persona?: string
+  /** Situation in which a fresh Session begins. */
+  scenario?: string
+  /** Initial relationship before Session-owned memories modify it. */
+  relationship?: string
 }
 
-/** Loader schema for portable Roleplay decision budgets. */
+/** Loader schema for the Agent RP character configuration. */
 export const Config: z<Config> = z.object({
-  decisionTimeoutMs: z.number().step(1).min(1).max(2_147_483_647)
-    .default(DEFAULT_STANDARD_WEREWOLF_DECISION_TIMEOUT_MS),
-  decisionMaxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER)
-    .default(STRUCTURED_DECISION_MAX_TOKENS),
-  decisionReasoningEffort: z.union(['off', 'high', 'max'])
-    .default(DEFAULT_DECISION_REASONING_EFFORT),
-  discussionMaxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER)
-    .default(PUBLIC_DISCUSSION_MAX_TOKENS),
-  discussionReasoningEffort: z.union(['off', 'high', 'max'])
-    .default(DEFAULT_DISCUSSION_REASONING_EFFORT),
-  discussionAttemptLimit: z.number().step(1).min(1).max(5)
-    .default(DEFAULT_PUBLIC_DISCUSSION_ATTEMPT_LIMIT),
+  mode: z.union(['host', 'character']).default('character'),
+  characterName: z.string().min(1).max(80).default(DEFAULT_CHARACTER_NAME),
+  persona: z.string().min(1).max(4_000).default(DEFAULT_PERSONA),
+  scenario: z.string().min(1).max(4_000).default(DEFAULT_SCENARIO),
+  relationship: z.string().min(1).max(2_000).default(DEFAULT_RELATIONSHIP),
 })
+
+/** Fully materialized, normalized Agent RP configuration. */
+export interface ResolvedConfig {
+  readonly mode: AgentRpMode
+  readonly characterName: string
+  readonly persona: string
+  readonly scenario: string
+  readonly relationship: string
+}
+
+function requiredText(value: string | undefined, fallback: string, field: string): string {
+  const normalized = (value ?? fallback).trim()
+  if (normalized.length === 0) throw new TypeError(`${field} must contain non-whitespace text`)
+  return normalized
+}
+
+/**
+ * Normalize configuration even when the plugin is mounted without Loader validation.
+ * @param config - loader-provided or direct plugin configuration.
+ * @returns complete character configuration.
+ */
+export function resolveConfig(config: Config): ResolvedConfig {
+  return {
+    mode: config.mode ?? 'character',
+    characterName: requiredText(config.characterName, DEFAULT_CHARACTER_NAME, 'characterName'),
+    persona: requiredText(config.persona, DEFAULT_PERSONA, 'persona'),
+    scenario: requiredText(config.scenario, DEFAULT_SCENARIO, 'scenario'),
+    relationship: requiredText(config.relationship, DEFAULT_RELATIONSHIP, 'relationship'),
+  }
+}

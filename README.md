@@ -1,49 +1,42 @@
-# DSH Roleplay portable preview
+# DSH Agent RP preview
 
-This private internal-testing package adds a Chinese Roleplay surface and a complete twelve-player Werewolf benchmark to a DSH Web profile. It targets `@deepseek-ai/dsh@0.0.1-rc.2` and uses the profile bundle format; the removed `.dsh-plugin` repository format is not supported.
+This private preview adds a `角色会话` Agent Preset. The top-level Agent is the character: ordinary chat starts immediately, without a narrator, coordinator, start command, or Character subagent.
 
-Every top-level Session created in a profile that enables this bundle becomes a new Werewolf game. Subagent Sessions remain Character workers and are never initialized as separate games. A resumed game keeps its recorded observer and seed, while a fresh game receives a shuffled role layout and human seat before its first turn starts.
+The profile bundle installs its managed `agent-rp` preset under `$DSH_HOME/.agent-presets` and selects it for new Sessions. That preset contains no workspace context, coding persona, shell, filesystem, Skills, goals, plans, or delegation tools. Its only model-facing tool is `remember`.
 
-The Web profile opens new top-level Sessions directly on the Roleplay view. Creating a game does not require a start phrase or spend a model turn.
+The character row configures `characterName`, `persona`, `scenario`, and the initial `relationship`. Each field is normalized and must contain text. The bundled preset describes an original test character. To customize it, copy the preset to a new id in DSH, edit that copy's `agent.cordis.yml`, and select the copy; the installer refuses to overwrite local edits under the managed `agent-rp` id.
 
-The benchmark supports night and day phases, Sheriff election, sequential public discussion, voting, special-role actions, victory resolution, and a developer-facing endgame review. A revealed Idiot remains in the speaking order and can still be targeted at night, but cannot cast or receive an exile ballot. Good Characters may reveal their assigned role when table strategy warrants it; wolves may bluff any good role without exposing their private alignment. Model dialogue remains experimental. Multiplayer is outside this preview.
+## Memory contract
 
-Character choices and public discussion default to thinking disabled with a 2,048-token output cap and a 30-second decision window. The bundle accepts the DeepSeek adapter's `off`, `high`, and `max` reasoning efforts; unsupported values fail during profile loading.
+The scoped `remember` tool stores confirmed cross-turn information in its native successful `tool/call` and `tool/result` Session events. Kinds distinguish facts, promises, relationship changes, preferences, and shared events. Ordinary chat, temporary emotion, speculation, and duplicate information stay out of memory.
+
+Each record points to the exact direct `remember` tool call that created it. Corrections append a new record with `supersedes`; history remains auditable while only active records enter later model context. Memory is Session-local and survives the same persistence, resume, and fork paths as the conversation log. This preview intentionally uses no vector database, automatic extraction pass, or subagent.
 
 ## Build and install
 
-Authenticate npm for the private `@deepseek-ai` registry, then install dependencies and build the two package entries:
+Authenticate npm for the private `@deepseek-ai` registry, then run:
 
 ```powershell
 pnpm install
+pnpm run test:focused
+pnpm run typecheck
 pnpm run build
 ```
 
-The repository disables pnpm peer auto-installation. DSH packages declare their surrounding Host services as peers, and the target Web profile supplies those services; installing a second peer graph into this bundle would give development a different module identity from production.
-
-Install this checkout into an isolated Web profile and start the matching DSH release:
+Install the checkout into a Web profile and start the matching release:
 
 ```powershell
 npx -p @deepseek-ai/dsh@0.0.1-rc.2 dsh plugin --profile web add .
 npx -p @deepseek-ai/dsh@0.0.1-rc.2 dsh --profile web --port 3091
 ```
 
-The package manifest contributes `cordis.patch.yml` and the browser client entry. DSH supplies its own runtime packages; the Host bundle contains only Roleplay-owned code and public third-party dependencies.
+Start a new Session after installation. The preset selector shows `角色会话`, and the ordinary Chat UI opens directly into the character conversation. The generic `remember` tool card is the only new in-conversation surface in this milestone.
 
-The rc.2 runtime exports its persistence event vocabulary but does not yet provide a downstream registration service. While this bundle is active, it registers the required `rp/*` and `werewolf/*` records with that vocabulary; it does not mark identity, world state, or Character memory as ignorable data.
+## Limitations
 
-Discarded Character attempts are retained as log-only `werewolf/decision-failure` classifications for developer inspection. These records identify the phase, seat, timeout, or validation category without storing rejected model text or private reasoning. During public discussion, invalid attempts receive category-specific corrections up to the configured `discussionAttemptLimit` before the seat falls back to passing; timeouts are not retried.
+- The bundled preset contains one character; additional characters require copied presets.
+- Memory selection is model-initiated and explicit; there is no semantic retrieval or automatic forgetting policy.
+- SillyTavern character-card import, multi-character scenes, multiplayer, and custom RP UI are outside this milestone.
+- rc.2 does not expose package-owned preset roots, so the Host row installs the bundled preset into the user preset directory. Removing the profile bundle leaves that managed directory behind; without the package its composition is unavailable but other Sessions are unaffected.
 
-## Acceptance evidence
-
-- `pnpm run test:focused` covers equal wolf ballots, revealed-Idiot participation, and the public-speech move contract.
-- `pnpm run build` must leave only DSH and Node imports in `lib/index.js`; it must not embed a DSH checkout.
-- `pnpm pack --dry-run` must list only the manifest, patch, README, and built Host/browser entries.
-- A fresh isolated profile must load, unload, and reload the bundle, then create a playable game without a blocking command failure.
-- Packaged files must contain no local path, credential name or value, telemetry value, distribution fingerprint, private transcript, or verbatim research corpus line.
-
-## Distribution status
-
-This preview may be shared only through the private `dsh-external` internal-testing organization. No public redistribution license has been selected, so the package remains `private: true` and version `0.0.0`.
-
-For local single-player Roleplay, observer projection prevents accidental spoilers in the normal UI; it is not an adversarial security boundary. Server-enforced secrecy becomes relevant only for a future untrusted multiplayer deployment.
+This preview remains private because no public redistribution license has been selected.

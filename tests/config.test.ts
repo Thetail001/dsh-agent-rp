@@ -1,22 +1,34 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { Config } from '../src/config.ts'
+import {
+  Config,
+  DEFAULT_CHARACTER_NAME,
+  resolveConfig,
+} from '../src/config.ts'
 
-test('uses one supported bounded effort for every Character decision by default', () => {
+test('materializes one original character without a start command', () => {
   const config = Config({})
 
-  assert.equal(config.decisionReasoningEffort, 'off')
-  assert.equal(config.discussionReasoningEffort, 'off')
-  assert.equal(config.decisionMaxTokens, 2_048)
-  assert.equal(config.discussionMaxTokens, 768)
-  assert.equal(config.discussionAttemptLimit, 3)
+  assert.equal(config.characterName, DEFAULT_CHARACTER_NAME)
+  assert.equal(config.mode, 'character')
+  assert.match(config.persona ?? '', /旧书修复铺/u)
+  assert.match(config.scenario ?? '', /下雨/u)
 })
 
-test('rejects a reasoning effort that the DeepSeek adapter does not advertise', () => {
-  assert.throws(() => Config({ discussionReasoningEffort: 'medium' } as never))
-})
+test('normalizes direct plugin configuration and rejects blank identity text', () => {
+  const resolved = resolveConfig({
+    characterName: '  小满  ',
+    persona: '  克制而好奇  ',
+    scenario: '  刚搬来的邻居敲响了门  ',
+    relationship: '  还不熟悉  ',
+  })
 
-test('bounds public discussion attempts', () => {
-  assert.throws(() => Config({ discussionAttemptLimit: 0 }))
-  assert.throws(() => Config({ discussionAttemptLimit: 6 }))
+  assert.deepEqual(resolved, {
+    mode: 'character',
+    characterName: '小满',
+    persona: '克制而好奇',
+    scenario: '刚搬来的邻居敲响了门',
+    relationship: '还不熟悉',
+  })
+  assert.throws(() => resolveConfig({ characterName: '   ' }), /characterName/u)
 })
