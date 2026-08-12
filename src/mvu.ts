@@ -215,6 +215,34 @@ export function renderMvuUpdateInstructions(
     .join('\n\n')
 }
 
+/** Collect a card-authored ten-choice contract for a dedicated completion call. */
+export function renderChoiceInstructions(card: ImportedCharacterCard): string | undefined {
+  const symbols = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩']
+  return card.lorebook?.entries
+    .filter(entry => entry.enabled
+      && entry.constant
+      && !entry.hasDecorators
+      && !/<%[\s\S]*?%>/u.test(entry.content)
+      && symbols.every(symbol => entry.content.includes(`<${symbol}>`) && entry.content.includes(`</${symbol}>`)))
+    .sort((left, right) => left.insertionOrder - right.insertionOrder)
+    .map(entry => entry.content)
+    .join('\n\n') || undefined
+}
+
+/** Normalize one complete card-authored ten-choice module. */
+export function normalizeChoiceSupplement(raw: string): string | undefined {
+  const symbols = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩']
+  const choices = symbols.map(symbol => {
+    const matches = [...raw.matchAll(new RegExp(`<${symbol}>\\s*([\\s\\S]*?)\\s*</${symbol}>`, 'gu'))]
+    if (matches.length !== 1) return undefined
+    const value = matches[0]?.[1]?.trim()
+    return value === undefined || value.length === 0 || /<[①②③④⑤⑥⑦⑧⑨⑩]>/u.test(value)
+      ? undefined
+      : `<${symbol}>${value}</${symbol}>`
+  })
+  return choices.some(choice => choice === undefined) ? undefined : choices.join('\n')
+}
+
 /** Normalize a narrow model response to one complete, valid MVU block. */
 export function normalizeMvuSupplement(current: JsonValue, raw: string): string | undefined {
   const fenced = raw.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '').trim()
