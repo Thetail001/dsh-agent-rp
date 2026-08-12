@@ -6,10 +6,10 @@ export interface DraftAttachmentLike {
   }
 }
 
-/** One migration affordance that can be inferred safely from a lone draft filename. */
-export type SillyTavernDraftKind = 'chat' | 'json-resource' | 'png-candidate'
+/** One migration affordance inferred safely from draft filenames. */
+export type SillyTavernDraftKind = 'migration' | 'chat' | 'json-resource' | 'png-candidate'
 
-/** A lone draft that may participate in SillyTavern migration. */
+/** One recognized draft selection that may participate in SillyTavern migration. */
 export interface SillyTavernDraftSelection {
   readonly kind: SillyTavernDraftKind
   readonly name: string
@@ -23,6 +23,15 @@ export interface SillyTavernDraftSelection {
 export function selectSillyTavernDraft(
   attachments: readonly DraftAttachmentLike[],
 ): SillyTavernDraftSelection | undefined {
+  if (attachments.length === 2) {
+    const files = attachments.filter(attachment => attachment.kind === 'file')
+    const card = files.find(attachment => /\.json$/iu.test(attachment.file.name.trim()))
+    const chat = files.find(attachment => /\.jsonl$/iu.test(attachment.file.name.trim()))
+    if (card !== undefined && chat !== undefined) {
+      return { kind: 'migration', name: `${card.file.name.trim()} + ${chat.file.name.trim()}` }
+    }
+    return undefined
+  }
   if (attachments.length !== 1) return undefined
   const attachment = attachments[0]
   if (attachment === undefined) return undefined

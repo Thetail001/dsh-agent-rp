@@ -37,6 +37,7 @@ import { CHARACTER_IMPORT_DEGRADATIONS } from './import/types.ts'
 import { WORLD_INFO_IMPORT_DEGRADATIONS } from './import/types.ts'
 import { parseWorldInfoJsonBytes } from './import/world-info.ts'
 import { parseSillyTavernChatBytes } from './import/sillytavern-chat.ts'
+import { createSillyTavernMigrationSeed } from './import/sillytavern-migration-seed.ts'
 import {
   createSillyTavernChatSeed,
   readSillyTavernChatIdentity,
@@ -143,6 +144,18 @@ export function isSillyTavernChatOffer(
   return attachments.length === 1
     && attachments[0]?.type === 'file'
     && /\.jsonl$/iu.test(attachments[0].name)
+}
+
+/** Recognize one Character Card JSON and one JSONL chat submitted together. */
+export function isSillyTavernMigrationOffer(
+  agentRpActive: boolean,
+  content: readonly PromptAttachmentPart[],
+): boolean {
+  if (!agentRpActive) return false
+  const files = content.filter(part => part.type === 'file')
+  return content.filter(part => part.type !== 'text').length === 2
+    && files.filter(part => /\.json$/iu.test(part.name)).length === 1
+    && files.filter(part => /\.jsonl$/iu.test(part.name)).length === 1
 }
 
 /** Recognize one explicitly selected standalone Character Card JSON import. */
@@ -268,6 +281,26 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
   ctx.effect(() => gateway.registerPromptAttachmentConsumer('dsh-agent-rp', ({ agent, content }) => (
     claimAgentRpPrompt(agentsByScope.get(agent) === agent, content)
   )), 'agent-rp: prompt attachment consumer')
+  ctx.effect(() => gateway.registerPromptSessionImporter('dsh-agent-rp:sillytavern-migration', {
+    recognize: ({ agent, content }) => isSillyTavernMigrationOffer(agentsByScope.get(agent) === agent, content),
+    async import(input, signal) {
+      const cardAttachment = input.attachments.find(attachment => attachment.kind === 'file' && /\.json$/iu.test(attachment.name))
+      const chatAttachment = input.attachments.find(attachment => attachment.kind === 'file' && /\.jsonl$/iu.test(attachment.name))
+      if (cardAttachment === undefined || chatAttachment === undefined) {
+        throw new Error('SillyTavern migration requires one Character Card JSON and one chat JSONL')
+      }
+      const [cardBytes, chatBytes] = await Promise.all([
+        input.readFile(cardAttachment, signal),
+        input.readFile(chatAttachment, signal),
+      ])
+      const card = parseCharacterCardJsonBytes(cardBytes)
+      const chat = parseSillyTavernChatBytes(chatBytes)
+      return {
+        seed: createSillyTavernMigrationSeed(card, cardAttachment, chat, chatAttachment),
+        title: card.nickname?.trim() || card.name,
+      }
+    },
+  }), 'agent-rp: SillyTavern migration importer')
   ctx.effect(() => gateway.registerPromptSessionImporter('dsh-agent-rp:sillytavern-chat', {
     recognize: ({ agent, content }) => isSillyTavernChatOffer(agentsByScope.get(agent) === agent, content),
     async import(input, signal) {

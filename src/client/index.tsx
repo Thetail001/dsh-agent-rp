@@ -77,18 +77,20 @@ function importHintComponent(ctx: Context): (props: ImportHintProps) => JSX.Elem
     if (selected === undefined) return null
     const blank = input.draft.trim() === ''
     const chat = selected.kind === 'chat'
+    const migration = selected.kind === 'migration'
     return <div style={hintStyle} role="status">
       <div style={markStyle} aria-hidden="true">↗</div>
       <div style={textStyle}>
         <div style={titleStyle}>
-          {chat ? '导入 SillyTavern 对话' : selected.kind === 'json-resource' ? 'SillyTavern JSON 资源' : 'PNG 附件'}
+          {migration ? '迁移 SillyTavern 角色' : chat ? '导入 SillyTavern 对话' : selected.kind === 'json-resource' ? 'SillyTavern JSON 资源' : 'PNG 附件'}
           <span style={fileStyle}>{selected.name}</span>
         </div>
-        <div style={detailStyle}>{chat
-          ? '将创建新的角色会话，点击发送开始导入'
+        <div style={detailStyle}>{migration
+          ? '角色卡与聊天记录将进入同一个新会话，点击发送开始迁移'
+          : chat ? '将创建新的角色会话，点击发送开始导入'
           : blank ? '选择导入类型，再点击发送' : '将按输入框中的说明处理'}</div>
       </div>
-      {!chat && blank && <div style={actionsStyle}>
+      {!chat && !migration && blank && <div style={actionsStyle}>
         <button type="button" style={actionStyle} onClick={() => { inputActions.setDraft('请导入这张角色卡') }}>
           作为角色卡
         </button>
