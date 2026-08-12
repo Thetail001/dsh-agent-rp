@@ -59,6 +59,8 @@ import {
   substituteCardMacros,
 } from './prompt.ts'
 import { installBundledAgentRpPreset } from './preset.ts'
+import type {} from '@deepseek-ai/dsh-session-projection'
+import { agentRpProjectionDefinition } from './projection.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -588,6 +590,9 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
 export function apply(ctx: Context, config: AgentRpConfig): void {
   const resolved = resolveConfig(config)
   if (resolved.mode === 'host') {
+    ctx.inject(['sessionProjections'], projectionCtx => {
+      projectionCtx.sessionProjections.register(agentRpProjectionDefinition)
+    })
     installBundledAgentRpPreset()
     return
   }
