@@ -50,6 +50,7 @@ test('assembles markers and nested variables on the correct side of chat history
       scenario: '<scenario>{{scenario}}</scenario>',
       personality: '<personality>{{personality}}</personality>',
     },
+    regexScripts: [],
     extensionSummary: { regexScriptCount: 0, hasSPreset: false, hasTavernHelper: false },
   }
   const pending = createUserMessage({

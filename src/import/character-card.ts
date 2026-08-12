@@ -9,6 +9,7 @@ import type {
   ImportedLorebook,
   ImportedLorebookEntry,
 } from './types.ts'
+import { parseRegexScript } from './regex-script.ts'
 
 /** Maximum decoded JSON accepted from one card transport. */
 export const MAX_CHARACTER_CARD_JSON_BYTES = 2 * 1024 * 1024
@@ -68,42 +69,12 @@ function stringArray(value: JsonValue | undefined, path: string, fallback: reado
   return [...value] as string[]
 }
 
-function numberArray(value: JsonValue | undefined, path: string): number[] {
-  if (value === undefined) return []
-  if (!Array.isArray(value) || value.some(item => typeof item !== 'number' || !Number.isFinite(item))) {
-    throw new Error(`${path} must be an array of finite numbers`)
-  }
-  return [...value] as number[]
-}
-
-function nullableFiniteNumber(value: JsonValue | undefined, path: string): number | null {
-  if (value === undefined || value === null) return null
-  return optionalFiniteNumber(value, path) ?? null
-}
-
 function parseFrontend(data: JsonObject): ImportedCharacterFrontend {
   const extensions = optionalObject(data.extensions, 'data.extensions')
   const rawRegex = extensions?.regex_scripts
   const regexScripts = rawRegex === undefined ? [] : (() => {
     if (!Array.isArray(rawRegex)) throw new Error('data.extensions.regex_scripts must be an array')
-    return rawRegex.map((value, index) => {
-      const path = `data.extensions.regex_scripts[${index}]`
-      const script = object(value, path)
-      return {
-        scriptName: requiredString(script.scriptName, `${path}.scriptName`),
-        findRegex: requiredString(script.findRegex, `${path}.findRegex`),
-        replaceString: requiredString(script.replaceString, `${path}.replaceString`),
-        trimStrings: stringArray(script.trimStrings, `${path}.trimStrings`),
-        placement: numberArray(script.placement, `${path}.placement`),
-        disabled: optionalBoolean(script.disabled, `${path}.disabled`) ?? false,
-        markdownOnly: optionalBoolean(script.markdownOnly, `${path}.markdownOnly`) ?? false,
-        promptOnly: optionalBoolean(script.promptOnly, `${path}.promptOnly`) ?? false,
-        runOnEdit: optionalBoolean(script.runOnEdit, `${path}.runOnEdit`) ?? false,
-        substituteRegex: optionalFiniteNumber(script.substituteRegex, `${path}.substituteRegex`) ?? 0,
-        minDepth: nullableFiniteNumber(script.minDepth, `${path}.minDepth`),
-        maxDepth: nullableFiniteNumber(script.maxDepth, `${path}.maxDepth`),
-      }
-    })
+    return rawRegex.map((value, index) => parseRegexScript(value, `data.extensions.regex_scripts[${index}]`))
   })()
   const helper = extensions?.tavern_helper
   const helperScripts = helper === undefined ? [] : (() => {

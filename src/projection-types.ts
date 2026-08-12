@@ -1,6 +1,7 @@
 /** Browser-safe Roleplay state computed from durable Session events. */
 
 import type { ImportedCharacterFrontend } from './import/types.ts'
+import type { ImportedRegexScript } from './import/types.ts'
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 
 /** Current character identity and migration summary for one Roleplay Session. */
@@ -41,6 +42,7 @@ export interface AgentRpProjection {
     }
     readonly degradedRoleCount: number
     readonly regexScriptCount: number
+    readonly regexScripts: readonly (ImportedRegexScript & { readonly index: number })[]
     readonly appliedGeneration: readonly string[]
     readonly preservedGeneration: readonly string[]
   }

@@ -62,6 +62,7 @@ test('edits module switches, order, and generation without changing imported def
       { identifier: 'main', enabled: true },
     ],
     generation: { temperature: 1.1, maxTokens: null, reasoningEffort: 'high' },
+    regex: [],
   })
 
   assert.deepEqual(edited.order, [
@@ -105,6 +106,7 @@ test('replays the latest session configuration and rejects stale editor revision
         revision: 0,
         order: preset.order.map(entry => ({ ...entry, enabled: entry.identifier !== 'private-marker' })),
         generation: {},
+        regex: [],
       }),
       source: { kind: 'user' },
     },
@@ -126,9 +128,35 @@ test('decodes the private manager command at its Host boundary', () => {
   assert.throws(() => parsePresetConfigurationRequest(JSON.stringify({
     operation: 'replace', revision: 0,
     order: [{ identifier: 'style', enabled: true }, { identifier: 'style', enabled: false }],
-    generation: {},
+    generation: {}, regex: [],
   })), /repeats module/u)
   assert.deepEqual(parsePresetConfigurationRequest(JSON.stringify({
     operation: 'generation', revision: 0, reasoningEffort: 'provider-owned-level',
   })), { operation: 'generation', revision: 0, reasoningEffort: 'provider-owned-level' })
+})
+
+test('edits preset regex switches independently from prompt modules', () => {
+  const preset = parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [{ identifier: 'main', name: '主提示', role: 'system', content: 'main', marker: true }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: 'main', enabled: true }] }],
+    extensions: { regex_scripts: [{
+      scriptName: '隐藏元数据', findRegex: '/<meta>[\\s\\S]*?<\\/meta>/gu', replaceString: '',
+      trimStrings: [], placement: [2], disabled: false, markdownOnly: true, promptOnly: true,
+      runOnEdit: false, substituteRegex: 0, minDepth: null, maxDepth: null,
+    }] },
+  }), 'regex.json')
+  const active = {
+    ...activePreset(),
+    importedPreset: preset,
+    preset,
+    result: { ...activePreset().result, regexScriptCount: 1 },
+  }
+  const disabled = configurePreset(active, {
+    operation: 'replace', revision: 0, order: preset.order, generation: {}, regex: [{ index: 0, disabled: true }],
+  })
+  assert.equal(disabled.regexScripts[0]?.disabled, true)
+  assert.equal(disabled.order[0]?.enabled, true)
+  assert.throws(() => configurePreset(active, {
+    operation: 'replace', revision: 0, order: preset.order, generation: {}, regex: [{ index: 1, disabled: true }],
+  }), /does not match/u)
 })

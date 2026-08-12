@@ -28,7 +28,20 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
     top_p: 0.88,
     top_k: 40,
     extensions: {
-      regex_scripts: Array.from({ length: 40 }, () => ({})),
+      regex_scripts: Array.from({ length: 40 }, (_, index) => ({
+        scriptName: `正则 ${index}`,
+        findRegex: '/old/gu',
+        replaceString: 'new',
+        trimStrings: [],
+        placement: [2],
+        disabled: index >= 22,
+        markdownOnly: true,
+        promptOnly: false,
+        runOnEdit: false,
+        substituteRegex: 0,
+        minDepth: null,
+        maxDepth: null,
+      })),
       SPreset: {},
       tavern_helper: {},
     },
@@ -51,5 +64,7 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
     hasSPreset: true,
     hasTavernHelper: true,
   })
+  assert.equal(preset.regexScripts.length, 40)
+  assert.equal(preset.regexScripts.filter(script => !script.disabled).length, 22)
   assert.equal(preset.prompts.at(-1)?.content, `内容 ${moduleCount - 1}`)
 })

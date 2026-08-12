@@ -33,6 +33,7 @@ interface DraftResolver {
 type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly loadAvatar: (attachmentId: string) => Promise<string | undefined>
   readonly configurePreset: (sessionId: SessionId, request: PresetConfigurationRequest) => Promise<void>
+  readonly importPreset: (sessionId: SessionId, file: File) => Promise<void>
 }
 
 type ComposerDockProps = PropsRuntime<'conversation.composer.dock'>
@@ -195,7 +196,7 @@ function DetailSection({ title, text }: { readonly title: string; readonly text:
   </section>
 }
 
-function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar, configurePreset }: HeaderProps) {
+function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar, configurePreset, importPreset }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projected = useProjection('agentRp')
   const projection = roleplaySummary(summary, projected)
@@ -223,7 +224,7 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar, con
     : renderCharacterDisplay(statusPlaceholder, {
         name: projection.characterName,
         frontend: projection.frontend,
-      }, AI_OUTPUT_PLACEMENT, 0, projection.userName)
+      }, AI_OUTPUT_PLACEMENT, 0, projection.userName, projection.preset?.regexScripts)
   const statusSource = status === undefined || status === statusPlaceholder || projection.mvu === undefined
     ? undefined
     : cardFrameSource(status, projection.mvu.statData)
@@ -245,10 +246,10 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar, con
         background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
         color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', marginLeft: '8px', padding: '6px 10px',
       }}>角色信息</button>
-      {projection.preset !== undefined && <button type="button" onClick={() => { setPresetOpen(true) }} style={{
+      <button type="button" onClick={() => { setPresetOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 10%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
-      }}>预设</button>}
+      }}>预设</button>
       {statusSource !== undefined && <button type="button" onClick={() => { setStatusOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
@@ -300,7 +301,7 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar, con
           projection.preset.degradedRoleCount === 0
             ? ''
             : `${projection.preset.degradedRoleCount} 项非 system 角色按 Host 兼容模式注入`,
-          projection.preset.regexScriptCount === 0 ? '' : `${projection.preset.regexScriptCount} 条预设正则等待扩展兼容`,
+          projection.preset.regexScriptCount === 0 ? '' : `${projection.preset.regexScriptCount} 条预设正则已载入；显示规则生效，生成规则保留待 Host 提供无损上下文投影`,
         ].filter(Boolean).join('\n')} />}
         {projection.description === '' && projection.personality === '' && projection.scenario === '' && <p style={{ fontSize: '13px', lineHeight: 1.7, marginTop: '22px', opacity: 0.62 }}>
           当前只迁移了聊天记录，没有对应角色卡；再次迁移时可将角色卡和 JSONL 放在同一条消息中
@@ -312,11 +313,17 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar, con
       source={statusSource}
       onClose={() => { setStatusOpen(false) }}
     />}
-    {presetOpen && projection.preset !== undefined && <PresetManagerDialog
-      preset={projection.preset}
-      onClose={() => { setPresetOpen(false) }}
-      onSave={request => configurePreset(sessionId, request)}
-    />}
+    {presetOpen && (projection.preset === undefined
+      ? <PresetImportDialog
+          onClose={() => { setPresetOpen(false) }}
+          onImport={file => importPreset(sessionId, file)}
+        />
+      : <PresetManagerDialog
+          preset={projection.preset}
+          onClose={() => { setPresetOpen(false) }}
+          onImport={file => importPreset(sessionId, file)}
+          onSave={request => configurePreset(sessionId, request)}
+        />)}
   </>
 }
 
@@ -331,22 +338,28 @@ function roleLabel(role: PresetPromptProjection['role']): string {
   }
 }
 
-function PresetManagerDialog({ preset, onClose, onSave }: {
+function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
   readonly preset: PresetProjection
   readonly onClose: () => void
+  readonly onImport: (file: File) => Promise<void>
   readonly onSave: (request: PresetConfigurationRequest) => Promise<void>
 }) {
   const [prompts, setPrompts] = useState(() => preset.prompts.map(prompt => ({ ...prompt })))
+  const [regexScripts, setRegexScripts] = useState(() => preset.regexScripts.map(script => ({ ...script })))
   const [temperature, setTemperature] = useState(preset.generation.temperature?.toString() ?? '')
   const [maxTokens, setMaxTokens] = useState(preset.generation.maxTokens?.toString() ?? '')
   const [reasoningEffort, setReasoningEffort] = useState(preset.generation.reasoningEffort ?? '')
   const [query, setQuery] = useState('')
+  const [section, setSection] = useState<'prompts' | 'regex'>('prompts')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string>()
+  const importInputRef = useRef<HTMLInputElement | null>(null)
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const visiblePrompts = prompts.filter(prompt => normalizedQuery === ''
     || prompt.name.toLocaleLowerCase().includes(normalizedQuery)
     || prompt.identifier.toLocaleLowerCase().includes(normalizedQuery))
+  const visibleRegex = regexScripts.filter(script => normalizedQuery === ''
+    || script.scriptName.toLocaleLowerCase().includes(normalizedQuery))
   const attached = prompts.filter(prompt => prompt.attached)
   const enabledCount = attached.filter(prompt => prompt.enabled).length
   const setPrompt = (identifier: string, update: (prompt: PresetPromptProjection) => PresetPromptProjection): void => {
@@ -392,6 +405,7 @@ function PresetManagerDialog({ preset, onClose, onSave }: {
           maxTokens: resolvedMaxTokens,
           reasoningEffort: reasoningEffort === '' ? null : reasoningEffort,
         },
+        regex: regexScripts.map(script => ({ index: script.index, disabled: script.disabled })),
       })
       onClose()
     } catch (reason: unknown) {
@@ -425,7 +439,7 @@ function PresetManagerDialog({ preset, onClose, onSave }: {
       <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #343438)', display: 'flex', gap: '12px', padding: '18px 20px' }}>
         <div style={{ minWidth: 0 }}>
           <h2 style={{ fontSize: '17px', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{preset.name}</h2>
-          <div style={{ fontSize: '12px', marginTop: '4px', opacity: 0.56 }}>{enabledCount} 项启用 · {attached.length} 项已排序 · 会话独立</div>
+          <div style={{ fontSize: '12px', marginTop: '4px', opacity: 0.56 }}>{enabledCount} 项提示启用 · {regexScripts.filter(script => !script.disabled).length}/{regexScripts.length} 条正则启用 · 会话独立</div>
         </div>
         <button type="button" aria-label="关闭预设管理" disabled={saving} onClick={onClose} style={{
           background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '22px', marginLeft: 'auto', padding: '4px',
@@ -433,15 +447,22 @@ function PresetManagerDialog({ preset, onClose, onSave }: {
       </header>
       <div className="agent-rp-preset-body" style={{ display: 'grid', flex: '1 1 auto', gap: '14px', gridTemplateColumns: 'minmax(0, 1fr) 230px', minHeight: 0, padding: '16px 20px' }}>
         <div className="agent-rp-preset-list" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <input aria-label="搜索提示模块" placeholder="搜索模块名称或标识…" value={query} onChange={event => { setQuery(event.target.value) }} style={{
+          <div style={{ display: 'flex', gap: '6px', marginBottom: '9px' }}>
+            {([['prompts', '提示模块'], ['regex', '正则脚本']] as const).map(([value, label]) => <button key={value} type="button" onClick={() => { setSection(value); setQuery('') }} style={{
+              ...miniButtonStyle, background: section === value ? `color-mix(in srgb, ${color} 16%, transparent)` : 'transparent',
+              borderColor: section === value ? `color-mix(in srgb, ${color} 42%, transparent)` : miniButtonStyle.border,
+              height: '30px', padding: '3px 10px',
+            }}>{label}{value === 'regex' ? ` · ${regexScripts.length}` : ''}</button>)}
+          </div>
+          <input aria-label={section === 'prompts' ? '搜索提示模块' : '搜索正则脚本'} placeholder={section === 'prompts' ? '搜索模块名称或标识…' : '搜索正则脚本名称…'} value={query} onChange={event => { setQuery(event.target.value) }} style={{
             background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
             borderRadius: '9px', color: 'inherit', font: 'inherit', fontSize: '13px', outline: 'none', padding: '9px 11px',
           }} />
           <div style={{ display: 'flex', fontSize: '11px', justifyContent: 'space-between', margin: '10px 3px 7px', opacity: 0.48 }}>
-            <span>提示模块</span><span>顺序与开关</span>
+            <span>{section === 'prompts' ? '提示模块' : '预设正则'}</span><span>{section === 'prompts' ? '顺序与开关' : '开关'}</span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minHeight: '220px', overflowY: 'auto', paddingRight: '4px' }}>
-            {visiblePrompts.map((prompt) => {
+            {section === 'prompts' && visiblePrompts.map((prompt) => {
               const attachedIndex = prompts.filter(item => item.attached).findIndex(item => item.identifier === prompt.identifier)
               return <div key={prompt.identifier} style={{
                 alignItems: 'center', background: prompt.enabled ? `color-mix(in srgb, ${color} 9%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
@@ -473,7 +494,28 @@ function PresetManagerDialog({ preset, onClose, onSave }: {
                 </div>
               </div>
             })}
-            {visiblePrompts.length === 0 && <div style={{ fontSize: '13px', opacity: 0.52, padding: '32px 10px', textAlign: 'center' }}>没有匹配的模块</div>}
+            {section === 'regex' && visibleRegex.map(script => <div key={script.index} style={{
+              alignItems: 'center', background: !script.disabled ? `color-mix(in srgb, ${color} 9%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
+              border: `1px solid ${!script.disabled ? `color-mix(in srgb, ${color} 24%, transparent)` : 'var(--dsw-alias-border-l2, #34343a)'}`,
+              borderRadius: '10px', display: 'grid', gap: '8px', gridTemplateColumns: 'minmax(0, 1fr) auto', minHeight: '52px', padding: '8px 9px 8px 12px',
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: '13px', fontWeight: 560, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{script.scriptName}</div>
+                <div style={{ fontSize: '10px', marginTop: '3px', opacity: 0.42 }}>{[
+                  script.markdownOnly ? '显示' : undefined,
+                  script.promptOnly ? '生成规则已保留' : undefined,
+                  script.placement.includes(1) ? '用户消息' : undefined,
+                  script.placement.includes(2) ? '角色回复' : undefined,
+                ].filter(Boolean).join(' · ') || '普通处理'}</div>
+              </div>
+              <button type="button" role="switch" aria-checked={!script.disabled} disabled={saving} onClick={() => { setRegexScripts(current => current.map(item => item.index === script.index ? { ...item, disabled: !item.disabled } : item)) }} style={{
+                background: !script.disabled ? color : 'var(--dsw-alias-bg-layer-2, #2b2b30)', border: 0, borderRadius: '999px',
+                cursor: 'pointer', height: '22px', padding: '2px', position: 'relative', width: '39px',
+              }}><span style={{
+                background: '#fff', borderRadius: '50%', display: 'block', height: '18px', transform: `translateX(${!script.disabled ? 17 : 0}px)`, transition: 'transform .14s ease', width: '18px',
+              }} /></button>
+            </div>)}
+            {((section === 'prompts' && visiblePrompts.length === 0) || (section === 'regex' && visibleRegex.length === 0)) && <div style={{ fontSize: '13px', opacity: 0.52, padding: '32px 10px', textAlign: 'center' }}>没有匹配的{section === 'prompts' ? '模块' : '正则脚本'}</div>}
           </div>
         </div>
         <aside className="agent-rp-preset-generation" style={{ borderLeft: '1px solid var(--dsw-alias-border-l2, #343438)', paddingLeft: '16px' }}>
@@ -498,9 +540,62 @@ function PresetManagerDialog({ preset, onClose, onSave }: {
       <footer className="agent-rp-preset-footer" style={{ alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #343438)', display: 'flex', gap: '9px', justifyContent: 'flex-end', minHeight: '64px', padding: '12px 20px' }}>
         {error !== undefined && <span role="alert" style={{ color: '#e47a7a', fontSize: '12px', marginRight: 'auto' }}>{error}</span>}
         <button type="button" disabled={saving} onClick={() => { void reset() }} style={{ ...secondaryButtonStyle, marginRight: error === undefined ? 'auto' : undefined }}>恢复导入值</button>
+        <input ref={importInputRef} type="file" accept=".json,application/json" hidden onChange={event => {
+          const file = event.currentTarget.files?.[0]
+          event.currentTarget.value = ''
+          if (file === undefined) return
+          setSaving(true)
+          setError(undefined)
+          void onImport(file).then(onClose, (reason: unknown) => {
+            setError(reason instanceof Error ? reason.message : '预设导入失败')
+            setSaving(false)
+          })
+        }} />
+        <button type="button" disabled={saving} onClick={() => { importInputRef.current?.click() }} style={secondaryButtonStyle}>替换预设</button>
         <button type="button" disabled={saving} onClick={onClose} style={secondaryButtonStyle}>取消</button>
         <button type="button" disabled={saving} onClick={() => { void save() }} style={primaryButtonStyle}>{saving ? '保存中…' : '保存到此会话'}</button>
       </footer>
+    </section>
+  </div>
+}
+
+function PresetImportDialog({ onClose, onImport }: {
+  readonly onClose: () => void
+  readonly onImport: (file: File) => Promise<void>
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [error, setError] = useState<string>()
+  return <div role="dialog" aria-modal="true" aria-label="导入预设" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1100,
+  }} onMouseDown={event => { if (event.target === event.currentTarget && !importing) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #151518)', border: '1px solid var(--dsw-alias-border-l2, #38383d)',
+      borderRadius: '16px', boxShadow: '0 24px 80px rgba(0,0,0,.45)', maxWidth: '480px', padding: '24px', width: 'min(94vw, 480px)',
+    }}>
+      <h2 style={{ fontSize: '17px', margin: 0 }}>为此角色选择预设</h2>
+      <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '9px 0 22px', opacity: 0.58 }}>
+        导入 SillyTavern Chat Completion 预设 JSON。导入后可分别调整提示模块、正则脚本与生成参数
+      </p>
+      {error !== undefined && <p role="alert" style={{ color: '#e47a7a', fontSize: '12px', margin: '0 0 12px' }}>{error}</p>}
+      <input ref={inputRef} type="file" accept=".json,application/json" hidden onChange={event => {
+        const file = event.currentTarget.files?.[0]
+        event.currentTarget.value = ''
+        if (file === undefined) return
+        setImporting(true)
+        setError(undefined)
+        void onImport(file).then(onClose, (reason: unknown) => {
+          setError(reason instanceof Error ? reason.message : '预设导入失败')
+          setImporting(false)
+        })
+      }} />
+      <div style={{ display: 'flex', gap: '9px', justifyContent: 'flex-end' }}>
+        <button type="button" disabled={importing} onClick={onClose} style={secondaryButtonStyle}>取消</button>
+        <button type="button" disabled={importing} onClick={() => { inputRef.current?.click() }} style={primaryButtonStyle}>
+          {importing ? '导入中…' : '选择预设文件'}
+        </button>
+      </div>
     </section>
   </div>
 }
@@ -653,7 +748,8 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
   }, [placeholder])
   useEffect(() => {
     const frontend = projection?.frontend
-    if (frontend === undefined || frontend.regexScripts.length === 0 || projection === undefined) return
+    if (frontend === undefined || projection === undefined
+      || frontend.regexScripts.length + (projection.preset?.regexScripts.length ?? 0) === 0) return
     const mounted = new Set<HTMLIFrameElement>()
     const hiddenTranscriptDetails = new Map<HTMLElement, { readonly display: string; readonly priority: string }>()
     const hideTranscriptDetail = (element: HTMLElement): void => {
@@ -731,7 +827,7 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
         const rendered = renderCharacterDisplay(raw.replaceAll(statusPlaceholder, ''), {
           name: projection.characterName,
           frontend,
-        }, AI_OUTPUT_PLACEMENT, depth, projection.userName)
+        }, AI_OUTPUT_PLACEMENT, depth, projection.userName, projection.preset?.regexScripts)
         if (rendered === raw || !/<(?:!doctype|html|head|body|style|script|div|section|details)\b/iu.test(rendered)) continue
         const original = item.firstElementChild as HTMLElement | null
         if (original === null) continue
@@ -864,12 +960,46 @@ function avatarLoader(ctx: ClientContext) {
   }
 }
 
+function base64(data: Uint8Array): string {
+  let binary = ''
+  const chunk = 0x8000
+  for (let offset = 0; offset < data.length; offset += chunk) {
+    binary += String.fromCharCode(...data.subarray(offset, offset + chunk))
+  }
+  return btoa(binary)
+}
+
 /** Client services required by the Roleplay shell. */
 export const inject = ['connection', 'slots', 'sessions']
 
 /** Register the Agent RP header, composer presentation, and import affordance. */
 export function apply(ctx: ClientContext): void {
   const loadAvatar = avatarLoader(ctx)
+  const importPreset = async (sessionId: SessionId, file: File): Promise<void> => {
+    if (!/\.json$/iu.test(file.name)) throw new Error('请选择 SillyTavern 预设 JSON 文件')
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const fileSession = session as unknown as {
+      prompt(
+        content: Array<
+          | { readonly type: 'file'; readonly data: string; readonly name: string; readonly mediaType?: string }
+          | { readonly type: 'text'; readonly text: string }
+        >,
+        mode: 'queue',
+      ): Promise<
+        | { readonly ok: true; readonly value: unknown }
+        | { readonly ok: false; readonly error: { readonly message: string } }
+      >
+    }
+    const result = await fileSession.prompt([{
+      type: 'file',
+      data: base64(new Uint8Array(await file.arrayBuffer())),
+      name: file.name,
+      ...(file.type === '' ? {} : { mediaType: file.type }),
+    }, { type: 'text', text: '请导入这份预设' }], 'queue')
+    if (!result.ok) throw new Error(result.error.message)
+  }
   const configurePreset = async (sessionId: SessionId, request: PresetConfigurationRequest): Promise<void> => {
     const connection = ctx.get('connection') as {
       readonly api: {
@@ -895,7 +1025,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} configurePreset={configurePreset} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} configurePreset={configurePreset} importPreset={importPreset} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',
   }, () => null))

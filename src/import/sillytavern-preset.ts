@@ -1,6 +1,8 @@
 /** SillyTavern Chat Completion preset parsing without executing extension code. */
 
 import type { JsonValue } from '@deepseek-ai/dsh-session'
+import { parseRegexScript } from './regex-script.ts'
+import type { ImportedRegexScript } from './types.ts'
 
 /** Role assigned to one Prompt Manager entry. */
 export type SillyTavernPresetRole = 'system' | 'user' | 'assistant'
@@ -51,11 +53,18 @@ export interface ImportedSillyTavernPreset {
     readonly scenario: string
     readonly personality: string
   }
+  /** Preset-scoped scripts executed before character-scoped scripts. */
+  readonly regexScripts: readonly ImportedRegexScript[]
   readonly extensionSummary: {
     readonly regexScriptCount: number
     readonly hasSPreset: boolean
     readonly hasTavernHelper: boolean
   }
+}
+
+/** Read preset scripts from the current normalized shape or a pre-regex session snapshot. */
+export function presetRegexScripts(preset: ImportedSillyTavernPreset): readonly ImportedRegexScript[] {
+  return preset.regexScripts ?? []
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -139,6 +148,13 @@ export function parseSillyTavernPresetJson(source: string, fileName = 'SillyTave
     if (!seen.has(item.identifier)) throw new Error(`prompt_order references missing prompt ${JSON.stringify(item.identifier)}`)
   }
   const extensions = record.extensions === undefined ? {} : object(record.extensions, 'extensions')
+  const rawRegex = extensions.regex_scripts
+  const regexScripts = rawRegex === undefined
+    ? []
+    : (() => {
+        if (!Array.isArray(rawRegex)) throw new Error('extensions.regex_scripts must be an array')
+        return rawRegex.map((value, index) => parseRegexScript(value as JsonValue, `extensions.regex_scripts[${index}]`))
+      })()
   return {
     format: 0,
     name: fileName.replace(/\.json$/iu, '').trim() || 'SillyTavern preset',
@@ -161,8 +177,9 @@ export function parseSillyTavernPresetJson(source: string, fileName = 'SillyTave
       scenario: text(record.scenario_format, '{{scenario}}'),
       personality: text(record.personality_format, '{{personality}}'),
     },
+    regexScripts,
     extensionSummary: {
-      regexScriptCount: Array.isArray(extensions.regex_scripts) ? extensions.regex_scripts.length : 0,
+      regexScriptCount: regexScripts.length,
       hasSPreset: extensions.SPreset !== undefined && extensions.SPreset !== null,
       hasTavernHelper: extensions.tavern_helper !== undefined && extensions.tavern_helper !== null,
     },

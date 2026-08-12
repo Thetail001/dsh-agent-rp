@@ -7,7 +7,7 @@ import type { CharacterImportMeta } from './import/session-character.ts'
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import type { WorldInfoImportMeta } from './import/session-world-info.ts'
 import type { ActiveSessionPreset, PresetImportMeta } from './import/session-preset.ts'
-import type { ImportedSillyTavernPreset } from './import/sillytavern-preset.ts'
+import { presetRegexScripts, type ImportedSillyTavernPreset } from './import/sillytavern-preset.ts'
 import type { AgentRpProjection } from './projection-types.ts'
 import { applyMvuReply, readCurrentMvuState } from './mvu.ts'
 import { canTogglePresetPrompt } from './preset-configuration.ts'
@@ -187,6 +187,7 @@ function presetProjection(
     },
     degradedRoleCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier) && prompt.role !== 'system').length,
     regexScriptCount: preset.extensionSummary.regexScriptCount,
+    regexScripts: presetRegexScripts(preset).map((script, index) => ({ ...script, index })),
     appliedGeneration,
     preservedGeneration,
   }

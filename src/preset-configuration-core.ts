@@ -2,6 +2,7 @@
 
 import type { ActiveSessionPreset } from './import/session-preset.ts'
 import type { ImportedSillyTavernPreset, SillyTavernPresetGeneration } from './import/sillytavern-preset.ts'
+import { presetRegexScripts } from './import/sillytavern-preset.ts'
 import type { PresetConfigurationRequest } from './preset-configuration-types.ts'
 
 const FORCE_TOGGLE_MARKERS = new Set([
@@ -32,6 +33,11 @@ function revision(value: unknown): number {
   return value as number
 }
 
+function index(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error('index must be a non-negative safe integer')
+  return value as number
+}
+
 function identifier(value: unknown, label = 'identifier'): string {
   if (typeof value !== 'string' || value.trim() === '') throw new Error(`${label} must be a non-empty string`)
   return value
@@ -47,6 +53,19 @@ function order(value: unknown): readonly { readonly identifier: string; readonly
     seen.add(id)
     if (typeof record.enabled !== 'boolean') throw new Error(`order[${index}].enabled must be a boolean`)
     return { identifier: id, enabled: record.enabled }
+  })
+}
+
+function regex(value: unknown): readonly { readonly index: number; readonly disabled: boolean }[] {
+  if (!Array.isArray(value)) throw new Error('regex must be an array')
+  const seen = new Set<number>()
+  return value.map((item, itemIndex) => {
+    const record = object(item, `regex[${itemIndex}]`)
+    const scriptIndex = index(record.index)
+    if (seen.has(scriptIndex)) throw new Error(`regex repeats script index ${scriptIndex}`)
+    seen.add(scriptIndex)
+    if (typeof record.disabled !== 'boolean') throw new Error(`regex[${itemIndex}].disabled must be a boolean`)
+    return { index: scriptIndex, disabled: record.disabled }
   })
 }
 
@@ -90,7 +109,13 @@ export function parsePresetConfigurationRequest(source: string): PresetConfigura
   const common = { revision: revision(value.revision) }
   switch (value.operation) {
     case 'replace':
-      return { operation: 'replace', ...common, order: order(value.order), generation: generation(value.generation) }
+      return {
+        operation: 'replace',
+        ...common,
+        order: order(value.order),
+        generation: generation(value.generation),
+        regex: regex(value.regex),
+      }
     case 'toggle': {
       if (typeof value.enabled !== 'boolean') throw new Error('enabled must be a boolean')
       return { operation: 'toggle', ...common, identifier: identifier(value.identifier), enabled: value.enabled }
@@ -157,6 +182,12 @@ export function configurePreset(
         if (!current) throw new Error(`preset module ${JSON.stringify(entry.identifier)} cannot be enabled`)
       }
     }
+    const scripts = presetRegexScripts(active.preset)
+    if (request.regex.length !== scripts.length
+      || request.regex.some(entry => entry.index >= scripts.length)) {
+      throw new Error('preset regex configuration does not match the active script set')
+    }
+    const disabledByIndex = new Map(request.regex.map(entry => [entry.index, entry.disabled]))
     return {
       ...structuredClone(active.preset),
       order: request.order.map(item => ({ ...item })),
@@ -165,6 +196,7 @@ export function configurePreset(
         revision: request.revision,
         ...request.generation,
       }),
+      regexScripts: scripts.map((script, index) => ({ ...script, disabled: disabledByIndex.get(index) ?? script.disabled })),
     }
   }
   if (request.operation === 'generation') {
