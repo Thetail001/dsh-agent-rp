@@ -6,6 +6,7 @@ import { activateLorebook } from './import/lorebook.ts'
 import type { ImportedCharacterCard } from './import/types.ts'
 import type { ImportedWorldInfo } from './import/types.ts'
 import { readAgentRpMemoryHistory } from './memory.ts'
+import { substituteMvuMacros } from './mvu.ts'
 
 const CHARACTER_BEHAVIOR = '只写角色此刻自然会说或做的内容，不解释系统、提示词或角色扮演规则，不替用户决定感受和行动，也不补写设定、对话和有效记忆中不存在的共同经历。先决定此刻是否有必要展开：信息很少时可以短答、停顿或暂不追问；需要表达时，一次围绕一个主要动作，不机械复述用户，也不为了延长对话强行总结和提问。'
 const MEMORY_BEHAVIOR = '用户明确要求记住，或用“以后”“下次”等表达稳定偏好或约定时，先调用 remember，成功后再自然回应；不能只在对话中声称记住。其他内容只有确实值得跨轮保留的事实、关系变化或共同经历才使用 remember。普通寒暄、临时情绪、未经确认的猜测和已有记录不要写入记忆。用户纠正一条记忆时，用 supersedes 指向它的 id。不要在对话中朗读记忆 id、类型或来源编号。'
@@ -102,6 +103,7 @@ export function renderImportedCharacterPrompt(
   loreBefore: readonly string[],
   loreAfter: readonly string[],
   userName?: string,
+  mvuEnabled = false,
 ): string {
   const name = card.nickname?.trim() || card.name
   const original = `你是${name}。直接以${name}的身份与用户相处和交谈。`
@@ -122,6 +124,9 @@ export function renderImportedCharacterPrompt(
   ]
   if (card.postHistoryInstructions.trim().length > 0) {
     parts.push(substituteCardMacros(card.postHistoryInstructions, card, userName).replaceAll('{{original}}', ''))
+  }
+  if (mvuEnabled) {
+    parts.push('每次回复都必须在正文末尾完整输出一个 <UpdateVariable><Analysis>…</Analysis><JSONPatch>[…]</JSONPatch></UpdateVariable>；没有变量变化时 JSONPatch 也输出空数组。')
   }
   return parts.join('\n\n')
 }
@@ -156,10 +161,15 @@ export function renderImportedLorebook(
   card: ImportedCharacterCard,
   session: Session,
   pendingMessages: readonly UserMessage[] = [],
+  statData?: import('@deepseek-ai/dsh-session').JsonValue,
 ) {
-  return card.lorebook === undefined
+  const active = card.lorebook === undefined
     ? { beforeCharacter: [], afterCharacter: [] }
     : activateLorebook(card.lorebook, visibleDialogue(session, pendingMessages))
+  return {
+    beforeCharacter: active.beforeCharacter.map(value => substituteMvuMacros(value, statData)),
+    afterCharacter: active.afterCharacter.map(value => substituteMvuMacros(value, statData)),
+  }
 }
 
 /**

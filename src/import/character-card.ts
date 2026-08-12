@@ -5,6 +5,7 @@ import type {
   CharacterCardVersion,
   CharacterImportDegradation,
   ImportedCharacterCard,
+  ImportedCharacterFrontend,
   ImportedLorebook,
   ImportedLorebookEntry,
 } from './types.ts'
@@ -30,6 +31,11 @@ function object(value: JsonValue | undefined, path: string): JsonObject {
     throw new Error(`${path} must be an object`)
   }
   return value
+}
+
+function optionalObject(value: JsonValue | undefined, path: string): JsonObject | undefined {
+  if (value === undefined) return undefined
+  return object(value, path)
 }
 
 function requiredString(value: JsonValue | undefined, path: string): string {
@@ -62,6 +68,56 @@ function stringArray(value: JsonValue | undefined, path: string, fallback: reado
   return [...value] as string[]
 }
 
+function numberArray(value: JsonValue | undefined, path: string): number[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'number' || !Number.isFinite(item))) {
+    throw new Error(`${path} must be an array of finite numbers`)
+  }
+  return [...value] as number[]
+}
+
+function nullableFiniteNumber(value: JsonValue | undefined, path: string): number | null {
+  if (value === undefined || value === null) return null
+  return optionalFiniteNumber(value, path) ?? null
+}
+
+function parseFrontend(data: JsonObject): ImportedCharacterFrontend {
+  const extensions = optionalObject(data.extensions, 'data.extensions')
+  const rawRegex = extensions?.regex_scripts
+  const regexScripts = rawRegex === undefined ? [] : (() => {
+    if (!Array.isArray(rawRegex)) throw new Error('data.extensions.regex_scripts must be an array')
+    return rawRegex.map((value, index) => {
+      const path = `data.extensions.regex_scripts[${index}]`
+      const script = object(value, path)
+      return {
+        scriptName: requiredString(script.scriptName, `${path}.scriptName`),
+        findRegex: requiredString(script.findRegex, `${path}.findRegex`),
+        replaceString: requiredString(script.replaceString, `${path}.replaceString`),
+        trimStrings: stringArray(script.trimStrings, `${path}.trimStrings`),
+        placement: numberArray(script.placement, `${path}.placement`),
+        disabled: optionalBoolean(script.disabled, `${path}.disabled`) ?? false,
+        markdownOnly: optionalBoolean(script.markdownOnly, `${path}.markdownOnly`) ?? false,
+        promptOnly: optionalBoolean(script.promptOnly, `${path}.promptOnly`) ?? false,
+        runOnEdit: optionalBoolean(script.runOnEdit, `${path}.runOnEdit`) ?? false,
+        substituteRegex: optionalFiniteNumber(script.substituteRegex, `${path}.substituteRegex`) ?? 0,
+        minDepth: nullableFiniteNumber(script.minDepth, `${path}.minDepth`),
+        maxDepth: nullableFiniteNumber(script.maxDepth, `${path}.maxDepth`),
+      }
+    })
+  })()
+  const helper = extensions?.tavern_helper
+  const helperScripts = helper === undefined ? [] : (() => {
+    const root = object(helper, 'data.extensions.tavern_helper')
+    if (root.scripts === undefined) return []
+    if (!Array.isArray(root.scripts)) throw new Error('data.extensions.tavern_helper.scripts must be an array')
+    return root.scripts.flatMap((value, index) => {
+      const script = object(value, `data.extensions.tavern_helper.scripts[${index}]`)
+      return script.enabled !== false && typeof script.name === 'string' ? [script.name] : []
+    })
+  })()
+  return { regexScripts, tavernHelperScriptNames: helperScripts }
+}
+
 function hasDecorator(content: string): boolean {
   return /(?:^|\n)@@@?[a-z_]+(?:\s|$)/imu.test(content)
 }
@@ -69,7 +125,7 @@ function hasDecorator(content: string): boolean {
 function parseLorebookEntry(value: JsonValue, index: number, version: CharacterCardVersion): ImportedLorebookEntry {
   const path = `data.character_book.entries[${index}]`
   const entry = object(value, path)
-  object(entry.extensions, `${path}.extensions`)
+  const extensions = object(entry.extensions, `${path}.extensions`)
   const insertionOrder = optionalFiniteNumber(entry.insertion_order, `${path}.insertion_order`)
   if (insertionOrder === undefined) throw new Error(`${path}.insertion_order must be a finite number`)
   const enabled = optionalBoolean(entry.enabled, `${path}.enabled`)
@@ -97,16 +153,19 @@ function parseLorebookEntry(value: JsonValue, index: number, version: CharacterC
     ...(priority === undefined ? {} : { priority }),
     useRegex,
     hasDecorators: hasDecorator(content),
+    ignoreBudget: optionalBoolean(extensions.ignore_budget, `${path}.extensions.ignore_budget`) ?? false,
   }
 }
 
 function parseLorebook(value: JsonValue | undefined, version: CharacterCardVersion): ImportedLorebook | undefined {
   if (value === undefined) return undefined
   const book = object(value, 'data.character_book')
-  object(book.extensions, 'data.character_book.extensions')
+  optionalObject(book.extensions, 'data.character_book.extensions')
   if (!Array.isArray(book.entries)) throw new Error('data.character_book.entries must be an array')
   const scanDepth = optionalFiniteNumber(book.scan_depth, 'data.character_book.scan_depth')
-  const tokenBudget = optionalFiniteNumber(book.token_budget, 'data.character_book.token_budget')
+  const extensions = optionalObject(book.extensions, 'data.character_book.extensions')
+  const extensionTokenBudget = optionalFiniteNumber(extensions?.token_budget, 'data.character_book.extensions.token_budget')
+  const tokenBudget = optionalFiniteNumber(book.token_budget, 'data.character_book.token_budget') ?? extensionTokenBudget
   if (scanDepth !== undefined && scanDepth < 0) throw new Error('data.character_book.scan_depth must not be negative')
   if (tokenBudget !== undefined && tokenBudget < 0) throw new Error('data.character_book.token_budget must not be negative')
   const name = optionalString(book.name, 'data.character_book.name')
@@ -194,6 +253,7 @@ export function parseCharacterCardJson(json: string): ImportedCharacterCard {
   const alternateGreetings = stringArray(data.alternate_greetings, 'data.alternate_greetings')
   const systemPrompt = optionalString(data.system_prompt, 'data.system_prompt') ?? ''
   const postHistoryInstructions = optionalString(data.post_history_instructions, 'data.post_history_instructions') ?? ''
+  const frontend = parseFrontend(data)
   return {
     format: 0,
     version,
@@ -209,6 +269,7 @@ export function parseCharacterCardJson(json: string): ImportedCharacterCard {
     systemPrompt,
     postHistoryInstructions,
     ...(lorebook === undefined ? {} : { lorebook }),
+    frontend,
     degradations: degradationSet(data, version, specVersion, lorebook),
     raw,
   }

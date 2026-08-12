@@ -120,6 +120,7 @@ function parseEntry(
     secondaryLogic: secondaryLogic(finiteNumber(entry.selectiveLogic, `${path}.selectiveLogic`, 0), `${path}.selectiveLogic`),
     ...(scanDepth === undefined ? {} : { scanDepth }),
     position: position === 0 ? 'before_char' : 'after_char',
+    ignoreBudget: false,
     useRegex,
     hasDecorators: decorated,
   }

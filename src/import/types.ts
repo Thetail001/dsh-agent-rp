@@ -19,6 +19,28 @@ export const CHARACTER_IMPORT_DEGRADATIONS = [
 /** One feature preserved from a card but deliberately not executed. */
 export type CharacterImportDegradation = typeof CHARACTER_IMPORT_DEGRADATIONS[number]
 
+/** One SillyTavern character-scoped regex retained for display and prompt views. */
+export interface ImportedRegexScript {
+  readonly scriptName: string
+  readonly findRegex: string
+  readonly replaceString: string
+  readonly trimStrings: readonly string[]
+  readonly placement: readonly number[]
+  readonly disabled: boolean
+  readonly markdownOnly: boolean
+  readonly promptOnly: boolean
+  readonly runOnEdit: boolean
+  readonly substituteRegex: number
+  readonly minDepth: number | null
+  readonly maxDepth: number | null
+}
+
+/** Character-owned lightweight frontend resources preserved at import. */
+export interface ImportedCharacterFrontend {
+  readonly regexScripts: readonly ImportedRegexScript[]
+  readonly tavernHelperScriptNames: readonly string[]
+}
+
 /** Supported runtime behavior of one lorebook entry. */
 export interface ImportedLorebookEntry {
   readonly keys: readonly string[]
@@ -34,9 +56,11 @@ export interface ImportedLorebookEntry {
   readonly scanDepth?: number
   readonly position: 'before_char' | 'after_char'
   readonly priority?: number
-  /** V3 regex entries remain exportable but never activate. */
+  /** Card extension flag allowing this entry to bypass the ordinary lorebook token budget. */
+  readonly ignoreBudget: boolean
+  /** V3 key-matching mode retained from the card transport. */
   readonly useRegex: boolean
-  /** Decorated content remains exportable but never activates. */
+  /** Executable template or decorator syntax remains exportable but never activates. */
   readonly hasDecorators: boolean
 }
 
@@ -90,6 +114,7 @@ export interface ImportedCharacterCard {
   readonly systemPrompt: string
   readonly postHistoryInstructions: string
   readonly lorebook?: ImportedLorebook
+  readonly frontend: ImportedCharacterFrontend
   readonly degradations: readonly CharacterImportDegradation[]
   /** Exact parsed JSON, including unknown fields and extension namespaces. */
   readonly raw: JsonValue

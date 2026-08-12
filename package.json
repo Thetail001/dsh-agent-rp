@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-agent-rp",
-  "version": "0.0.0-rc.15",
+  "version": "0.0.0-rc.23",
   "private": true,
   "type": "module",
   "main": "./lib/index.js",
@@ -58,15 +58,16 @@
     "@deepseek-ai/dsh-user-approval": "0.0.1-rc.2",
     "@deepseek-ai/schemastery": "3.18.1-rc.1",
     "@types/node": "^24.10.0",
-    "@types/react": "18.3.31",
     "@types/png-chunk-text": "1.0.3",
     "@types/png-chunks-extract": "1.0.2",
+    "@types/react": "18.3.31",
     "react": "18.3.1",
     "tsdown": "0.22.2",
     "typescript": "6.0.3"
   },
   "dependencies": {
     "png-chunk-text": "1.0.0",
-    "png-chunks-extract": "1.0.0"
+    "png-chunks-extract": "1.0.0",
+    "yaml": "2.9.0"
   }
 }

@@ -10,6 +10,7 @@ import type { IConversation } from '@deepseek-ai/dsh-client-ui-conversation/clie
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
+import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay } from '../frontend-regex.ts'
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
 
 interface ImportHintProps {
@@ -35,6 +36,37 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
 type ComposerDockProps = PropsRuntime<'conversation.composer.dock'>
 
 const color = 'var(--dsw-alias-state-business-primary, #6f78e8)'
+
+function mvuFrameRuntime(statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined): string {
+  const json = JSON.stringify(statData ?? {}).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
+  return `
+var __dshStatData=${json};
+window.Mvu={events:{VARIABLE_UPDATE_ENDED:'mvu-variable-update-ended'}};
+window.getAllVariables=function(){return {stat_data:__dshStatData}};
+window.waitGlobalInitialized=function(){return Promise.resolve()};
+window.eventOn=function(){return function(){}};
+window.errorCatched=function(fn){return function(){try{var value=fn.apply(this,arguments);if(value&&typeof value.catch==='function')value.catch(console.error)}catch(error){console.error(error)}}};
+window._={
+  get:function(object,path,fallback){var parts=Array.isArray(path)?path:String(path).replace(/^\\./,'').split('.').filter(Boolean);var value=object;for(var i=0;i<parts.length;i++){if(value==null)return fallback;value=value[parts[i]]}return value===undefined?fallback:value},
+  clamp:function(value,min,max){return Math.min(max,Math.max(min,Number(value)))},
+};
+(function(){
+  function nodes(value){if(value instanceof Mini)return value.items;if(typeof value==='string'&&value.trim().startsWith('<')){var template=document.createElement('template');template.innerHTML=value.trim();return Array.from(template.content.childNodes)}if(typeof value==='string')return Array.from(document.querySelectorAll(value));if(value===window||value===document||value instanceof Element||value instanceof DocumentFragment)return [value];if(value&&typeof value.length==='number')return Array.from(value);return []}
+  function Mini(value){this.items=nodes(value)}
+  Mini.prototype.each=function(callback){this.items.forEach(function(item,index){callback.call(item,index,item)});return this};
+  Mini.prototype.text=function(value){if(value===undefined)return this.items[0]?.textContent??'';return this.each(function(){this.textContent=String(value)})};
+  Mini.prototype.html=function(value){if(value===undefined)return this.items[0]?.innerHTML??'';return this.each(function(){this.innerHTML=String(value)})};
+  Mini.prototype.empty=function(){return this.html('')};
+  Mini.prototype.val=function(value){if(value===undefined)return this.items[0]?.value??'';return this.each(function(){this.value=value})};
+  Mini.prototype.attr=function(name,value){if(value===undefined)return this.items[0]?.getAttribute?.(name);return this.each(function(){this.setAttribute?.(name,String(value))})};
+  Mini.prototype.addClass=function(value){var names=String(value).split(/\\s+/).filter(Boolean);return this.each(function(){this.classList?.add(...names)})};
+  Mini.prototype.removeClass=function(value){var names=String(value).split(/\\s+/).filter(Boolean);return this.each(function(){this.classList?.remove(...names)})};
+  Mini.prototype.toggleClass=function(value,force){return this.each(function(){this.classList?.toggle(String(value),force)})};
+  Mini.prototype.on=function(type,selector,handler){if(typeof selector==='function'){handler=selector;selector=undefined}return this.each(function(){this.addEventListener(type,function(event){if(selector===undefined){handler.call(this,event);return}var target=event.target?.closest?.(selector);if(target&&this.contains(target))handler.call(target,event)})})};
+  window.$=function(value){if(typeof value==='function'){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',value,{once:true});else queueMicrotask(value);return new Mini([])}return new Mini(value)};
+})();
+`
+}
 
 function initials(name: string): string {
   return [...name.trim()].slice(0, 1).join('').toUpperCase() || 'RP'
@@ -195,6 +227,10 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar }: H
           {projection.userName !== undefined && <span style={chipStyle}>你是 {projection.userName}</span>}
           {projection.importedMessageCount > 0 && <span style={chipStyle}>{projection.importedMessageCount} 条历史消息</span>}
           {projection.worldInfoCount > 0 && <span style={chipStyle}>{projection.worldInfoCount} 条世界书设定</span>}
+          {(projection.frontend?.regexScripts.length ?? 0) > 0 && <span style={chipStyle}>轻前端 · {projection.frontend?.regexScripts.length} 条显示规则</span>}
+          {(projection.frontend?.tavernHelperScriptNames.length ?? 0) > 0 && <span style={chipStyle}>
+            {projection.mvu === undefined ? 'MVU · 未初始化' : `MVU · 已接通${projection.mvu.updateCount === 0 ? '' : ` · ${projection.mvu.updateCount} 次更新`}`}
+          </span>}
         </div>
         <DetailSection title="角色简介" text={projection.description} />
         <DetailSection title="性格" text={projection.personality} />
@@ -212,11 +248,13 @@ const chipStyle = {
   color: 'inherit', fontSize: '11px', opacity: 0.76, padding: '5px 9px',
 } as const
 
-function RoleplayComposerDock({
-  sessionId, useProjection, useSessions, useSession,
-}: ComposerDockProps) {
+function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps) => JSX.Element | null {
+  return function RoleplayComposerDock({
+    inputActions, sessionId, useProjection, useSessions, useSession,
+  }: ComposerDockProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projection = roleplaySummary(summary, useProjection('agentRp'))
+  const chat = useSession(state => state.chat)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const placeholder = projection === undefined ? undefined : `和${projection.characterName}说点什么…`
   useLayoutEffect(() => {
@@ -263,10 +301,81 @@ function RoleplayComposerDock({
       else textarea.setAttribute('placeholder', previousPlaceholder)
     }
   }, [placeholder])
+  useEffect(() => {
+    const frontend = projection?.frontend
+    if (frontend === undefined || frontend.regexScripts.length === 0 || projection === undefined) return
+    const mounted = new Set<HTMLIFrameElement>()
+    const bridge = (event: MessageEvent<unknown>): void => {
+      if (![...mounted].some(frame => frame.contentWindow === event.source)
+        || typeof event.data !== 'object' || event.data === null) return
+      const message = event.data as { readonly source?: unknown; readonly action?: unknown; readonly value?: unknown }
+      if (message.source !== 'dsh-agent-rp-card' || typeof message.value !== 'string' || message.value.length > 65_536) return
+      if (message.action === 'draft') {
+        inputActions.setDraft(message.value)
+        return
+      }
+      if (message.action !== 'trigger-slash') return
+      const match = message.value.match(/^\/send\s+([\s\S]*?)(?:\|\/trigger)?$/u)
+      if (match?.[1] === undefined) return
+      const scoped = ctx.sessions.scope(sessionId)
+      const conversation = scoped?.get('conversation') as IConversation | undefined
+      void conversation?.send(match[1])
+    }
+    window.addEventListener('message', bridge)
+    const scan = (): void => {
+      const scroll = rootRef.current?.closest('[data-conversation-scroll]')
+      if (scroll === null || scroll === undefined) return
+      for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="assistant-step"]')) {
+        const key = item.dataset.chatFlowKey
+        if (key === undefined || item.dataset.agentRpFrontend === 'true') continue
+        const node = chat.nodes.get(key)
+        if (node?.kind !== 'assistant-step') continue
+        const data = node.data as { readonly blocks?: readonly { readonly kind: string; readonly text?: string }[] }
+        const raw = data.blocks?.flatMap(block => block.kind === 'text' && block.text !== undefined ? [block.text] : []).join('\n') ?? ''
+        if (raw === '') continue
+        const depth = Math.max(0, chat.order.length - chat.order.indexOf(key) - 1)
+        const rendered = renderCharacterDisplay(raw, {
+          name: projection.characterName,
+          frontend,
+        }, AI_OUTPUT_PLACEMENT, depth, projection.userName)
+        if (rendered === raw || !/<(?:!doctype|html|head|body|style|script|div|section|details)\b/iu.test(rendered)) continue
+        const original = item.firstElementChild as HTMLElement | null
+        if (original === null) continue
+        const frame = document.createElement('iframe')
+        frame.title = `${projection.characterName}的轻前端界面`
+        frame.setAttribute('sandbox', 'allow-scripts')
+        frame.style.cssText = 'border:0;border-radius:12px;display:block;height:min(760px,78vh);width:100%;background:transparent;'
+        const adapted = rendered
+          .replace(/```html/giu, '')
+          .replace(/```/gu, '')
+          .replaceAll('window.parent?.document ?? window.document', 'window.document')
+        frame.srcdoc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><textarea id="send_textarea" hidden></textarea><script>${mvuFrameRuntime(projection.mvu?.statData)}window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(input)input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')})});</script>${adapted}</body></html>`
+        original.style.display = 'none'
+        item.insertBefore(frame, original.nextSibling)
+        item.dataset.agentRpFrontend = 'true'
+        mounted.add(frame)
+      }
+    }
+    scan()
+    const observer = new MutationObserver(scan)
+    observer.observe(document.body, { childList: true, subtree: true })
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('message', bridge)
+      for (const frame of mounted) {
+        const item = frame.closest<HTMLElement>('[data-agent-rp-frontend]')
+        const original = item?.firstElementChild as HTMLElement | null
+        if (original !== null) original.style.removeProperty('display')
+        if (item !== null) delete item.dataset.agentRpFrontend
+        frame.remove()
+      }
+    }
+  }, [chat, projection])
   if (projection === undefined) return null
   return <div ref={rootRef} data-agent-rp-status>
     <RoleplayStatusLine projection={projection} running={useSession(state => state.running)} />
   </div>
+  }
 }
 
 function RoleplayStatusLine({ projection, running }: {
@@ -361,7 +470,7 @@ export function apply(ctx: ClientContext): void {
   }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} />))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
-  }, RoleplayComposerDock))
+  }, roleplayComposerDockComponent(ctx)))
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock', id: 'agent-rp-sillytavern-import-hint', order: -10,
   }, importHintComponent(ctx)))

@@ -7,6 +7,7 @@ import type { CharacterImportMeta } from './import/session-character.ts'
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import type { WorldInfoImportMeta } from './import/session-world-info.ts'
 import type { AgentRpProjection } from './projection-types.ts'
+import { applyMvuReply, readCurrentMvuState } from './mvu.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -29,6 +30,7 @@ const projectionSchema = {
       || record.importedMessageCount < 0
       || typeof record.worldInfoCount !== 'number' || !Number.isSafeInteger(record.worldInfoCount)
       || record.worldInfoCount < 0
+      || (record.frontend !== undefined && (typeof record.frontend !== 'object' || record.frontend === null))
       || !validSource) throw new Error('invalid agentRp projection')
     return value as AgentRpProjection
   },
@@ -41,6 +43,7 @@ interface AgentRpProjectionState {
   readonly cardWorldInfoCount: number
   readonly standaloneWorldInfos: Readonly<Record<string, number>>
   readonly calls: Readonly<Record<string, ImportCall>>
+  readonly mvu?: AgentRpProjection['mvu']
 }
 
 const INITIAL_CHARACTER: AgentRpProjectionState['character'] = {
@@ -72,6 +75,7 @@ function cardProjection(
       cardVersion: result.cardVersion,
       ...(result.transport === 'png' ? { avatarAttachmentId: result.sourceAttachmentId } : {}),
       importedMessageCount: previous.importedMessageCount,
+      frontend: card.frontend,
       source: 'character-card',
     },
     lorebookEntries: card.lorebook?.entries.length ?? 0,
@@ -142,7 +146,37 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     }
     if (event.type === 'agent-rp/character-card-seed') {
       const projected = cardProjection(state.character, event.data.meta)
-      return { ...state, character: projected.character, cardWorldInfoCount: projected.lorebookEntries }
+      const card = parseCharacterCardJson(JSON.stringify(event.data.meta.raw))
+      return {
+        ...state,
+        character: projected.character,
+        cardWorldInfoCount: projected.lorebookEntries,
+        mvu: readCurrentMvuState(card, []) ,
+      }
+    }
+    if (event.type === 'assistant/message' && state.mvu !== undefined) {
+      const text = event.data.message.content
+        .flatMap(block => block.type === 'text' ? [block.text] : [])
+        .join('\n')
+      if (!/<UpdateVariable(?:variable)?>/iu.test(text)) return state
+      try {
+        const update = applyMvuReply(state.mvu.statData, text)
+        return update === undefined ? state : {
+          ...state,
+          mvu: {
+            statData: update.statData,
+            updateCount: state.mvu.updateCount + 1,
+          },
+        }
+      } catch (error: unknown) {
+        return {
+          ...state,
+          mvu: {
+            ...state.mvu,
+            lastError: error instanceof Error ? error.message : String(error),
+          },
+        }
+      }
     }
     if (event.type === 'tool/call') {
       const kind = event.data.name === 'import_character_card'
@@ -163,11 +197,13 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
       const meta = parseCharacterMeta(event.data.meta)
       if (meta === undefined) return { ...state, calls }
       const projected = cardProjection(state.character, meta)
+      const card = parseCharacterCardJson(JSON.stringify(meta.raw))
       return {
         ...state,
         calls,
         character: projected.character,
         cardWorldInfoCount: projected.lorebookEntries,
+        mvu: readCurrentMvuState(card, []),
       }
     }
     const meta = parseWorldInfoMeta(event.data.meta)
@@ -186,6 +222,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     ...state.character,
     worldInfoCount: state.cardWorldInfoCount
       + Object.values(state.standaloneWorldInfos).reduce((total, count) => total + count, 0),
+    ...(state.mvu === undefined ? {} : { mvu: state.mvu }),
   }),
   stateVersion: 0,
 }

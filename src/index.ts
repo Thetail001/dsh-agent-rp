@@ -61,12 +61,14 @@ import {
 import { installBundledAgentRpPreset } from './preset.ts'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { agentRpProjectionDefinition } from './projection.ts'
+import { readCurrentMvuState } from './mvu.ts'
+import { installMvuStreamCompletion } from './mvu-stream.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
 export { Config }
 /** Host services required by the profile bundle. */
-export const inject = ['agents', 'apiProxy', 'attachments', 'systemPrompt', 'tools']
+export const inject = ['agents', 'apiProxy', 'attachments', 'llm', 'systemPrompt', 'tools']
 
 interface PromptAttachmentGateway {
   registerPromptAttachmentConsumer(
@@ -285,6 +287,7 @@ function importedCharacter(agentsByScope: WeakMap<ScopeKey, Agent>, scope: Scope
  */
 export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
   const agentsByScope = new WeakMap<ScopeKey, Agent>()
+  const agentsBySession = new Map<string, Agent>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
   const gateway = (ctx as Context & { apiProxy: PromptAttachmentGateway }).apiProxy
   ctx.effect(() => gateway.registerPromptAttachmentConsumer('dsh-agent-rp', ({ agent, content }) => (
@@ -389,23 +392,28 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
         return renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter)
       }
       const card = cardFromImportMeta(active.meta)
-      const characterLore = renderImportedLorebook(card, agent.session, pendingMessages)
+      const mvu = readCurrentMvuState(card, agent.session.events)
+      const characterLore = renderImportedLorebook(card, agent.session, pendingMessages, mvu?.statData)
       return renderImportedCharacterPrompt(
         card,
         [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
         [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
         readSillyTavernChatIdentity(agent.session.events)?.userName,
+        mvu !== undefined,
       )
     },
     complete: true,
   })
   ctx.on('agent/created', ({ agent }) => {
     agentsByScope.set(agent, agent)
+    agentsBySession.set(String(agent.session.id), agent)
   })
   ctx.on('agent/disposed', ({ agent }) => {
     agentsByScope.delete(agent)
+    agentsBySession.delete(String(agent.session.id))
     pendingMessagesByAgent.delete(agent)
   })
+  installMvuStreamCompletion(ctx, sessionId => agentsBySession.get(sessionId))
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {
     if (agentsByScope.get(agent) !== agent) return
     const pending = pendingMessagesByAgent.get(agent)

@@ -24,8 +24,12 @@ function includesKey(text: string, key: string, caseSensitive: boolean, matchWho
   return false
 }
 
+function hasExecutableTemplate(content: string): boolean {
+  return /<%[=_-]?[\s\S]*?%>/imu.test(content)
+}
+
 function activates(entry: ImportedLorebookEntry, messages: readonly string[], bookDepth: number | undefined): boolean {
-  if (!entry.enabled || entry.content.trim().length === 0 || entry.useRegex || entry.hasDecorators) return false
+  if (!entry.enabled || entry.content.trim().length === 0 || entry.hasDecorators || hasExecutableTemplate(entry.content)) return false
   if (entry.constant) return true
   const depth = entry.scanDepth ?? bookDepth ?? messages.length
   const text = depth === 0 ? '' : messages.slice(-Math.max(0, Math.trunc(depth))).join('\n')
@@ -58,6 +62,10 @@ function budgeted(book: ImportedLorebook, entries: readonly ImportedLorebookEntr
   let used = 0
   for (const entry of preferred) {
     const cost = approximateTokens(entry.content)
+    if (entry.ignoreBudget) {
+      kept.push(entry)
+      continue
+    }
     if (used + cost > budget) continue
     used += cost
     kept.push(entry)
