@@ -15,6 +15,7 @@ import {
   publicHoldTargetIssue,
   publicSpeechJudgmentFamily,
   publicSpeechJudgmentCapacity,
+  publicSpeechJudgmentTargetId,
   publicSpeechMovesForPosition,
   publicSpeechMovesForTurn,
   publicTargetPronounBallotClaims,
@@ -273,6 +274,21 @@ test('keeps the final named player aligned with the structured judgment target',
   ), 'seat-6')
   assert.equal(finalPublicSpeechTargetId('今天没有新的公开信息，过。'), undefined)
   assert.equal(finalPublicSpeechTargetId('13号不属于这张桌。'), undefined)
+})
+
+test('keeps a clear judgment target despite later historical seat references', () => {
+  assert.equal(publicSpeechJudgmentTargetId(
+    '我先说结论：我今天重点看6号。6号昨天先关注3号，后来放逐票投了9号，请6号把这段变化讲清楚。',
+  ), 'seat-6')
+  assert.equal(publicSpeechJudgmentTargetId(
+    '我注意到4号：警长票投给9号，放逐票却给了2号，先记4号这一笔。',
+  ), 'seat-4')
+  assert.equal(publicSpeechJudgmentTargetId(
+    '我今天重点看6号，但最后这一票会投给9号。',
+  ), 'seat-9')
+  assert.equal(publicSpeechJudgmentTargetId(
+    '8号先点出了7号照抄，我核对后也认为今天该出7号。',
+  ), 'seat-7')
 })
 
 test('allows one actionable hold without repeating an earlier waiting target', () => {

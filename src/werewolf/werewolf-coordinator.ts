@@ -100,7 +100,6 @@ import {
   deniedPublicSeerClaims,
   directedPublicFocusTargetIds,
   explicitPublicAttentionTargetIds,
-  finalPublicSpeechTargetId,
   inactivePublicTargetFutureReference,
   normalizePublicSpeechStatement,
   prematurePublicBallotExplanationTarget,
@@ -108,6 +107,7 @@ import {
   publicEvidenceActorIds,
   publicAcknowledgementClaimActorIds,
   publicHoldTargetIssue,
+  publicSpeechJudgmentTargetId,
   publicSpeechMovesForTurn,
   publicTargetPronounBallotClaims,
   publicSpeechMoveCarriesJudgment,
@@ -1211,10 +1211,10 @@ function assertPublicStatementCandidate(
     )
   }
   if (publicSpeechMoveCarriesJudgment(trace.speech_move) && typeof trace.target_id === 'string') {
-    if (finalPublicSpeechTargetId(statement) !== trace.target_id) {
+    if (publicSpeechJudgmentTargetId(statement) !== trace.target_id) {
       throw new DecisionValidationError(
         'target-reference',
-        `${options.label} did not finish its spoken judgment on the structured target`,
+        `${options.label} did not anchor its spoken judgment on the structured target`,
       )
     }
   }
@@ -2373,7 +2373,7 @@ function publicSpeechRetryInstruction(failure: DecisionFailure): string {
     : failure.issue === 'public-attribution'
       ? '“你／他承认了”只能指 target_id 本人的公开原话；若承认来自其他玩家，明确写出真正说话的座位，或删去这项归因。'
       : failure.issue === 'target-reference'
-        ? '若 speech_move 带有 target_id，statement 最后点名的玩家必须回到该目标；提供证据的人不是自动的判断目标。'
+        ? '若 speech_move 带有 target_id，statement 必须用明确判断或直接点名聚焦该目标；引用其他玩家的历史可以保留，但不能在结尾另起一个判断目标。'
         : failure.issue === 'statement-repetition'
           ? '不要复述前面玩家的句式和整段理由。保留自己的当前结论，只使用一条不同的公开依据；没有独立信息时选择 pass。'
           : failure.issue === 'future-explanation'
@@ -2540,7 +2540,7 @@ async function coordinateDiscussion(
       + '可以请尚未发言的玩家轮到时解释公开选票，但在其发言机会到来前不得说他“至今没解释、一直没给理由”，也不能据此判断。'
       + '先定 speech_move、公开 evidence_ids 和 confidence，再写 statement；一轮只完成一个动作。'
       + moveInstruction
-      + 'assess、revise、commit 填写 target_id 与 stance；target_id 是被判断的人，不是提供证据的人，statement 最后一个点名必须回到对应“N号”；'
+      + 'assess、revise、commit 填写 target_id 与 stance；target_id 是被判断的人，不是提供证据的人，statement 必须用明确判断或直接点名聚焦该玩家；引用其他人的历史不必在句尾机械重报 target_id，但不能另起第二个判断目标；'
       + 'respond、hold、pass 的 target_id 与 stance 都填 null。public_discussion_context.covered_public_judgments 是本轮已有判断。'
       + (speechMoves.includes('respond')
         ? 'respond 只处理指向自己的那项公开质疑，结尾只能落回自己或提出质疑的玩家，不得顺带评价第三名玩家。'

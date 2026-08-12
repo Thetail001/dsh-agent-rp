@@ -370,6 +370,34 @@ export function finalPublicSpeechTargetId(statement: string): string | undefined
   return seats.at(-1)
 }
 
+const EXPLICIT_PUBLIC_JUDGMENT_TARGET_REFERENCES = [
+  /我[^。！？]{0,24}(?:关注|怀疑|质疑|警惕|看|盯|注意到)(?:着)?\s*(\d{1,2})\s*号(?:玩家)?/gu,
+  /(?:注意力|焦点|方向)[^。！？]{0,16}(?:放回|放在|落在|转向|看向|盯住)?\s*(\d{1,2})\s*号(?:玩家)?/gu,
+  /(?:今天|本轮|最后|这一票)[^。！？]{0,20}(?:会|要|准备|倾向)?(?:投给|票给|放逐|出)\s*(\d{1,2})\s*号(?:玩家)?/gu,
+  /(?:^|[。！？；：])\s*(\d{1,2})\s*号(?:玩家)?[，,:：]\s*你/gu,
+] as const
+
+/**
+ * Find the target of the final explicit table judgment rather than the final seat mentioned at all.
+ * Historical speech and ballot references may legitimately follow an opening focus without forcing
+ * every player to append a mechanical “我先看 N 号” restatement.
+ * @param statement - public table utterance.
+ * @returns the final explicitly focused standard seat, falling back to the final named seat.
+ */
+export function publicSpeechJudgmentTargetId(statement: string): string | undefined {
+  const targets = EXPLICIT_PUBLIC_JUDGMENT_TARGET_REFERENCES.flatMap(pattern =>
+    [...statement.matchAll(pattern)].flatMap((match) => {
+      const seat = match[1]
+      if (seat === undefined) return []
+      const value = Number(seat)
+      return Number.isSafeInteger(value) && value >= 1 && value <= 12
+        ? [{ index: match.index + match[0].lastIndexOf(seat), actorId: `seat-${String(value)}` }]
+        : []
+    }))
+    .sort((left, right) => left.index - right.index)
+  return targets.at(-1)?.actorId ?? finalPublicSpeechTargetId(statement)
+}
+
 /** Context problem that makes a hold repeat or wait for an unavailable answer. */
 export type PublicHoldTargetIssue =
   | 'missing-future-target'
