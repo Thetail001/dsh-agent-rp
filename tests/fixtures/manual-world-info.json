@@ -1,0 +1,39 @@
+{
+  "name": "海城",
+  "entries": {
+    "10": {
+      "uid": 10,
+      "key": [],
+      "keysecondary": [],
+      "comment": "城市气候",
+      "content": "海城终年多雾。",
+      "constant": true,
+      "selective": false,
+      "order": 20,
+      "position": 0,
+      "disable": false
+    },
+    "20": {
+      "uid": 20,
+      "key": [
+        "旧钟楼"
+      ],
+      "keysecondary": [],
+      "comment": "旧钟楼",
+      "content": "旧钟楼每天午夜停摆一分钟。",
+      "constant": false,
+      "selective": false,
+      "order": 10,
+      "position": 1,
+      "disable": false,
+      "extensions": {
+        "fixture/unknown": {
+          "keep": true
+        }
+      }
+    }
+  },
+  "extensions": {
+    "fixture/book": true
+  }
+}

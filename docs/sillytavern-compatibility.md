@@ -13,7 +13,8 @@ This reference defines what the Agent RP importer preserves and what it executes
 | PNG containing both `ccv3` and `chara` | Yes | `ccv3` takes precedence |
 | Unknown card fields and `extensions` values | Yes | Preserved without entering the prompt unless a supported field owns the behavior |
 | Future V3 minor versions | Degraded | Imported and preserved; the result reports that future behavior may be inactive |
-| CHARX or independent lorebook files | Not yet | Planned for later migration layers |
+| Independent SillyTavern World Info JSON | Yes | Session-owned literal-key safe subset; original JSON and unsupported fields remain exportable |
+| CHARX | Not yet | Planned for a later migration layer |
 
 Card `system_prompt` replaces the fallback identity instruction when non-empty and supports `{{original}}`. `post_history_instructions` is appended after the Agent RP behavioral contract. `{{char}}`, `<char>`, and `<bot>` resolve to the V3 nickname when present, otherwise the card name.
 
@@ -21,11 +22,17 @@ Card `system_prompt` replaces the fallback identity instruction when non-empty a
 
 Enabled entries support constant activation, literal primary keys, selective secondary keys, case sensitivity, scan depth, insertion order, `before_char` and `after_char` placement, priority, and token budget. Each active entry enters the prompt once.
 
+## Independent World Info
+
+SillyTavern World Info JSON with a top-level `entries` object or array is accepted. Enabled entries support constant activation, literal primary and secondary keys, all four `selectiveLogic` modes, case sensitivity, whole-word matching, per-entry scan depth, insertion order, and before/after-character positions. Imported books remain Session-owned and combine with an imported card's embedded lorebook.
+
+Regular-expression keys, decorators, probability, vector matching, timed effects, recursive controls, character-field matching, and advanced insertion positions remain preserved but inert. The importer does not execute a partially supported entry when its unsupported fields would change whether or where it activates.
+
 V3 regex keys, recursive scanning, and decorated content are retained but never executed. The import result lists each disabled capability. Token budgeting uses a deterministic local estimate; it does not claim byte-for-byte parity with a SillyTavern model tokenizer.
 
 ## Security and degradation
 
-The importer never executes card scripts, regex replacement scripts, lorebook regular expressions, decorators, or extension code. Remote and data-URL assets are neither fetched nor decoded. Asset records, group-only greetings, and unknown extensions remain in the preserved raw card. Standalone JSON must be a `.json` file containing valid UTF-8; the Host stores it as an opaque attachment, so neither its bytes nor its path are sent to the model.
+The importer never executes card scripts, regex replacement scripts, lorebook regular expressions, decorators, or extension code. Remote and data-URL assets are neither fetched nor decoded. Asset records, group-only greetings, and unknown extensions remain in preserved raw JSON. Standalone JSON must be a `.json` file containing valid UTF-8; the Host stores it as an opaque attachment, so neither its bytes nor its path are sent to the model.
 
 ## Public format sources
 

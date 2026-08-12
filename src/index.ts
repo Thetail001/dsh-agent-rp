@@ -32,10 +32,19 @@ import {
   type FileAttachmentRef,
 } from './import/session-character.ts'
 import { CHARACTER_IMPORT_DEGRADATIONS } from './import/types.ts'
+import { WORLD_INFO_IMPORT_DEGRADATIONS } from './import/types.ts'
+import { parseWorldInfoJsonBytes } from './import/world-info.ts'
+import {
+  isJsonWorldInfoAttachment,
+  prepareWorldInfoImportResult,
+  readActiveSessionWorldInfos,
+  type WorldInfoImportMeta,
+} from './import/session-world-info.ts'
 import {
   renderCharacterPrompt,
   renderImportedCharacterPrompt,
   renderImportedLorebook,
+  renderImportedWorldInfos,
   renderMemoryContext,
 } from './prompt.ts'
 import { installBundledAgentRpPreset } from './preset.ts'
@@ -75,15 +84,23 @@ function isCharacterCardOffer(part: PromptAttachmentPart): boolean {
     : part.type === 'file' && /\.json$/iu.test(part.name)
 }
 
+function isWorldInfoRequest(text: string): boolean {
+  return /(?:世界书|世界信息|world\s*info|lorebook)/iu.test(text) && /(?:导入|加载|使用|接入)/u.test(text)
+}
+
 /** Recognize one explicit Character Card import without exposing attachment bytes to the model. */
-export function claimCharacterCardPrompt(
+export function claimAgentRpPrompt(
   agentRpActive: boolean,
   content: readonly PromptAttachmentPart[],
 ): { readonly text: string } | undefined {
   if (!agentRpActive) return undefined
   const attachments = content.filter(part => part.type !== 'text')
-  const cards = attachments.filter(isCharacterCardOffer)
   const text = content.filter(part => part.type === 'text').map(part => part.text).join('\n')
+  if (isWorldInfoRequest(text)) {
+    const files = attachments.filter(part => part.type === 'file' && /\.json$/iu.test(part.name))
+    return files.length === 1 ? { text } : undefined
+  }
+  const cards = attachments.filter(isCharacterCardOffer)
   if (cards.length !== 1 || !/(?:角色卡|character\s*card|导入|接管|切换角色)/iu.test(text)) return undefined
   return { text }
 }
@@ -122,12 +139,41 @@ export const CHARACTER_IMPORT_VALUE_SCHEMA = {
   },
 } as const
 
+/** Canonical output schema for one accepted standalone World Info import. */
+export const WORLD_INFO_IMPORT_VALUE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    version: { type: 'integer', required: true, const: 0 },
+    name: { type: 'string', required: true },
+    sourceEventSeq: { type: 'integer', required: true },
+    sourceAttachmentId: { type: 'string', required: true },
+    entryCount: { type: 'integer', required: true },
+    degradations: { type: 'array', required: true, items: { type: 'string', enum: WORLD_INFO_IMPORT_DEGRADATIONS } },
+    raw: { type: 'json', required: true },
+  },
+} as const
+
 function rememberCall(subject: string, text: string): GenericCallView {
   return { card: 'generic', title: `记住：${subject}`, kind: 'other', rawInput: text }
 }
 
 function isCharacterCardAttachment(value: unknown): value is CharacterCardAttachmentRef {
   return isPngCharacterCardAttachment(value) || isJsonCharacterCardAttachment(value)
+}
+
+function latestConsumedAttachments(agent: Agent): { eventSeq: number; attachments: FileAttachmentRef[] } {
+  for (let index = agent.session.events.length - 1; index >= 0; index -= 1) {
+    const event = agent.session.events[index]
+    if (event?.type !== 'user/message' || event.data.source.kind !== 'user') continue
+    const source = event.data.source as unknown as { attachmentConsumer?: unknown; attachments?: unknown }
+    const attachments = source.attachmentConsumer === 'dsh-agent-rp' && Array.isArray(source.attachments)
+      ? source.attachments.filter(isJsonWorldInfoAttachment)
+      : []
+    if (attachments.length === 0) throw new Error('当前消息没有可导入的 JSON 文件')
+    return { eventSeq: event.seq, attachments }
+  }
+  throw new Error('没有找到导入请求；请在同一条消息中附上 JSON 文件')
 }
 
 function latestUserAttachments(agent: Agent): { eventSeq: number; attachments: CharacterCardAttachmentRef[] } {
@@ -165,7 +211,7 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
   const gateway = (ctx as Context & { apiProxy: PromptAttachmentGateway }).apiProxy
   ctx.effect(() => gateway.registerPromptAttachmentConsumer('dsh-agent-rp', ({ agent, content }) => (
-    claimCharacterCardPrompt(agentsByScope.get(agent) === agent, content)
+    claimAgentRpPrompt(agentsByScope.get(agent) === agent, content)
   )), 'agent-rp: prompt attachment consumer')
   ctx.systemPrompt.section({
     name: 'deployment:persona',
@@ -175,10 +221,17 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       const pendingMessages = agent === undefined ? [] : pendingMessagesByAgent.get(agent) ?? []
       if (agent !== undefined) pendingMessagesByAgent.delete(agent)
       const active = importedCharacter(agentsByScope, scope)
-      if (agent === undefined || active === undefined) return renderCharacterPrompt(config)
+      if (agent === undefined) return renderCharacterPrompt(config)
+      const worldInfos = readActiveSessionWorldInfos(agent.session.events).map(imported => imported.worldInfo)
+      const standaloneLore = renderImportedWorldInfos(worldInfos, agent.session, pendingMessages)
+      if (active === undefined) return renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter)
       const card = cardFromImportMeta(active.meta)
-      const lore = renderImportedLorebook(card, agent.session, pendingMessages)
-      return renderImportedCharacterPrompt(card, lore.beforeCharacter, lore.afterCharacter)
+      const characterLore = renderImportedLorebook(card, agent.session, pendingMessages)
+      return renderImportedCharacterPrompt(
+        card,
+        [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
+        [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
+      )
     },
     complete: true,
   })
@@ -303,6 +356,51 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
     presentResult: (_args, result) => ({
       card: 'generic',
       title: result.isError ? '角色卡导入失败' : '角色卡已导入',
+    }),
+    isConcurrencySafe: () => false,
+  }))
+  ctx.tools.register(defineTool({
+    name: 'import_world_info',
+    description: 'Import one standalone SillyTavern World Info / lorebook JSON attachment from the latest user message and keep it active in this Session. Omit attachmentIndex unless the message contains multiple JSON files.',
+    parameters: {
+      attachmentIndex: {
+        type: 'integer',
+        description: 'Zero-based JSON attachment index in the latest user message. Omit when it contains exactly one file.',
+      },
+    },
+    output: {
+      schema: WORLD_INFO_IMPORT_VALUE_SCHEMA,
+      render: (_args, value) => [{
+        type: 'text',
+        text: [
+          `已导入世界书 ${value.name}（${value.entryCount} 个条目）`,
+          value.degradations.length === 0 ? '未发现需要降级的能力。' : `未启用：${value.degradations.join('、')}`,
+          '从下一次回应开始使用已激活的设定，不解释导入过程。',
+        ].join('\n'),
+      }],
+      presentationMeta: (_args, value) => {
+        const { raw, ...result } = value
+        const meta: WorldInfoImportMeta = { format: 0, result, raw }
+        return meta as unknown as import('@deepseek-ai/dsh-session').JsonValue
+      },
+    },
+    async execute(args, exec) {
+      if (exec.agent === undefined) throw new Error('import_world_info requires an Agent Session')
+      if (exec.parent !== undefined) throw new Error('import_world_info must be called directly by the character Agent')
+      const direct = latestConsumedAttachments(exec.agent)
+      const attachmentIndex = args.attachmentIndex ?? 0
+      if (!Number.isSafeInteger(attachmentIndex) || attachmentIndex < 0 || attachmentIndex >= direct.attachments.length) {
+        throw new Error(`attachmentIndex ${attachmentIndex} is unavailable; the current import source contains ${direct.attachments.length} JSON attachment(s)`)
+      }
+      const reader = ctx.attachments as unknown as FileAttachmentReader
+      const stored = await reader.readFile(direct.attachments[attachmentIndex]!, exec.signal)
+      const worldInfo = parseWorldInfoJsonBytes(stored.data)
+      return prepareWorldInfoImportResult(worldInfo, direct.eventSeq, stored.ref)
+    },
+    presentCall: () => ({ card: 'generic', title: '导入世界书', kind: 'read' }),
+    presentResult: (_args, result) => ({
+      card: 'generic',
+      title: result.isError ? '世界书导入失败' : '世界书已导入',
     }),
     isConcurrencySafe: () => false,
   }))

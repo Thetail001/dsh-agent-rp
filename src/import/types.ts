@@ -29,6 +29,9 @@ export interface ImportedLorebookEntry {
   readonly selective: boolean
   readonly constant: boolean
   readonly caseSensitive: boolean
+  readonly matchWholeWords: boolean
+  readonly secondaryLogic: 'and-any' | 'and-all' | 'not-any' | 'not-all'
+  readonly scanDepth?: number
   readonly position: 'before_char' | 'after_char'
   readonly priority?: number
   /** V3 regex entries remain exportable but never activate. */
@@ -44,6 +47,31 @@ export interface ImportedLorebook {
   readonly tokenBudget?: number
   readonly recursiveScanning: boolean
   readonly entries: readonly ImportedLorebookEntry[]
+}
+
+/** One SillyTavern World Info feature retained in raw JSON but not executed. */
+export const WORLD_INFO_IMPORT_DEGRADATIONS = [
+  'entry-advanced-matching',
+  'entry-decorators',
+  'entry-probability',
+  'entry-regex',
+  'entry-unsupported-position',
+  'lorebook-recursion',
+  'timed-effects',
+  'vector-matching',
+] as const
+
+/** One SillyTavern World Info feature retained in raw JSON but not executed. */
+export type WorldInfoImportDegradation = typeof WORLD_INFO_IMPORT_DEGRADATIONS[number]
+
+/** Lossless standalone SillyTavern World Info import. */
+export interface ImportedWorldInfo {
+  readonly format: 0
+  readonly name?: string
+  readonly lorebook: ImportedLorebook
+  readonly degradations: readonly WorldInfoImportDegradation[]
+  /** Exact parsed JSON, including unsupported fields and extension namespaces. */
+  readonly raw: JsonValue
 }
 
 /** Canonical imported card persisted with the native tool result. */

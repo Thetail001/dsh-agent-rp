@@ -6,13 +6,15 @@ The profile bundle installs its managed `agent-rp` preset under `$DSH_HOME/.agen
 
 The character row configures `characterName`, `persona`, `scenario`, and the initial `relationship`. Each field is normalized and must contain text. The bundled preset describes an original character until the Session imports a card. To customize that fallback, copy the preset to a new id in DSH, edit that copy's `agent.cordis.yml`, and select the copy; the installer refuses to overwrite local edits under the managed `agent-rp` id.
 
-## Import a SillyTavern character
+## Import SillyTavern content
 
 Start a `角色会话`, attach one Character Card PNG or JSON file to an ordinary message, and ask the character to import it. The current top-level Agent becomes that character, sends the card's selected greeting, and keeps the import through Session restart and resume. A message with several recognized cards can name the intended attachment and greeting; greeting zero is `first_mes`, followed by `alternate_greetings`.
 
 Character Card V1, V2, and V3 are accepted as standalone JSON or JSON embedded in PNG `tEXt` metadata. When a PNG contains both `ccv3` and `chara`, `ccv3` wins. The importer retains the complete parsed JSON, including unknown fields and extension namespaces, in the native successful tool result metadata. The original PNG or JSON bytes remain a Session attachment for restart, ZIP export, and later migration; standalone JSON never enters model content.
 
 The supported character lorebook subset covers enabled and constant entries, primary and secondary keywords, selective matching, case sensitivity, scan depth, insertion order, before/after-character placement, priority, and token budget. See [the compatibility reference](docs/sillytavern-compatibility.md) for exact degradation behavior and format sources.
+
+Attach an exported SillyTavern World Info JSON to the same conversation and ask to import the world info, lorebook, or 世界书. Its enabled literal-key entries join the active character lore for that Session, remain active after restart, and retain the original JSON attachment for ZIP export. Multiple books can remain active together; importing the same attachment again replaces its prior parsed value.
 
 ## Memory contract
 
@@ -42,7 +44,7 @@ Start a new Session after installation. The preset selector shows `角色会话`
 
 ## Limitations
 
-- Character import accepts PNG and standalone JSON; CHARX, independent lorebooks, and SillyTavern JSONL chat files remain migration gaps.
+- Character import accepts PNG and standalone JSON, and independent SillyTavern World Info JSON is active in the Session. CHARX and SillyTavern JSONL chat files remain migration gaps.
 - Memory selection is model-initiated and explicit; there is no semantic retrieval or automatic forgetting policy.
 - Multi-character scenes, multiplayer, and a custom RP UI are outside this milestone.
 - rc.2 does not expose package-owned preset roots, so the Host row installs the bundled preset into the user preset directory. Removing the profile bundle leaves that managed directory behind; without the package its composition is unavailable but other Sessions are unaffected.

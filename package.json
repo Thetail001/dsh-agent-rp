@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsdown",
     "prepack": "pnpm run build",
-    "test:focused": "tsdown tests/config.test.ts tests/import.test.ts tests/memory.test.ts tests/prompt.test.ts tests/preset.test.ts tests/session-character.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-dist --clean && node --test .test-dist/config.test.mjs .test-dist/import.test.mjs .test-dist/memory.test.mjs .test-dist/prompt.test.mjs .test-dist/preset.test.mjs .test-dist/session-character.test.mjs",
+    "test:focused": "tsdown tests/config.test.ts tests/import.test.ts tests/memory.test.ts tests/prompt.test.ts tests/preset.test.ts tests/session-character.test.ts tests/session-world-info.test.ts tests/world-info.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-dist --clean && node --test .test-dist/config.test.mjs .test-dist/import.test.mjs .test-dist/memory.test.mjs .test-dist/prompt.test.mjs .test-dist/preset.test.mjs .test-dist/session-character.test.mjs .test-dist/session-world-info.test.mjs .test-dist/world-info.test.mjs",
     "typecheck": "tsc -p tsconfig.host.json --noEmit"
   },
   "devDependencies": {

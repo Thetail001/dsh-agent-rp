@@ -91,6 +91,8 @@ function parseLorebookEntry(value: JsonValue, index: number, version: CharacterC
     selective: optionalBoolean(entry.selective, `${path}.selective`) ?? false,
     constant: optionalBoolean(entry.constant, `${path}.constant`) ?? false,
     caseSensitive: optionalBoolean(entry.case_sensitive, `${path}.case_sensitive`) ?? false,
+    matchWholeWords: optionalBoolean(entry.match_whole_words, `${path}.match_whole_words`) ?? false,
+    secondaryLogic: 'and-any',
     position,
     ...(priority === undefined ? {} : { priority }),
     useRegex,

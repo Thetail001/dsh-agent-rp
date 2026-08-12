@@ -18,11 +18,11 @@ PNG transport follows the public Character Card convention: base64 UTF-8 JSON in
 
 Ordinary Chat remains the migration entry point: an attached PNG or JSON file plus an import request switches the same Agent and Session. The source user event, selected attachment index, transport, and attachment id are validated during replay, so a detached tool result cannot silently claim another file. Unknown JSON and extension namespaces remain available for later export.
 
-The first compatibility layer covers V1/V2/V3 PNG and standalone JSON cards, greetings, character prompt fields, and a deterministic literal-key lorebook subset. CHARX files, independent lorebooks, SillyTavern JSONL chats, swipes, and batch conversion remain separate migration layers.
+The compatibility layer covers V1/V2/V3 PNG and standalone JSON cards, greetings, character prompt fields, embedded lorebooks, and independent SillyTavern World Info JSON. Independent books use the same Session-owned native-result pattern, combine with card lore, and preserve unsupported behavior as inert raw JSON. CHARX files, SillyTavern JSONL chats, swipes, and batch conversion remain separate migration layers.
 
 ## Verification contract
 
-Focused tests cover all three card generations, standalone JSON recognition, unknown-field preservation, dual-chunk V3 precedence, malformed transport and schema rejection, safe lorebook activation and budgeting, disabled V3 behavior, native result replay, selected greetings, and transport-specific source binding. Typecheck and the built package smoke validate the shipped profile path.
+Focused tests cover all three card generations, standalone JSON recognition, unknown-field preservation, dual-chunk V3 precedence, malformed transport and schema rejection, safe lorebook activation and budgeting, standalone World Info matching and inert degradations, native result replay, selected greetings, and source binding. Typecheck and the built package smoke validate the shipped profile path.
 
 ## Alternatives considered
 
