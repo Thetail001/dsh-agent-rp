@@ -95,6 +95,36 @@ export interface ImportedCharacterCard {
   readonly raw: JsonValue
 }
 
+/** SillyTavern chat header retained independently from model-visible history. */
+export interface ImportedSillyTavernChatHeader {
+  readonly userName?: string
+  readonly characterName?: string
+  readonly createDate?: JsonValue
+  readonly chatMetadata: JsonValue
+  /** Exact parsed header object, including unknown fields. */
+  readonly raw: JsonValue
+}
+
+/** One parsed SillyTavern chat row before conversion to a DSH Session log. */
+export interface ImportedSillyTavernChatMessage {
+  readonly line: number
+  readonly name?: string
+  readonly text: string
+  readonly kind: 'user' | 'assistant' | 'narrator' | 'system'
+  readonly swipes: readonly string[]
+  readonly swipeId?: number
+  readonly extra?: JsonValue
+  /** Exact parsed message object, including unknown fields. */
+  readonly raw: JsonValue
+}
+
+/** Lossless SillyTavern JSONL import with an explicit model-history projection. */
+export interface ImportedSillyTavernChat {
+  readonly format: 0
+  readonly header: ImportedSillyTavernChatHeader
+  readonly messages: readonly ImportedSillyTavernChatMessage[]
+}
+
 /** Result of decoding one PNG transport before card validation. */
 export interface CharacterCardPngPayload {
   readonly keyword: 'ccv3' | 'chara'

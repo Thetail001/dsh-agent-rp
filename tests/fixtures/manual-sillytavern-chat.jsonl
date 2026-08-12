@@ -1,0 +1,5 @@
+{"user_name":"宝宝","character_name":"白露","create_date":"2026-08-12T00:00:00.000Z","chat_metadata":{"integrity":"fixture","unknown":{"keep":true}}}
+{"name":"白露","mes":"门还没锁。","is_user":false,"is_system":false,"send_date":"2026-08-12T00:00:01.000Z","swipes":["门还没锁。","你来得正好。"],"swipe_id":0,"extra":{"model":"fixture","unknown":true}}
+{"name":"宝宝","mes":"那我进来啦。","is_user":true,"is_system":false,"send_date":"2026-08-12T00:00:02.000Z","extra":{}}
+{"name":"旁白","mes":"窗外响起整点钟声。","is_user":false,"is_system":false,"send_date":"2026-08-12T00:00:03.000Z","extra":{"type":"narrator"}}
+{"name":"System","mes":"仅供界面显示。","is_user":false,"is_system":true,"send_date":"2026-08-12T00:00:04.000Z","extra":{"type":"comment"}}
