@@ -3,6 +3,7 @@ import test from 'node:test'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
+import { claimCharacterCardPrompt } from '../src/index.ts'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { renderCharacterPrompt, renderImportedLorebook, renderMemoryContext } from '../src/prompt.ts'
 
@@ -20,6 +21,24 @@ test('makes the top-level Agent the character and permits concise silence', () =
 
 test('renders an explicit empty memory snapshot', () => {
   assert.equal(renderMemoryContext([]), '当前没有已记录的持久记忆。')
+})
+
+test('claims one Character Card JSON only for an Agent RP import request', () => {
+  const request = [
+    { type: 'text' as const, text: '请导入这张角色卡' },
+    { type: 'file' as const, name: '白露.json', mediaType: 'application/json' },
+  ]
+
+  assert.deepEqual(claimCharacterCardPrompt(true, request), { text: '请导入这张角色卡' })
+  assert.equal(claimCharacterCardPrompt(false, request), undefined)
+  assert.equal(claimCharacterCardPrompt(true, [
+    { type: 'text', text: '帮我看看这份数据' },
+    { type: 'file', name: '白露.json', mediaType: 'application/json' },
+  ]), undefined)
+  assert.equal(claimCharacterCardPrompt(true, [
+    { type: 'text', text: '请导入这张角色卡' },
+    { type: 'file', name: 'notes.txt', mediaType: 'text/plain' },
+  ]), undefined)
 })
 
 test('activates lorebook entries from the current message before it enters Session history', () => {

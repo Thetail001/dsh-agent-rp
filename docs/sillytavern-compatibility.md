@@ -6,13 +6,14 @@ This reference defines what the Agent RP importer preserves and what it executes
 
 | Input | Import | Runtime behavior |
 |---|---:|---|
+| Standalone Character Card V1/V2/V3 JSON | Yes | Same card semantics as PNG; original bytes remain a Session attachment and never enter model content |
 | Character Card V1 JSON fields in PNG `chara` metadata | Yes | Identity, description, personality, scenario, examples, and `first_mes` |
 | Character Card V2 in PNG `chara` metadata | Yes | V1 behavior, alternate greetings, character system prompt, post-history instructions, and character lorebook |
 | Character Card V3 in PNG `ccv3` metadata | Yes | V2 behavior, nickname, and V3 lorebook fields in the safe subset |
 | PNG containing both `ccv3` and `chara` | Yes | `ccv3` takes precedence |
 | Unknown card fields and `extensions` values | Yes | Preserved without entering the prompt unless a supported field owns the behavior |
 | Future V3 minor versions | Degraded | Imported and preserved; the result reports that future behavior may be inactive |
-| Standalone JSON, CHARX, or independent lorebook files | Not yet | Planned for the batch migration entry point |
+| CHARX or independent lorebook files | Not yet | Planned for later migration layers |
 
 Card `system_prompt` replaces the fallback identity instruction when non-empty and supports `{{original}}`. `post_history_instructions` is appended after the Agent RP behavioral contract. `{{char}}`, `<char>`, and `<bot>` resolve to the V3 nickname when present, otherwise the card name.
 
@@ -24,7 +25,7 @@ V3 regex keys, recursive scanning, and decorated content are retained but never 
 
 ## Security and degradation
 
-The importer never executes card scripts, regex replacement scripts, lorebook regular expressions, decorators, or extension code. Remote and data-URL assets are neither fetched nor decoded. Asset records, group-only greetings, and unknown extensions remain in the preserved raw card.
+The importer never executes card scripts, regex replacement scripts, lorebook regular expressions, decorators, or extension code. Remote and data-URL assets are neither fetched nor decoded. Asset records, group-only greetings, and unknown extensions remain in the preserved raw card. Standalone JSON must be a `.json` file containing valid UTF-8; the Host stores it as an opaque attachment, so neither its bytes nor its path are sent to the model.
 
 ## Public format sources
 

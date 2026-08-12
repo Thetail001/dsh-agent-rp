@@ -6,6 +6,21 @@ import { parseCharacterCardJson } from './character-card.ts'
 import { CHARACTER_IMPORT_DEGRADATIONS } from './types.ts'
 import type { CharacterCardPngPayload, CharacterImportDegradation, ImportedCharacterCard } from './types.ts'
 
+export interface FileAttachmentRef {
+  readonly kind: 'file'
+  readonly attachmentId: ImageAttachmentRef['attachmentId']
+  readonly bytes: number
+  readonly name: string
+  readonly mediaType?: string
+}
+
+export type CharacterCardAttachmentRef = ImageAttachmentRef | FileAttachmentRef
+
+/** Transport-specific provenance recorded with an imported card. */
+export type CharacterImportTransport =
+  | { readonly transport: 'png'; readonly metadataKeyword: CharacterCardPngPayload['keyword'] }
+  | { readonly transport: 'json'; readonly metadataKeyword?: never }
+
 /** Model-facing canonical value for one completed import. */
 export interface CharacterImportResult {
   readonly version: 0
@@ -13,7 +28,8 @@ export interface CharacterImportResult {
   readonly cardVersion: 1 | 2 | 3
   readonly sourceEventSeq: number
   readonly sourceAttachmentId: string
-  readonly metadataKeyword: CharacterCardPngPayload['keyword']
+  readonly transport: CharacterImportTransport['transport']
+  readonly metadataKeyword?: CharacterCardPngPayload['keyword']
   readonly greetingIndex: number
   readonly selectedGreeting: string
   readonly degradations: Array<ImportedCharacterCard['degradations'][number]>
@@ -49,11 +65,14 @@ function jsonObject(value: JsonValue | undefined, label: string): Record<string,
 
 function parseResult(value: JsonValue | undefined): CharacterImportResult {
   const record = jsonObject(value, 'import_character_card result')
+  const validTransport = record.transport === 'png'
+    ? record.metadataKeyword === 'ccv3' || record.metadataKeyword === 'chara'
+    : record.transport === 'json' && record.metadataKeyword === undefined
   if (record.version !== 0 || typeof record.name !== 'string'
     || (record.cardVersion !== 1 && record.cardVersion !== 2 && record.cardVersion !== 3)
     || typeof record.sourceEventSeq !== 'number' || !Number.isSafeInteger(record.sourceEventSeq)
     || typeof record.sourceAttachmentId !== 'string'
-    || (record.metadataKeyword !== 'ccv3' && record.metadataKeyword !== 'chara')
+    || !validTransport
     || typeof record.greetingIndex !== 'number' || !Number.isSafeInteger(record.greetingIndex) || record.greetingIndex < 0
     || typeof record.selectedGreeting !== 'string'
     || !Array.isArray(record.degradations)
@@ -72,17 +91,33 @@ function parseMeta(value: JsonValue | undefined): CharacterImportMeta {
   return { format: 0, result, raw: meta.raw }
 }
 
-function sourceImage(events: readonly SessionEvent[], sourceEventSeq: number, attachmentId: string): ImageAttachmentRef {
+/** Recognize one durable PNG reference usable as a Character Card transport. */
+export function isPngCharacterCardAttachment(value: unknown): value is ImageAttachmentRef {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return record.kind === undefined && record.mediaType === 'image/png'
+    && typeof record.attachmentId === 'string' && typeof record.bytes === 'number'
+    && typeof record.width === 'number' && typeof record.height === 'number'
+}
+
+/** Recognize one durable standalone JSON reference usable as a Character Card transport. */
+export function isJsonCharacterCardAttachment(value: unknown): value is FileAttachmentRef {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return record.kind === 'file' && typeof record.attachmentId === 'string'
+    && typeof record.bytes === 'number' && typeof record.name === 'string' && /\.json$/iu.test(record.name)
+    && (record.mediaType === undefined || typeof record.mediaType === 'string')
+}
+
+function sourceAttachments(events: readonly SessionEvent[], sourceEventSeq: number): CharacterCardAttachmentRef[] {
   const source = events[sourceEventSeq]
   if (source?.type !== 'user/message' || source.seq !== sourceEventSeq) {
     throw new Error('import_character_card sourceEventSeq does not reference a user message')
   }
-  const images = source.data.content.filter(block => block.type === 'image')
-  if (images.length > 0) {
-    const image = images.find(block => String(block.attachment.attachmentId) === attachmentId)
-    if (image === undefined) throw new Error('import_character_card source attachment is absent from its user message')
-    return image.attachment
-  }
+  const direct = source.data.content.flatMap(block => block.type === 'image' && isPngCharacterCardAttachment(block.attachment)
+    ? [block.attachment]
+    : [])
+  if (direct.length > 0) return direct
   const sourceMeta = source.data.source.kind === 'user'
     ? source.data.source as unknown as Record<string, JsonValue>
     : undefined
@@ -90,12 +125,7 @@ function sourceImage(events: readonly SessionEvent[], sourceEventSeq: number, at
   const attachments = sourceMeta.attachmentConsumer === 'dsh-agent-rp' && Array.isArray(sourceMeta.attachments)
     ? sourceMeta.attachments
     : []
-  const image = attachments.find(value => typeof value === 'object' && value !== null && !Array.isArray(value)
-    && String((value as Record<string, JsonValue>).attachmentId) === attachmentId)
-  if (image === undefined) {
-    throw new Error('import_character_card source attachment metadata is invalid')
-  }
-  return image as unknown as ImageAttachmentRef
+  return attachments.filter(value => isPngCharacterCardAttachment(value) || isJsonCharacterCardAttachment(value)) as CharacterCardAttachmentRef[]
 }
 
 function validateImport(events: readonly SessionEvent[], resultEvent: SessionEvent<'tool/result'>): ActiveSessionCharacter {
@@ -122,9 +152,21 @@ function validateImport(events: readonly SessionEvent[], resultEvent: SessionEve
   if (greetingIndex !== result.greetingIndex) {
     throw new Error('import_character_card greeting does not match its source call')
   }
-  if (result.sourceEventSeq >= call.seq) throw new Error('import_character_card source image does not precede its tool call')
-  const image = sourceImage(events, result.sourceEventSeq, result.sourceAttachmentId)
-  if (image.mediaType !== 'image/png') throw new Error('import_character_card source must remain a PNG')
+  if (result.sourceEventSeq >= call.seq) throw new Error('import_character_card source attachment does not precede its tool call')
+  const attachmentIndex = args.attachmentIndex ?? 0
+  if (typeof attachmentIndex !== 'number' || !Number.isSafeInteger(attachmentIndex) || attachmentIndex < 0) {
+    throw new Error('import_character_card source call has an invalid attachmentIndex')
+  }
+  const attachment = sourceAttachments(events, result.sourceEventSeq)[attachmentIndex]
+  if (attachment === undefined || String(attachment.attachmentId) !== result.sourceAttachmentId) {
+    throw new Error('import_character_card source attachment is absent from its user message')
+  }
+  if (result.transport === 'png' && !isPngCharacterCardAttachment(attachment)) {
+    throw new Error('import_character_card PNG transport does not match its source attachment')
+  }
+  if (result.transport === 'json' && !isJsonCharacterCardAttachment(attachment)) {
+    throw new Error('import_character_card JSON transport does not match its source attachment')
+  }
   const expectedGreeting = [card.firstMessage, ...card.alternateGreetings][result.greetingIndex]
   if (result.name !== card.name || result.cardVersion !== card.version
     || result.selectedGreeting !== expectedGreeting
@@ -152,19 +194,19 @@ export function readActiveSessionCharacter(events: readonly SessionEvent[]): Act
 }
 
 /**
- * Build the canonical import summary associated with its source image.
+ * Build the canonical import summary associated with its source attachment.
  * @param card - parsed Character Card.
- * @param payload - PNG metadata transport that selected the card.
- * @param sourceEventSeq - exact user message carrying the image.
- * @param image - matching durable image reference.
+ * @param transport - transport and PNG metadata provenance for the selected card.
+ * @param sourceEventSeq - exact user message carrying the attachment.
+ * @param attachment - matching durable attachment reference.
  * @param greetingIndex - zero-based selected greeting, with zero naming `first_mes`.
  * @returns a compact canonical tool result.
  */
 export function prepareCharacterImportResult(
   card: ImportedCharacterCard,
-  payload: CharacterCardPngPayload,
+  transport: CharacterImportTransport,
   sourceEventSeq: number,
-  image: ImageAttachmentRef,
+  attachment: CharacterCardAttachmentRef,
   greetingIndex: number,
 ): CharacterImportValue {
   if (!Number.isSafeInteger(greetingIndex) || greetingIndex < 0) throw new Error('greetingIndex must be a non-negative integer')
@@ -176,8 +218,9 @@ export function prepareCharacterImportResult(
     name: card.name,
     cardVersion: card.version,
     sourceEventSeq,
-    sourceAttachmentId: String(image.attachmentId),
-    metadataKeyword: payload.keyword,
+    sourceAttachmentId: String(attachment.attachmentId),
+    transport: transport.transport,
+    ...(transport.transport === 'png' ? { metadataKeyword: transport.metadataKeyword } : {}),
     greetingIndex,
     selectedGreeting,
     degradations: [...card.degradations],

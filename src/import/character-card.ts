@@ -12,6 +12,17 @@ import type {
 /** Maximum decoded JSON accepted from one card transport. */
 export const MAX_CHARACTER_CARD_JSON_BYTES = 2 * 1024 * 1024
 
+/** Decode one standalone Character Card JSON file without replacement characters. */
+export function parseCharacterCardJsonBytes(data: Uint8Array): ImportedCharacterCard {
+  let json: string
+  try {
+    json = new TextDecoder('utf-8', { fatal: true }).decode(data).replace(/^\uFEFF/u, '')
+  } catch (error) {
+    throw new Error('Character Card JSON must be valid UTF-8', { cause: error })
+  }
+  return parseCharacterCardJson(json)
+}
+
 type JsonObject = { [key: string]: JsonValue }
 
 function object(value: JsonValue | undefined, path: string): JsonObject {

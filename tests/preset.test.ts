@@ -61,6 +61,7 @@ test('claims character-card images for every Agent joined to the preset, includi
     content: ReadonlyArray<
       | { type: 'text'; text: string }
       | { type: 'image'; mediaType: string; name?: string }
+      | { type: 'file'; name: string; mediaType?: string }
     >
   }) => { text: string } | undefined>()
   root.provide('apiProxy' as never, {
@@ -99,6 +100,10 @@ test('claims character-card images for every Agent joined to the preset, includi
   ]
   assert.deepEqual(consumer({ agent: joinedAgent, content }), { text: '导入这张角色卡' })
   assert.equal(consumer({ agent: siblingAgent, content }), undefined)
+  assert.deepEqual(consumer({ agent: joinedAgent, content: [
+    { type: 'text', text: '导入这张角色卡' },
+    { type: 'file', name: 'card.json', mediaType: 'application/json' },
+  ] }), { text: '导入这张角色卡' })
 
   context.after(async () => {
     disposeSibling()

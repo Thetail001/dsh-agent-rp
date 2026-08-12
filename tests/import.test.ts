@@ -3,7 +3,7 @@ import test from 'node:test'
 import { Buffer } from 'node:buffer'
 import { deflateSync } from 'node:zlib'
 import { encode as encodeTextChunk } from 'png-chunk-text'
-import { parseCharacterCardJson } from '../src/import/character-card.ts'
+import { parseCharacterCardJson, parseCharacterCardJsonBytes } from '../src/import/character-card.ts'
 import { activateLorebook } from '../src/import/lorebook.ts'
 import { readCharacterCardPng } from '../src/import/png.ts'
 
@@ -197,6 +197,17 @@ test('rejects malformed transport and schema without partial fallback', () => {
   assert.throws(() => parseCharacterCardJson('{'), /not valid JSON/u)
   assert.throws(() => parseCharacterCardJson(JSON.stringify({ ...base, name: 3 })), /data.name must be a string/u)
   assert.throws(() => parseCharacterCardJson(JSON.stringify({ ...base, spec: 'unknown' })), /unsupported character card spec/u)
+})
+
+test('imports standalone UTF-8 JSON bytes and rejects invalid encoding', () => {
+  const json = JSON.stringify({
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: v2Data(),
+  })
+
+  assert.equal(parseCharacterCardJsonBytes(Buffer.from(`\uFEFF${json}`, 'utf8')).name, '白露')
+  assert.throws(() => parseCharacterCardJsonBytes(Uint8Array.from([0xc3, 0x28])), /valid UTF-8/u)
 })
 
 test('honors zero lorebook scan depth and token budget', () => {

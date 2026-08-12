@@ -3,7 +3,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent'
-import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type { ScopeKey } from '@deepseek-ai/dsh-scope'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
@@ -20,13 +19,17 @@ import {
   AGENT_RP_MEMORY_KINDS,
   prepareAgentRpMemory,
 } from './memory.ts'
-import { parseCharacterCardJson } from './import/character-card.ts'
+import { parseCharacterCardJson, parseCharacterCardJsonBytes } from './import/character-card.ts'
 import { readCharacterCardPng } from './import/png.ts'
 import {
   cardFromImportMeta,
+  isJsonCharacterCardAttachment,
+  isPngCharacterCardAttachment,
   prepareCharacterImportResult,
   readActiveSessionCharacter,
+  type CharacterCardAttachmentRef,
   type CharacterImportMeta,
+  type FileAttachmentRef,
 } from './import/session-character.ts'
 import { CHARACTER_IMPORT_DEGRADATIONS } from './import/types.ts'
 import {
@@ -51,9 +54,38 @@ interface PromptAttachmentGateway {
       readonly content: ReadonlyArray<
         | { readonly type: 'text'; readonly text: string }
         | { readonly type: 'image'; readonly mediaType: string; readonly name?: string }
+        | { readonly type: 'file'; readonly name: string; readonly mediaType?: string }
       >
     }) => { readonly text: string } | undefined,
   ): () => void
+}
+
+interface FileAttachmentReader {
+  readFile(
+    ref: FileAttachmentRef,
+    signal?: AbortSignal,
+  ): Promise<{ readonly ref: FileAttachmentRef; readonly data: Uint8Array }>
+}
+
+type PromptAttachmentPart = Parameters<Parameters<PromptAttachmentGateway['registerPromptAttachmentConsumer']>[1]>[0]['content'][number]
+
+function isCharacterCardOffer(part: PromptAttachmentPart): boolean {
+  return part.type === 'image'
+    ? part.mediaType === 'image/png'
+    : part.type === 'file' && /\.json$/iu.test(part.name)
+}
+
+/** Recognize one explicit Character Card import without exposing attachment bytes to the model. */
+export function claimCharacterCardPrompt(
+  agentRpActive: boolean,
+  content: readonly PromptAttachmentPart[],
+): { readonly text: string } | undefined {
+  if (!agentRpActive) return undefined
+  const attachments = content.filter(part => part.type !== 'text')
+  const cards = attachments.filter(isCharacterCardOffer)
+  const text = content.filter(part => part.type === 'text').map(part => part.text).join('\n')
+  if (cards.length !== 1 || !/(?:角色卡|character\s*card|导入|接管|切换角色)/iu.test(text)) return undefined
+  return { text }
 }
 
 /** Canonical output schema for one accepted `remember` call. */
@@ -81,7 +113,8 @@ export const CHARACTER_IMPORT_VALUE_SCHEMA = {
     cardVersion: { type: 'integer', required: true, enum: [1, 2, 3] },
     sourceEventSeq: { type: 'integer', required: true },
     sourceAttachmentId: { type: 'string', required: true },
-    metadataKeyword: { type: 'string', required: true, enum: ['ccv3', 'chara'] },
+    transport: { type: 'string', required: true, enum: ['png', 'json'] },
+    metadataKeyword: { type: 'string', enum: ['ccv3', 'chara'] },
     greetingIndex: { type: 'integer', required: true },
     selectedGreeting: { type: 'string', required: true },
     degradations: { type: 'array', required: true, items: { type: 'string', enum: CHARACTER_IMPORT_DEGRADATIONS } },
@@ -93,7 +126,11 @@ function rememberCall(subject: string, text: string): GenericCallView {
   return { card: 'generic', title: `记住：${subject}`, kind: 'other', rawInput: text }
 }
 
-function latestUserImages(agent: Agent): { eventSeq: number; images: ImageAttachmentRef[] } {
+function isCharacterCardAttachment(value: unknown): value is CharacterCardAttachmentRef {
+  return isPngCharacterCardAttachment(value) || isJsonCharacterCardAttachment(value)
+}
+
+function latestUserAttachments(agent: Agent): { eventSeq: number; attachments: CharacterCardAttachmentRef[] } {
   for (let index = agent.session.events.length - 1; index >= 0; index -= 1) {
     const event = agent.session.events[index]
     if (event?.type !== 'user/message' || event.data.source.kind !== 'user') continue
@@ -103,13 +140,13 @@ function latestUserImages(agent: Agent): { eventSeq: number; images: ImageAttach
       attachments?: unknown
     }
     const consumed = source.attachmentConsumer === 'dsh-agent-rp' && Array.isArray(source.attachments)
-      ? source.attachments as ImageAttachmentRef[]
+      ? source.attachments.filter(isCharacterCardAttachment)
       : []
-    const images = direct.length > 0 ? direct : consumed
-    if (images.length === 0) throw new Error('当前用户消息没有图片；请把角色卡 PNG 附在导入请求中')
-    return { eventSeq: event.seq, images }
+    const attachments = [...direct.filter(isCharacterCardAttachment), ...consumed]
+    if (attachments.length === 0) throw new Error('当前消息没有可导入的角色卡；请附上 Character Card PNG 或 JSON')
+    return { eventSeq: event.seq, attachments }
   }
-  throw new Error('没有找到用户消息；请把角色卡 PNG 附在导入请求中')
+  throw new Error('没有找到导入请求；请在同一条消息中附上 Character Card PNG 或 JSON')
 }
 
 function importedCharacter(agentsByScope: WeakMap<ScopeKey, Agent>, scope: ScopeKey | undefined) {
@@ -127,16 +164,9 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
   const agentsByScope = new WeakMap<ScopeKey, Agent>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
   const gateway = (ctx as Context & { apiProxy: PromptAttachmentGateway }).apiProxy
-  ctx.effect(() => gateway.registerPromptAttachmentConsumer('dsh-agent-rp', ({ agent, content }) => {
-    if (agentsByScope.get(agent) !== agent) return undefined
-    const images = content.filter(part => part.type === 'image')
-    const text = content.filter(part => part.type === 'text').map(part => part.text).join('\n')
-    if (images.length !== 1 || images[0]?.mediaType !== 'image/png'
-      || !/(?:角色卡|character\s*card|导入|接管|切换角色)/iu.test(text)) {
-      return undefined
-    }
-    return { text }
-  }), 'agent-rp: prompt attachment consumer')
+  ctx.effect(() => gateway.registerPromptAttachmentConsumer('dsh-agent-rp', ({ agent, content }) => (
+    claimCharacterCardPrompt(agentsByScope.get(agent) === agent, content)
+  )), 'agent-rp: prompt attachment consumer')
   ctx.systemPrompt.section({
     name: 'deployment:persona',
     order: 0,
@@ -216,11 +246,11 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
   }))
   ctx.tools.register(defineTool({
     name: 'import_character_card',
-    description: 'Import a SillyTavern Character Card V1, V2, or V3 from a PNG attached to the latest user message, then make that character active for this Session. Omit imageIndex unless the message has multiple images. greetingIndex 0 selects first_mes; later indexes select alternate_greetings.',
+    description: 'Import a SillyTavern Character Card V1, V2, or V3 from a PNG or JSON attachment in the latest user message, then make that character active for this Session. Omit attachmentIndex unless the message has multiple recognized cards. greetingIndex 0 selects first_mes; later indexes select alternate_greetings.',
     parameters: {
-      imageIndex: {
+      attachmentIndex: {
         type: 'integer',
-        description: 'Zero-based image index in the latest user message. Omit when it contains exactly one image.',
+        description: 'Zero-based Character Card attachment index in the latest user message. Omit when it contains exactly one card.',
       },
       greetingIndex: {
         type: 'integer',
@@ -248,19 +278,26 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
     async execute(args, exec) {
       if (exec.agent === undefined) throw new Error('import_character_card requires an Agent Session')
       if (exec.parent !== undefined) throw new Error('import_character_card must be called directly by the character Agent')
-      const direct = latestUserImages(exec.agent)
-      const imageIndex = args.imageIndex ?? 0
-      const images = direct.images
-      if (!Number.isSafeInteger(imageIndex) || imageIndex < 0 || imageIndex >= images.length) {
-        throw new Error(`imageIndex ${imageIndex} is unavailable; the current import source contains ${images.length} image(s)`)
+      const direct = latestUserAttachments(exec.agent)
+      const attachmentIndex = args.attachmentIndex ?? 0
+      const attachments = direct.attachments
+      if (!Number.isSafeInteger(attachmentIndex) || attachmentIndex < 0 || attachmentIndex >= attachments.length) {
+        throw new Error(`attachmentIndex ${attachmentIndex} is unavailable; the current import source contains ${attachments.length} Character Card attachment(s)`)
       }
-      const image = images[imageIndex]!
-      if (image.mediaType !== 'image/png') throw new Error('角色卡必须是带元数据的 PNG 图片')
-      const stored = await ctx.attachments.readImage(image, exec.signal)
+      const attachment = attachments[attachmentIndex]!
+      if (isJsonCharacterCardAttachment(attachment)) {
+        const reader = ctx.attachments as unknown as FileAttachmentReader
+        const stored = await reader.readFile(attachment, exec.signal)
+        const card = parseCharacterCardJsonBytes(stored.data)
+        return prepareCharacterImportResult(card, { transport: 'json' }, direct.eventSeq, stored.ref, args.greetingIndex ?? 0)
+      }
+      const stored = await ctx.attachments.readImage(attachment, exec.signal)
       const payload = readCharacterCardPng(stored.data)
       const card = parseCharacterCardJson(payload.json)
-      const result = prepareCharacterImportResult(card, payload, direct.eventSeq, stored.ref, args.greetingIndex ?? 0)
-      return result
+      return prepareCharacterImportResult(card, {
+        transport: 'png',
+        metadataKeyword: payload.keyword,
+      }, direct.eventSeq, stored.ref, args.greetingIndex ?? 0)
     },
     presentCall: () => ({ card: 'generic', title: '导入角色卡', kind: 'read' }),
     presentResult: (_args, result) => ({
