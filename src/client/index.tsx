@@ -36,6 +36,20 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
 type ComposerDockProps = PropsRuntime<'conversation.composer.dock'>
 
 const color = 'var(--dsw-alias-state-business-primary, #6f78e8)'
+const statusPlaceholder = '<StatusPlaceHolderImpl/>'
+
+const cardFrameCompatibility = `<style>
+html,body{margin:0!important;max-width:100%!important;background:transparent!important;color-scheme:dark;scrollbar-color:rgba(145,158,181,.58) transparent;scrollbar-width:thin}
+body{overflow-x:hidden!important}
+*,*::before,*::after{box-sizing:border-box}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:999px;background:rgba(145,158,181,.58);background-clip:padding-box}
+img,svg,video,canvas{max-width:100%}
+.form-control,.dynamic-item>*{min-width:0;max-width:100%}
+.add-btn .svg-icon{fill:none!important;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:2}
+@media(max-width:600px){.chapter-section>label{width:100%!important;white-space:nowrap}.chapter-section>.form-control{width:100%!important;flex:none!important}}
+</style>`
 
 function mvuFrameRuntime(statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined): string {
   const json = JSON.stringify(statData ?? {}).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
@@ -68,13 +82,28 @@ window._={
 `
 }
 
+function cardFrameSource(
+  rendered: string,
+  statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined,
+): string {
+  const adapted = rendered
+    .replace(/```html/giu, '')
+    .replace(/```/gu, '')
+    .replaceAll('window.parent?.document ?? window.document', 'window.document')
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}</head><body><textarea id="send_textarea" hidden></textarea><script>${mvuFrameRuntime(statData)}window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(input)input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>${adapted}${cardFrameCompatibility}</body></html>`
+}
+
 function initials(name: string): string {
   return [...name.trim()].slice(0, 1).join('').toUpperCase() || 'RP'
 }
 
-function truncate(text: string, max: number): string {
-  const normalized = text.replace(/\s+/gu, ' ').trim()
-  return normalized.length <= max ? normalized : `${normalized.slice(0, max).trimEnd()}…`
+function characterCapabilitySummary(projection: AgentRpProjection): string {
+  const parts = [
+    projection.worldInfoCount > 0 ? `${projection.worldInfoCount} 条世界书` : undefined,
+    (projection.frontend?.regexScripts.length ?? 0) > 0 ? '轻前端' : undefined,
+    projection.mvu === undefined ? undefined : '动态状态',
+  ].filter((part): part is string => part !== undefined)
+  return parts.length === 0 ? '继续这段对话' : parts.join(' · ')
 }
 
 function hideWhileMounted(elements: readonly (HTMLElement | null | undefined)[]): () => void {
@@ -195,7 +224,7 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar }: H
           <span style={{ fontSize: '11px', opacity: 0.48, whiteSpace: 'nowrap' }}>{imported ? '已迁移对话' : '角色对话'}</span>
         </div>
         <div style={{ fontSize: '12px', marginTop: '2px', opacity: 0.55, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {projection.description.trim() === '' ? '继续这段对话' : truncate(projection.description, 54)}
+          {characterCapabilitySummary(projection)}
         </div>
       </div>
       <button type="button" onClick={() => { setOpen(true) }} style={{
@@ -256,6 +285,8 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
   const projection = roleplaySummary(summary, useProjection('agentRp'))
   const chat = useSession(state => state.chat)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const statusFrameRef = useRef<HTMLIFrameElement | null>(null)
+  const [statusOpen, setStatusOpen] = useState(false)
   const placeholder = projection === undefined ? undefined : `和${projection.characterName}说点什么…`
   useLayoutEffect(() => {
     const inputRoot = rootRef.current?.parentElement
@@ -305,11 +336,27 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
     const frontend = projection?.frontend
     if (frontend === undefined || frontend.regexScripts.length === 0 || projection === undefined) return
     const mounted = new Set<HTMLIFrameElement>()
+    const hiddenTranscriptDetails = new Map<HTMLElement, { readonly display: string; readonly priority: string }>()
+    const hideTranscriptDetail = (element: HTMLElement): void => {
+      if (hiddenTranscriptDetails.has(element)) return
+      hiddenTranscriptDetails.set(element, {
+        display: element.style.getPropertyValue('display'),
+        priority: element.style.getPropertyPriority('display'),
+      })
+      element.style.setProperty('display', 'none', 'important')
+    }
     const bridge = (event: MessageEvent<unknown>): void => {
-      if (![...mounted].some(frame => frame.contentWindow === event.source)
+      const sourceFrame = [...mounted, statusFrameRef.current]
+        .find(frame => frame?.contentWindow === event.source)
+      if (sourceFrame == null
         || typeof event.data !== 'object' || event.data === null) return
       const message = event.data as { readonly source?: unknown; readonly action?: unknown; readonly value?: unknown }
-      if (message.source !== 'dsh-agent-rp-card' || typeof message.value !== 'string' || message.value.length > 65_536) return
+      if (message.source !== 'dsh-agent-rp-card') return
+      if (message.action === 'resize' && typeof message.value === 'number' && Number.isFinite(message.value)) {
+        sourceFrame.style.height = `${Math.min(760, Math.max(72, Math.ceil(message.value)))}px`
+        return
+      }
+      if (typeof message.value !== 'string' || message.value.length > 65_536) return
       if (message.action === 'draft') {
         inputActions.setDraft(message.value)
         return
@@ -325,16 +372,44 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
     const scan = (): void => {
       const scroll = rootRef.current?.closest('[data-conversation-scroll]')
       if (scroll === null || scroll === undefined) return
+      for (const item of scroll.querySelectorAll<HTMLElement>(
+        '[data-chat-flow-kind="context"], [data-chat-flow-kind="tool-call"]',
+      )) hideTranscriptDetail(item)
+      for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="turn-error"]')) {
+        if (item.textContent?.includes('agent-rp/character-card-seed has invalid provenance')) {
+          hideTranscriptDetail(item)
+        }
+      }
+      for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="user"]')) {
+        if (item.dataset.agentRpSetupCollapsed === 'true'
+          || !item.textContent?.includes('🎬 档案提交完毕指令：')) continue
+        const content = item.firstElementChild as HTMLElement | null
+        if (content === null) continue
+        const details = document.createElement('details')
+        details.style.cssText = 'font-size:12px;opacity:.72;'
+        const summary = document.createElement('summary')
+        summary.textContent = '角色设定已提交'
+        summary.style.cssText = 'cursor:pointer;list-style:none;'
+        const original = content.cloneNode(true) as HTMLElement
+        original.style.cssText = 'margin-top:8px;max-height:240px;overflow:auto;white-space:pre-wrap;'
+        details.append(summary, original)
+        content.style.display = 'none'
+        item.insertBefore(details, content.nextSibling)
+        item.dataset.agentRpSetupCollapsed = 'true'
+      }
       for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="assistant-step"]')) {
         const key = item.dataset.chatFlowKey
         if (key === undefined || item.dataset.agentRpFrontend === 'true') continue
         const node = chat.nodes.get(key)
         if (node?.kind !== 'assistant-step') continue
         const data = node.data as { readonly blocks?: readonly { readonly kind: string; readonly text?: string }[] }
+        for (const button of item.querySelectorAll<HTMLButtonElement>('button')) {
+          if (button.textContent?.trimStart().startsWith('Think')) hideTranscriptDetail(button)
+        }
         const raw = data.blocks?.flatMap(block => block.kind === 'text' && block.text !== undefined ? [block.text] : []).join('\n') ?? ''
         if (raw === '') continue
         const depth = Math.max(0, chat.order.length - chat.order.indexOf(key) - 1)
-        const rendered = renderCharacterDisplay(raw, {
+        const rendered = renderCharacterDisplay(raw.replaceAll(statusPlaceholder, ''), {
           name: projection.characterName,
           frontend,
         }, AI_OUTPUT_PLACEMENT, depth, projection.userName)
@@ -344,12 +419,8 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
         const frame = document.createElement('iframe')
         frame.title = `${projection.characterName}的轻前端界面`
         frame.setAttribute('sandbox', 'allow-scripts')
-        frame.style.cssText = 'border:0;border-radius:12px;display:block;height:min(760px,78vh);width:100%;background:transparent;'
-        const adapted = rendered
-          .replace(/```html/giu, '')
-          .replace(/```/gu, '')
-          .replaceAll('window.parent?.document ?? window.document', 'window.document')
-        frame.srcdoc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><textarea id="send_textarea" hidden></textarea><script>${mvuFrameRuntime(projection.mvu?.statData)}window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(input)input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')})});</script>${adapted}</body></html>`
+        frame.style.cssText = 'border:0;border-radius:12px;display:block;height:180px;max-width:100%;width:100%;background:transparent;color-scheme:dark;'
+        frame.srcdoc = cardFrameSource(rendered, projection.mvu?.statData)
         original.style.display = 'none'
         item.insertBefore(frame, original.nextSibling)
         item.dataset.agentRpFrontend = 'true'
@@ -369,29 +440,79 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
         if (item !== null) delete item.dataset.agentRpFrontend
         frame.remove()
       }
+      for (const [element, { display, priority }] of hiddenTranscriptDetails) {
+        if (display === '') element.style.removeProperty('display')
+        else element.style.setProperty('display', display, priority)
+      }
+      const scroll = rootRef.current?.closest('[data-conversation-scroll]')
+      for (const item of scroll?.querySelectorAll<HTMLElement>('[data-agent-rp-setup-collapsed="true"]') ?? []) {
+        const content = item.firstElementChild as HTMLElement | null
+        content?.style.removeProperty('display')
+        item.querySelector(':scope > details')?.remove()
+        delete item.dataset.agentRpSetupCollapsed
+      }
     }
   }, [chat, projection])
   if (projection === undefined) return null
+  const status = projection.frontend === undefined || projection.mvu === undefined
+    ? undefined
+    : renderCharacterDisplay(statusPlaceholder, {
+        name: projection.characterName,
+        frontend: projection.frontend,
+      }, AI_OUTPUT_PLACEMENT, 0, projection.userName)
+  const statusSource = status === undefined || status === statusPlaceholder || projection.mvu === undefined
+    ? undefined
+    : cardFrameSource(status, projection.mvu.statData)
   return <div ref={rootRef} data-agent-rp-status>
-    <RoleplayStatusLine projection={projection} running={useSession(state => state.running)} />
+    <RoleplayStatusLine
+      projection={projection}
+      running={useSession(state => state.running)}
+      statusAvailable={statusSource !== undefined}
+      onOpenStatus={() => { setStatusOpen(true) }}
+    />
+    {statusOpen && statusSource !== undefined && <div role="dialog" aria-modal="true" aria-label="当前状态" style={{
+      alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
+      justifyContent: 'center', padding: '24px', position: 'fixed', zIndex: 1000,
+    }} onMouseDown={event => { if (event.target === event.currentTarget) setStatusOpen(false) }}>
+      <section style={{
+        background: 'var(--dsw-alias-bg-base, #111216)', border: '1px solid var(--dsw-alias-border-l2, #35373d)',
+        borderRadius: '14px', boxShadow: '0 20px 64px rgba(0,0,0,.45)', maxHeight: '88vh',
+        maxWidth: '1240px', overflow: 'hidden', position: 'relative', width: 'min(94vw, 1240px)',
+      }}>
+        <button type="button" aria-label="关闭当前状态" onClick={() => { setStatusOpen(false) }} style={{
+          alignItems: 'center', background: 'rgba(13,17,27,.88)', border: '1px solid rgba(116,143,184,.35)',
+          borderRadius: '50%', color: '#edf4ff', cursor: 'pointer', display: 'flex', fontSize: '20px',
+          height: '34px', justifyContent: 'center', position: 'absolute', right: '12px', top: '12px', width: '34px', zIndex: 2,
+        }}>×</button>
+        <iframe ref={statusFrameRef} title={`${projection.characterName}的当前状态`} sandbox="allow-scripts" srcDoc={statusSource} style={{
+          background: 'transparent', border: 0, colorScheme: 'dark', display: 'block', height: 'min(760px, 82vh)', width: '100%',
+        }} />
+      </section>
+    </div>}
   </div>
   }
 }
 
-function RoleplayStatusLine({ projection, running }: {
+function RoleplayStatusLine({ projection, running, statusAvailable, onOpenStatus }: {
   readonly projection: AgentRpProjection
   readonly running: boolean
+  readonly statusAvailable: boolean
+  readonly onOpenStatus: () => void
 }) {
   const parts = [
     projection.userName === undefined ? undefined : `你是 ${projection.userName}`,
     projection.worldInfoCount === 0 ? undefined : `世界书 ${projection.worldInfoCount} 条`,
     projection.importedMessageCount === 0 ? undefined : `已迁移 ${projection.importedMessageCount} 条历史`,
   ].filter((part): part is string => part !== undefined)
-  if (!running && parts.length === 0) return null
+  if (!running && parts.length === 0 && !statusAvailable) return null
   return <div style={{ alignItems: 'center', display: 'flex', fontSize: '11px', gap: '8px', minHeight: '18px', opacity: 0.5, padding: '0 10px' }}>
     {running && <span>{projection.characterName}正在回应</span>}
     {running && parts.length > 0 && <span>·</span>}
     {parts.length > 0 && <span>{parts.join(' · ')}</span>}
+    {statusAvailable && <button type="button" onClick={onOpenStatus} style={{
+      background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', font: 'inherit',
+      marginLeft: 'auto', opacity: 0.9, padding: '1px 0', textDecoration: 'underline', textUnderlineOffset: '2px',
+    }}>当前状态</button>}
   </div>
 }
 
