@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Buffer } from 'node:buffer'
+import { readFileSync } from 'node:fs'
 import { deflateSync } from 'node:zlib'
 import { encode as encodeTextChunk } from 'png-chunk-text'
 import { parseCharacterCardJson, parseCharacterCardJsonBytes } from '../src/import/character-card.ts'
@@ -208,6 +209,16 @@ test('imports standalone UTF-8 JSON bytes and rejects invalid encoding', () => {
 
   assert.equal(parseCharacterCardJsonBytes(Buffer.from(`\uFEFF${json}`, 'utf8')).name, '白露')
   assert.throws(() => parseCharacterCardJsonBytes(Uint8Array.from([0xc3, 0x28])), /valid UTF-8/u)
+})
+
+test('keeps the manual standalone JSON card fixture importable', () => {
+  const data = readFileSync('tests/fixtures/manual-character-card.json')
+  const card = parseCharacterCardJsonBytes(data)
+
+  assert.equal(card.name, '白露')
+  assert.deepEqual((card.raw as { data: { extensions: object } }).data.extensions, {
+    'fixture/unknown': { keep: true },
+  })
 })
 
 test('honors zero lorebook scan depth and token budget', () => {
