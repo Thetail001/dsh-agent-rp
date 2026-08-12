@@ -90,7 +90,7 @@ function cardFrameSource(
     .replace(/```html/giu, '')
     .replace(/```/gu, '')
     .replaceAll('window.parent?.document ?? window.document', 'window.document')
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}</head><body><textarea id="send_textarea" hidden></textarea><script>${mvuFrameRuntime(statData)}window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(input)input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>${adapted}${cardFrameCompatibility}</body></html>`
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}</head><body><textarea id="send_textarea" hidden></textarea><script>${mvuFrameRuntime(statData)}window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}function __dshAdaptChoices(){document.querySelectorAll('.nova-container').forEach(function(container){if(container.dataset.dshAdapted==='true')return;var header=container.querySelector('.nova-header');var content=container.querySelector('.collapsible-content');var group=container.querySelector('.button-group-silent');var submit=container.querySelector('.submit-btn-silent');if(!header||!content||!group)return;var buttons=Array.from(group.querySelectorAll('.action-btn-silent'));if(buttons.length===0)return;container.dataset.dshAdapted='true';header.innerHTML='<span>行动建议</span><small>点选后仍可修改</small>';header.addEventListener('click',function(event){event.stopImmediatePropagation();content.style.display=content.style.display==='none'?'flex':'none';requestAnimationFrame(__dshReportSize)},true);content.style.display='flex';if(submit)submit.style.display='none';buttons.forEach(function(button,index){button.hidden=index>=3;button.addEventListener('click',function(event){event.preventDefault();event.stopImmediatePropagation();var input=document.getElementById('send_textarea');if(!input)return;input.value=(button.getAttribute('data-action')||button.textContent||'').trim();input.dispatchEvent(new Event('input',{bubbles:true}));buttons.forEach(function(item){item.classList.remove('selected')});button.classList.add('selected')},true)});if(buttons.length>3){var more=document.createElement('button');more.type='button';more.className='dsh-choice-more';more.textContent='更多 '+String(buttons.length-3)+' 项';more.addEventListener('click',function(){var opening=buttons[3].hidden;buttons.slice(3).forEach(function(button){button.hidden=!opening});more.textContent=opening?'收起':'更多 '+String(buttons.length-3)+' 项';requestAnimationFrame(__dshReportSize)});content.appendChild(more)}})}addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(input)input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});__dshAdaptChoices();requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>${adapted}${cardFrameCompatibility}<style>.nova-container[data-dsh-adapted="true"]{margin:10px 0!important;padding:0!important}.nova-container[data-dsh-adapted="true"] .mystic-card-silent{border:1px solid rgba(212,175,55,.28)!important;border-radius:12px!important;box-shadow:none!important;max-width:none!important;padding:10px!important}.nova-container[data-dsh-adapted="true"] .nova-header{align-items:center!important;background:transparent!important;border:0!important;box-shadow:none!important;display:flex!important;font-family:inherit!important;justify-content:space-between!important;letter-spacing:0!important;padding:4px 6px 9px!important;text-align:left!important;text-transform:none!important}.nova-container[data-dsh-adapted="true"] .nova-header small{color:var(--roe-text-light,#ddd);font-family:inherit;font-size:11px;font-weight:400;opacity:.5}.nova-container[data-dsh-adapted="true"] .collapsible-content{gap:7px!important;margin-top:0!important}.nova-container[data-dsh-adapted="true"] .button-group-silent{gap:7px!important}.nova-container[data-dsh-adapted="true"] .action-btn-silent{border-left-width:2px!important;border-radius:8px!important;font-family:inherit!important;font-size:13px!important;line-height:1.45!important;padding:9px 12px!important}.nova-container[data-dsh-adapted="true"] .action-btn-silent[hidden]{display:none!important}.nova-container[data-dsh-adapted="true"] .action-btn-silent.selected{border-left-width:3px!important}.nova-container[data-dsh-adapted="true"] .click-order-badge{display:none!important}.dsh-choice-more{background:transparent;border:0;color:var(--roe-gold,#d4af37);cursor:pointer;font:inherit;font-size:12px;opacity:.78;padding:4px 6px;text-align:left}.dsh-choice-more:hover{opacity:1}</style></body></html>`
 }
 
 function initials(name: string): string {
@@ -197,6 +197,7 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar }: H
   const projected = useProjection('agentRp')
   const projection = roleplaySummary(summary, projected)
   const [open, setOpen] = useState(false)
+  const [statusOpen, setStatusOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
     const root = rootRef.current
@@ -213,6 +214,15 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar }: H
   }, [projection !== undefined])
   if (projection === undefined) return null
   const imported = projection.importedMessageCount > 0
+  const status = projection.frontend === undefined || projection.mvu === undefined
+    ? undefined
+    : renderCharacterDisplay(statusPlaceholder, {
+        name: projection.characterName,
+        frontend: projection.frontend,
+      }, AI_OUTPUT_PLACEMENT, 0, projection.userName)
+  const statusSource = status === undefined || status === statusPlaceholder || projection.mvu === undefined
+    ? undefined
+    : cardFrameSource(status, projection.mvu.statData)
   return <>
     <div ref={rootRef} data-agent-rp-header style={{ alignItems: 'center', display: 'flex', gap: '10px', marginRight: 'auto', minWidth: 0 }}>
       <Avatar projection={projection} loadAvatar={loadAvatar} />
@@ -231,6 +241,10 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar }: H
         background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
         color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', marginLeft: '8px', padding: '6px 10px',
       }}>角色信息</button>
+      {statusSource !== undefined && <button type="button" onClick={() => { setStatusOpen(true) }} style={{
+        background: `color-mix(in srgb, ${color} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
+        borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
+      }}>当前状态</button>}
     </div>
     {open && <div role="dialog" aria-modal="true" aria-label={`${projection.characterName}的角色信息`} style={{
       alignItems: 'stretch', background: 'rgba(0,0,0,.48)', display: 'flex', inset: 0,
@@ -269,7 +283,38 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar }: H
         </p>}
       </aside>
     </div>}
+    {statusOpen && statusSource !== undefined && <RoleplayStatusDialog
+      characterName={projection.characterName}
+      source={statusSource}
+      onClose={() => { setStatusOpen(false) }}
+    />}
   </>
+}
+
+function RoleplayStatusDialog({ characterName, source, onClose }: {
+  readonly characterName: string
+  readonly source: string
+  readonly onClose: () => void
+}) {
+  return <div role="dialog" aria-modal="true" aria-label="当前状态" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '24px', position: 'fixed', zIndex: 1000,
+  }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #111216)', border: '1px solid var(--dsw-alias-border-l2, #35373d)',
+      borderRadius: '14px', boxShadow: '0 20px 64px rgba(0,0,0,.45)', maxHeight: '88vh',
+      maxWidth: '1240px', overflow: 'hidden', position: 'relative', width: 'min(94vw, 1240px)',
+    }}>
+      <button type="button" aria-label="关闭当前状态" onClick={onClose} style={{
+        alignItems: 'center', background: 'rgba(13,17,27,.88)', border: '1px solid rgba(116,143,184,.35)',
+        borderRadius: '50%', color: '#edf4ff', cursor: 'pointer', display: 'flex', fontSize: '20px',
+        height: '34px', justifyContent: 'center', position: 'absolute', right: '12px', top: '12px', width: '34px', zIndex: 2,
+      }}>×</button>
+      <iframe title={`${characterName}的当前状态`} sandbox="allow-scripts" srcDoc={source} style={{
+        background: 'transparent', border: 0, colorScheme: 'dark', display: 'block', height: 'min(760px, 82vh)', width: '100%',
+      }} />
+    </section>
+  </div>
 }
 
 const chipStyle = {
@@ -285,8 +330,6 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
   const projection = roleplaySummary(summary, useProjection('agentRp'))
   const chat = useSession(state => state.chat)
   const rootRef = useRef<HTMLDivElement | null>(null)
-  const statusFrameRef = useRef<HTMLIFrameElement | null>(null)
-  const [statusOpen, setStatusOpen] = useState(false)
   const placeholder = projection === undefined ? undefined : `和${projection.characterName}说点什么…`
   useLayoutEffect(() => {
     const inputRoot = rootRef.current?.parentElement
@@ -346,7 +389,7 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
       element.style.setProperty('display', 'none', 'important')
     }
     const bridge = (event: MessageEvent<unknown>): void => {
-      const sourceFrame = [...mounted, statusFrameRef.current]
+      const sourceFrame = [...mounted]
         .find(frame => frame?.contentWindow === event.source)
       if (sourceFrame == null
         || typeof event.data !== 'object' || event.data === null) return
@@ -454,65 +497,29 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
     }
   }, [chat, projection])
   if (projection === undefined) return null
-  const status = projection.frontend === undefined || projection.mvu === undefined
-    ? undefined
-    : renderCharacterDisplay(statusPlaceholder, {
-        name: projection.characterName,
-        frontend: projection.frontend,
-      }, AI_OUTPUT_PLACEMENT, 0, projection.userName)
-  const statusSource = status === undefined || status === statusPlaceholder || projection.mvu === undefined
-    ? undefined
-    : cardFrameSource(status, projection.mvu.statData)
   return <div ref={rootRef} data-agent-rp-status>
     <RoleplayStatusLine
       projection={projection}
       running={useSession(state => state.running)}
-      statusAvailable={statusSource !== undefined}
-      onOpenStatus={() => { setStatusOpen(true) }}
     />
-    {statusOpen && statusSource !== undefined && <div role="dialog" aria-modal="true" aria-label="当前状态" style={{
-      alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
-      justifyContent: 'center', padding: '24px', position: 'fixed', zIndex: 1000,
-    }} onMouseDown={event => { if (event.target === event.currentTarget) setStatusOpen(false) }}>
-      <section style={{
-        background: 'var(--dsw-alias-bg-base, #111216)', border: '1px solid var(--dsw-alias-border-l2, #35373d)',
-        borderRadius: '14px', boxShadow: '0 20px 64px rgba(0,0,0,.45)', maxHeight: '88vh',
-        maxWidth: '1240px', overflow: 'hidden', position: 'relative', width: 'min(94vw, 1240px)',
-      }}>
-        <button type="button" aria-label="关闭当前状态" onClick={() => { setStatusOpen(false) }} style={{
-          alignItems: 'center', background: 'rgba(13,17,27,.88)', border: '1px solid rgba(116,143,184,.35)',
-          borderRadius: '50%', color: '#edf4ff', cursor: 'pointer', display: 'flex', fontSize: '20px',
-          height: '34px', justifyContent: 'center', position: 'absolute', right: '12px', top: '12px', width: '34px', zIndex: 2,
-        }}>×</button>
-        <iframe ref={statusFrameRef} title={`${projection.characterName}的当前状态`} sandbox="allow-scripts" srcDoc={statusSource} style={{
-          background: 'transparent', border: 0, colorScheme: 'dark', display: 'block', height: 'min(760px, 82vh)', width: '100%',
-        }} />
-      </section>
-    </div>}
   </div>
   }
 }
 
-function RoleplayStatusLine({ projection, running, statusAvailable, onOpenStatus }: {
+function RoleplayStatusLine({ projection, running }: {
   readonly projection: AgentRpProjection
   readonly running: boolean
-  readonly statusAvailable: boolean
-  readonly onOpenStatus: () => void
 }) {
   const parts = [
     projection.userName === undefined ? undefined : `你是 ${projection.userName}`,
     projection.worldInfoCount === 0 ? undefined : `世界书 ${projection.worldInfoCount} 条`,
     projection.importedMessageCount === 0 ? undefined : `已迁移 ${projection.importedMessageCount} 条历史`,
   ].filter((part): part is string => part !== undefined)
-  if (!running && parts.length === 0 && !statusAvailable) return null
+  if (!running && parts.length === 0) return null
   return <div style={{ alignItems: 'center', display: 'flex', fontSize: '11px', gap: '8px', minHeight: '18px', opacity: 0.5, padding: '0 10px' }}>
     {running && <span>{projection.characterName}正在回应</span>}
     {running && parts.length > 0 && <span>·</span>}
     {parts.length > 0 && <span>{parts.join(' · ')}</span>}
-    {statusAvailable && <button type="button" onClick={onOpenStatus} style={{
-      background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', font: 'inherit',
-      marginLeft: 'auto', opacity: 0.9, padding: '1px 0', textDecoration: 'underline', textUnderlineOffset: '2px',
-    }}>当前状态</button>}
   </div>
 }
 
