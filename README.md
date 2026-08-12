@@ -20,8 +20,8 @@ Authenticate npm for the private `@deepseek-ai` packages, then clone this reposi
 ```powershell
 pnpm install
 pnpm run build
-npx -p @deepseek-ai/dsh@0.0.1-rc.2 dsh plugin --profile web add .
-npx -p @deepseek-ai/dsh@0.0.1-rc.2 dsh --profile web
+npx -p @deepseek-ai/dsh@latest dsh plugin --profile web add .
+npx -p @deepseek-ai/dsh@latest dsh --profile web
 ```
 
 Start a new conversation, choose `角色会话`, and attach either:

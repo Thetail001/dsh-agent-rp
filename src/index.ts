@@ -293,7 +293,8 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
   ctx.effect(() => gateway.registerPromptAttachmentConsumer('dsh-agent-rp', ({ agent, content }) => (
     claimAgentRpPrompt(agentsByScope.get(agent) === agent, content)
   )), 'agent-rp: prompt attachment consumer')
-  ctx.effect(() => gateway.registerPromptSessionImporter('dsh-agent-rp:sillytavern-migration', {
+  const registerSessionImporter = gateway.registerPromptSessionImporter?.bind(gateway)
+  if (registerSessionImporter !== undefined) ctx.effect(() => registerSessionImporter('dsh-agent-rp:sillytavern-migration', {
     recognize: ({ agent, content }) => isSillyTavernMigrationOffer(agentsByScope.get(agent) === agent, content),
     async import(input, signal) {
       const cardAttachment = input.attachments.find(attachment =>
@@ -326,7 +327,7 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       }
     },
   }), 'agent-rp: SillyTavern migration importer')
-  ctx.effect(() => gateway.registerPromptSessionImporter('dsh-agent-rp:sillytavern-chat', {
+  if (registerSessionImporter !== undefined) ctx.effect(() => registerSessionImporter('dsh-agent-rp:sillytavern-chat', {
     recognize: ({ agent, content }) => isSillyTavernChatOffer(agentsByScope.get(agent) === agent, content),
     async import(input, signal) {
       if (input.attachments.length !== 1) throw new Error('SillyTavern chat import requires exactly one file')
@@ -343,7 +344,7 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       }
     },
   }), 'agent-rp: SillyTavern chat importer')
-  ctx.effect(() => gateway.registerPromptSessionImporter('dsh-agent-rp:character-card', {
+  if (registerSessionImporter !== undefined) ctx.effect(() => registerSessionImporter('dsh-agent-rp:character-card', {
     recognize: ({ agent, content }) => isCharacterCardSessionOffer(agentsByScope.get(agent) === agent, content),
     async import(input, signal) {
       if (input.attachments.length !== 1) throw new Error('Character Card import requires exactly one file')
