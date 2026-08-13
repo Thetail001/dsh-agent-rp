@@ -303,6 +303,9 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar, con
           projection.preset.degradedRoleCount === 0
             ? ''
             : `${projection.preset.degradedRoleCount} 项非 system 角色按 Host 兼容模式注入`,
+          projection.preset.preservedInChatCount === 0
+            ? ''
+            : `${projection.preset.preservedInChatCount} 项聊天内注入已保留；当前 Host 暂不执行`,
           projection.preset.regexScriptCount === 0 ? '' : `${projection.preset.regexScriptCount} 条预设正则已载入；显示规则生效，生成规则保留待 Host 提供无损上下文投影`,
         ].filter(Boolean).join('\n')} />}
         {projection.description === '' && projection.personality === '' && projection.scenario === '' && <p style={{ fontSize: '13px', lineHeight: 1.7, marginTop: '22px', opacity: 0.62 }}>
@@ -367,6 +370,9 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
     || prompt.name !== prompt.importedName
     || prompt.role !== prompt.importedRole
     || prompt.content !== prompt.importedContent
+    || prompt.injectionPosition !== prompt.importedInjectionPosition
+    || prompt.injectionDepth !== prompt.importedInjectionDepth
+    || prompt.injectionOrder !== prompt.importedInjectionOrder
     || prompt.attached !== prompt.importedAttached
     || (prompt.attached && prompt.enabled !== prompt.importedEnabled)
     || (prompt.attached && attachedPositionById.get(prompt.identifier) !== prompt.importedPosition)
@@ -420,6 +426,9 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
       importedContent: '',
       imported: false,
       contentModified: false,
+      injectionPosition: 0,
+      injectionDepth: 4,
+      injectionOrder: 100,
       marker: false,
       systemPrompt: false,
       forbidOverrides: false,
@@ -528,6 +537,9 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
           name: prompt.name,
           role: prompt.role,
           content: prompt.content,
+          ...(prompt.injectionPosition === undefined ? {} : { injectionPosition: prompt.injectionPosition }),
+          ...(prompt.injectionDepth === undefined ? {} : { injectionDepth: prompt.injectionDepth }),
+          ...(prompt.injectionOrder === undefined ? {} : { injectionOrder: prompt.injectionOrder }),
         })),
         content: [],
         generation: {
@@ -725,6 +737,9 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
           name: value.name,
           role: value.role,
           content: value.content,
+          injectionPosition: value.injectionPosition,
+          injectionDepth: value.injectionDepth,
+          injectionOrder: value.injectionOrder,
           contentModified: value.content !== prompt.importedContent,
         }))
         setEditingPromptId(undefined)
@@ -740,13 +755,29 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
 function PresetPromptEditorDialog({ prompt, onClose, onApply, onDelete }: {
   readonly prompt: PresetPromptProjection
   readonly onClose: () => void
-  readonly onApply: (value: { readonly name: string; readonly role: PresetPromptProjection['role']; readonly content: string }) => void
+  readonly onApply: (value: {
+    readonly name: string
+    readonly role: PresetPromptProjection['role']
+    readonly content: string
+    readonly injectionPosition: number
+    readonly injectionDepth: number
+    readonly injectionOrder: number
+  }) => void
   readonly onDelete?: () => void
 }) {
   const [name, setName] = useState(prompt.name)
   const [role, setRole] = useState(prompt.role)
   const [content, setContent] = useState(prompt.content)
+  const [injectionPosition, setInjectionPosition] = useState(prompt.injectionPosition ?? 0)
+  const [injectionDepth, setInjectionDepth] = useState(String(prompt.injectionDepth ?? 4))
+  const [injectionOrder, setInjectionOrder] = useState(String(prompt.injectionOrder ?? 100))
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const resolvedDepth = Number(injectionDepth)
+  const resolvedOrder = Number(injectionOrder)
+  const validInjection = injectionPosition === 0 || (
+    Number.isSafeInteger(resolvedDepth) && resolvedDepth >= 0 && resolvedDepth <= 9999
+    && Number.isSafeInteger(resolvedOrder) && resolvedOrder >= 0 && resolvedOrder <= 9999
+  )
   return <div role="dialog" aria-modal="true" aria-label={`编辑${prompt.name || prompt.identifier}`} style={{
     alignItems: 'center', background: 'rgba(0,0,0,.7)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1150,
@@ -766,6 +797,20 @@ function PresetPromptEditorDialog({ prompt, onClose, onApply, onDelete }: {
           </select>
         </label>
         <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: '10px', gridColumn: '1 / -1', opacity: 0.4 }}>{prompt.identifier}</div>
+        <label style={{ ...fieldLabelStyle, margin: 0 }}>插入位置
+          <select aria-label="插入位置" value={injectionPosition} onChange={event => { setInjectionPosition(Number(event.target.value)) }} style={fieldInputStyle}>
+            <option value={0}>相对（按模块顺序）</option><option value={1}>聊天内（按历史深度）</option>
+          </select>
+        </label>
+        {injectionPosition === 1 && <>
+          <label style={{ ...fieldLabelStyle, margin: 0 }}>历史深度
+            <input aria-label="历史深度" type="number" min={0} max={9999} value={injectionDepth} onChange={event => { setInjectionDepth(event.target.value) }} style={fieldInputStyle} />
+          </label>
+          <label style={{ ...fieldLabelStyle, margin: 0 }}>同深度优先级
+            <input aria-label="同深度优先级" type="number" min={0} max={9999} value={injectionOrder} onChange={event => { setInjectionOrder(event.target.value) }} style={fieldInputStyle} />
+          </label>
+          <div style={{ alignSelf: 'end', color: '#d6aa67', fontSize: '10px', lineHeight: 1.45 }}>配置会完整保留；当前 Host 暂不执行聊天内深度注入</div>
+        </>}
       </header>
       <textarea aria-label="提示内容" autoFocus spellCheck={false} value={content} onChange={event => { setContent(event.target.value) }} style={{
         background: 'var(--dsw-alias-bg-layer-1, #202024)', border: 0, color: 'inherit', flex: '1 1 auto',
@@ -778,7 +823,9 @@ function PresetPromptEditorDialog({ prompt, onClose, onApply, onDelete }: {
           ? <><span style={{ color: '#e47a7a', fontSize: '11px' }}>永久移除此模块？</span><button type="button" onClick={onDelete} style={{ ...secondaryButtonStyle, borderColor: '#a94f4f', color: '#ef8a8a' }}>确认删除</button></>
           : <button type="button" onClick={() => { setConfirmingDelete(true) }} style={{ ...secondaryButtonStyle, marginRight: 'auto' }}>删除模块</button>)}
         <button type="button" onClick={onClose} style={secondaryButtonStyle}>取消</button>
-        <button type="button" disabled={name.trim() === ''} onClick={() => { onApply({ name: name.trim(), role, content }) }} style={primaryButtonStyle}>应用修改</button>
+        <button type="button" disabled={name.trim() === '' || !validInjection} onClick={() => { onApply({
+          name: name.trim(), role, content, injectionPosition, injectionDepth: resolvedDepth, injectionOrder: resolvedOrder,
+        }) }} style={primaryButtonStyle}>应用修改</button>
       </footer>
     </section>
   </div>

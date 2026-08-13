@@ -91,6 +91,14 @@ function content(value: unknown): readonly { readonly identifier: string; readon
 
 type PromptDefinition = NonNullable<Extract<PresetConfigurationRequest, { operation: 'replace' }>['prompts']>[number]
 
+function optionalPromptInteger(value: unknown, label: string, maximum: number): number | undefined {
+  if (value === undefined) return undefined
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > maximum) {
+    throw new Error(`${label} must be an integer from 0 to ${maximum}`)
+  }
+  return value as number
+}
+
 function promptDefinitions(value: unknown): readonly PromptDefinition[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) throw new Error('prompts must be an array')
@@ -107,7 +115,18 @@ function promptDefinitions(value: unknown): readonly PromptDefinition[] | undefi
       throw new Error(`prompts[${itemIndex}].role is unsupported`)
     }
     if (typeof record.content !== 'string') throw new Error(`prompts[${itemIndex}].content must be a string`)
-    return { identifier: id, name: record.name.trim(), role: record.role, content: record.content }
+    const injectionPosition = optionalPromptInteger(record.injectionPosition, `prompts[${itemIndex}].injectionPosition`, 1)
+    const injectionDepth = optionalPromptInteger(record.injectionDepth, `prompts[${itemIndex}].injectionDepth`, 9999)
+    const injectionOrder = optionalPromptInteger(record.injectionOrder, `prompts[${itemIndex}].injectionOrder`, 9999)
+    return {
+      identifier: id,
+      name: record.name.trim(),
+      role: record.role,
+      content: record.content,
+      ...(injectionPosition === undefined ? {} : { injectionPosition }),
+      ...(injectionDepth === undefined ? {} : { injectionDepth }),
+      ...(injectionOrder === undefined ? {} : { injectionOrder }),
+    }
   })
 }
 
@@ -229,6 +248,9 @@ export function configurePreset(
               marker: false,
               systemPrompt: false,
               forbidOverrides: false,
+              injectionPosition: definition.injectionPosition ?? 0,
+              injectionDepth: definition.injectionDepth ?? 4,
+              injectionOrder: definition.injectionOrder ?? 100,
             }
           }
           if (current.marker && definition.content !== current.content) {
@@ -239,6 +261,9 @@ export function configurePreset(
             name: definition.name,
             role: definition.role,
             content: definition.content,
+            ...(definition.injectionPosition === undefined ? {} : { injectionPosition: definition.injectionPosition }),
+            ...(definition.injectionDepth === undefined ? {} : { injectionDepth: definition.injectionDepth }),
+            ...(definition.injectionOrder === undefined ? {} : { injectionOrder: definition.injectionOrder }),
           }
         })
     if (request.prompts !== undefined) {

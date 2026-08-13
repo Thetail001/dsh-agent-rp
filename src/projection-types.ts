@@ -45,6 +45,9 @@ export interface AgentRpProjection {
       readonly injectionPosition?: number
       readonly injectionDepth?: number
       readonly injectionOrder?: number
+      readonly importedInjectionPosition?: number
+      readonly importedInjectionDepth?: number
+      readonly importedInjectionOrder?: number
       readonly attached: boolean
       readonly enabled: boolean
       readonly toggleable: boolean
@@ -69,6 +72,7 @@ export interface AgentRpProjection {
       readonly personality: string
     }
     readonly degradedRoleCount: number
+    readonly preservedInChatCount: number
     readonly regexScriptCount: number
     readonly regexScripts: readonly (ImportedRegexScript & { readonly index: number })[]
     readonly appliedGeneration: readonly string[]

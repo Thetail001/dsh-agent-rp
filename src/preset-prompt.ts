@@ -207,6 +207,9 @@ export function assembleSillyTavernPreset(
     const prompt = byId.get(entry.identifier)
     if (prompt === undefined) continue
     enabledPromptCount += 1
+    // The Host currently requires request messages to equal the durable Session
+    // derivation, so it cannot represent SillyTavern's transient depth insertion.
+    if (prompt.injectionPosition === 1) continue
     if (prompt.identifier === 'chatHistory' && prompt.marker) {
       pastHistory = true
       continue

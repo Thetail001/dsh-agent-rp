@@ -83,12 +83,16 @@ test('adds, runs, edits, and deletes one session-owned module', () => {
   }))
   const added = configurePreset(active, {
     operation: 'replace', revision: 0,
-    prompts: [...prompts, { identifier: 'custom', name: '自定义', role: 'user', content: '只在本会话使用' }],
+    prompts: [...prompts, {
+      identifier: 'custom', name: '自定义', role: 'user', content: '只在本会话使用',
+      injectionPosition: 0, injectionDepth: 4, injectionOrder: 100,
+    }],
     order: [...active.preset.order, { identifier: 'custom', enabled: true }],
     content: [], generation: {}, regex: [],
   })
   assert.equal(added.prompts.at(-1)?.systemPrompt, false)
   assert.equal(added.prompts.at(-1)?.marker, false)
+  assert.equal(added.prompts.at(-1)?.injectionPosition, 0)
   assert.match(assembleSillyTavernPreset(added, {
     card: {
       format: 0, version: 2, specVersion: '2.0', name: '角色', description: '', personality: '', scenario: '',
@@ -109,6 +113,14 @@ test('adds, runs, edits, and deletes one session-owned module', () => {
     order: active.preset.order.filter(entry => entry.identifier !== 'main'),
     content: [], generation: {}, regex: [],
   }), /built-in module.*cannot be deleted/u)
+  assert.throws(() => parsePresetConfigurationRequest(JSON.stringify({
+    operation: 'replace', revision: 0,
+    prompts: [...prompts, {
+      identifier: 'bad-depth', name: '错误深度', role: 'system', content: '',
+      injectionPosition: 1, injectionDepth: -1, injectionOrder: 100,
+    }],
+    order: active.preset.order, content: [], generation: {}, regex: [],
+  })), /injectionDepth/u)
 })
 
 test('keeps extension markers fixed and restores the exact imported defaults', () => {

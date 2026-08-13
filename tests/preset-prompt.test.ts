@@ -37,6 +37,7 @@ test('assembles markers and nested variables on the correct side of chat history
     { identifier: 'chatHistory', name: '历史', role: 'system', content: '', marker: true, systemPrompt: true, forbidOverrides: false },
     { identifier: 'after', name: '历史后', role: 'system', content: '{{getvar::line}}：{{lastUserMessage}}', marker: false, systemPrompt: true, forbidOverrides: false },
     { identifier: 'prefill', name: '回复前缀', role: 'assistant', content: 'OUTPUT', marker: false, systemPrompt: false, forbidOverrides: false },
+    { identifier: 'in-chat', name: '聊天内注入', role: 'system', content: '暂不应进入请求', marker: false, systemPrompt: false, forbidOverrides: false, injectionPosition: 1, injectionDepth: 2, injectionOrder: 100 },
     { identifier: 'disabled', name: '关闭项', role: 'system', content: '绝不能出现', marker: false, systemPrompt: true, forbidOverrides: false },
   ]
   const preset: ImportedSillyTavernPreset = {
@@ -73,12 +74,12 @@ test('assembles markers and nested variables on the correct side of chat history
   assert.match(assembled.system, /<scenario>宝宝刚刚推门进来。<\/scenario>/u)
   assert.match(assembled.system, /怕冷/u)
   assert.match(assembled.system, /白露: 坐吧，宝宝/u)
-  assert.doesNotMatch(assembled.system, /历史后|OUTPUT|绝不能出现/u)
+  assert.doesNotMatch(assembled.system, /历史后|OUTPUT|暂不应进入请求|绝不能出现/u)
   assert.match(assembled.afterHistory, /轻声回答：表为什么停了/u)
   assert.match(assembled.afterHistory, /SillyTavern assistant prompt · 回复前缀/u)
   assert.match(assembled.afterHistory, /OUTPUT/u)
-  assert.doesNotMatch(`${assembled.system}\n${assembled.afterHistory}`, /\{\{|不进入提示词|绝不能出现/u)
-  assert.equal(assembled.enabledPromptCount, 11)
+  assert.doesNotMatch(`${assembled.system}\n${assembled.afterHistory}`, /\{\{|不进入提示词|暂不应进入请求|绝不能出现/u)
+  assert.equal(assembled.enabledPromptCount, 12)
   assert.equal(assembled.degradedRoleCount, 1)
   assert.equal(assembled.unsupportedMacroCount, 0)
 })

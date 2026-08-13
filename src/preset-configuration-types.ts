@@ -9,6 +9,9 @@ export type PresetConfigurationRequest =
       readonly name: string
       readonly role: 'system' | 'user' | 'assistant'
       readonly content: string
+      readonly injectionPosition?: number
+      readonly injectionDepth?: number
+      readonly injectionOrder?: number
     }[]
     readonly content: readonly { readonly identifier: string; readonly content: string }[]
     readonly generation: {

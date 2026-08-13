@@ -172,6 +172,9 @@ function presetProjection(
             imported: importedPrompt !== undefined,
             importedName: importedPrompt?.name ?? prompt.name,
             importedRole: importedPrompt?.role ?? prompt.role,
+            ...(importedPrompt?.injectionPosition === undefined ? {} : { importedInjectionPosition: importedPrompt.injectionPosition }),
+            ...(importedPrompt?.injectionDepth === undefined ? {} : { importedInjectionDepth: importedPrompt.injectionDepth }),
+            ...(importedPrompt?.injectionOrder === undefined ? {} : { importedInjectionOrder: importedPrompt.injectionOrder }),
           }
         })(),
         identifier: prompt.identifier,
@@ -202,6 +205,9 @@ function presetProjection(
           imported: importedPrompt !== undefined,
           importedName: importedPrompt?.name ?? prompt.name,
           importedRole: importedPrompt?.role ?? prompt.role,
+          ...(importedPrompt?.injectionPosition === undefined ? {} : { importedInjectionPosition: importedPrompt.injectionPosition }),
+          ...(importedPrompt?.injectionDepth === undefined ? {} : { importedInjectionDepth: importedPrompt.injectionDepth }),
+          ...(importedPrompt?.injectionOrder === undefined ? {} : { importedInjectionOrder: importedPrompt.injectionOrder }),
         }
       })(),
       identifier: prompt.identifier,
@@ -239,6 +245,7 @@ function presetProjection(
     },
     formats: { ...preset.formats },
     degradedRoleCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier) && prompt.role !== 'system').length,
+    preservedInChatCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier) && prompt.injectionPosition === 1).length,
     regexScriptCount: preset.extensionSummary.regexScriptCount,
     regexScripts: presetRegexScripts(preset).map((script, index) => ({ ...script, index })),
     appliedGeneration,
