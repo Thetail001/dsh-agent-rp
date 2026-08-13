@@ -1150,6 +1150,7 @@ function CharacterLibraryDialog({
   ) => Promise<void>
 }) {
   const narrow = useNarrowCharacterLibrary()
+  const startsInCurrentSession = currentCharacterName === ''
   const [collection, setCollection] = useState<CharacterLibraryCollection>('active')
   const [entries, setEntries] = useState<readonly CharacterLibrarySummary[]>()
   const [selected, setSelected] = useState<CharacterLibraryDetail>()
@@ -1290,7 +1291,9 @@ function CharacterLibraryDialog({
       }}>
         <div style={{ padding: narrow ? '14px 14px 10px' : '22px 20px 14px' }}>
           <h2 style={{ fontSize: '18px', margin: 0 }}>角色库</h2>
-          <p style={{ fontSize: '12px', lineHeight: 1.55, margin: '7px 0 0', opacity: .55 }}>选择角色只会创建新会话，不会改动当前聊天</p>
+          <p style={{ fontSize: '12px', lineHeight: 1.55, margin: '7px 0 0', opacity: .55 }}>
+            {startsInCurrentSession ? '选择角色后，会从当前空白会话开始' : '从这里开始新对话，不会改动当前聊天'}
+          </p>
           <div role="tablist" aria-label="角色库分区" style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '9px', display: 'grid', gap: '3px', gridTemplateColumns: '1fr 1fr', marginTop: '14px', padding: '3px' }}>
             {([['active', '角色'], ['archived', '已收起']] as const).map(([value, label]) => <button
               key={value} type="button" role="tab" aria-selected={collection === value}
@@ -1353,7 +1356,9 @@ function CharacterLibraryDialog({
         <header style={{ alignItems: 'center', display: 'flex', padding: '18px 20px 12px' }}>
           {selected !== undefined && <CharacterLibraryAvatar entry={selected} size={42} />}
           <div style={{ marginLeft: selected === undefined ? 0 : '11px', minWidth: 0 }}>
-            <div style={{ fontSize: '12px', opacity: .5 }}>开始一段新的角色对话</div>
+            <div style={{ fontSize: '12px', opacity: .5 }}>
+              {startsInCurrentSession ? '设置这段对话' : '开始一段新的角色对话'}
+            </div>
             <strong style={{ display: 'block', fontSize: '17px', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected?.displayName ?? '选择角色'}</strong>
           </div>
           {selected !== undefined && <button type="button" disabled={updating} onClick={updateArchiveState} style={{
