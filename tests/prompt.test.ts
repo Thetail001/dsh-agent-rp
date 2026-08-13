@@ -90,6 +90,13 @@ test('claims one Character Card JSON only for an Agent RP import request', () =>
   ]), undefined)
 })
 
+test('claims one CHARX file as an explicit Character Card import', () => {
+  assert.deepEqual(claimAgentRpPrompt(true, [
+    { type: 'text', text: '请导入这张角色卡' },
+    { type: 'file', name: '海棠.charx', mediaType: 'application/zip' },
+  ]), { text: '请导入这张角色卡' })
+})
+
 test('claims one standalone World Info JSON without confusing it with a card request', () => {
   const request = [
     { type: 'text' as const, text: '请导入这本世界书' },

@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
       png-chunk-text:
         specifier: 1.0.0
         version: 1.0.0

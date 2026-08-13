@@ -13,10 +13,11 @@ import type { ImportedCharacterCard, ImportedSillyTavernChat } from './types.ts'
 /**
  * Build one Session from a Character Card JSON and its SillyTavern chat export.
  * @param card - parsed Character Card identity.
- * @param cardAttachment - stored card JSON or PNG.
+ * @param cardAttachment - stored card JSON, PNG, or CHARX.
  * @param cardTransport - decoded card transport metadata.
  * @param chat - parsed SillyTavern chat history.
  * @param chatAttachment - stored chat JSONL.
+ * @param libraryId - reusable card id used to resolve CHARX media.
  * @returns one validated seed with imported history and active card identity.
  */
 export function createSillyTavernMigrationSeed(
@@ -25,6 +26,7 @@ export function createSillyTavernMigrationSeed(
   cardTransport: CharacterImportTransport,
   chat: ImportedSillyTavernChat,
   chatAttachment: FileAttachmentRef,
+  libraryId?: string,
 ): readonly SessionEvent[] {
   const events = [...createSillyTavernChatSeed(chat, chatAttachment)]
   const cardEvent = createCharacterCardSessionSeed(
@@ -34,6 +36,8 @@ export function createSillyTavernMigrationSeed(
     '',
     cardTransport,
     resolveSillyTavernChatIdentity(chat).userName,
+    undefined,
+    libraryId,
   )[0]
   if (cardEvent?.type !== 'agent-rp/character-card-seed') throw new Error('Character Card seed is missing')
   const seq = events.length

@@ -14,7 +14,7 @@ export interface CharacterLibrarySummary {
   readonly greetingCount: number
   readonly worldInfoCount: number
   readonly avatarAvailable: boolean
-  readonly transport: 'png' | 'json'
+  readonly transport: 'png' | 'json' | 'charx'
   readonly updatedAt: number
 }
 

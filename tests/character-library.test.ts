@@ -3,8 +3,10 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { strToU8, zipSync } from 'fflate'
 import { CharacterLibrary } from '../src/character-library.ts'
 import { parseCharacterCardJsonBytes } from '../src/import/character-card.ts'
+import { parseCharx } from '../src/import/charx.ts'
 
 test('keeps one exact reusable Character Card asset with selectable greetings', (context) => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-character-library-'))
@@ -45,4 +47,33 @@ test('keeps one exact reusable Character Card asset with selectable greetings', 
     '今天来得很早。',
   ])
   assert.deepEqual(library.asset(first.id).data, data)
+})
+
+test('keeps the original CHARX archive reusable', (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-character-library-charx-'))
+  context.after(() => { rmSync(root, { recursive: true, force: true }) })
+  const raw = JSON.parse(readFileSync('tests/fixtures/manual-character-card.json', 'utf8')) as Record<string, unknown>
+  const data = raw.data as Record<string, unknown>
+  raw.spec = 'chara_card_v3'
+  raw.spec_version = '3.0'
+  data.group_only_greetings = []
+  data.assets = [{ type: 'icon', uri: 'embeded://assets/icon/images/main.png', name: 'main', ext: 'png' }]
+  const avatar = Uint8Array.from([0x89, 0x50, 0x4e, 0x47])
+  const archive = zipSync({
+    'card.json': strToU8(JSON.stringify(raw)),
+    'assets/icon/images/main.png': avatar,
+  })
+  const library = new CharacterLibrary({ root })
+  const imported = library.import({
+    data: archive,
+    filename: '白露.charx',
+    mediaType: 'application/zip',
+    card: parseCharx(archive).card,
+    transport: { transport: 'charx' },
+  })
+
+  assert.equal(imported.transport, 'charx')
+  assert.equal(imported.avatarAvailable, true)
+  assert.deepEqual(library.avatar(imported.id), { mediaType: 'image/png', data: avatar })
+  assert.deepEqual(library.asset(imported.id).data, archive)
 })

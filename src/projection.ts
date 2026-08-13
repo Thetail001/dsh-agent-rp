@@ -111,6 +111,7 @@ function cardProjection(
       ...(previous.persona === undefined ? {} : { persona: previous.persona }),
       cardVersion: result.cardVersion,
       ...(result.transport === 'png' ? { avatarAttachmentId: result.sourceAttachmentId } : {}),
+      ...(result.transport === 'charx' && result.libraryId !== undefined ? { avatarLibraryId: result.libraryId } : {}),
       importedMessageCount: previous.importedMessageCount,
       frontend: card.frontend,
       source: 'character-card',

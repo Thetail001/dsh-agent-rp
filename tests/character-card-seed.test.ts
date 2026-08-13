@@ -53,3 +53,14 @@ test('snapshots one reusable Persona independently from the Character Card', () 
   assert.equal(seed[1]?.type, 'agent-rp/persona-seed')
   assert.equal(seed[4]?.type, 'assistant/message')
 })
+
+test('retains a reusable library id for CHARX media projection', () => {
+  const card = parseCharacterCardJsonBytes(readFileSync('tests/fixtures/manual-character-card.json'))
+  const charxAttachment = { ...attachment, name: '白露.charx', mediaType: 'application/zip' }
+  const libraryId = 'card-0123456789abcdef0123456789abcdef'
+  const seed = createCharacterCardSessionSeed(
+    card, charxAttachment, 0, '', { transport: 'charx' }, undefined, undefined, libraryId,
+  )
+
+  assert.equal(readActiveSessionCharacter(seed)?.result.libraryId, libraryId)
+})

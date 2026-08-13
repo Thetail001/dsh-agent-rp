@@ -18,6 +18,7 @@ export interface AgentRpProjection {
   readonly persona?: SessionPersonaSnapshot
   readonly cardVersion?: 1 | 2 | 3
   readonly avatarAttachmentId?: string
+  readonly avatarLibraryId?: string
   readonly importedMessageCount: number
   readonly worldInfoCount: number
   /** Imported lorebooks, current session overlays, and next-request activation evidence. */

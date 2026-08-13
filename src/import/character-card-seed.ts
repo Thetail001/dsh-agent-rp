@@ -38,9 +38,10 @@ type SessionSeedEvent = SessionEvent extends infer Event
  * @param attachment - Host-stored original card attachment.
  * @param greetingIndex - selected first or alternate greeting.
  * @param renderedGreeting - selected greeting after stable identity macro substitution.
- * @param transport - JSON or decoded PNG provenance.
+ * @param transport - JSON, PNG, or CHARX provenance.
  * @param userName - optional imported user identity for card macros.
  * @param persona - optional reusable player Persona snapshotted for this Session.
+ * @param libraryId - reusable card id used to resolve CHARX media.
  * @returns validated immutable Session seed.
  */
 export function createCharacterCardSessionSeed(
@@ -51,6 +52,7 @@ export function createCharacterCardSessionSeed(
   transport: CharacterImportTransport = { transport: 'json' },
   userName?: string,
   persona?: SessionPersonaSnapshot,
+  libraryId?: string,
 ): readonly SessionEvent[] {
   const value = prepareCharacterImportResult(
     card,
@@ -59,6 +61,7 @@ export function createCharacterCardSessionSeed(
     attachment,
     greetingIndex,
     userName,
+    libraryId,
   )
   const { raw, ...result } = value
   const meta: CharacterImportMeta = { format: 0, result, raw }

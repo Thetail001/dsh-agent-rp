@@ -5,6 +5,7 @@ import type {
   CharacterCardVersion,
   CharacterImportDegradation,
   ImportedCharacterCard,
+  ImportedCharacterAsset,
   ImportedCharacterFrontend,
   ImportedLorebook,
   ImportedLorebookEntry,
@@ -87,6 +88,20 @@ function parseFrontend(data: JsonObject): ImportedCharacterFrontend {
     })
   })()
   return { regexScripts, tavernHelperScriptNames: helperScripts }
+}
+
+function parseAssets(value: JsonValue | undefined): ImportedCharacterAsset[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error('data.assets must be an array')
+  return value.map((item, index) => {
+    const asset = object(item, `data.assets[${index}]`)
+    return {
+      type: requiredString(asset.type, `data.assets[${index}].type`),
+      uri: requiredString(asset.uri, `data.assets[${index}].uri`),
+      name: requiredString(asset.name, `data.assets[${index}].name`),
+      ext: requiredString(asset.ext, `data.assets[${index}].ext`),
+    }
+  })
 }
 
 function hasDecorator(content: string): boolean {
@@ -235,6 +250,7 @@ export function parseCharacterCardJson(json: string): ImportedCharacterCard {
   const systemPrompt = optionalString(data.system_prompt, 'data.system_prompt') ?? ''
   const postHistoryInstructions = optionalString(data.post_history_instructions, 'data.post_history_instructions') ?? ''
   const frontend = parseFrontend(data)
+  const assets = parseAssets(data.assets)
   return {
     format: 0,
     version,
@@ -249,6 +265,7 @@ export function parseCharacterCardJson(json: string): ImportedCharacterCard {
     alternateGreetings,
     systemPrompt,
     postHistoryInstructions,
+    assets,
     ...(lorebook === undefined ? {} : { lorebook }),
     frontend,
     degradations: degradationSet(data, version, specVersion, lorebook),

@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import { defineConfig, type UserConfig } from 'tsdown'
 
 function isHostExternal(id: string): boolean {
@@ -18,6 +19,11 @@ const host: UserConfig = {
     alwaysBundle: id => isHostExternal(id) ? undefined : true,
   },
   plugins: [{
+    name: 'bundle-browser-safe-fflate',
+    resolveId(id) {
+      return id === 'fflate' ? resolve('node_modules/fflate/esm/browser.js') : null
+    },
+  }, {
     name: 'assert-profile-host-externals',
     generateBundle(_options, bundle) {
       for (const output of Object.values(bundle)) {

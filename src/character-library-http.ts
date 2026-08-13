@@ -77,6 +77,22 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
           response.end(asset.data)
           return
         }
+        if (parts.length === 2 && parts[0] !== undefined && parts[1] === 'avatar') {
+          const avatar = library.avatar(parts[0])
+          if (avatar === undefined) {
+            fail(response, 404, 'avatar not found')
+            return
+          }
+          response.writeHead(200, {
+            'cache-control': 'private, max-age=31536000, immutable',
+            'content-length': String(avatar.data.byteLength),
+            'content-type': avatar.mediaType,
+            'content-security-policy': "default-src 'none'; sandbox",
+            'x-content-type-options': 'nosniff',
+          })
+          response.end(avatar.data)
+          return
+        }
         fail(response, 404, 'not found')
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)

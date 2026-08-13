@@ -296,11 +296,15 @@ function Avatar({ projection, loadAvatar, size = 40 }: {
     let current = true
     let objectUrl: string | undefined
     const attachmentId = projection.avatarAttachmentId
-    if (attachmentId === undefined) {
+    const libraryId = projection.avatarLibraryId
+    if (attachmentId === undefined && libraryId === undefined) {
       setSrc(undefined)
       return () => { current = false }
     }
-    void loadAvatar(attachmentId).then((url: string | undefined) => {
+    const loading = libraryId === undefined
+      ? loadAvatar(attachmentId!)
+      : Promise.resolve(`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(libraryId)}/avatar`)
+    void loading.then((url: string | undefined) => {
       if (!current) {
         if (url !== undefined) URL.revokeObjectURL(url)
         return
@@ -312,7 +316,7 @@ function Avatar({ projection, loadAvatar, size = 40 }: {
       current = false
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl)
     }
-  }, [loadAvatar, projection.avatarAttachmentId])
+  }, [loadAvatar, projection.avatarAttachmentId, projection.avatarLibraryId])
   return <span style={{
     alignItems: 'center',
     background: `color-mix(in srgb, ${color} 16%, transparent)`,
@@ -2257,7 +2261,8 @@ function importHintComponent(ctx: Context): (props: ImportHintProps) => JSX.Elem
       <div style={markStyle} aria-hidden="true">↗</div>
       <div style={{ minWidth: 0 }}>
         <div style={{ fontSize: '13px', fontWeight: 600, lineHeight: 1.45 }}>
-          {migration ? '迁移角色与对话' : chat ? '导入历史对话' : selected.kind === 'json-resource' ? '识别到 JSON 资源' : '识别到 PNG 图片'}
+          {migration ? '迁移角色与对话' : chat ? '导入历史对话' : selected.kind === 'character-card'
+            ? '识别到 CHARX 角色卡' : selected.kind === 'json-resource' ? '识别到 JSON 资源' : '识别到 PNG 图片'}
           <span style={{ fontWeight: 400, marginLeft: '6px', opacity: 0.72 }}>{selected.name}</span>
         </div>
         <div style={{ fontSize: '12px', lineHeight: 1.45, marginTop: '2px', opacity: 0.62 }}>{migration

@@ -26,4 +26,7 @@ test('offers an explicit choice for standalone JSON and PNG resources', () => {
     { kind: 'image', file: { name: '白露.PNG' } },
   ]), { kind: 'png-candidate', name: '白露.PNG' })
   assert.equal(selectSillyTavernDraft([{ kind: 'file', file: { name: 'notes.txt' } }]), undefined)
+  assert.deepEqual(selectSillyTavernDraft([{ kind: 'file', file: { name: '海棠.charx' } }]), {
+    kind: 'character-card', name: '海棠.charx',
+  })
 })

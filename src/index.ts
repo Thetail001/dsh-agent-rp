@@ -23,10 +23,12 @@ import {
   prepareAgentRpMemory,
 } from './memory.ts'
 import { parseCharacterCardJson, parseCharacterCardJsonBytes } from './import/character-card.ts'
+import { parseCharx } from './import/charx.ts'
 import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
 import { readCharacterCardPng } from './import/png.ts'
 import {
   cardFromImportMeta,
+  isCharxCharacterCardAttachment,
   isJsonCharacterCardAttachment,
   isPngCharacterCardAttachment,
   prepareCharacterImportResult,
@@ -152,10 +154,27 @@ type PromptImportAttachment = CharacterCardAttachmentRef | FileAttachmentRef
 
 type PromptAttachmentPart = Parameters<Parameters<PromptAttachmentGateway['registerPromptAttachmentConsumer']>[1]>[0]['content'][number]
 
+function decodeCharacterCardAttachment(
+  attachment: CharacterCardAttachmentRef,
+  data: Uint8Array,
+): { readonly card: import('./import/types.ts').ImportedCharacterCard; readonly transport: import('./import/session-character.ts').CharacterImportTransport } {
+  if (isCharxCharacterCardAttachment(attachment)) {
+    return { card: parseCharx(data).card, transport: { transport: 'charx' } }
+  }
+  if (isJsonCharacterCardAttachment(attachment)) {
+    return { card: parseCharacterCardJsonBytes(data), transport: { transport: 'json' } }
+  }
+  const payload = readCharacterCardPng(data)
+  return {
+    card: parseCharacterCardJson(payload.json),
+    transport: { transport: 'png', metadataKeyword: payload.keyword },
+  }
+}
+
 function isCharacterCardOffer(part: PromptAttachmentPart): boolean {
   return part.type === 'image'
     ? part.mediaType === 'image/png'
-    : part.type === 'file' && /\.json$/iu.test(part.name)
+    : part.type === 'file' && /\.(?:json|charx)$/iu.test(part.name)
 }
 
 function isWorldInfoRequest(text: string): boolean {
@@ -298,11 +317,12 @@ export const CHARACTER_IMPORT_VALUE_SCHEMA = {
     cardVersion: { type: 'integer', required: true, enum: [1, 2, 3] },
     sourceEventSeq: { type: 'integer', required: true },
     sourceAttachmentId: { type: 'string', required: true },
-    transport: { type: 'string', required: true, enum: ['png', 'json'] },
+    transport: { type: 'string', required: true, enum: ['png', 'json', 'charx'] },
     metadataKeyword: { type: 'string', enum: ['ccv3', 'chara'] },
     greetingIndex: { type: 'integer', required: true },
     selectedGreeting: { type: 'string', required: true },
     userName: { type: 'string' },
+    libraryId: { type: 'string' },
     degradations: { type: 'array', required: true, items: { type: 'string', enum: CHARACTER_IMPORT_DEGRADATIONS } },
     raw: { type: 'json', required: true },
   },
@@ -345,6 +365,7 @@ function rememberCall(subject: string, text: string): GenericCallView {
 
 function isCharacterCardAttachment(value: unknown): value is CharacterCardAttachmentRef {
   return isPngCharacterCardAttachment(value) || isJsonCharacterCardAttachment(value)
+    || isCharxCharacterCardAttachment(value)
 }
 
 function latestConsumedAttachments(agent: Agent): { eventSeq: number; attachments: FileAttachmentRef[] } {
@@ -374,10 +395,10 @@ function latestUserAttachments(agent: Agent): { eventSeq: number; attachments: C
       ? source.attachments.filter(isCharacterCardAttachment)
       : []
     const attachments = [...direct.filter(isCharacterCardAttachment), ...consumed]
-    if (attachments.length === 0) throw new Error('当前消息没有可导入的角色卡；请附上 Character Card PNG 或 JSON')
+    if (attachments.length === 0) throw new Error('当前消息没有可导入的角色卡；请附上 Character Card PNG、JSON 或 CHARX')
     return { eventSeq: event.seq, attachments }
   }
-  throw new Error('没有找到导入请求；请在同一条消息中附上 Character Card PNG 或 JSON')
+  throw new Error('没有找到导入请求；请在同一条消息中附上 Character Card PNG、JSON 或 CHARX')
 }
 
 function importedCharacter(agentsByScope: WeakMap<ScopeKey, Agent>, scope: ScopeKey | undefined) {
@@ -441,29 +462,22 @@ export function installAgentRp(
     recognize: ({ agent, content }) => isSillyTavernMigrationOffer(agentsByScope.get(agent) === agent, content),
     async import(input, signal) {
       const cardAttachment = input.attachments.find(attachment =>
-        isJsonCharacterCardAttachment(attachment) || isPngCharacterCardAttachment(attachment))
+        isJsonCharacterCardAttachment(attachment) || isPngCharacterCardAttachment(attachment)
+        || isCharxCharacterCardAttachment(attachment))
       const chatAttachment = input.attachments.find((attachment): attachment is FileAttachmentRef =>
         'kind' in attachment && attachment.kind === 'file' && /\.jsonl$/iu.test(attachment.name))
       if (cardAttachment === undefined || chatAttachment === undefined) {
-        throw new Error('SillyTavern migration requires one Character Card PNG or JSON and one chat JSONL')
+        throw new Error('SillyTavern migration requires one Character Card PNG, JSON, or CHARX and one chat JSONL')
       }
       const reader = ctx.attachments as unknown as FileAttachmentReader
       const [storedCard, chatBytes] = await Promise.all([
-        isJsonCharacterCardAttachment(cardAttachment)
+        isJsonCharacterCardAttachment(cardAttachment) || isCharxCharacterCardAttachment(cardAttachment)
           ? input.readFile(cardAttachment, signal).then(data => ({ ref: cardAttachment, data }))
           : reader.readImage(cardAttachment, signal),
         input.readFile(chatAttachment, signal),
       ])
-      const payload = isJsonCharacterCardAttachment(storedCard.ref)
-        ? undefined
-        : readCharacterCardPng(storedCard.data)
-      const card = payload === undefined
-        ? parseCharacterCardJsonBytes(storedCard.data)
-        : parseCharacterCardJson(payload.json)
-      const transport = payload === undefined
-        ? { transport: 'json' as const }
-        : { transport: 'png' as const, metadataKeyword: payload.keyword }
-      characterLibrary.import({
+      const { card, transport } = decodeCharacterCardAttachment(storedCard.ref, storedCard.data)
+      const libraryEntry = characterLibrary.import({
         data: storedCard.data,
         ...(storedCard.ref.name === undefined ? {} : { filename: storedCard.ref.name }),
         ...(storedCard.ref.mediaType === undefined ? {} : { mediaType: storedCard.ref.mediaType }),
@@ -472,7 +486,7 @@ export function installAgentRp(
       })
       const chat = parseSillyTavernChatBytes(chatBytes)
       return {
-        seed: createSillyTavernMigrationSeed(card, storedCard.ref, transport, chat, chatAttachment),
+        seed: createSillyTavernMigrationSeed(card, storedCard.ref, transport, chat, chatAttachment, libraryEntry.id),
         title: card.nickname?.trim() || card.name,
       }
     },
@@ -500,17 +514,15 @@ export function installAgentRp(
       if (input.attachments.length !== 1) throw new Error('Character Card import requires exactly one file')
       const attachment = input.attachments[0]
       if (attachment === undefined
-        || (!isJsonCharacterCardAttachment(attachment) && !isPngCharacterCardAttachment(attachment))) {
-        throw new Error('Character Card import requires one PNG or JSON card')
+        || (!isJsonCharacterCardAttachment(attachment) && !isPngCharacterCardAttachment(attachment)
+          && !isCharxCharacterCardAttachment(attachment))) {
+        throw new Error('Character Card import requires one PNG, JSON, or CHARX card')
       }
       const reader = ctx.attachments as unknown as FileAttachmentReader
-      const stored = isJsonCharacterCardAttachment(attachment)
+      const stored = isJsonCharacterCardAttachment(attachment) || isCharxCharacterCardAttachment(attachment)
         ? { ref: attachment, data: await input.readFile(attachment, signal) }
         : await reader.readImage(attachment, signal)
-      const payload = isJsonCharacterCardAttachment(stored.ref) ? undefined : readCharacterCardPng(stored.data)
-      const card = payload === undefined
-        ? parseCharacterCardJsonBytes(stored.data)
-        : parseCharacterCardJson(payload.json)
+      const { card, transport } = decodeCharacterCardAttachment(stored.ref, stored.data)
       const request = parseCharacterCardSessionRequest(input.text)
       if (request === undefined) throw new Error('Character Card import request is invalid')
       const greetings = [card.firstMessage, ...card.alternateGreetings]
@@ -518,10 +530,7 @@ export function installAgentRp(
       if (selectedGreeting === undefined) {
         throw new Error(`角色卡没有第 ${request.greetingIndex + 1} 条开场白`)
       }
-      const transport = payload === undefined
-        ? { transport: 'json' as const }
-        : { transport: 'png' as const, metadataKeyword: payload.keyword }
-      characterLibrary.import({
+      const libraryEntry = characterLibrary.import({
         data: stored.data,
         ...(stored.ref.name === undefined ? {} : { filename: stored.ref.name }),
         ...(stored.ref.mediaType === undefined ? {} : { mediaType: stored.ref.mediaType }),
@@ -532,7 +541,7 @@ export function installAgentRp(
       const greeting = substituteCardMacros(selectedGreeting, card, userName)
       return {
         seed: createCharacterCardSessionSeed(
-          card, stored.ref, request.greetingIndex, greeting, transport, userName, request.persona,
+          card, stored.ref, request.greetingIndex, greeting, transport, userName, request.persona, libraryEntry.id,
         ),
         title: card.nickname?.trim() || card.name,
       }
@@ -767,7 +776,7 @@ export function installAgentRp(
   }))
   ctx.tools.register(defineTool({
     name: 'import_character_card',
-    description: 'Import a SillyTavern Character Card V1, V2, or V3 from a PNG or JSON attachment in the latest user message, then make that character active for this Session. Omit attachmentIndex unless the message has multiple recognized cards. greetingIndex 0 selects first_mes; later indexes select alternate_greetings.',
+    description: 'Import a SillyTavern Character Card V1, V2, or V3 from a PNG, JSON, or CHARX attachment in the latest user message, then make that character active for this Session. Omit attachmentIndex unless the message has multiple recognized cards. greetingIndex 0 selects first_mes; later indexes select alternate_greetings.',
     parameters: {
       attachmentIndex: {
         type: 'integer',
@@ -810,30 +819,31 @@ export function installAgentRp(
         throw new Error(`attachmentIndex ${attachmentIndex} is unavailable; the current import source contains ${attachments.length} Character Card attachment(s)`)
       }
       const attachment = attachments[attachmentIndex]!
-      if (isJsonCharacterCardAttachment(attachment)) {
+      if (isJsonCharacterCardAttachment(attachment) || isCharxCharacterCardAttachment(attachment)) {
         const reader = ctx.attachments as unknown as FileAttachmentReader
         const stored = await reader.readFile(attachment, exec.signal)
-        const card = parseCharacterCardJsonBytes(stored.data)
-        characterLibrary.import({
+        const { card, transport } = decodeCharacterCardAttachment(stored.ref, stored.data)
+        const libraryEntry = characterLibrary.import({
           data: stored.data,
           filename: stored.ref.name,
           ...(stored.ref.mediaType === undefined ? {} : { mediaType: stored.ref.mediaType }),
           card,
-          transport: { transport: 'json' },
+          transport,
         })
         return prepareCharacterImportResult(
           card,
-          { transport: 'json' },
+          transport,
           direct.eventSeq,
           stored.ref,
           args.greetingIndex ?? 0,
           readSillyTavernChatIdentity(exec.agent.session.events)?.userName,
+          libraryEntry.id,
         )
       }
       const stored = await ctx.attachments.readImage(attachment, exec.signal)
       const payload = readCharacterCardPng(stored.data)
       const card = parseCharacterCardJson(payload.json)
-      characterLibrary.import({
+      const libraryEntry = characterLibrary.import({
         data: stored.data,
         ...(stored.ref.name === undefined ? {} : { filename: stored.ref.name }),
         mediaType: stored.ref.mediaType,
@@ -844,7 +854,7 @@ export function installAgentRp(
         transport: 'png',
         metadataKeyword: payload.keyword,
       }, direct.eventSeq, stored.ref, args.greetingIndex ?? 0,
-      readSillyTavernChatIdentity(exec.agent.session.events)?.userName)
+      readSillyTavernChatIdentity(exec.agent.session.events)?.userName, libraryEntry.id)
     },
     presentCall: () => ({ card: 'generic', title: '导入角色卡', kind: 'read' }),
     presentResult: (_args, result) => ({

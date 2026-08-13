@@ -7,7 +7,7 @@ export interface DraftAttachmentLike {
 }
 
 /** One migration affordance inferred safely from draft filenames. */
-export type SillyTavernDraftKind = 'migration' | 'chat' | 'json-resource' | 'png-candidate'
+export type SillyTavernDraftKind = 'migration' | 'chat' | 'character-card' | 'json-resource' | 'png-candidate'
 
 /** One recognized draft selection that may participate in SillyTavern migration. */
 export interface SillyTavernDraftSelection {
@@ -26,6 +26,7 @@ export function selectSillyTavernDraft(
   if (attachments.length === 2) {
     const card = attachments.find(attachment =>
       (attachment.kind === 'file' && /\.json$/iu.test(attachment.file.name.trim()))
+      || (attachment.kind === 'file' && /\.charx$/iu.test(attachment.file.name.trim()))
       || (attachment.kind === 'image' && /\.png$/iu.test(attachment.file.name.trim())))
     const chat = attachments.find(attachment =>
       attachment.kind === 'file' && /\.jsonl$/iu.test(attachment.file.name.trim()))
@@ -41,6 +42,7 @@ export function selectSillyTavernDraft(
   if (name === '') return undefined
   if (attachment.kind === 'file' && /\.jsonl$/iu.test(name)) return { kind: 'chat', name }
   if (attachment.kind === 'file' && /\.json$/iu.test(name)) return { kind: 'json-resource', name }
+  if (attachment.kind === 'file' && /\.charx$/iu.test(name)) return { kind: 'character-card', name }
   if (attachment.kind === 'image' && /\.png$/iu.test(name)) return { kind: 'png-candidate', name }
   return undefined
 }

@@ -41,6 +41,14 @@ export interface ImportedCharacterFrontend {
   readonly tavernHelperScriptNames: readonly string[]
 }
 
+/** One Character Card V3 asset declaration retained independently of its transport. */
+export interface ImportedCharacterAsset {
+  readonly type: string
+  readonly uri: string
+  readonly name: string
+  readonly ext: string
+}
+
 /** Supported runtime behavior of one lorebook entry. */
 export interface ImportedLorebookEntry {
   /** Stable source-local identifier retained for display and diagnostics. */
@@ -119,6 +127,7 @@ export interface ImportedCharacterCard {
   readonly alternateGreetings: readonly string[]
   readonly systemPrompt: string
   readonly postHistoryInstructions: string
+  readonly assets?: readonly ImportedCharacterAsset[]
   readonly lorebook?: ImportedLorebook
   readonly frontend: ImportedCharacterFrontend
   readonly degradations: readonly CharacterImportDegradation[]

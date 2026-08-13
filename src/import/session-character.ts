@@ -20,6 +20,7 @@ export type CharacterCardAttachmentRef = ImageAttachmentRef | FileAttachmentRef
 export type CharacterImportTransport =
   | { readonly transport: 'png'; readonly metadataKeyword: CharacterCardPngPayload['keyword'] }
   | { readonly transport: 'json'; readonly metadataKeyword?: never }
+  | { readonly transport: 'charx'; readonly metadataKeyword?: never }
 
 /** Model-facing canonical value for one completed import. */
 export interface CharacterImportResult {
@@ -34,6 +35,7 @@ export interface CharacterImportResult {
   readonly selectedGreeting: string
   readonly userName?: string
   readonly degradations: Array<ImportedCharacterCard['degradations'][number]>
+  readonly libraryId?: string
 }
 
 /** Execution-only canonical value projected into compact text and durable metadata. */
@@ -68,7 +70,7 @@ function parseResult(value: JsonValue | undefined): CharacterImportResult {
   const record = jsonObject(value, 'import_character_card result')
   const validTransport = record.transport === 'png'
     ? record.metadataKeyword === 'ccv3' || record.metadataKeyword === 'chara'
-    : record.transport === 'json' && record.metadataKeyword === undefined
+    : (record.transport === 'json' || record.transport === 'charx') && record.metadataKeyword === undefined
   if (record.version !== 0 || typeof record.name !== 'string'
     || (record.cardVersion !== 1 && record.cardVersion !== 2 && record.cardVersion !== 3)
     || typeof record.sourceEventSeq !== 'number' || !Number.isSafeInteger(record.sourceEventSeq)
@@ -76,6 +78,8 @@ function parseResult(value: JsonValue | undefined): CharacterImportResult {
     || !validTransport
     || typeof record.greetingIndex !== 'number' || !Number.isSafeInteger(record.greetingIndex) || record.greetingIndex < 0
     || typeof record.selectedGreeting !== 'string'
+    || (record.libraryId !== undefined && (typeof record.libraryId !== 'string'
+      || !/^card-[a-f0-9]{32}$/u.test(record.libraryId)))
     || (record.userName !== undefined && (typeof record.userName !== 'string' || record.userName.trim() === ''))
     || !Array.isArray(record.degradations)
     || record.degradations.some(value => typeof value !== 'string'
@@ -111,6 +115,15 @@ export function isJsonCharacterCardAttachment(value: unknown): value is FileAtta
     && (record.mediaType === undefined || typeof record.mediaType === 'string')
 }
 
+/** Recognize one durable CHARX reference usable as a Character Card transport. */
+export function isCharxCharacterCardAttachment(value: unknown): value is FileAttachmentRef {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return record.kind === 'file' && typeof record.attachmentId === 'string'
+    && typeof record.bytes === 'number' && typeof record.name === 'string' && /\.charx$/iu.test(record.name)
+    && (record.mediaType === undefined || typeof record.mediaType === 'string')
+}
+
 function sourceAttachments(events: readonly SessionEvent[], sourceEventSeq: number): CharacterCardAttachmentRef[] {
   const source = events[sourceEventSeq]
   if (source?.type !== 'user/message' || source.seq !== sourceEventSeq) {
@@ -119,7 +132,6 @@ function sourceAttachments(events: readonly SessionEvent[], sourceEventSeq: numb
   const direct = source.data.content.flatMap(block => block.type === 'image' && isPngCharacterCardAttachment(block.attachment)
     ? [block.attachment]
     : [])
-  if (direct.length > 0) return direct
   const sourceMeta = source.data.source.kind === 'user'
     ? source.data.source as unknown as Record<string, JsonValue>
     : undefined
@@ -127,7 +139,9 @@ function sourceAttachments(events: readonly SessionEvent[], sourceEventSeq: numb
   const attachments = sourceMeta.attachmentConsumer === 'dsh-agent-rp' && Array.isArray(sourceMeta.attachments)
     ? sourceMeta.attachments
     : []
-  return attachments.filter(value => isPngCharacterCardAttachment(value) || isJsonCharacterCardAttachment(value)) as CharacterCardAttachmentRef[]
+  const consumed = attachments.filter(value => isPngCharacterCardAttachment(value)
+    || isJsonCharacterCardAttachment(value) || isCharxCharacterCardAttachment(value)) as CharacterCardAttachmentRef[]
+  return [...direct, ...consumed]
 }
 
 function validateImport(events: readonly SessionEvent[], resultEvent: SessionEvent<'tool/result'>): ActiveSessionCharacter {
@@ -169,6 +183,9 @@ function validateImport(events: readonly SessionEvent[], resultEvent: SessionEve
   if (result.transport === 'json' && !isJsonCharacterCardAttachment(attachment)) {
     throw new Error('import_character_card JSON transport does not match its source attachment')
   }
+  if (result.transport === 'charx' && !isCharxCharacterCardAttachment(attachment)) {
+    throw new Error('import_character_card CHARX transport does not match its source attachment')
+  }
   const expectedGreeting = [card.firstMessage, ...card.alternateGreetings][result.greetingIndex]
   if (result.name !== card.name || result.cardVersion !== card.version
     || result.selectedGreeting !== expectedGreeting
@@ -194,7 +211,9 @@ export function readActiveSessionCharacter(events: readonly SessionEvent[]): Act
       const expectedGreeting = [card.firstMessage, ...card.alternateGreetings][result.greetingIndex]
       const validTransport = result.transport === 'json'
         ? isJsonCharacterCardAttachment(attachment)
-        : isPngCharacterCardAttachment(attachment)
+        : result.transport === 'charx'
+          ? isCharxCharacterCardAttachment(attachment)
+          : isPngCharacterCardAttachment(attachment)
       if (event.data.format !== 0 || event.data.source.attachmentConsumer !== 'dsh-agent-rp'
         || !validTransport || result.sourceEventSeq !== event.seq
         || result.sourceAttachmentId !== String(attachment.attachmentId)
@@ -231,6 +250,7 @@ export function prepareCharacterImportResult(
   attachment: CharacterCardAttachmentRef,
   greetingIndex: number,
   userName?: string,
+  libraryId?: string,
 ): CharacterImportValue {
   if (!Number.isSafeInteger(greetingIndex) || greetingIndex < 0) throw new Error('greetingIndex must be a non-negative integer')
   const greetings = [card.firstMessage, ...card.alternateGreetings]
@@ -247,6 +267,7 @@ export function prepareCharacterImportResult(
     greetingIndex,
     selectedGreeting,
     ...(userName === undefined || userName.trim() === '' ? {} : { userName: userName.trim() }),
+    ...(libraryId === undefined ? {} : { libraryId }),
     degradations: [...card.degradations],
     raw: card.raw,
   }
