@@ -455,6 +455,11 @@ const generationButtonStyle = {
   lineHeight: 1, minHeight: '24px', minWidth: '24px', opacity: 0.58, padding: '4px 7px',
 } as const
 
+const headerMenuItemStyle = {
+  background: 'transparent', border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer',
+  font: 'inherit', fontSize: '12px', padding: '8px 9px', textAlign: 'left', whiteSpace: 'nowrap',
+} as const
+
 function initials(name: string): string {
   return [...name.trim()].slice(0, 1).join('').toUpperCase() || 'RP'
 }
@@ -857,7 +862,7 @@ function PersonaManagerDialog({ current, listPersonas, savePersona, deletePerson
           background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #414147)', borderRadius: '8px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', lineHeight: 1.55, padding: '8px 9px', resize: 'vertical', width: '100%',
         }} />
         <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-          <button type="button" onClick={() => { setEditing(false); setEditingId(undefined); setName(''); setDescription('') }} style={{ background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '7px 10px' }}>取消</button>
+          <button type="button" onClick={() => { setEditing(false); setEditingId(undefined); setName(''); setDescription('') }} style={{ background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '7px 10px' }}>取消编辑</button>
           <button type="button" disabled={busy !== undefined || name.trim() === ''} onClick={() => {
             setBusy('save')
             setError(undefined)
@@ -882,7 +887,7 @@ function PersonaManagerDialog({ current, listPersonas, savePersona, deletePerson
         {current !== undefined && <button type="button" disabled={busy !== undefined} onClick={() => { apply() }} style={{
           background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '9px', color: 'inherit', cursor: 'pointer', font: 'inherit', marginRight: 'auto', padding: '8px 12px',
         }}>清除当前身份</button>}
-        <button type="button" disabled={busy !== undefined} onClick={onClose} style={{ background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '9px', color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '8px 12px' }}>取消</button>
+        <button type="button" disabled={busy !== undefined} onClick={onClose} style={{ background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '9px', color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '8px 12px' }}>关闭</button>
         <button type="button" disabled={selected === undefined || busy !== undefined} onClick={() => {
           if (selected !== undefined) apply({ id: selected.id, name: selected.name, description: selected.description })
         }} style={{ background: color, border: 0, borderRadius: '9px', color: '#fff', cursor: 'pointer', font: 'inherit', opacity: selected === undefined ? .45 : 1, padding: '8px 13px' }}>{busy === 'apply' ? '正在应用…' : '应用到本会话'}</button>
@@ -1083,6 +1088,7 @@ function RoleplayHeader({
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [migrationOpen, setMigrationOpen] = useState(false)
   const [personaOpen, setPersonaOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [aliasDraft, setAliasDraft] = useState('')
   const [aliasError, setAliasError] = useState<string>()
   const [renaming, setRenaming] = useState(false)
@@ -1154,26 +1160,28 @@ function RoleplayHeader({
         border: `1px solid ${projection.persona === undefined ? 'var(--dsw-alias-border-l2, #444)' : `color-mix(in srgb, ${color} 34%, transparent)`}`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>身份{projection.persona === undefined ? '' : ` · ${projection.persona.name}`}</button>
-      <button type="button" onClick={() => { setMigrationOpen(true) }} style={{
-        background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
-        color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
-      }}>迁移聊天</button>
-      <button type="button" onClick={() => { setPresetOpen(true) }} style={{
-        background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)',
-        borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
-      }}>预设</button>
-      <button type="button" onClick={() => { setWorldInfoOpen(true) }} style={{
-        background: projection.worldInfo.activeCount > 0 ? `color-mix(in srgb, ${color} 12%, transparent)` : 'transparent',
-        border: `1px solid ${projection.worldInfo.activeCount > 0 ? `color-mix(in srgb, ${color} 34%, transparent)` : 'var(--dsw-alias-border-l2, #444)'}`,
-        borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
-      }}>世界书{projection.worldInfo.activeCount === 0 ? '' : ` · ${projection.worldInfo.activeCount}`}</button>
-      <button type="button" aria-pressed={viewMode === 'debug'} onClick={() => {
-        setRoleplayViewMode(sessionId, viewMode === 'immersive' ? 'debug' : 'immersive')
-      }} style={{
-        background: viewMode === 'debug' ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
-        border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px', color: 'inherit', cursor: 'pointer',
-        font: 'inherit', fontSize: '12px', padding: '6px 10px',
-      }}>{viewMode === 'debug' ? '返回沉浸' : '调试'}</button>
+      <details open={settingsOpen} onToggle={event => { setSettingsOpen(event.currentTarget.open) }} style={{ position: 'relative' }}>
+        <summary role="button" aria-expanded={settingsOpen} aria-haspopup="menu" style={{
+          background: projection.worldInfo.activeCount > 0 ? `color-mix(in srgb, ${color} 10%, transparent)` : 'transparent',
+          border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px', color: 'inherit', cursor: 'pointer',
+          fontSize: '12px', listStyle: 'none', padding: '6px 10px', whiteSpace: 'nowrap',
+        }}>会话设置</summary>
+        <div role="menu" aria-label="角色会话设置" style={{
+          background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+          borderRadius: '10px', boxShadow: '0 14px 38px rgba(0,0,0,.36)', display: 'grid', gap: '3px',
+          minWidth: '168px', padding: '6px', position: 'absolute', right: 0, top: 'calc(100% + 7px)', zIndex: 80,
+        }}>
+          <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setMigrationOpen(true) }} style={headerMenuItemStyle}>迁移聊天</button>
+          <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setPresetOpen(true) }} style={headerMenuItemStyle}>预设</button>
+          <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setWorldInfoOpen(true) }} style={headerMenuItemStyle}>
+            世界书{projection.worldInfo.activeCount === 0 ? '' : ` · ${projection.worldInfo.activeCount}`}
+          </button>
+          <button type="button" role="menuitem" aria-pressed={viewMode === 'debug'} onClick={() => {
+            setSettingsOpen(false)
+            setRoleplayViewMode(sessionId, viewMode === 'immersive' ? 'debug' : 'immersive')
+          }} style={headerMenuItemStyle}>{viewMode === 'debug' ? '返回沉浸视图' : '打开调试视图'}</button>
+        </div>
+      </details>
       {statusSource !== undefined && <button type="button" onClick={() => { setStatusOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
