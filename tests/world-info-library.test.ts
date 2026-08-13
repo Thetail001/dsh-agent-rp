@@ -1,0 +1,69 @@
+import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { CommandId } from '@deepseek-ai/dsh-commands'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { readActiveSessionWorldInfos } from '../src/import/session-world-info.ts'
+import { agentRpProjectionDefinition } from '../src/projection.ts'
+import { WorldInfoLibrary } from '../src/world-info-library.ts'
+import { executeWorldInfoLibraryCommand } from '../src/world-info-library-command.ts'
+
+const source = Buffer.from(JSON.stringify({
+  name: '海城',
+  entries: {
+    1: {
+      uid: 1,
+      key: ['旧钟楼'],
+      keysecondary: [],
+      content: '旧钟楼每天午夜停摆一分钟。',
+      constant: false,
+      selective: false,
+      order: 10,
+      position: 0,
+      disable: false,
+    },
+  },
+}), 'utf8')
+
+test('imports Host-owned World Info through a private command without a model turn', context => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-rp-world-info-library-'))
+  context.after(() => { rmSync(root, { recursive: true, force: true }) })
+  const library = new WorldInfoLibrary({ root })
+  const upload = library.importFile({ data: source, filename: '海城.json' })
+  const session = Session.create(SessionId('direct-world-info'))
+  const agent = { session } as Agent
+  const commandId = CommandId('world-info-library-1')
+  const rawInput = JSON.stringify({ format: 0, importId: upload.id })
+  session.append('command/run', {
+    commandId,
+    name: 'rp-world-info-import',
+    args: ` ${rawInput}`,
+    source: { kind: 'user' },
+  })
+  const result = executeWorldInfoLibraryCommand(library, { agent, commandId, rawInput })
+  session.append('command/done', { commandId, ...result })
+
+  const [active] = readActiveSessionWorldInfos(session.events)
+  assert.equal(active?.result.name, '海城')
+  assert.equal(active?.worldInfo.lorebook.entries[0]?.content, '旧钟楼每天午夜停摆一分钟。')
+  assert.equal(session.events.some(event => event.type === 'turn/start'), false)
+
+  let state = agentRpProjectionDefinition.init()
+  for (const event of session.events) state = agentRpProjectionDefinition.apply(state, event)
+  const projected = agentRpProjectionDefinition.view(state)
+  assert.equal(projected.worldInfo.books[0]?.name, '海城')
+  assert.equal(projected.worldInfoCount, 1)
+})
+
+test('deduplicates the same World Info bytes and rejects non-World-Info JSON', context => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-rp-world-info-library-'))
+  context.after(() => { rmSync(root, { recursive: true, force: true }) })
+  const library = new WorldInfoLibrary({ root })
+  const first = library.importFile({ data: source, filename: '海城.json' })
+  const second = library.importFile({ data: source, filename: '副本.json' })
+  assert.equal(second.id, first.id)
+  assert.throws(() => library.importFile({ data: Buffer.from('{"name":"not a book"}'), filename: 'wrong.json' }), /entries/u)
+})

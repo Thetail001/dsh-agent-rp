@@ -5,7 +5,7 @@ import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
 import { parseCharacterCardJson } from './import/character-card.ts'
 import { decodeCharacterLibraryLaunch, type CharacterImportMeta, type CharacterLibraryLaunchRecord } from './import/session-character.ts'
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
-import type { WorldInfoImportMeta } from './import/session-world-info.ts'
+import { parseWorldInfoImportMeta, type WorldInfoImportMeta } from './import/session-world-info.ts'
 import { parseWorldInfoJson } from './import/world-info.ts'
 import type { ActiveSessionPreset, PresetImportMeta } from './import/session-preset.ts'
 import { presetRegexScripts, type ImportedSillyTavernPreset } from './import/sillytavern-preset.ts'
@@ -26,6 +26,7 @@ import {
 } from './world-info-configuration-core.ts'
 import type { WorldInfoConfigurationState } from './world-info-configuration-types.ts'
 import { decodeSillyTavernChatCommandRecord, type SillyTavernChatCommandRecord } from './sillytavern-chat-protocol.ts'
+import { decodeWorldInfoLibraryImport } from './world-info-library-protocol.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -474,6 +475,27 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         ...(generation.mvu === undefined ? {} : { mvu: generation.mvu }),
         generations: { ...state.generations, [generation.groupId]: generation },
         currentReplySeq: generation.anchorSeq,
+      }
+    }
+    if (event.type === 'command/done' && event.data.kind === 'success') {
+      let directWorldInfo: { readonly key: string; readonly source: SessionLorebookSource } | undefined
+      try {
+        const record = decodeWorldInfoLibraryImport(event.data.text)
+        if (record !== undefined) {
+          const meta = parseWorldInfoImportMeta(record.meta)
+          directWorldInfo = { key: meta.result.sourceAttachmentId, source: standaloneLorebookSource(meta) }
+        }
+      } catch {
+        return withSurface
+      }
+      if (directWorldInfo !== undefined) {
+        return {
+          ...withSurface,
+          standaloneWorldInfos: {
+            ...withSurface.standaloneWorldInfos,
+            [directWorldInfo.key]: directWorldInfo.source,
+          },
+        }
       }
     }
     if (event.type === 'command/done' && event.data.kind === 'success') {

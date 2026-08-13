@@ -99,6 +99,9 @@ import { executeGenerationCommand } from './generation.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
 import { configuredLorebook, readWorldInfoConfiguration } from './world-info-configuration-core.ts'
 import { executeWorldInfoConfiguration, readSessionLorebookSources } from './world-info-configuration.ts'
+import { WorldInfoLibrary } from './world-info-library.ts'
+import { executeWorldInfoLibraryCommand } from './world-info-library-command.ts'
+import { installWorldInfoLibraryHttp } from './world-info-library-http.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -443,6 +446,7 @@ export function installAgentRp(
     ? {}
     : { root: options.characterLibraryRoot })
   const chatLibrary = new SillyTavernChatLibrary()
+  const worldInfoLibrary = new WorldInfoLibrary()
 
   commands.register({
     name: 'rp-character-library',
@@ -483,6 +487,13 @@ export function installAgentRp(
     input: { hint: '<private world-info-manager payload>' },
     recordInput: false,
     handler: executeWorldInfoConfiguration,
+  })
+  commands.register({
+    name: 'rp-world-info-import',
+    description: 'import one Host-owned World Info source into this roleplay Session',
+    input: { hint: '<private world-info import payload>' },
+    recordInput: false,
+    handler: invocation => executeWorldInfoLibraryCommand(worldInfoLibrary, invocation),
   })
   const registerAttachmentConsumer = gateway.registerPromptAttachmentConsumer?.bind(gateway)
   if (registerAttachmentConsumer !== undefined) ctx.effect(() => registerAttachmentConsumer(
@@ -954,6 +965,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
     const personaLibrary = new PersonaLibrary()
     const presetLibrary = new PresetLibrary()
     const chatLibrary = new SillyTavernChatLibrary()
+    const worldInfoLibrary = new WorldInfoLibrary()
     const workspaceSettings = new WorkspaceSettingsStore()
     let mountedServer: AgentRpHttpServer | undefined
     const mountHost = (serviceName: 'httpServer' | 'webServer'): void => {
@@ -968,6 +980,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
         installPresetLibraryHttp(webCtx, presetLibrary, server)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)
+        installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
       })
     }

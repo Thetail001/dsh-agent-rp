@@ -47,6 +47,11 @@ import {
   type SillyTavernChatUploadResponse,
 } from '../sillytavern-chat-protocol.ts'
 import {
+  WORLD_INFO_LIBRARY_PATH,
+  type WorldInfoLibraryLaunchRequest,
+  type WorldInfoLibraryUploadResponse,
+} from '../world-info-library-protocol.ts'
+import {
   AGENT_RP_WORKSPACE_SETTINGS_PATH,
   DEFAULT_AGENT_RP_SETTINGS,
   allowsAgentRpEntry,
@@ -147,6 +152,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly importPreset: (sessionId: SessionId, file: File) => Promise<void>
   readonly managePresetLibrary: (sessionId: SessionId, request: PresetLibraryRequest) => Promise<void>
   readonly configureWorldInfo: (sessionId: SessionId, request: WorldInfoConfigurationRequest) => Promise<void>
+  readonly importWorldInfo: (sessionId: SessionId, file: File) => Promise<void>
   readonly listCharacters: (collection?: CharacterLibraryCollection) => Promise<readonly CharacterLibrarySummary[]>
   readonly readCharacter: (id: string) => Promise<CharacterLibraryDetail>
   readonly setCharacterArchived: (id: string, archived: boolean) => Promise<CharacterLibraryDetail>
@@ -904,7 +910,7 @@ function WorkspaceSettingsSection({
 
 function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
-  configureWorldInfo,
+  configureWorldInfo, importWorldInfo,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, startCharacterSession,
   listPersonas, savePersona, deletePersona,
 }: HeaderProps) {
@@ -991,11 +997,11 @@ function RoleplayHeader({
         background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)',
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>预设</button>
-      {projection.worldInfo.books.length > 0 && <button type="button" onClick={() => { setWorldInfoOpen(true) }} style={{
+      <button type="button" onClick={() => { setWorldInfoOpen(true) }} style={{
         background: projection.worldInfo.activeCount > 0 ? `color-mix(in srgb, ${color} 12%, transparent)` : 'transparent',
         border: `1px solid ${projection.worldInfo.activeCount > 0 ? `color-mix(in srgb, ${color} 34%, transparent)` : 'var(--dsw-alias-border-l2, #444)'}`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
-      }}>世界书{projection.worldInfo.activeCount === 0 ? '' : ` · ${projection.worldInfo.activeCount}`}</button>}
+      }}>世界书{projection.worldInfo.activeCount === 0 ? '' : ` · ${projection.worldInfo.activeCount}`}</button>
       <button type="button" aria-pressed={viewMode === 'debug'} onClick={() => {
         setRoleplayViewMode(sessionId, viewMode === 'immersive' ? 'debug' : 'immersive')
       }} style={{
@@ -1148,6 +1154,7 @@ function RoleplayHeader({
     {worldInfoOpen && <WorldInfoManagerDialog
       worldInfo={projection.worldInfo}
       onClose={() => { setWorldInfoOpen(false) }}
+      onImport={file => importWorldInfo(sessionId, file)}
       onSave={request => configureWorldInfo(sessionId, request)}
     />}
   </>
@@ -1201,17 +1208,23 @@ function editableFromProjection(entry: WorldInfoEntryProjection): WorldInfoEdita
   }
 }
 
-function WorldInfoManagerDialog({ worldInfo, onClose, onSave }: {
+function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
   readonly worldInfo: WorldInfoProjection
   readonly onClose: () => void
+  readonly onImport: (file: File) => Promise<void>
   readonly onSave: (request: WorldInfoConfigurationRequest) => Promise<void>
 }) {
+  const importInputRef = useRef<HTMLInputElement>(null)
   const first = worldInfo.books.flatMap(book => book.entries.map(entry => `${book.id}\u0000${entry.index}`))[0]
   const [selectedKey, setSelectedKey] = useState(first)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<WorldInfoEditableEntry>()
   const [saving, setSaving] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [error, setError] = useState<string>()
+  useEffect(() => {
+    if (selectedKey === undefined && first !== undefined) setSelectedKey(first)
+  }, [first, selectedKey])
   const pair = worldInfo.books.flatMap(book => book.entries.map(entry => ({ book, entry })))
     .find(({ book, entry }) => `${book.id}\u0000${entry.index}` === selectedKey)
     ?? worldInfo.books.flatMap(book => book.entries.map(entry => ({ book, entry })))[0]
@@ -1219,9 +1232,9 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onSave }: {
     if (pair === undefined || editing) return
     setDraft(editableFromProjection(pair.entry))
   }, [pair?.book.id, pair?.entry.index, pair?.entry.modified, pair?.entry.deleted, editing])
-  if (pair === undefined) return null
-  const { book, entry } = pair
-  const reason = worldInfoReason(entry)
+  const book = pair?.book
+  const entry = pair?.entry
+  const reason = entry === undefined ? undefined : worldInfoReason(entry)
   const hasOverrides = worldInfo.books.some(item => item.entries.some(candidate => candidate.modified || candidate.deleted))
   const mutate = (request: WorldInfoConfigurationRequest, after?: () => void): void => {
     setSaving(true)
@@ -1232,6 +1245,16 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onSave }: {
     }, (saveError: unknown) => {
       setSaving(false)
       setError(saveError instanceof Error ? saveError.message : String(saveError))
+    })
+  }
+  const importFile = (file: File): void => {
+    setImporting(true)
+    setError(undefined)
+    void onImport(file).then(() => {
+      setImporting(false)
+    }, (importError: unknown) => {
+      setImporting(false)
+      setError(importError instanceof Error ? importError.message : String(importError))
     })
   }
   return <div role="dialog" aria-modal="true" aria-label="世界书" style={{
@@ -1250,11 +1273,31 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onSave }: {
             {worldInfo.books.length} 本 · {worldInfo.books.reduce((sum, item) => sum + item.entries.length, 0)} 条 · 当前激活 {worldInfo.activeCount} 条
           </div>
         </div>
+        <input ref={importInputRef} type="file" accept="application/json,.json" hidden onChange={event => {
+          const file = event.currentTarget.files?.[0]
+          event.currentTarget.value = ''
+          if (file !== undefined) importFile(file)
+        }} />
+        <button type="button" disabled={importing} onClick={() => { importInputRef.current?.click() }} style={{ ...generationButtonStyle, marginLeft: 'auto' }}>
+          {importing ? '导入中…' : '导入世界书'}
+        </button>
         {hasOverrides && <button type="button" disabled={saving} onClick={() => {
           mutate({ operation: 'reset-all', revision: worldInfo.revision }, () => { setEditing(false) })
-        }} style={{ ...generationButtonStyle, marginLeft: 'auto' }}>全部恢复原始设置</button>}
-        <button type="button" aria-label="关闭世界书" onClick={onClose} style={{ background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', marginLeft: hasOverrides ? 0 : 'auto', padding: '3px 6px' }}>×</button>
+        }} style={generationButtonStyle}>全部恢复原始设置</button>}
+        <button type="button" aria-label="关闭世界书" onClick={onClose} style={{ background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', padding: '3px 6px' }}>×</button>
       </header>
+      {pair === undefined && <div style={{ alignItems: 'center', display: 'flex', flex: 1, flexDirection: 'column', justifyContent: 'center', minHeight: '300px', padding: '30px', textAlign: 'center' }}>
+        <div style={{ fontSize: '28px', opacity: .38 }}>◇</div>
+        <h3 style={{ fontSize: '16px', margin: '14px 0 0' }}>还没有世界书</h3>
+        <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '8px 0 0', maxWidth: '430px', opacity: .58 }}>
+          导入 SillyTavern World Info JSON 后会立即用于这段角色对话，不需要发送消息，也不会交给模型判断
+        </p>
+        <button type="button" disabled={importing} onClick={() => { importInputRef.current?.click() }} style={{ ...primaryButtonStyle, marginTop: '18px' }}>
+          {importing ? '正在导入…' : '选择世界书 JSON'}
+        </button>
+        {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.55, marginTop: '14px' }}>{error}</div>}
+      </div>}
+      {pair !== undefined && book !== undefined && entry !== undefined && reason !== undefined && <>
       <div style={{ display: 'flex', flex: 1, flexWrap: 'wrap', minHeight: 0, overflowY: 'auto' }}>
         <nav aria-label="世界书条目" style={{
           borderRight: '1px solid var(--dsw-alias-border-l2, #39393c)', boxSizing: 'border-box',
@@ -1349,6 +1392,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onSave }: {
           {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.55, marginTop: '14px' }}>{error}</div>}
         </main>
       </div>
+      </>}
     </section>
   </div>
 }
@@ -3429,6 +3473,23 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok) throw new Error(response.error.message)
     if (!response.value.matched) throw new Error('当前 Host 未启用世界书管理')
   }
+  const importWorldInfo = async (sessionId: SessionId, file: File): Promise<void> => {
+    if (!/\.json$/iu.test(file.name)) throw new Error('请选择 SillyTavern World Info JSON 文件')
+    const response = await fetch(`${WORLD_INFO_LIBRARY_PATH}?filename=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': file.type || 'application/json' },
+      body: file,
+    })
+    const value = await response.json() as Partial<WorldInfoLibraryUploadResponse> & { readonly error?: string }
+    if (!response.ok || value.upload === undefined) throw new Error(value.error ?? `世界书上传失败（${response.status}）`)
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const request: WorldInfoLibraryLaunchRequest = { format: 0, importId: value.upload.id }
+    const result = await session.command(`/rp-world-info-import ${JSON.stringify(request)}`)
+    if (!result.ok) throw new Error(result.error.message)
+    if (!result.value.matched) throw new Error('当前 Host 未启用世界书导入')
+  }
   const runGeneration = async (
     sessionId: SessionId,
     request: { readonly operation: 'regenerate' | 'continue'; readonly replySeq: number }
@@ -3443,7 +3504,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -3470,6 +3531,9 @@ export function apply(ctx: ClientContext): void {
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-world-info',
+  }, () => null))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-world-info-import',
   }, () => null))
   ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
     name: 'conversation.chat.turnTail',

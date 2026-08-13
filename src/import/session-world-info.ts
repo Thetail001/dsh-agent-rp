@@ -5,6 +5,7 @@ import { parseWorldInfoJson } from './world-info.ts'
 import { WORLD_INFO_IMPORT_DEGRADATIONS } from './types.ts'
 import type { ImportedWorldInfo, WorldInfoImportDegradation } from './types.ts'
 import type { FileAttachmentRef } from './session-character.ts'
+import { decodeWorldInfoLibraryImport } from '../world-info-library-protocol.ts'
 
 /** Model-facing canonical value for one completed World Info import. */
 export interface WorldInfoImportResult {
@@ -54,7 +55,8 @@ function parseResult(value: JsonValue | undefined): WorldInfoImportResult {
   return record as unknown as WorldInfoImportResult
 }
 
-function parseMeta(value: JsonValue | undefined): WorldInfoImportMeta {
+/** Parse replayable World Info metadata from a tool or private command result. */
+export function parseWorldInfoImportMeta(value: JsonValue | undefined): WorldInfoImportMeta {
   const meta = jsonObject(value, 'import_world_info metadata')
   if (meta.format !== 0) throw new Error('import_world_info metadata has an unsupported format')
   const result = parseResult(meta.result)
@@ -84,7 +86,7 @@ function sourceAttachments(events: readonly SessionEvent[], sourceEventSeq: numb
 }
 
 function validateImport(events: readonly SessionEvent[], resultEvent: SessionEvent<'tool/result'>): ActiveSessionWorldInfo {
-  const meta = parseMeta(resultEvent.data.meta)
+  const meta = parseWorldInfoImportMeta(resultEvent.data.meta)
   const result = meta.result
   const worldInfo = parseWorldInfoJson(JSON.stringify(meta.raw))
   const call = resultEvent.sourceEventSeqs?.length === 1 ? events[resultEvent.sourceEventSeqs[0]!] : undefined
@@ -127,6 +129,26 @@ function validateImport(events: readonly SessionEvent[], resultEvent: SessionEve
 export function readActiveSessionWorldInfos(events: readonly SessionEvent[]): ActiveSessionWorldInfo[] {
   const active = new Map<string, ActiveSessionWorldInfo>()
   for (const event of events) {
+    if (event.type === 'command/done' && event.data.kind === 'success') {
+      const direct = decodeWorldInfoLibraryImport(event.data.text)
+      if (direct === undefined) continue
+      const meta = parseWorldInfoImportMeta(direct.meta)
+      const source = events[meta.result.sourceEventSeq]
+      const expectedAttachment = `library:${direct.importId}`
+      if (source?.type !== 'command/run' || source.data.name !== 'rp-world-info-import'
+        || source.seq >= event.seq || String(source.data.commandId) !== String(event.data.commandId)
+        || meta.result.sourceAttachmentId !== expectedAttachment) {
+        throw new Error('世界书导入结果没有对应的命令来源')
+      }
+      const worldInfo = parseWorldInfoJson(JSON.stringify(meta.raw))
+      if (meta.result.name !== (worldInfo.name?.trim() || meta.result.name)
+        || meta.result.entryCount !== worldInfo.lorebook.entries.length
+        || JSON.stringify(meta.result.degradations) !== JSON.stringify(worldInfo.degradations)) {
+        throw new Error('世界书导入结果与来源不一致')
+      }
+      active.set(expectedAttachment, { result: meta.result, meta, worldInfo })
+      continue
+    }
     if (event.type !== 'tool/result' || event.data.message.content[0].isError === true) continue
     const callId = String(event.data.message.content[0].toolCallId)
     const call = events.find(candidate => candidate.type === 'tool/call' && String(candidate.data.callId) === callId)
