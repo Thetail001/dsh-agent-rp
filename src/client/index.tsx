@@ -543,6 +543,42 @@ function CharacterAssetsSection({ detail, sessionId }: {
   </section>
 }
 
+function CharacterLibraryAvatar({ entry, size = 38 }: {
+  readonly entry: CharacterLibrarySummary
+  readonly size?: number
+}) {
+  const [failed, setFailed] = useState(false)
+  useEffect(() => { setFailed(false) }, [entry.id])
+  const image = entry.avatarAvailable && !failed
+  return <span aria-hidden="true" style={{
+    alignItems: 'center', background: `color-mix(in srgb, ${color} 13%, transparent)`,
+    border: `1px solid color-mix(in srgb, ${color} 25%, transparent)`, borderRadius: `${Math.max(9, Math.round(size * .24))}px`,
+    color, display: 'inline-flex', flex: `0 0 ${size}px`, fontSize: `${Math.max(12, Math.round(size * .32))}px`,
+    fontWeight: 650, height: `${size}px`, justifyContent: 'center', overflow: 'hidden', width: `${size}px`,
+  }}>
+    {image
+      ? <img src={`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(entry.id)}/avatar`} alt="" loading="lazy"
+          onError={() => { setFailed(true) }} style={{ height: '100%', objectFit: 'cover', width: '100%' }} />
+      : initials(entry.displayName)}
+  </span>
+}
+
+const characterLibraryNarrowQuery = '(max-width: 720px)'
+
+function subscribeCharacterLibraryWidth(listener: () => void): () => void {
+  const media = window.matchMedia(characterLibraryNarrowQuery)
+  media.addEventListener('change', listener)
+  return () => { media.removeEventListener('change', listener) }
+}
+
+function useNarrowCharacterLibrary(): boolean {
+  return useSyncExternalStore(
+    subscribeCharacterLibraryWidth,
+    () => window.matchMedia(characterLibraryNarrowQuery).matches,
+    () => false,
+  )
+}
+
 function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
   configureWorldInfo,
@@ -1070,6 +1106,7 @@ function CharacterLibraryDialog({
     character: CharacterLibraryDetail, greetingIndex: number, persona?: SessionPersonaSnapshot,
   ) => Promise<void>
 }) {
+  const narrow = useNarrowCharacterLibrary()
   const [collection, setCollection] = useState<CharacterLibraryCollection>('active')
   const [entries, setEntries] = useState<readonly CharacterLibrarySummary[]>()
   const [selected, setSelected] = useState<CharacterLibraryDetail>()
@@ -1193,16 +1230,22 @@ function CharacterLibraryDialog({
   }
   return <div role="dialog" aria-modal="true" aria-label="角色库" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.52)', display: 'flex', inset: 0,
-    justifyContent: 'center', padding: '24px', position: 'fixed', zIndex: 1001,
+    justifyContent: 'center', padding: 'clamp(8px, 3vw, 24px)', position: 'fixed', zIndex: 1001,
   }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
     <section style={{
       background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
       borderRadius: '16px', boxShadow: '0 22px 80px rgba(0,0,0,.36)', display: 'grid',
-      gridTemplateColumns: 'minmax(210px, .78fr) minmax(330px, 1.35fr)', height: 'min(680px, calc(100vh - 48px))',
-      maxWidth: '980px', overflow: 'hidden', width: 'min(980px, calc(100vw - 48px))',
+      gridTemplateColumns: narrow ? 'minmax(0, 1fr)' : 'minmax(min(210px, 42%), .78fr) minmax(0, 1.35fr)',
+      gridTemplateRows: narrow ? 'minmax(240px, .8fr) minmax(0, 1.2fr)' : undefined,
+      height: 'min(680px, calc(100vh - clamp(16px, 6vw, 48px)))',
+      maxWidth: '980px', overflow: 'hidden', width: 'min(980px, calc(100vw - clamp(16px, 6vw, 48px)))',
     }}>
-      <div style={{ borderRight: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <div style={{ padding: '22px 20px 14px' }}>
+      <div style={{
+        borderBottom: narrow ? '1px solid var(--dsw-alias-border-l2, #39393c)' : undefined,
+        borderRight: narrow ? undefined : '1px solid var(--dsw-alias-border-l2, #39393c)',
+        display: 'flex', flexDirection: 'column', minHeight: 0,
+      }}>
+        <div style={{ padding: narrow ? '14px 14px 10px' : '22px 20px 14px' }}>
           <h2 style={{ fontSize: '18px', margin: 0 }}>角色库</h2>
           <p style={{ fontSize: '12px', lineHeight: 1.55, margin: '7px 0 0', opacity: .55 }}>选择角色只会创建新会话，不会改动当前聊天</p>
           <div role="tablist" aria-label="角色库分区" style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '9px', display: 'grid', gap: '3px', gridTemplateColumns: '1fr 1fr', marginTop: '14px', padding: '3px' }}>
@@ -1245,25 +1288,30 @@ function CharacterLibraryDialog({
           </div>}
           {entries?.map(entry => <button key={entry.id} type="button" aria-pressed={selected?.id === entry.id}
             onClick={() => { choose(entry) }} style={{
+              alignItems: 'center',
               background: selected?.id === entry.id ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
               border: selected?.id === entry.id ? `1px solid color-mix(in srgb, ${color} 36%, transparent)` : '1px solid transparent',
-              borderRadius: '10px', color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '11px', textAlign: 'left',
+              borderRadius: '10px', color: 'inherit', cursor: 'pointer', display: 'flex', font: 'inherit', gap: '10px', padding: '9px', textAlign: 'left',
             }}>
-            <div style={{ fontSize: '13px', fontWeight: 620, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {entry.displayName}{loadingId === entry.id ? ' · 读取中' : ''}
-            </div>
-            <div style={{ fontSize: '11px', marginTop: '5px', opacity: .5 }}>
-              V{entry.cardVersion} · {entry.greetingCount} 个开场{entry.worldInfoCount === 0 ? '' : ` · ${entry.worldInfoCount} 条世界书`}
-              {entry.imageAssetCount === 0 ? '' : ` · ${entry.imageAssetCount} 张图片`}
+            <CharacterLibraryAvatar entry={entry} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: '13px', fontWeight: 620, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {entry.displayName}{loadingId === entry.id ? ' · 读取中' : ''}
+              </div>
+              <div style={{ fontSize: '11px', marginTop: '5px', opacity: .5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                V{entry.cardVersion} · {entry.greetingCount} 个开场{entry.worldInfoCount === 0 ? '' : ` · ${entry.worldInfoCount} 条世界书`}
+                {entry.imageAssetCount === 0 ? '' : ` · ${entry.imageAssetCount} 张图片`}
+              </div>
             </div>
           </button>)}
         </div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <header style={{ alignItems: 'center', display: 'flex', padding: '18px 20px 12px' }}>
-          <div>
+          {selected !== undefined && <CharacterLibraryAvatar entry={selected} size={42} />}
+          <div style={{ marginLeft: selected === undefined ? 0 : '11px', minWidth: 0 }}>
             <div style={{ fontSize: '12px', opacity: .5 }}>开始一段新的角色对话</div>
-            <strong style={{ display: 'block', fontSize: '17px', marginTop: '3px' }}>{selected?.displayName ?? '选择角色'}</strong>
+            <strong style={{ display: 'block', fontSize: '17px', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected?.displayName ?? '选择角色'}</strong>
           </div>
           {selected !== undefined && <button type="button" disabled={updating} onClick={updateArchiveState} style={{
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
