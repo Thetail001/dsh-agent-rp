@@ -96,6 +96,13 @@ export class PersonaLibrary {
     return this.get(id)
   }
 
+  /** Remove one reusable Persona without changing Sessions that already copied it. */
+  remove(id: string): PersonaLibraryEntry {
+    const entry = this.get(id)
+    rmSync(this.path(id))
+    return entry
+  }
+
   private path(id: string): string {
     if (!ID_PATTERN.test(id)) throw new Error('Persona id 无效')
     return join(this.root, `${id}.json`)

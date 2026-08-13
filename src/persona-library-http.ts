@@ -54,7 +54,7 @@ function parseSaveRequest(value: unknown): PersonaLibrarySaveRequest {
   return record as unknown as PersonaLibrarySaveRequest
 }
 
-/** Register local Persona list, read, create, and update operations. */
+/** Register local Persona list, read, create, update, and delete operations. */
 export function installPersonaLibraryHttp(ctx: Context, library: PersonaLibrary, server: AgentRpHttpServer): void {
   ctx.effect(() => server.register({
     kind: 'prefix',
@@ -79,8 +79,12 @@ export function installPersonaLibraryHttp(ctx: Context, library: PersonaLibrary,
           json(response, 200, { format: 0, entry: library.save(parseSaveRequest(await readJson(request))) })
           return
         }
-        response.setHeader('allow', 'GET, POST')
-        json(response, request.method === 'GET' || request.method === 'POST' ? 404 : 405, { error: 'not found' })
+        if (request.method === 'DELETE' && suffix !== '' && !suffix.includes('/')) {
+          json(response, 200, { format: 0, entry: library.remove(decodeURIComponent(suffix)) })
+          return
+        }
+        response.setHeader('allow', 'GET, POST, DELETE')
+        json(response, request.method === 'GET' || request.method === 'POST' || request.method === 'DELETE' ? 404 : 405, { error: 'not found' })
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)
         json(response, /库中没有/u.test(message) ? 404 : 400, { error: message })
