@@ -92,9 +92,11 @@ const statusPlaceholder = '<StatusPlaceHolderImpl/>'
 type RoleplayViewMode = 'immersive' | 'debug'
 
 type RoleplayBackgroundChoice = 'auto' | 'off' | number
+type RoleplayExpressionChoice = 'default' | number
 
 const roleplayViewListeners = new Map<SessionId, Set<() => void>>()
 const roleplayBackgroundListeners = new Map<SessionId, Set<() => void>>()
+const roleplayExpressionListeners = new Map<SessionId, Set<() => void>>()
 
 function roleplayViewKey(sessionId: SessionId): string {
   return `dsh.agent-rp.view.${sessionId}`
@@ -150,6 +152,34 @@ function useRoleplayBackground(sessionId: SessionId | undefined): RoleplayBackgr
       if (listeners.size === 0) roleplayBackgroundListeners.delete(sessionId)
     }
   }, () => sessionId === undefined ? 'auto' : readRoleplayBackground(sessionId), () => 'auto')
+}
+
+function roleplayExpressionKey(sessionId: SessionId): string {
+  return `dsh.agent-rp.expression.${sessionId}`
+}
+
+function readRoleplayExpression(sessionId: SessionId): RoleplayExpressionChoice {
+  const value = localStorage.getItem(roleplayExpressionKey(sessionId))
+  return value !== null && /^\d+$/u.test(value) ? Number(value) : 'default'
+}
+
+function setRoleplayExpression(sessionId: SessionId, choice: RoleplayExpressionChoice): void {
+  if (choice === 'default') localStorage.removeItem(roleplayExpressionKey(sessionId))
+  else localStorage.setItem(roleplayExpressionKey(sessionId), String(choice))
+  for (const listener of roleplayExpressionListeners.get(sessionId) ?? []) listener()
+}
+
+function useRoleplayExpression(sessionId: SessionId | undefined): RoleplayExpressionChoice {
+  return useSyncExternalStore(callback => {
+    if (sessionId === undefined) return () => {}
+    const listeners = roleplayExpressionListeners.get(sessionId) ?? new Set<() => void>()
+    listeners.add(callback)
+    roleplayExpressionListeners.set(sessionId, listeners)
+    return () => {
+      listeners.delete(callback)
+      if (listeners.size === 0) roleplayExpressionListeners.delete(sessionId)
+    }
+  }, () => sessionId === undefined ? 'default' : readRoleplayExpression(sessionId), () => 'default')
 }
 
 async function characterLibraryJson<T>(path = ''): Promise<T> {
@@ -374,9 +404,10 @@ function roleplayDisplayName(summary: SessionSummary | undefined, projection: Ag
   return summary?.title?.trim() || projection.characterName
 }
 
-function Avatar({ projection, loadAvatar, size = 40 }: {
+function Avatar({ projection, loadAvatar, imageUrl, size = 40 }: {
   readonly projection: AgentRpProjection
   readonly loadAvatar: HeaderProps['loadAvatar']
+  readonly imageUrl?: string
   readonly size?: number
 }) {
   const [src, setSrc] = useState<string>()
@@ -385,6 +416,10 @@ function Avatar({ projection, loadAvatar, size = 40 }: {
     let objectUrl: string | undefined
     const attachmentId = projection.avatarAttachmentId
     const libraryId = projection.avatarLibraryId
+    if (imageUrl !== undefined) {
+      setSrc(imageUrl)
+      return () => { current = false }
+    }
     if (attachmentId === undefined && libraryId === undefined) {
       setSrc(undefined)
       return () => { current = false }
@@ -404,7 +439,7 @@ function Avatar({ projection, loadAvatar, size = 40 }: {
       current = false
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl)
     }
-  }, [loadAvatar, projection.avatarAttachmentId, projection.avatarLibraryId])
+  }, [imageUrl, loadAvatar, projection.avatarAttachmentId, projection.avatarLibraryId])
   return <span style={{
     alignItems: 'center',
     background: `color-mix(in srgb, ${color} 16%, transparent)`,
@@ -439,6 +474,7 @@ function CharacterAssetsSection({ detail, sessionId }: {
   readonly sessionId?: SessionId
 }) {
   const backgroundChoice = useRoleplayBackground(sessionId)
+  const expressionChoice = useRoleplayExpression(sessionId)
   const backgrounds = backgroundAssets(detail)
   const expressions = detail.imageAssets.filter(asset => asset.type === 'emotion' || asset.type === 'expression')
   if (backgrounds.length + expressions.length === 0) return null
@@ -472,9 +508,25 @@ function CharacterAssetsSection({ detail, sessionId }: {
       </div>
     </>}
     {expressions.length > 0 && <>
-      <div style={{ fontSize: '12px', margin: backgrounds.length === 0 ? '0 0 8px' : '16px 0 8px', opacity: .64 }}>表情资源</div>
+      <div style={{ alignItems: 'center', display: 'flex', fontSize: '12px', margin: backgrounds.length === 0 ? '0 0 8px' : '16px 0 8px' }}>
+        <span style={{ opacity: .64 }}>表情资源</span>
+        {sessionId !== undefined && <button type="button" onClick={() => { setRoleplayExpression(sessionId, 'default') }} style={{
+          background: expressionChoice === 'default' ? `color-mix(in srgb, ${color} 14%, transparent)` : 'transparent',
+          border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '7px', color: 'inherit',
+          cursor: 'pointer', font: 'inherit', fontSize: '10px', marginLeft: 'auto', padding: '4px 7px',
+        }}>默认头像</button>}
+      </div>
       <div style={{ display: 'grid', gap: '7px', gridTemplateColumns: 'repeat(auto-fill, minmax(64px, 1fr))' }}>
-        {expressions.map(asset => <figure key={asset.index} style={{ margin: 0, minWidth: 0 }}>
+        {expressions.map(asset => <button key={asset.index} type="button" aria-label={`使用表情 ${asset.name || asset.index + 1}`}
+          aria-pressed={sessionId !== undefined && expressionChoice === asset.index}
+          disabled={sessionId === undefined} onClick={() => { if (sessionId !== undefined) setRoleplayExpression(sessionId, asset.index) }} style={{
+            background: sessionId !== undefined && expressionChoice === asset.index
+              ? `color-mix(in srgb, ${color} 14%, transparent)` : 'transparent',
+            border: sessionId !== undefined && expressionChoice === asset.index
+              ? `1px solid color-mix(in srgb, ${color} 48%, transparent)` : '1px solid transparent',
+            borderRadius: '9px', color: 'inherit', cursor: sessionId === undefined ? 'default' : 'pointer',
+            font: 'inherit', margin: 0, minWidth: 0, padding: '3px',
+          }}>
           <img src={characterLibraryImageUrl(detail.id, asset.index)} alt={asset.name || '角色表情'} loading="lazy" style={{
             aspectRatio: '1', background: 'color-mix(in srgb, currentColor 5%, transparent)',
             border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '8px', display: 'block', objectFit: 'contain', width: '100%',
@@ -482,7 +534,7 @@ function CharacterAssetsSection({ detail, sessionId }: {
           <figcaption style={{ fontSize: '10px', marginTop: '4px', opacity: .48, overflow: 'hidden', textAlign: 'center', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {asset.name || `表情 ${asset.index + 1}`}
           </figcaption>
-        </figure>)}
+        </button>)}
       </div>
     </>}
   </section>
@@ -507,6 +559,7 @@ function RoleplayHeader({
   const [renaming, setRenaming] = useState(false)
   const viewMode = useRoleplayViewMode(sessionId)
   const characterDetail = useCharacterDetail(projection?.avatarLibraryId)
+  const expressionChoice = useRoleplayExpression(sessionId)
   const rootRef = useRef<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
     if (viewMode === 'debug') return
@@ -527,6 +580,11 @@ function RoleplayHeader({
   const displayProjection = displayName === projection.characterName
     ? projection
     : { ...projection, characterName: displayName }
+  const expression = expressionChoice === 'default' ? undefined : characterDetail?.imageAssets.find(asset =>
+    (asset.type === 'emotion' || asset.type === 'expression') && asset.index === expressionChoice)
+  const expressionUrl = expression === undefined || projection.avatarLibraryId === undefined
+    ? undefined
+    : characterLibraryImageUrl(projection.avatarLibraryId, expression.index)
   const imported = projection.importedMessageCount > 0
   const status = projection.frontend === undefined || projection.mvu === undefined
     ? undefined
@@ -542,7 +600,7 @@ function RoleplayHeader({
     : cardFrameSource(statusHtml, projection.mvu.statData, characterDetail)
   return <>
     <div ref={rootRef} data-agent-rp-header style={{ alignItems: 'center', display: 'flex', gap: '10px', marginRight: 'auto', minWidth: 0 }}>
-      <Avatar projection={displayProjection} loadAvatar={loadAvatar} />
+      <Avatar projection={displayProjection} loadAvatar={loadAvatar} {...(expressionUrl === undefined ? {} : { imageUrl: expressionUrl })} />
       <div style={{ minWidth: 0 }}>
         <div style={{ alignItems: 'baseline', display: 'flex', gap: '8px', minWidth: 0 }}>
           <strong style={{ fontSize: '15px', fontWeight: 620, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -592,7 +650,7 @@ function RoleplayHeader({
         boxShadow: '-18px 0 44px rgba(0,0,0,.2)', maxWidth: '92vw', overflowY: 'auto', padding: '24px', width: '380px',
       }}>
         <div style={{ alignItems: 'center', display: 'flex', gap: '13px' }}>
-          <Avatar projection={displayProjection} loadAvatar={loadAvatar} size={54} />
+          <Avatar projection={displayProjection} loadAvatar={loadAvatar} {...(expressionUrl === undefined ? {} : { imageUrl: expressionUrl })} size={54} />
           <div style={{ minWidth: 0 }}>
             <h2 style={{ fontSize: '18px', margin: 0 }}>{displayName}</h2>
             <div style={{ fontSize: '12px', marginTop: '5px', opacity: 0.52 }}>
