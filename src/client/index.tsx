@@ -167,6 +167,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly listPersonas: () => Promise<readonly PersonaLibraryEntry[]>
   readonly savePersona: (request: PersonaLibrarySaveRequest) => Promise<PersonaLibraryEntry>
   readonly deletePersona: (id: string) => Promise<PersonaLibraryEntry>
+  readonly applyPersona: (sessionId: SessionId, persona?: SessionPersonaSnapshot) => Promise<void>
 }
 
 type ComposerDockProps = PropsRuntime<'conversation.composer.dock'>
@@ -732,6 +733,161 @@ function SillyTavernImportDialog({ onClose, onImport }: {
   </div>
 }
 
+function PersonaManagerDialog({ current, listPersonas, savePersona, deletePersona, onApply, onClose }: {
+  readonly current?: SessionPersonaSnapshot
+  readonly listPersonas: HeaderProps['listPersonas']
+  readonly savePersona: HeaderProps['savePersona']
+  readonly deletePersona: HeaderProps['deletePersona']
+  readonly onApply: (persona?: SessionPersonaSnapshot) => Promise<void>
+  readonly onClose: () => void
+}) {
+  const [entries, setEntries] = useState<readonly PersonaLibraryEntry[]>()
+  const [selectedId, setSelectedId] = useState(current?.id ?? '')
+  const [editingId, setEditingId] = useState<string>()
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [busy, setBusy] = useState<'apply' | 'save' | 'delete'>()
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [error, setError] = useState<string>()
+  useEffect(() => {
+    let active = true
+    void listPersonas().then(value => {
+      if (active) setEntries(value)
+    }, reason => {
+      if (active) setError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { active = false }
+  }, [listPersonas])
+  const selected = entries?.find(entry => entry.id === selectedId)
+    ?? (current?.id === selectedId ? current : undefined)
+  const edit = (persona?: Pick<SessionPersonaSnapshot, 'id' | 'name' | 'description'>): void => {
+    setEditing(true)
+    setEditingId(persona?.id)
+    setName(persona?.name ?? '')
+    setDescription(persona?.description ?? '')
+    setConfirmDelete(false)
+    setError(undefined)
+  }
+  const apply = (persona?: SessionPersonaSnapshot): void => {
+    setBusy('apply')
+    setError(undefined)
+    void onApply(persona).then(onClose, reason => {
+      setBusy(undefined)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }
+  return <div role="dialog" aria-modal="true" aria-label="管理你的身份" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.58)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1220,
+  }} onMouseDown={event => { if (event.target === event.currentTarget && busy === undefined) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+      borderRadius: '16px', boxShadow: '0 24px 80px rgba(0,0,0,.42)', maxHeight: 'min(720px, calc(100vh - 36px))',
+      overflowY: 'auto', padding: '22px', width: 'min(94vw, 520px)',
+    }}>
+      <header style={{ alignItems: 'center', display: 'flex', gap: '12px' }}>
+        <div>
+          <h2 style={{ fontSize: '18px', margin: 0 }}>你的身份</h2>
+          <p style={{ fontSize: '12px', lineHeight: 1.55, margin: '6px 0 0', opacity: .55 }}>更改从下一次回复开始生效，不会改写已有聊天</p>
+        </div>
+        <button type="button" aria-label="关闭身份管理" disabled={busy !== undefined} onClick={onClose} style={{
+          background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', marginLeft: 'auto', padding: '4px',
+        }}>×</button>
+      </header>
+      {current === undefined ? <div style={{
+        background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '10px', fontSize: '12px', lineHeight: 1.6,
+        marginTop: '18px', opacity: .62, padding: '11px 12px',
+      }}>当前会话没有设置 Persona</div> : <div style={{
+        background: `color-mix(in srgb, ${color} 11%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 28%, transparent)`,
+        borderRadius: '10px', marginTop: '18px', padding: '11px 12px',
+      }}>
+        <div style={{ fontSize: '11px', opacity: .5 }}>当前会话</div>
+        <strong style={{ display: 'block', fontSize: '14px', marginTop: '3px' }}>{current.name}</strong>
+        {current.description !== '' && <div style={{ fontSize: '12px', lineHeight: 1.6, marginTop: '5px', opacity: .62, whiteSpace: 'pre-wrap' }}>{current.description}</div>}
+      </div>}
+      <div style={{ alignItems: 'center', display: 'flex', marginTop: '18px' }}>
+        <label htmlFor="agent-rp-persona-manager-select" style={{ fontSize: '12px', fontWeight: 620, opacity: .64 }}>选择已保存的身份</label>
+        <button type="button" onClick={() => { edit() }} style={{ background: 'transparent', border: 0, color, cursor: 'pointer', font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: 0 }}>新建</button>
+      </div>
+      <select id="agent-rp-persona-manager-select" value={selectedId} disabled={entries === undefined || busy !== undefined} onChange={event => {
+        setSelectedId(event.target.value)
+        setConfirmDelete(false)
+      }} style={{
+        background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+        borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', marginTop: '7px', padding: '9px 10px', width: '100%',
+      }}>
+        <option value="">{entries === undefined ? '正在读取…' : entries.length === 0 ? '还没有保存的身份' : '选择身份'}</option>
+        {entries?.map(persona => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
+        {current !== undefined && entries?.some(persona => persona.id === current.id) === false
+          && <option value={current.id}>{current.name}（会话快照）</option>}
+      </select>
+      {selected !== undefined && <div style={{ marginTop: '8px' }}>
+        <div style={{ fontSize: '12px', lineHeight: 1.6, opacity: .58, whiteSpace: 'pre-wrap' }}>{selected.description || '只有称呼，没有额外人物设定'}</div>
+        <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
+          {entries?.some(entry => entry.id === selected.id) === true && <button type="button" onClick={() => { edit(selected) }} style={{ background: 'transparent', border: 0, color, cursor: 'pointer', font: 'inherit', fontSize: '11px', padding: 0 }}>编辑</button>}
+          {entries?.some(entry => entry.id === selected.id) === true && <button type="button" disabled={busy !== undefined} onClick={() => {
+            if (!confirmDelete) { setConfirmDelete(true); return }
+            setBusy('delete')
+            setError(undefined)
+            void deletePersona(selected.id).then(() => {
+              setEntries(value => (value ?? []).filter(entry => entry.id !== selected.id))
+              setSelectedId(current?.id === selected.id ? current.id : '')
+              setConfirmDelete(false)
+              setBusy(undefined)
+            }, reason => {
+              setBusy(undefined)
+              setError(reason instanceof Error ? reason.message : String(reason))
+            })
+          }} style={{ background: 'transparent', border: 0, color: confirmDelete ? '#e88989' : 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: confirmDelete ? 1 : .48, padding: 0 }}>{busy === 'delete' ? '正在移除…' : confirmDelete ? '确认从身份库移除' : '从身份库移除'}</button>}
+          {confirmDelete && <button type="button" onClick={() => { setConfirmDelete(false) }} style={{ background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .48, padding: 0 }}>取消</button>}
+        </div>
+      </div>}
+      {editing ? <div style={{
+        background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+        borderRadius: '10px', display: 'grid', gap: '9px', marginTop: '14px', padding: '11px',
+      }}>
+        <input value={name} maxLength={120} placeholder="称呼（角色会这样称呼你）" onChange={event => { setName(event.target.value) }} style={{
+          background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #414147)', borderRadius: '8px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '8px 9px', width: '100%',
+        }} />
+        <textarea value={description} maxLength={12000} rows={4} placeholder="身份、外貌、性格，或你与角色的关系" onChange={event => { setDescription(event.target.value) }} style={{
+          background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #414147)', borderRadius: '8px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', lineHeight: 1.55, padding: '8px 9px', resize: 'vertical', width: '100%',
+        }} />
+        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+          <button type="button" onClick={() => { setEditing(false); setEditingId(undefined); setName(''); setDescription('') }} style={{ background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '7px 10px' }}>取消</button>
+          <button type="button" disabled={busy !== undefined || name.trim() === ''} onClick={() => {
+            setBusy('save')
+            setError(undefined)
+            void savePersona({ format: 0, ...(editingId === undefined ? {} : { id: editingId }), name, description }).then(entry => {
+              setEntries(value => [entry, ...(value ?? []).filter(item => item.id !== entry.id)])
+              setSelectedId(entry.id)
+              setEditing(false)
+              setEditingId(undefined)
+              setName('')
+              setDescription('')
+              setBusy(undefined)
+              apply({ id: entry.id, name: entry.name, description: entry.description })
+            }, reason => {
+              setBusy(undefined)
+              setError(reason instanceof Error ? reason.message : String(reason))
+            })
+          }} style={{ background: color, border: 0, borderRadius: '8px', color: '#fff', cursor: 'pointer', font: 'inherit', opacity: name.trim() === '' ? .45 : 1, padding: '7px 11px' }}>{busy === 'save' ? '正在保存…' : '保存并应用'}</button>
+        </div>
+      </div> : null}
+      {error !== undefined && <p role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.55, margin: '12px 0 0' }}>{error}</p>}
+      <footer style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '9px', justifyContent: 'flex-end', marginTop: '20px', paddingTop: '14px' }}>
+        {current !== undefined && <button type="button" disabled={busy !== undefined} onClick={() => { apply() }} style={{
+          background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '9px', color: 'inherit', cursor: 'pointer', font: 'inherit', marginRight: 'auto', padding: '8px 12px',
+        }}>清除当前身份</button>}
+        <button type="button" disabled={busy !== undefined} onClick={onClose} style={{ background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '9px', color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '8px 12px' }}>取消</button>
+        <button type="button" disabled={selected === undefined || busy !== undefined} onClick={() => {
+          if (selected !== undefined) apply({ id: selected.id, name: selected.name, description: selected.description })
+        }} style={{ background: color, border: 0, borderRadius: '9px', color: '#fff', cursor: 'pointer', font: 'inherit', opacity: selected === undefined ? .45 : 1, padding: '8px 13px' }}>{busy === 'apply' ? '正在应用…' : '应用到本会话'}</button>
+      </footer>
+    </section>
+  </div>
+}
+
 type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick<HeaderProps,
   | 'listCharacters'
   | 'readCharacter'
@@ -912,7 +1068,7 @@ function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
   configureWorldInfo, importWorldInfo,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, startCharacterSession,
-  listPersonas, savePersona, deletePersona,
+  listPersonas, savePersona, deletePersona, applyPersona,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projected = useProjection('agentRp')
@@ -923,6 +1079,7 @@ function RoleplayHeader({
   const [worldInfoOpen, setWorldInfoOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [migrationOpen, setMigrationOpen] = useState(false)
+  const [personaOpen, setPersonaOpen] = useState(false)
   const [aliasDraft, setAliasDraft] = useState('')
   const [aliasError, setAliasError] = useState<string>()
   const [renaming, setRenaming] = useState(false)
@@ -989,6 +1146,11 @@ function RoleplayHeader({
         background: `color-mix(in srgb, ${color} 10%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>角色库</button>
+      <button type="button" onClick={() => { setPersonaOpen(true) }} style={{
+        background: projection.persona === undefined ? 'transparent' : `color-mix(in srgb, ${color} 12%, transparent)`,
+        border: `1px solid ${projection.persona === undefined ? 'var(--dsw-alias-border-l2, #444)' : `color-mix(in srgb, ${color} 34%, transparent)`}`,
+        borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
+      }}>身份{projection.persona === undefined ? '' : ` · ${projection.persona.name}`}</button>
       <button type="button" onClick={() => { setMigrationOpen(true) }} style={{
         background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
         color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
@@ -1016,6 +1178,14 @@ function RoleplayHeader({
     </div>
     {migrationOpen && <SillyTavernImportDialog onClose={() => { setMigrationOpen(false) }}
       onImport={(chatFile, cardFile) => migrateChat(sessionId, chatFile, cardFile)} />}
+    {personaOpen && <PersonaManagerDialog
+      {...(projection.persona === undefined ? {} : { current: projection.persona })}
+      listPersonas={listPersonas}
+      savePersona={savePersona}
+      deletePersona={deletePersona}
+      onApply={persona => applyPersona(sessionId, persona)}
+      onClose={() => { setPersonaOpen(false) }}
+    />}
     {open && <div role="dialog" aria-modal="true" aria-label={`${displayName}的角色信息`} style={{
       alignItems: 'stretch', background: 'rgba(0,0,0,.48)', display: 'flex', inset: 0,
       justifyContent: 'flex-end', position: 'fixed', zIndex: 1000,
@@ -3423,6 +3593,17 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `Persona 移除失败（${response.status}）`)
     return value.entry
   }
+  const applyPersona = async (sessionId: SessionId, persona?: SessionPersonaSnapshot): Promise<void> => {
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const response = await session.command(`/rp-persona ${JSON.stringify({
+      format: 0,
+      ...(persona === undefined ? {} : { persona }),
+    })}`)
+    if (!response.ok) throw new Error(response.error.message)
+    if (!response.value.matched) throw new Error('当前 Host 未启用身份管理')
+  }
   const importPreset = async (sessionId: SessionId, file: File): Promise<void> => {
     if (!/\.json$/iu.test(file.name)) throw new Error('请选择 SillyTavern 预设 JSON 文件')
     const response = await fetch(`${PRESET_LIBRARY_PATH}?filename=${encodeURIComponent(file.name)}`, {
@@ -3489,7 +3670,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -3504,6 +3685,9 @@ export function apply(ctx: ClientContext): void {
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-chat-import',
+  }, () => null))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-persona',
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',

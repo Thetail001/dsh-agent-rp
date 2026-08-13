@@ -39,12 +39,14 @@ export function renderCharacterPrompt(
  * Render the identity contract for a chat import that has history but no Character Card.
  * @param characterName - character named by the SillyTavern chat header.
  * @param userName - optional user name retained by that header.
+ * @param userPersona - optional Persona description selected for the current Session.
  * @returns model-visible prompt that continues imported history without applying the deployment default persona.
  */
-export function renderImportedChatPrompt(characterName: string, userName?: string): string {
+export function renderImportedChatPrompt(characterName: string, userName?: string, userPersona?: string): string {
   return [
     `你是${characterName}。直接以${characterName}的身份延续当前会话。`,
     ...(userName === undefined ? [] : [`与您对话的人在导入记录中名为${userName}。`]),
+    ...(userPersona?.trim() ? [`对方当前选择的 Persona：\n${userPersona.trim()}`] : []),
     '以已导入的对话历史为准；缺少角色卡时，不要补用其他角色的身份、经历、场景或关系设定。',
     CHARACTER_BEHAVIOR,
     MEMORY_BEHAVIOR,

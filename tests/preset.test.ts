@@ -236,6 +236,7 @@ test('mounts commands when public DSH omits prompt extension gateways', async (c
   assert.deepEqual(commands, [
     'rp-character-library',
     'rp-chat-import',
+    'rp-persona',
     'rp-preset-configure',
     'rp-preset-library',
     'rp-generation',

@@ -91,7 +91,8 @@ import {
 } from './character-library-protocol.ts'
 import { installPersonaLibraryHttp } from './persona-library-http.ts'
 import { PersonaLibrary } from './persona-library.ts'
-import { parseSessionPersona, readSessionPersona } from './session-persona.ts'
+import { parseSessionPersona, resolveSessionPersonaIdentity } from './session-persona.ts'
+import { executePersonaCommand } from './persona-command.ts'
 import { executeSillyTavernChatCommand } from './sillytavern-chat-command.ts'
 import { installSillyTavernChatHttp } from './sillytavern-chat-http.ts'
 import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
@@ -463,6 +464,13 @@ export function installAgentRp(
     handler: invocation => executeSillyTavernChatCommand(chatLibrary, characterLibrary, invocation),
   })
   commands.register({
+    name: 'rp-persona',
+    description: 'change this roleplay Session Persona',
+    input: { hint: '<private Persona payload>' },
+    recordInput: false,
+    handler: executePersonaCommand,
+  })
+  commands.register({
     name: 'rp-preset-configure',
     description: 'update this roleplay Session preset',
     input: { hint: '<private preset-manager payload>' },
@@ -631,9 +639,10 @@ export function installAgentRp(
       if (active === undefined) {
         const importedChat = readSillyTavernChatIdentity(agent.session.events)
         if (importedChat !== undefined) {
+          const identity = resolveSessionPersonaIdentity(agent.session.events, undefined, importedChat.userName)
           return [
             ...standaloneLore.beforeCharacter,
-            renderImportedChatPrompt(importedChat.characterName, importedChat.userName),
+            renderImportedChatPrompt(importedChat.characterName, identity.userName, identity.persona?.description),
             ...standaloneLore.afterCharacter,
           ].join('\n\n')
         }
@@ -642,8 +651,12 @@ export function installAgentRp(
       const importedCard = cardFromImportMeta(active.meta)
       const cardLorebook = configuredSources.find(value => value.source.source === 'character')?.configured
       const card = cardLorebook === undefined ? importedCard : { ...importedCard, lorebook: cardLorebook }
-      const persona = readSessionPersona(agent.session.events)
-      const userName = persona?.name ?? active.result.userName ?? readSillyTavernChatIdentity(agent.session.events)?.userName
+      const identity = resolveSessionPersonaIdentity(
+        agent.session.events,
+        active.result.userName,
+        readSillyTavernChatIdentity(agent.session.events)?.userName,
+      )
+      const { persona, userName } = identity
       const mvu = readCurrentMvuState(card, agent.session.events)
       const characterLore = renderImportedLorebook(card, agent.session, pendingMessages, mvu?.statData)
       const preset = readActiveSessionPreset(agent.session.events)?.preset

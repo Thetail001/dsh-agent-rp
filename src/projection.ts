@@ -27,6 +27,7 @@ import {
 import type { WorldInfoConfigurationState } from './world-info-configuration-types.ts'
 import { decodeSillyTavernChatCommandRecord, type SillyTavernChatCommandRecord } from './sillytavern-chat-protocol.ts'
 import { decodeWorldInfoLibraryImport } from './world-info-library-protocol.ts'
+import { decodePersonaCommandRecord } from './persona-command-protocol.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -75,6 +76,7 @@ interface AgentRpProjectionState {
   readonly worldInfoConfiguration: WorldInfoConfigurationState
   readonly surface: readonly { readonly seq: number; readonly text?: string }[]
   readonly calls: Readonly<Record<string, ImportCall>>
+  readonly personaCommands: Readonly<Record<string, number>>
   readonly mvu?: AgentRpProjection['mvu']
   readonly preset?: AgentRpProjection['preset']
   readonly presetState?: ActiveSessionPreset
@@ -458,12 +460,47 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     worldInfoConfiguration: { format: 0, revision: 0, overrides: [] },
     surface: [],
     calls: {},
+    personaCommands: {},
     presetLibrary: [],
     generations: {},
   }),
   apply(state, event) {
     const surface = applySurface(state.surface, event)
     const withSurface = surface === state.surface ? state : { ...state, surface }
+    if (event.type === 'command/run' && event.data.name === 'rp-persona') {
+      return {
+        ...withSurface,
+        personaCommands: { ...withSurface.personaCommands, [String(event.data.commandId)]: event.seq },
+      }
+    }
+    if (event.type === 'command/done') {
+      const commandId = String(event.data.commandId)
+      const sourceEventSeq = withSurface.personaCommands[commandId]
+      if (sourceEventSeq !== undefined) {
+        const { [commandId]: _completed, ...personaCommands } = withSurface.personaCommands
+        if (event.data.kind !== 'success') return { ...withSurface, personaCommands }
+        try {
+          const record = decodePersonaCommandRecord(event.data.text)
+          if (record === undefined || record.sourceEventSeq !== sourceEventSeq) {
+            return { ...withSurface, personaCommands }
+          }
+          const { persona: _persona, userName: _userName, ...character } = withSurface.character
+          return {
+            ...withSurface,
+            personaCommands,
+            character: {
+              ...character,
+              ...(record.persona === undefined ? {} : { persona: record.persona, userName: record.persona.name }),
+              ...(record.persona !== undefined || record.fallbackUserName === undefined
+                ? {}
+                : { userName: record.fallbackUserName }),
+            },
+          }
+        } catch {
+          return { ...withSurface, personaCommands }
+        }
+      }
+    }
     const generation = event.type === 'command/done' && event.data.kind === 'success'
       ? decodeGenerationState(event.data.text)
       : event.type === ('agent-rp/generation-state' as SessionEvent['type'])
@@ -814,5 +851,5 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     })),
     ...(state.currentReplySeq === undefined ? {} : { currentReplySeq: state.currentReplySeq }),
   }),
-  stateVersion: 5,
+  stateVersion: 6,
 }

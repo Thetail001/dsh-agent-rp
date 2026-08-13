@@ -41,6 +41,13 @@ test('continues an imported chat identity without the deployment default persona
   assert.doesNotMatch(prompt, /岚|旧书修复铺/u)
 })
 
+test('adds a selected Persona to an imported chat without a Character Card', () => {
+  const prompt = renderImportedChatPrompt('白露', '小满', '怕冷，喜欢旧书。')
+
+  assert.match(prompt, /名为小满/u)
+  assert.match(prompt, /怕冷，喜欢旧书/u)
+})
+
 test('resolves stable SillyTavern identity macros across imported card prose', () => {
   const card = parseCharacterCardJson(JSON.stringify({
     spec: 'chara_card_v2',
