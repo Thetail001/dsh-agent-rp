@@ -11,6 +11,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
 import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
+import { projectPresetPromptSections } from '../preset-sections.ts'
 import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay } from '../frontend-regex.ts'
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
 
@@ -351,17 +352,38 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
   const [reasoningEffort, setReasoningEffort] = useState(preset.generation.reasoningEffort ?? '')
   const [query, setQuery] = useState('')
   const [section, setSection] = useState<'prompts' | 'regex'>('prompts')
+  const [collapsedPromptSections, setCollapsedPromptSections] = useState<ReadonlySet<string>>(() => new Set(
+    projectPresetPromptSections(preset.prompts).slice(1).map(group => group.key),
+  ))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string>()
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  const visiblePrompts = prompts.filter(prompt => normalizedQuery === ''
-    || prompt.name.toLocaleLowerCase().includes(normalizedQuery)
-    || prompt.identifier.toLocaleLowerCase().includes(normalizedQuery))
+  const promptSections = projectPresetPromptSections(prompts)
+  const visiblePromptSections = promptSections.flatMap((group) => {
+    if (normalizedQuery === '') return [group]
+    const groupMatches = group.title.toLocaleLowerCase().includes(normalizedQuery)
+    const matchingPrompts = groupMatches ? group.prompts : group.prompts.filter(prompt =>
+      prompt.name.toLocaleLowerCase().includes(normalizedQuery)
+      || prompt.identifier.toLocaleLowerCase().includes(normalizedQuery))
+    return matchingPrompts.length === 0 ? [] : [{
+      ...group,
+      prompts: matchingPrompts,
+      enabledCount: matchingPrompts.filter(prompt => prompt.enabled).length,
+    }]
+  })
   const visibleRegex = regexScripts.filter(script => normalizedQuery === ''
     || script.scriptName.toLocaleLowerCase().includes(normalizedQuery))
   const attached = prompts.filter(prompt => prompt.attached)
   const enabledCount = attached.filter(prompt => prompt.enabled).length
+  const togglePromptSection = (key: string): void => {
+    setCollapsedPromptSections((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
   const setPrompt = (identifier: string, update: (prompt: PresetPromptProjection) => PresetPromptProjection): void => {
     setPrompts(current => current.map(prompt => prompt.identifier === identifier ? update(prompt) : prompt))
   }
@@ -462,12 +484,25 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
             <span>{section === 'prompts' ? '提示模块' : '预设正则'}</span><span>{section === 'prompts' ? '顺序与开关' : '开关'}</span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minHeight: '220px', overflowY: 'auto', paddingRight: '4px' }}>
-            {section === 'prompts' && visiblePrompts.map((prompt) => {
-              const attachedIndex = prompts.filter(item => item.attached).findIndex(item => item.identifier === prompt.identifier)
-              return <div key={prompt.identifier} style={{
+            {section === 'prompts' && visiblePromptSections.map((group) => {
+              const collapsed = normalizedQuery === '' && collapsedPromptSections.has(group.key)
+              return <section key={group.key} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <button type="button" aria-expanded={!collapsed} onClick={() => { togglePromptSection(group.key) }} style={{
+                  alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #202024)',
+                  border: '1px solid var(--dsw-alias-border-l2, #34343a)', borderRadius: '10px', color: 'inherit',
+                  cursor: 'pointer', display: 'grid', font: 'inherit', gap: '8px', gridTemplateColumns: '18px minmax(0, 1fr) auto',
+                  minHeight: '42px', padding: '8px 11px', textAlign: 'left', width: '100%',
+                }}>
+                  <span aria-hidden="true" style={{ fontSize: '12px', opacity: 0.58, transform: `rotate(${collapsed ? 0 : 90}deg)`, transition: 'transform .14s ease' }}>›</span>
+                  <span style={{ fontSize: '13px', fontWeight: 620, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.title}</span>
+                  <span style={{ fontSize: '10px', opacity: 0.46 }}>{group.enabledCount}/{group.prompts.length} 启用</span>
+                </button>
+                {!collapsed && group.prompts.map((prompt) => {
+                  const attachedIndex = prompts.filter(item => item.attached).findIndex(item => item.identifier === prompt.identifier)
+                  return <div key={prompt.identifier} style={{
                 alignItems: 'center', background: prompt.enabled ? `color-mix(in srgb, ${color} 9%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
                 border: `1px solid ${prompt.enabled ? `color-mix(in srgb, ${color} 24%, transparent)` : 'var(--dsw-alias-border-l2, #34343a)'}`,
-                borderRadius: '10px', display: 'grid', gap: '8px', gridTemplateColumns: 'minmax(0, 1fr) auto', minHeight: '52px', padding: '8px 9px 8px 12px',
+                borderRadius: '10px', display: 'grid', gap: '8px', gridTemplateColumns: 'minmax(0, 1fr) auto', marginLeft: '8px', minHeight: '52px', padding: '8px 9px 8px 12px',
                 opacity: prompt.attached ? 1 : 0.62,
               }}>
                 <div style={{ minWidth: 0 }}>
@@ -492,7 +527,9 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
                   }} /></button> : <span style={{ fontSize: '10px', opacity: 0.44, padding: '0 3px' }}>固定</span>}
                   {!prompt.attached && <button type="button" onClick={() => { setPrompt(prompt.identifier, value => ({ ...value, attached: true })) }} style={miniButtonStyle}>加入</button>}
                 </div>
-              </div>
+                  </div>
+                })}
+              </section>
             })}
             {section === 'regex' && visibleRegex.map(script => <div key={script.index} style={{
               alignItems: 'center', background: !script.disabled ? `color-mix(in srgb, ${color} 9%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
@@ -515,7 +552,7 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
                 background: '#fff', borderRadius: '50%', display: 'block', height: '18px', transform: `translateX(${!script.disabled ? 17 : 0}px)`, transition: 'transform .14s ease', width: '18px',
               }} /></button>
             </div>)}
-            {((section === 'prompts' && visiblePrompts.length === 0) || (section === 'regex' && visibleRegex.length === 0)) && <div style={{ fontSize: '13px', opacity: 0.52, padding: '32px 10px', textAlign: 'center' }}>没有匹配的{section === 'prompts' ? '模块' : '正则脚本'}</div>}
+            {((section === 'prompts' && visiblePromptSections.length === 0) || (section === 'regex' && visibleRegex.length === 0)) && <div style={{ fontSize: '13px', opacity: 0.52, padding: '32px 10px', textAlign: 'center' }}>没有匹配的{section === 'prompts' ? '模块' : '正则脚本'}</div>}
           </div>
         </div>
         <aside className="agent-rp-preset-generation" style={{ borderLeft: '1px solid var(--dsw-alias-border-l2, #343438)', paddingLeft: '16px' }}>
