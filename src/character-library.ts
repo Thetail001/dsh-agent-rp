@@ -238,6 +238,7 @@ export class CharacterLibrary {
         type: image.type,
         name: image.name,
         mediaType: image.mediaType,
+        sourceUri: charx.card.assets?.[image.index]?.uri ?? '',
         data: image.data,
       }))
       return {

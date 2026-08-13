@@ -240,18 +240,27 @@ window._={
 function cardFrameSource(
   source: string,
   statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined,
+  character?: CharacterLibraryDetail,
 ): string {
-  const adapted = source.replaceAll('window.parent?.document ?? window.document', 'window.document')
-  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<script>${mvuFrameRuntime(statData)}window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>`
+  const assets = (character?.imageAssets ?? []).map(asset => ({
+    ...asset,
+    url: new URL(characterLibraryImageUrl(character!.id, asset.index), window.location.origin).href,
+  }))
+  const adapted = assets.reduce((html, asset) => asset.sourceUri === '' ? html : html.replaceAll(asset.sourceUri, asset.url), source)
+    .replaceAll('window.parent?.document ?? window.document', 'window.document')
+  const assetJson = JSON.stringify(assets).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
+  const allowedImageOrigin = window.location.origin.replace(/["'<>\s]/gu, '')
+  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigin}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<script>${mvuFrameRuntime(statData)}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>`
   if (/<head(?:\s|>)/iu.test(adapted)) return adapted.replace(/<head([^>]*)>/iu, `<head$1>${head}`)
   if (/<html(?:\s|>)/iu.test(adapted)) return adapted.replace(/<html([^>]*)>/iu, `<html$1><head>${head}</head>`)
   return `<!doctype html><html><head>${head}</head><body>${adapted}</body></html>`
 }
 
-function CharacterDisplay({ segments, statData, characterName }: {
+function CharacterDisplay({ segments, statData, characterName, character }: {
   readonly segments: readonly CharacterDisplaySegment[]
   readonly statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined
   readonly characterName: string
+  readonly character?: CharacterLibraryDetail
 }) {
   return <div data-agent-rp-character-display style={{ display: 'grid', gap: '10px', minWidth: 0 }}>
     {segments.map((segment, index) => segment.kind === 'markdown'
@@ -261,7 +270,7 @@ function CharacterDisplay({ segments, statData, characterName }: {
           title={`${characterName}的轻前端界面 ${index + 1}`}
           data-agent-rp-frame
           sandbox="allow-scripts"
-          srcDoc={cardFrameSource(segment.source, statData)}
+          srcDoc={cardFrameSource(segment.source, statData, character)}
           style={{ background: 'transparent', border: 0, colorScheme: 'dark', display: 'block', height: '72px', maxWidth: '100%', width: '100%' }}
         />)}
   </div>
@@ -530,7 +539,7 @@ function RoleplayHeader({
     : splitCharacterDisplay(status).find(segment => segment.kind === 'html')?.source
   const statusSource = statusHtml === undefined || projection.mvu === undefined
     ? undefined
-    : cardFrameSource(statusHtml, projection.mvu.statData)
+    : cardFrameSource(statusHtml, projection.mvu.statData, characterDetail)
   return <>
     <div ref={rootRef} data-agent-rp-header style={{ alignItems: 'center', display: 'flex', gap: '10px', marginRight: 'auto', minWidth: 0 }}>
       <Avatar projection={displayProjection} loadAvatar={loadAvatar} />
@@ -2228,6 +2237,7 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
           segments={segments}
           statData={projection.mvu?.statData}
           characterName={projection.characterName}
+          {...(characterDetail === undefined ? {} : { character: characterDetail })}
         />)
         return
       }
@@ -2243,6 +2253,7 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
         segments={segments}
         statData={projection.mvu?.statData}
         characterName={projection.characterName}
+        {...(characterDetail === undefined ? {} : { character: characterDetail })}
       />)
     }
     window.addEventListener('message', bridge)
@@ -2363,7 +2374,7 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
         delete item.dataset.agentRpSetupCollapsed
       }
     }
-  }, [chat, projection, viewMode])
+  }, [chat, characterDetail, projection, viewMode])
   if (projection === undefined) return null
   return <div ref={rootRef} data-agent-rp-status>
     <RoleplayStatusLine

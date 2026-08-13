@@ -12,6 +12,8 @@ export interface CharacterLibraryImage {
   readonly type: string
   readonly name: string
   readonly mediaType: string
+  /** Original embedded URI retained for exact light-frontend substitution. */
+  readonly sourceUri: string
 }
 
 /** One compact reusable Character Card shown in the library. */

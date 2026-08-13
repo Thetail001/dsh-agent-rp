@@ -86,12 +86,13 @@ test('keeps the original CHARX archive reusable', (context) => {
   assert.deepEqual(library.avatar(imported.id), { mediaType: 'image/png', data: avatar })
   assert.equal(imported.imageAssetCount, 3)
   assert.deepEqual(imported.imageAssets, [
-    { index: 0, type: 'icon', name: 'main', mediaType: 'image/png' },
-    { index: 1, type: 'background', name: 'rain', mediaType: 'image/webp' },
-    { index: 2, type: 'emotion', name: 'smile', mediaType: 'image/png' },
+    { index: 0, type: 'icon', name: 'main', mediaType: 'image/png', sourceUri: 'embeded://assets/icon/images/main.png' },
+    { index: 1, type: 'background', name: 'rain', mediaType: 'image/webp', sourceUri: 'embeded://assets/background/images/rain.webp' },
+    { index: 2, type: 'emotion', name: 'smile', mediaType: 'image/png', sourceUri: 'embeded://assets/emotion/images/smile.png' },
   ])
   assert.deepEqual(library.image(imported.id, 0), {
-    index: 0, type: 'icon', name: 'main', mediaType: 'image/png', data: avatar,
+    index: 0, type: 'icon', name: 'main', mediaType: 'image/png',
+    sourceUri: 'embeded://assets/icon/images/main.png', data: avatar,
   })
   assert.deepEqual(library.image(imported.id, 1)?.data, background)
   assert.deepEqual(library.image(imported.id, 2)?.data, emotion)

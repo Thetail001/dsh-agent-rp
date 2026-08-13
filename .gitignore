@@ -1,7 +1,7 @@
 node_modules/
 .test-dist/
 .test-dist-*/
-.test-*/
+.test-*
 .preset-smoke/
 .runtime/
 .runtime-web-*.log

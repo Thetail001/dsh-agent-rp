@@ -6,9 +6,13 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { CharacterLibrary } from './character-library.ts'
 import { CHARACTER_LIBRARY_PATH } from './character-library-protocol.ts'
 
-function trustedBrowserRequest(request: IncomingMessage): boolean {
+function trustedBrowserRequest(request: IncomingMessage, sandboxedImage: boolean): boolean {
   const host = request.headers.host
-  if (host === undefined || host.trim() === '' || request.headers['sec-fetch-site'] === 'cross-site') return false
+  if (host === undefined || host.trim() === '') return false
+  if (request.headers['sec-fetch-site'] === 'cross-site') {
+    return sandboxedImage && request.headers['sec-fetch-dest'] === 'image'
+      && request.headers['sec-fetch-mode'] === 'no-cors' && request.headers.origin === undefined
+  }
   const origin = request.headers.origin
   if (origin === undefined) return true
   try {
@@ -46,7 +50,10 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
     kind: 'prefix',
     path: CHARACTER_LIBRARY_PATH,
     handler(request, response) {
-      if (!trustedBrowserRequest(request)) {
+      const parts = pathParts(request)
+      const sandboxedImage = parts.length === 3 && parts[0] !== undefined
+        && parts[1] === 'images' && parts[2] !== undefined && /^\d+$/u.test(parts[2])
+      if (!trustedBrowserRequest(request, sandboxedImage)) {
         fail(response, 403, 'forbidden')
         return
       }
@@ -55,7 +62,6 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
         fail(response, 405, 'method not allowed')
         return
       }
-      const parts = pathParts(request)
       try {
         if (parts.length === 0) {
           json(response, 200, { format: 0, entries: library.list() })
