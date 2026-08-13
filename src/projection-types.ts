@@ -26,6 +26,19 @@ export interface AgentRpProjection {
     readonly updateCount: number
     readonly lastError?: string
   }
+  /** Persistent alternatives for Roleplay replies that have been regenerated or continued. */
+  readonly generations: readonly {
+    readonly groupId: string
+    readonly anchorSeq: number
+    readonly selectedVersionSeq: number
+    readonly assistantSeqs: readonly number[]
+    readonly versions: readonly {
+      readonly seq: number
+      readonly text: string
+    }[]
+  }[]
+  /** Stable transcript anchor of the model-visible final Roleplay reply. */
+  readonly currentReplySeq?: number
   readonly preset?: {
     readonly libraryId?: string
     readonly name: string

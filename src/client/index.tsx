@@ -6,7 +6,7 @@ import type {
   ClientContext, SessionId, SessionSummary,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { IConversation } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { IConversation, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import { createRoot, type Root } from 'react-dom/client'
@@ -68,6 +68,20 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
 }
 
 type ComposerDockProps = PropsRuntime<'conversation.composer.dock'>
+
+type GenerationTailProps = TurnTailOwnerProps & {
+  readonly matched: {
+    readonly replySeq: number
+  }
+  readonly sessionId: SessionId
+  readonly runGeneration: (
+    sessionId: SessionId,
+    request: { readonly operation: 'regenerate' | 'continue'; readonly replySeq: number }
+      | { readonly operation: 'select'; readonly replySeq: number; readonly versionIndex: number },
+  ) => Promise<void>
+  readonly useProjection: PropsRuntime<'conversation.composer.dock'>['useProjection']
+  readonly useSession: PropsRuntime<'conversation.composer.dock'>['useSession']
+}
 
 const color = 'var(--dsw-alias-state-business-primary, #6f78e8)'
 const statusPlaceholder = '<StatusPlaceHolderImpl/>'
@@ -172,6 +186,52 @@ function CharacterDisplay({ segments, statData, characterName }: {
   </div>
 }
 
+function GenerationTail({ matched, runGeneration, sessionId, useProjection, useSession }: GenerationTailProps) {
+  const projection = useProjection('agentRp') as AgentRpProjection | undefined
+  const running = useSession(snapshot => snapshot.running)
+  const [busy, setBusy] = useState<'regenerate' | 'continue' | 'select'>()
+  const [error, setError] = useState<string>()
+  const group = projection?.generations.find(candidate => candidate.anchorSeq === matched.replySeq)
+  if (projection === undefined || projection.currentReplySeq !== matched.replySeq) return null
+  const selectedIndex = group?.versions.findIndex(version => version.seq === group.selectedVersionSeq) ?? 0
+  const invoke = (request: Parameters<GenerationTailProps['runGeneration']>[1]): void => {
+    setBusy(request.operation)
+    setError(undefined)
+    void runGeneration(sessionId, request).then(
+      () => { setBusy(undefined) },
+      (reason: unknown) => {
+        setBusy(undefined)
+        setError(reason instanceof Error ? reason.message : '回复操作失败')
+      },
+    )
+  }
+  const disabled = running || busy !== undefined
+  return <div data-agent-rp-generation-tail style={{ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: '5px', marginRight: 'auto' }}>
+    {group !== undefined && group.versions.length > 1 && <>
+      <button type="button" aria-label="上一版回复" disabled={disabled || selectedIndex <= 0} onClick={() => {
+        invoke({ operation: 'select', replySeq: matched.replySeq, versionIndex: selectedIndex - 1 })
+      }} style={generationButtonStyle}>‹</button>
+      <span style={{ fontSize: '10px', minWidth: '32px', opacity: 0.5, textAlign: 'center' }}>{selectedIndex + 1} / {group.versions.length}</span>
+      <button type="button" aria-label="下一版回复" disabled={disabled || selectedIndex >= group.versions.length - 1} onClick={() => {
+        invoke({ operation: 'select', replySeq: matched.replySeq, versionIndex: selectedIndex + 1 })
+      }} style={generationButtonStyle}>›</button>
+    </>}
+    <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'regenerate', replySeq: matched.replySeq }) }} style={generationButtonStyle}>
+      {busy === 'regenerate' ? '重写中…' : '重写'}
+    </button>
+    <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'continue', replySeq: matched.replySeq }) }} style={generationButtonStyle}>
+      {busy === 'continue' ? '续写中…' : '续写'}
+    </button>
+    {error !== undefined && <span role="alert" title={error} style={{ color: '#dc7777', fontSize: '10px', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{error}</span>}
+  </div>
+}
+
+const generationButtonStyle = {
+  background: 'transparent', border: '1px solid color-mix(in srgb, currentColor 18%, transparent)',
+  borderRadius: '6px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '10px',
+  lineHeight: 1, minHeight: '24px', minWidth: '24px', opacity: 0.58, padding: '4px 7px',
+} as const
+
 function initials(name: string): string {
   return [...name.trim()].slice(0, 1).join('').toUpperCase() || 'RP'
 }
@@ -214,6 +274,7 @@ function roleplaySummary(summary: SessionSummary | undefined, projection: AgentR
     importedMessageCount: 0,
     worldInfoCount: 0,
     presetLibrary: [],
+    generations: [],
     source: 'preset' as const,
   }
 }
@@ -1705,8 +1766,19 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
       original: HTMLElement,
       segments: readonly CharacterDisplaySegment[],
     ): void => {
+      const existing = item.querySelector<HTMLElement>(':scope > [data-agent-rp-rendered-display]')
+      const existingRoot = existing === null ? undefined : mounted.get(existing)
+      if (existing !== null && existingRoot !== undefined) {
+        existingRoot.render(<CharacterDisplay
+          segments={segments}
+          statData={projection.mvu?.statData}
+          characterName={projection.characterName}
+        />)
+        return
+      }
       const display = document.createElement('div')
       display.style.cssText = 'display:block;min-width:0;width:100%;'
+      display.dataset.agentRpRenderedDisplay = 'true'
       original.style.display = 'none'
       item.dataset.agentRpFrontend = 'true'
       item.insertBefore(display, original.nextSibling)
@@ -1753,10 +1825,32 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
       }
       for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="assistant-step"]')) {
         const key = item.dataset.chatFlowKey
-        if (key === undefined || item.dataset.agentRpFrontend === 'true') continue
+        if (key === undefined) continue
         const node = chat.nodes.get(key)
         if (node?.kind !== 'assistant-step') continue
         const data = node.data as { readonly blocks?: readonly { readonly kind: string; readonly text?: string }[] }
+        const finalSeq = (node.data as { readonly finalNode?: { readonly seq: number } }).finalNode?.seq
+        const generation = finalSeq === undefined
+          ? undefined
+          : projection.generations.find(group => group.assistantSeqs.includes(finalSeq))
+        if (viewMode === 'immersive' && generation !== undefined) {
+          const original = item.firstElementChild as HTMLElement | null
+          if (finalSeq !== generation.anchorSeq) {
+            hideTranscriptDetail(item)
+            continue
+          }
+          const selected = generation.versions.find(version => version.seq === generation.selectedVersionSeq)
+          if (selected !== undefined && original !== null) {
+            const rendered = renderCharacterDisplay(selected.text.replaceAll(statusPlaceholder, ''), {
+              name: projection.characterName,
+              frontend: projection.frontend ?? { regexScripts: [], tavernHelperScriptNames: [] },
+            }, AI_OUTPUT_PLACEMENT, 0, projection.userName, projection.preset?.regexScripts)
+            const segments = splitCharacterDisplay(rendered)
+            mountRenderedDisplay(item, original, segments)
+            continue
+          }
+        }
+        if (item.dataset.agentRpFrontend === 'true') continue
         if (viewMode === 'immersive') {
           for (const element of item.querySelectorAll<HTMLElement>('[data-variant="think"]')) {
             hideTranscriptDetail(element)
@@ -1776,6 +1870,16 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
         const original = item.firstElementChild as HTMLElement | null
         if (original === null) continue
         mountRenderedDisplay(item, original, segments)
+      }
+      if (viewMode === 'immersive') {
+        for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="turn-tail"]')) {
+          const key = item.dataset.chatFlowKey
+          const node = key === undefined ? undefined : chat.nodes.get(key)
+          if (node?.kind !== 'turn-tail') continue
+          const seq = (node.data as { readonly closing?: { readonly finalNode?: { readonly seq: number } } }).closing?.finalNode?.seq
+          if (seq !== undefined && projection.generations.some(group =>
+            group.assistantSeqs.includes(seq) && seq !== group.anchorSeq)) hideTranscriptDetail(item)
+        }
       }
     }
     scan()
@@ -2063,6 +2167,18 @@ export function apply(ctx: ClientContext): void {
     if (!response.result.ok) throw new Error(response.result.error?.message ?? '预设库操作失败')
     if (response.result.value?.matched !== true) throw new Error('当前 Host 未启用预设库')
   }
+  const runGeneration = async (
+    sessionId: SessionId,
+    request: { readonly operation: 'regenerate' | 'continue'; readonly replySeq: number }
+      | { readonly operation: 'select'; readonly replySeq: number; readonly versionIndex: number },
+  ): Promise<void> => {
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const response = await session.command(`/rp-generation ${JSON.stringify(request)}`)
+    if (!response.ok) throw new Error(response.error.message)
+    if (!response.value.matched) throw new Error('当前 Host 未启用回复版本控制')
+  }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
   }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} listCharacters={listCharacters} readCharacter={readCharacter} startCharacterSession={startCharacterSession} listPersonas={listPersonas} savePersona={savePersona} />))
@@ -2072,6 +2188,17 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-library',
   }, () => null))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-generation',
+  }, () => null))
+  ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
+    name: 'conversation.chat.turnTail',
+    priority: 100,
+    select: owner => {
+      const closing = owner.turn.data.get('turn-tail')?.closing
+      return closing === null || closing === undefined ? null : { replySeq: closing.finalNode.seq }
+    },
+  }, props => <GenerationTail {...props} runGeneration={runGeneration} />))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
   }, roleplayComposerDockComponent(ctx)))

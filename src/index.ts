@@ -85,6 +85,7 @@ import {
 import { installPersonaLibraryHttp } from './persona-library-http.ts'
 import { PersonaLibrary } from './persona-library.ts'
 import { parseSessionPersona, readSessionPersona } from './session-persona.ts'
+import { executeGenerationCommand } from './generation.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -415,6 +416,13 @@ export function installAgentRp(
     description: 'manage reusable roleplay presets',
     input: { hint: '<private preset-library payload>' },
     handler: invocation => executePresetLibraryCommand(presetLibrary, invocation),
+  })
+  commands.register({
+    name: 'rp-generation',
+    description: 'manage persistent roleplay reply versions',
+    input: { hint: '<private reply-version payload>' },
+    recordInput: false,
+    handler: executeGenerationCommand,
   })
   ctx.effect(() => gateway.registerPromptAttachmentConsumer('dsh-agent-rp', ({ agent, content }) => (
     claimAgentRpPrompt(agentsByScope.get(agent) === agent, content)

@@ -14,6 +14,7 @@ import { canEditPresetPrompt, canTogglePresetPrompt } from './preset-configurati
 import { configurePreset, parsePresetConfigurationRequest } from './preset-configuration-core.ts'
 import { parsePresetLibraryResult } from './preset-library-protocol.ts'
 import { parseSessionPersona } from './session-persona.ts'
+import { decodeGenerationState, type GenerationStateRecord } from './generation.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -32,6 +33,9 @@ const projectionSchema = {
       || typeof record.scenario !== 'string'
       || (record.userName !== undefined && typeof record.userName !== 'string')
       || (record.persona !== undefined && (typeof record.persona !== 'object' || record.persona === null))
+      || !Array.isArray(record.generations)
+      || (record.currentReplySeq !== undefined && (typeof record.currentReplySeq !== 'number'
+        || !Number.isSafeInteger(record.currentReplySeq) || record.currentReplySeq < 0))
       || !validCardVersion
       || (record.avatarAttachmentId !== undefined && typeof record.avatarAttachmentId !== 'string')
       || typeof record.importedMessageCount !== 'number' || !Number.isSafeInteger(record.importedMessageCount)
@@ -50,7 +54,7 @@ const projectionSchema = {
 type ImportCall = 'character-card' | 'world-info' | 'preset'
 
 interface AgentRpProjectionState {
-  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'presetLibrary' | 'lastRequest'>
+  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'presetLibrary' | 'lastRequest' | 'generations'>
   readonly cardWorldInfoCount: number
   readonly standaloneWorldInfos: Readonly<Record<string, number>>
   readonly calls: Readonly<Record<string, ImportCall>>
@@ -59,6 +63,8 @@ interface AgentRpProjectionState {
   readonly presetState?: ActiveSessionPreset
   readonly presetLibrary: AgentRpProjection['presetLibrary']
   readonly lastRequest?: AgentRpProjection['lastRequest']
+  readonly generations: Readonly<Record<string, GenerationStateRecord>>
+  readonly currentReplySeq?: number
 }
 
 const INITIAL_CHARACTER: AgentRpProjectionState['character'] = {
@@ -332,8 +338,22 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     standaloneWorldInfos: {},
     calls: {},
     presetLibrary: [],
+    generations: {},
   }),
   apply(state, event) {
+    const generation = event.type === 'command/done' && event.data.kind === 'success'
+      ? decodeGenerationState(event.data.text)
+      : event.type === ('agent-rp/generation-state' as SessionEvent['type'])
+        ? (event as SessionEvent & { readonly data: GenerationStateRecord }).data
+        : undefined
+    if (generation !== undefined) {
+      return {
+        ...state,
+        ...(generation.mvu === undefined ? {} : { mvu: generation.mvu }),
+        generations: { ...state.generations, [generation.groupId]: generation },
+        currentReplySeq: generation.anchorSeq,
+      }
+    }
     if (event.type === 'agent-rp/persona-seed') {
       try {
         const persona = parseSessionPersona(event.data.persona)
@@ -469,15 +489,16 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         },
       }
     }
-    if (event.type === 'assistant/message' && state.mvu !== undefined) {
+    if (event.type === 'assistant/message' && event.surfaceOp === 'append') {
       const text = event.data.message.content
         .flatMap(block => block.type === 'text' ? [block.text] : [])
         .join('\n')
-      if (!/<UpdateVariable(?:variable)?>/iu.test(text)) return state
+      const nextState = text.trim() === '' ? state : { ...state, currentReplySeq: event.seq }
+      if (state.mvu === undefined || !/<UpdateVariable(?:variable)?>/iu.test(text)) return nextState
       try {
         const update = applyMvuReply(state.mvu.statData, text)
-        return update === undefined ? state : {
-          ...state,
+        return update === undefined ? nextState : {
+          ...nextState,
           mvu: {
             statData: update.statData,
             updateCount: state.mvu.updateCount + 1,
@@ -485,7 +506,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         }
       } catch (error: unknown) {
         return {
-          ...state,
+          ...nextState,
           mvu: {
             ...state.mvu,
             lastError: error instanceof Error ? error.message : String(error),
@@ -558,6 +579,14 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     ...(state.preset === undefined ? {} : { preset: state.preset }),
     presetLibrary: state.presetLibrary,
     ...(state.lastRequest === undefined ? {} : { lastRequest: state.lastRequest }),
+    generations: Object.values(state.generations).map(group => ({
+      groupId: group.groupId,
+      anchorSeq: group.anchorSeq,
+      selectedVersionSeq: group.selectedVersionSeq,
+      assistantSeqs: group.assistantSeqs,
+      versions: group.versions,
+    })),
+    ...(state.currentReplySeq === undefined ? {} : { currentReplySeq: state.currentReplySeq }),
   }),
-  stateVersion: 3,
+  stateVersion: 4,
 }
