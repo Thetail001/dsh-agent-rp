@@ -3,6 +3,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import type { AgentRpHttpServer } from './host-http.ts'
 import { PersonaLibrary } from './persona-library.ts'
 import { PERSONA_LIBRARY_PATH, type PersonaLibrarySaveRequest } from './persona-library-protocol.ts'
 
@@ -54,8 +55,8 @@ function parseSaveRequest(value: unknown): PersonaLibrarySaveRequest {
 }
 
 /** Register local Persona list, read, create, and update operations. */
-export function installPersonaLibraryHttp(ctx: Context, library: PersonaLibrary): void {
-  ctx.effect(() => ctx.webServer.register({
+export function installPersonaLibraryHttp(ctx: Context, library: PersonaLibrary, server: AgentRpHttpServer): void {
+  ctx.effect(() => server.register({
     kind: 'prefix',
     path: PERSONA_LIBRARY_PATH,
     async handler(request, response) {

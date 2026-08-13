@@ -5,6 +5,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { CharacterLibrary } from './character-library.ts'
 import { CHARACTER_LIBRARY_PATH } from './character-library-protocol.ts'
+import type { AgentRpHttpServer } from './host-http.ts'
 import { MAX_CHARX_BYTES } from './import/charx.ts'
 
 function trustedBrowserRequest(request: IncomingMessage, sandboxedImage: boolean): boolean {
@@ -61,8 +62,8 @@ function pathParts(request: IncomingMessage): readonly string[] {
 }
 
 /** Register local library reads plus reversible archive operations for the Roleplay UI. */
-export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibrary): void {
-  ctx.effect(() => ctx.webServer.register({
+export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibrary, server: AgentRpHttpServer): void {
+  ctx.effect(() => server.register({
     kind: 'prefix',
     path: CHARACTER_LIBRARY_PATH,
     async handler(request, response) {

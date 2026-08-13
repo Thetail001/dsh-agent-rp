@@ -24,6 +24,7 @@ export interface CharacterLibrarySummary {
   readonly id: string
   readonly name: string
   readonly displayName: string
+  readonly originalFilename: string
   readonly cardVersion: 1 | 2 | 3
   readonly greetingCount: number
   readonly worldInfoCount: number
@@ -31,12 +32,12 @@ export interface CharacterLibrarySummary {
   readonly imageAssetCount: number
   readonly archived: boolean
   readonly transport: 'png' | 'json' | 'charx'
+  readonly importedAt: number
   readonly updatedAt: number
 }
 
 /** Details loaded only after a user selects one library card. */
 export interface CharacterLibraryDetail extends CharacterLibrarySummary {
-  readonly originalFilename: string
   readonly mediaType: string
   readonly greetings: readonly string[]
   readonly imageAssets: readonly CharacterLibraryImage[]

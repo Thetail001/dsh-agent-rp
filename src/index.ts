@@ -88,14 +88,14 @@ import { installPersonaLibraryHttp } from './persona-library-http.ts'
 import { PersonaLibrary } from './persona-library.ts'
 import { parseSessionPersona, readSessionPersona } from './session-persona.ts'
 import { executeGenerationCommand } from './generation.ts'
+import type { AgentRpHttpServer } from './host-http.ts'
 import { configuredLorebook, readWorldInfoConfiguration } from './world-info-configuration-core.ts'
 import { executeWorldInfoConfiguration, readSessionLorebookSources } from './world-info-configuration.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
 export { Config }
-/** Host services required by the profile bundle. */
-export const inject = ['agents', 'apiProxy', 'attachments', 'commands', 'llm', 'systemPrompt', 'tools']
+const CHARACTER_SERVICES = ['agents', 'apiProxy', 'attachments', 'commands', 'llm', 'systemPrompt', 'tools']
 
 interface PromptAttachmentGateway {
   registerPromptAttachmentConsumer(
@@ -918,15 +918,30 @@ export function installAgentRp(
 export function apply(ctx: Context, config: AgentRpConfig): void {
   const resolved = resolveConfig(config)
   if (resolved.mode === 'host') {
-    ctx.inject(['httpServer'], webCtx => {
-      installCharacterLibraryHttp(webCtx, new CharacterLibrary())
-      installPersonaLibraryHttp(webCtx, new PersonaLibrary())
-    })
+    const characterLibrary = new CharacterLibrary()
+    const personaLibrary = new PersonaLibrary()
+    let mountedServer: AgentRpHttpServer | undefined
+    const mountHost = (serviceName: 'httpServer' | 'webServer'): void => {
+      ctx.inject([serviceName], webCtx => {
+        const server = webCtx.get(serviceName) as AgentRpHttpServer
+        if (mountedServer !== undefined) return
+        mountedServer = server
+        webCtx.effect(() => () => {
+          if (mountedServer === server) mountedServer = undefined
+        }, `agent-rp: release ${serviceName}`)
+        installCharacterLibraryHttp(webCtx, characterLibrary, server)
+        installPersonaLibraryHttp(webCtx, personaLibrary, server)
+      })
+    }
+    mountHost('httpServer')
+    mountHost('webServer')
     ctx.inject(['sessionProjections'], projectionCtx => {
       projectionCtx.sessionProjections.register(agentRpProjectionDefinition)
     })
     installBundledAgentRpPreset()
     return
   }
-  installAgentRp(ctx, resolved)
+  ctx.inject(CHARACTER_SERVICES, characterCtx => {
+    installAgentRp(characterCtx, resolved)
+  })
 }

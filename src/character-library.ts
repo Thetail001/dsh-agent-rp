@@ -113,6 +113,7 @@ function summary(
     id: meta.id,
     name: card.name,
     displayName: card.nickname?.trim() || card.name,
+    originalFilename: meta.originalFilename,
     cardVersion: card.version,
     greetingCount: 1 + card.alternateGreetings.length,
     worldInfoCount: card.lorebook?.entries.length ?? 0,
@@ -120,6 +121,7 @@ function summary(
     imageAssetCount,
     archived: meta.archivedAt !== undefined,
     transport: meta.transport,
+    importedAt: meta.createdAt,
     updatedAt: meta.updatedAt,
   }
 }
@@ -148,7 +150,6 @@ export class CharacterLibrary {
     const parsed = this.parseStored(entry.meta, entry.data)
     return {
       ...summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length),
-      originalFilename: entry.meta.originalFilename,
       mediaType: entry.meta.mediaType,
       greetings: [parsed.card.firstMessage, ...parsed.card.alternateGreetings],
       imageAssets: parsed.images.map(({ data: _data, ...image }) => image),

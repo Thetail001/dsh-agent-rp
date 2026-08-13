@@ -1272,6 +1272,9 @@ function CharacterLibraryDialog({
       setError(importError instanceof Error ? importError.message : String(importError))
     })
   }
+  const duplicateNames = new Set((entries ?? [])
+    .filter((entry, index, all) => all.findIndex(candidate => candidate.displayName === entry.displayName) !== index)
+    .map(entry => entry.displayName))
   return <div role="dialog" aria-modal="true" aria-label="角色库" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.52)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: 'clamp(8px, 3vw, 24px)', position: 'fixed', zIndex: 1001,
@@ -1345,6 +1348,7 @@ function CharacterLibraryDialog({
                 {entry.displayName}{loadingId === entry.id ? ' · 读取中' : ''}
               </div>
               <div style={{ fontSize: '11px', marginTop: '5px', opacity: .5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {duplicateNames.has(entry.displayName) ? `${entry.originalFilename} · ${new Date(entry.importedAt).toLocaleString('zh-CN', { hour12: false })} · ` : ''}
                 V{entry.cardVersion} · {entry.greetingCount} 个开场{entry.worldInfoCount === 0 ? '' : ` · ${entry.worldInfoCount} 条世界书`}
                 {entry.imageAssetCount === 0 ? '' : ` · ${entry.imageAssetCount} 张图片`}
               </div>
@@ -1360,6 +1364,7 @@ function CharacterLibraryDialog({
               {startsInCurrentSession ? '设置这段对话' : '开始一段新的角色对话'}
             </div>
             <strong style={{ display: 'block', fontSize: '17px', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected?.displayName ?? '选择角色'}</strong>
+            {selected !== undefined && <span title={selected.originalFilename} style={{ display: 'block', fontSize: '11px', marginTop: '3px', opacity: .46, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected.originalFilename}</span>}
           </div>
           {selected !== undefined && <button type="button" disabled={updating} onClick={updateArchiveState} style={{
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
@@ -1457,7 +1462,7 @@ function CharacterLibraryDialog({
           }} style={{
             background: color, border: 0, borderRadius: '9px', color: '#fff', cursor: starting ? 'wait' : 'pointer',
             font: 'inherit', fontWeight: 620, opacity: collection === 'archived' || selected === undefined ? .45 : 1, padding: '8px 15px',
-          }}>{starting ? '正在创建…' : '开始对话'}</button>
+          }}>{starting ? '正在开始…' : startsInCurrentSession ? '在当前会话开始' : '开始新对话'}</button>
         </footer>
       </div>
     </section>
