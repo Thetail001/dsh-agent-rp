@@ -1147,15 +1147,15 @@ function RoleplayHeader({
           {characterCapabilitySummary(projection)}
         </div>
       </div>
-      <button type="button" onClick={() => { setOpen(true) }} style={{
+      <button type="button" onClick={() => { setSettingsOpen(false); setOpen(true) }} style={{
         background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
         color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', marginLeft: '8px', padding: '6px 10px',
       }}>角色信息</button>
-      <button type="button" onClick={() => { setLibraryOpen(true) }} style={{
+      <button type="button" onClick={() => { setSettingsOpen(false); setLibraryOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 10%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>角色库</button>
-      <button type="button" onClick={() => { setPersonaOpen(true) }} style={{
+      <button type="button" onClick={() => { setSettingsOpen(false); setPersonaOpen(true) }} style={{
         background: projection.persona === undefined ? 'transparent' : `color-mix(in srgb, ${color} 12%, transparent)`,
         border: `1px solid ${projection.persona === undefined ? 'var(--dsw-alias-border-l2, #444)' : `color-mix(in srgb, ${color} 34%, transparent)`}`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
