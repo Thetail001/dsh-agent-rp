@@ -78,6 +78,7 @@ import { installMvuStreamCompletion } from './mvu-stream.ts'
 import { assembleSillyTavernPreset } from './preset-prompt.ts'
 import { configurePresetFromCommand } from './preset-configuration.ts'
 import { PresetLibrary } from './preset-library.ts'
+import { installPresetLibraryHttp } from './preset-library-http.ts'
 import { executePresetLibraryCommand } from './preset-library-command.ts'
 import { CharacterLibrary } from './character-library.ts'
 import { executeCharacterLibraryCommand } from './character-library-command.ts'
@@ -938,6 +939,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
   if (resolved.mode === 'host') {
     const characterLibrary = new CharacterLibrary()
     const personaLibrary = new PersonaLibrary()
+    const presetLibrary = new PresetLibrary()
     let mountedServer: AgentRpHttpServer | undefined
     const mountHost = (serviceName: 'httpServer' | 'webServer'): void => {
       ctx.inject([serviceName], webCtx => {
@@ -949,6 +951,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
         }, `agent-rp: release ${serviceName}`)
         installCharacterLibraryHttp(webCtx, characterLibrary, server)
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
+        installPresetLibraryHttp(webCtx, presetLibrary, server)
       })
     }
     mountHost('httpServer')

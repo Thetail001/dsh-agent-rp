@@ -17,6 +17,10 @@ import type { WorldInfoConfigurationRequest, WorldInfoEditableEntry } from '../w
 import { exportSillyTavernPresetJson } from '../preset-export.ts'
 import { projectPresetPromptSections } from '../preset-sections.ts'
 import {
+  PRESET_LIBRARY_PATH,
+  type PresetLibraryImportResponse,
+} from '../preset-library-http-protocol.ts'
+import {
   AI_OUTPUT_PLACEMENT, renderCharacterDisplay, splitCharacterDisplay,
   type CharacterDisplaySegment,
 } from '../frontend-regex.ts'
@@ -2868,15 +2872,6 @@ function avatarLoader(ctx: ClientContext) {
   }
 }
 
-function base64(data: Uint8Array): string {
-  let binary = ''
-  const chunk = 0x8000
-  for (let offset = 0; offset < data.length; offset += chunk) {
-    binary += String.fromCharCode(...data.subarray(offset, offset + chunk))
-  }
-  return btoa(binary)
-}
-
 /** Client services required by the Roleplay shell. */
 export const inject = ['connection', 'slots', 'sessions', 'workspaces']
 
@@ -3041,28 +3036,14 @@ export function apply(ctx: ClientContext): void {
   }
   const importPreset = async (sessionId: SessionId, file: File): Promise<void> => {
     if (!/\.json$/iu.test(file.name)) throw new Error('请选择 SillyTavern 预设 JSON 文件')
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
-    const fileSession = session as unknown as {
-      prompt(
-        content: Array<
-          | { readonly type: 'file'; readonly data: string; readonly name: string; readonly mediaType?: string }
-          | { readonly type: 'text'; readonly text: string }
-        >,
-        mode: 'queue',
-      ): Promise<
-        | { readonly ok: true; readonly value: unknown }
-        | { readonly ok: false; readonly error: { readonly message: string } }
-      >
-    }
-    const result = await fileSession.prompt([{
-      type: 'file',
-      data: base64(new Uint8Array(await file.arrayBuffer())),
-      name: file.name,
-      ...(file.type === '' ? {} : { mediaType: file.type }),
-    }, { type: 'text', text: '请导入这份预设' }], 'queue')
-    if (!result.ok) throw new Error(result.error.message)
+    const response = await fetch(`${PRESET_LIBRARY_PATH}?filename=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': file.type || 'application/json' },
+      body: file,
+    })
+    const value = await response.json() as Partial<PresetLibraryImportResponse> & { readonly error?: string }
+    if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `预设导入失败（${response.status}）`)
+    await managePresetLibrary(sessionId, { operation: 'select', id: value.entry.id })
   }
   const configurePreset = async (sessionId: SessionId, request: PresetConfigurationRequest): Promise<void> => {
     const connection = ctx.get('connection') as {
@@ -3088,25 +3069,12 @@ export function apply(ctx: ClientContext): void {
     if (response.result.value?.matched !== true) throw new Error('当前 Host 未启用预设管理命令')
   }
   const managePresetLibrary = async (sessionId: SessionId, request: PresetLibraryRequest): Promise<void> => {
-    const connection = ctx.get('connection') as {
-      readonly api: {
-        readonly commands: {
-          execute(input: { readonly sessionId: SessionId; readonly line: string }): Promise<{
-            readonly result: {
-              readonly ok: boolean
-              readonly value?: { readonly matched: boolean }
-              readonly error?: { readonly code: string; readonly message: string }
-            }
-          }>
-        }
-      }
-    }
-    const response = await connection.api.commands.execute({
-      sessionId,
-      line: `/rp-preset-library ${JSON.stringify(request)}`,
-    })
-    if (!response.result.ok) throw new Error(response.result.error?.message ?? '预设库操作失败')
-    if (response.result.value?.matched !== true) throw new Error('当前 Host 未启用预设库')
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const response = await session.command(`/rp-preset-library ${JSON.stringify(request)}`)
+    if (!response.ok) throw new Error(response.error.message)
+    if (!response.value.matched) throw new Error('当前 Host 未启用预设库')
   }
   const configureWorldInfo = async (sessionId: SessionId, request: WorldInfoConfigurationRequest): Promise<void> => {
     const scope = ctx.sessions.scope(sessionId)
