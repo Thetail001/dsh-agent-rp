@@ -339,7 +339,7 @@ function RoleplayHeader({
           projection.preset.preservedPromptRegexCount === 0 ? '' : `${projection.preset.preservedPromptRegexCount} 条生成规则已保留；等待 Host 提供独立模型消息视图`,
           ...projection.preset.extensionStatus.map(item => `${item.name}：${item.detail}`),
         ].filter(Boolean).join('\n')} />}
-        {projection.description === '' && projection.personality === '' && projection.scenario === '' && <p style={{ fontSize: '13px', lineHeight: 1.7, marginTop: '22px', opacity: 0.62 }}>
+        {projection.source === 'sillytavern-chat' && projection.cardVersion === undefined && <p style={{ fontSize: '13px', lineHeight: 1.7, marginTop: '22px', opacity: 0.62 }}>
           当前只迁移了聊天记录，没有对应角色卡；再次迁移时可将角色卡和 JSONL 放在同一条消息中
         </p>}
       </aside>
