@@ -3,11 +3,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type {
-  ClientContext, SessionId, SessionSummary,
+  ClientContext, SessionId, SessionSummary, WorkspaceView,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { IConversation, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import { createRoot, type Root } from 'react-dom/client'
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
@@ -45,6 +46,71 @@ import {
   type SillyTavernChatLaunchRequest,
   type SillyTavernChatUploadResponse,
 } from '../sillytavern-chat-protocol.ts'
+import {
+  AGENT_RP_WORKSPACE_SETTINGS_PATH,
+  DEFAULT_AGENT_RP_SETTINGS,
+  allowsAgentRpEntry,
+  normalizeAgentRpSettings,
+  type AgentRpSettings,
+} from '../workspace-settings.ts'
+
+interface WorkspaceListSource {
+  readonly getSnapshot: () => { readonly items: readonly WorkspaceView[] }
+  readonly subscribe: (listener: () => void) => () => void
+}
+
+interface WorkspaceSettingsSnapshot {
+  readonly status: 'loading' | 'ready' | 'error'
+  readonly value: AgentRpSettings
+  readonly error?: string
+}
+
+interface WorkspaceSettingsSource {
+  readonly getSnapshot: () => WorkspaceSettingsSnapshot
+  readonly subscribe: (listener: () => void) => () => void
+  readonly set: (settings: AgentRpSettings) => Promise<void>
+}
+
+function createWorkspaceSettingsSource(): WorkspaceSettingsSource {
+  const listeners = new Set<() => void>()
+  let snapshot: WorkspaceSettingsSnapshot = { status: 'loading', value: DEFAULT_AGENT_RP_SETTINGS }
+  const publish = (next: WorkspaceSettingsSnapshot): void => {
+    snapshot = next
+    for (const listener of listeners) listener()
+  }
+  const decode = (value: unknown): AgentRpSettings => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Agent RP 设置响应无效')
+    return normalizeAgentRpSettings((value as { readonly settings?: unknown }).settings)
+  }
+  const load = async (): Promise<void> => {
+    try {
+      const response = await fetch(AGENT_RP_WORKSPACE_SETTINGS_PATH, { headers: { accept: 'application/json' } })
+      const value = await response.json() as unknown
+      if (!response.ok) throw new Error((value as { readonly error?: string }).error ?? `设置读取失败（${response.status}）`)
+      publish({ status: 'ready', value: decode(value) })
+    } catch (reason: unknown) {
+      publish({ status: 'error', value: DEFAULT_AGENT_RP_SETTINGS, error: reason instanceof Error ? reason.message : String(reason) })
+    }
+  }
+  void load()
+  return {
+    getSnapshot: () => snapshot,
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
+    async set(settings) {
+      const response = await fetch(AGENT_RP_WORKSPACE_SETTINGS_PATH, {
+        method: 'PUT',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify(settings),
+      })
+      const value = await response.json() as unknown
+      if (!response.ok) throw new Error((value as { readonly error?: string }).error ?? `设置保存失败（${response.status}）`)
+      publish({ status: 'ready', value: decode(value) })
+    },
+  }
+}
 
 interface ImportHintProps {
   readonly sessionId: SessionId
@@ -670,16 +736,31 @@ type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick
   | 'listPersonas'
   | 'savePersona'
   | 'deletePersona'
->
+> & {
+  readonly workspaceSettings: WorkspaceSettingsSource
+  readonly workspaceList: WorkspaceListSource
+}
 
 function BlankRoleplayLauncher({
   session, sessionId,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, startCharacterSession,
   listPersonas, savePersona, deletePersona,
+  workspaceSettings, workspaceList,
 }: BlankRoleplayLauncherProps) {
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [migrationOpen, setMigrationOpen] = useState(false)
-  if (!session.blank) return null
+  const settingsSnapshot = useSyncExternalStore(
+    workspaceSettings.subscribe,
+    workspaceSettings.getSnapshot,
+    workspaceSettings.getSnapshot,
+  )
+  const workspaceSnapshot = useSyncExternalStore(
+    workspaceList.subscribe,
+    workspaceList.getSnapshot,
+    workspaceList.getSnapshot,
+  )
+  const workspace = workspaceSnapshot.items.find(item => item.sessionIds.includes(sessionId))
+  if (!session.blank || !allowsAgentRpEntry(settingsSnapshot.value, workspace?.workspaceId)) return null
   return <>
     <button type="button" onClick={() => { setLibraryOpen(true) }} style={{
       alignItems: 'center', background: `color-mix(in srgb, ${color} 14%, transparent)`,
@@ -711,6 +792,114 @@ function BlankRoleplayLauncher({
     {migrationOpen && <SillyTavernImportDialog onClose={() => { setMigrationOpen(false) }}
       onImport={(chatFile, cardFile) => migrateChat(sessionId, chatFile, cardFile)} />}
   </>
+}
+
+interface WorkspaceSettingsSectionProps extends PropsRuntime<'settings.section'> {
+  readonly workspaceSettings: WorkspaceSettingsSource
+  readonly workspaceList: WorkspaceListSource
+}
+
+function WorkspaceSettingsSection({
+  workspaceSettings,
+  workspaceList,
+}: WorkspaceSettingsSectionProps) {
+  const snapshot = useSyncExternalStore(
+    workspaceSettings.subscribe,
+    workspaceSettings.getSnapshot,
+    workspaceSettings.getSnapshot,
+  )
+  const workspaceSnapshot = useSyncExternalStore(
+    workspaceList.subscribe,
+    workspaceList.getSnapshot,
+    workspaceList.getSnapshot,
+  )
+  const settings = snapshot.value
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string>()
+  const writable = snapshot.status === 'ready' && !saving
+  const write = (next: AgentRpSettings): void => {
+    setSaving(true)
+    setError(undefined)
+    void workspaceSettings.set(next).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => { setSaving(false) })
+  }
+  const toggleWorkspace = (workspaceId: string): void => {
+    const selected = settings.workspaceIds.includes(workspaceId)
+    write({
+      ...settings,
+      workspaceIds: selected
+        ? settings.workspaceIds.filter(id => id !== workspaceId)
+        : [...settings.workspaceIds, workspaceId],
+    })
+  }
+  const choiceStyle = (active: boolean) => ({
+    alignItems: 'center',
+    background: active ? `color-mix(in srgb, ${color} 13%, transparent)` : 'transparent',
+    border: `1px solid ${active ? `color-mix(in srgb, ${color} 45%, transparent)` : 'var(--dsw-alias-border-l2, #3d3d43)'}`,
+    borderRadius: '10px',
+    color: 'inherit',
+    cursor: writable ? 'pointer' : 'default',
+    display: 'flex',
+    font: 'inherit',
+    gap: '10px',
+    padding: '11px 13px',
+    textAlign: 'left' as const,
+    width: '100%',
+  })
+  return <section style={{ margin: '0 auto', maxWidth: '720px', padding: '8px 4px 32px' }}>
+    <h2 style={{ fontSize: '18px', margin: '0 0 8px' }}>Agent RP</h2>
+    <p style={{ fontSize: '13px', lineHeight: 1.6, margin: '0 0 22px', opacity: .62 }}>
+      控制哪些工作区显示“选择角色”和“迁移聊天”快捷入口，已有角色会话不受影响
+    </p>
+    <div style={{ display: 'grid', gap: '8px' }}>
+      <button type="button" disabled={!writable} style={choiceStyle(settings.workspaceMode === 'all')}
+        onClick={() => { write({ ...settings, workspaceMode: 'all' }) }}>
+        <span aria-hidden="true" style={{ color: settings.workspaceMode === 'all' ? color : 'inherit' }}>
+          {settings.workspaceMode === 'all' ? '●' : '○'}
+        </span>
+        <span><strong style={{ display: 'block', fontSize: '13px' }}>全部工作区</strong>
+          <span style={{ fontSize: '12px', opacity: .55 }}>每个工作区都显示“选择角色”和“迁移聊天”</span></span>
+      </button>
+      <button type="button" disabled={!writable} style={choiceStyle(settings.workspaceMode === 'selected')}
+        onClick={() => { write({ ...settings, workspaceMode: 'selected' }) }}>
+        <span aria-hidden="true" style={{ color: settings.workspaceMode === 'selected' ? color : 'inherit' }}>
+          {settings.workspaceMode === 'selected' ? '●' : '○'}
+        </span>
+        <span><strong style={{ display: 'block', fontSize: '13px' }}>仅指定工作区</strong>
+          <span style={{ fontSize: '12px', opacity: .55 }}>只在下面勾选的工作区显示入口</span></span>
+      </button>
+    </div>
+    {settings.workspaceMode === 'selected' && <div style={{ marginTop: '22px' }}>
+      <h3 style={{ fontSize: '13px', margin: '0 0 9px' }}>工作区</h3>
+      {workspaceSnapshot.items.length === 0
+        ? <p style={{ fontSize: '12px', margin: 0, opacity: .55 }}>还没有可选的工作区</p>
+        : <div style={{ border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '11px', overflow: 'hidden' }}>
+          {workspaceSnapshot.items.map((workspace, index) => {
+            const checked = settings.workspaceIds.includes(workspace.workspaceId)
+            return <label key={workspace.workspaceId} style={{
+              alignItems: 'center', borderTop: index === 0 ? 'none' : '1px solid var(--dsw-alias-border-l2, #3d3d43)',
+              cursor: writable ? 'pointer' : 'default', display: 'flex', gap: '11px', padding: '11px 13px',
+            }}>
+              <input type="checkbox" checked={checked} disabled={!writable}
+                onChange={() => { toggleWorkspace(workspace.workspaceId) }} />
+              <span style={{ minWidth: 0 }}>
+                <strong style={{ display: 'block', fontSize: '13px', fontWeight: 580 }}>{workspace.title}</strong>
+                <span style={{ display: 'block', fontSize: '11px', marginTop: '2px', opacity: .45, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {workspace.path}
+                </span>
+              </span>
+            </label>
+          })}
+        </div>}
+      {settings.workspaceIds.length === 0 && <p style={{ fontSize: '12px', margin: '10px 0 0', opacity: .58 }}>
+        尚未选择工作区，新的角色入口会暂时隐藏
+      </p>}
+    </div>}
+    {snapshot.status === 'loading' && <p role="status" style={{ fontSize: '12px', marginTop: '14px', opacity: .55 }}>正在读取设置…</p>}
+    {snapshot.status === 'error' && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '14px' }}>{snapshot.error}</p>}
+    {error !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '14px' }}>{error}</p>}
+  </section>
 }
 
 function RoleplayHeader({
@@ -2976,6 +3165,11 @@ export const inject = ['connection', 'slots', 'sessions', 'workspaces']
 
 /** Register the Agent RP header, composer presentation, and import affordance. */
 export function apply(ctx: ClientContext): void {
+  const workspaceSettings = createWorkspaceSettingsSource()
+  const workspaceList: WorkspaceListSource = {
+    getSnapshot: () => ctx.workspaces.list.getSnapshot(),
+    subscribe: listener => ctx.workspaces.list.subscribe(listener),
+  }
   const loadAvatar = avatarLoader(ctx)
   const renameSession = async (sessionId: SessionId, title: string): Promise<void> => {
     const scope = ctx.sessions.scope(sessionId)
@@ -3250,9 +3444,15 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
   }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'agent-rp',
+    order: 25,
+    label: 'Agent RP',
+  }, props => <WorkspaceSettingsSection {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} />))
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left', id: 'agent-rp-blank-launcher', order: -100,
-  }, props => <BlankRoleplayLauncher {...props} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromBlankSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromBlankSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-character-library',
   }, () => null))

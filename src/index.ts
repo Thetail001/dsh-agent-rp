@@ -13,6 +13,8 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
+import { WorkspaceSettingsStore } from './workspace-settings-store.ts'
+import { installWorkspaceSettingsHttp } from './workspace-settings-http.ts'
 import {
   Config,
   resolveConfig,
@@ -952,6 +954,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
     const personaLibrary = new PersonaLibrary()
     const presetLibrary = new PresetLibrary()
     const chatLibrary = new SillyTavernChatLibrary()
+    const workspaceSettings = new WorkspaceSettingsStore()
     let mountedServer: AgentRpHttpServer | undefined
     const mountHost = (serviceName: 'httpServer' | 'webServer'): void => {
       ctx.inject([serviceName], webCtx => {
@@ -965,6 +968,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
         installPresetLibraryHttp(webCtx, presetLibrary, server)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)
+        installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
       })
     }
     mountHost('httpServer')
