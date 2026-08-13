@@ -89,6 +89,28 @@ function content(value: unknown): readonly { readonly identifier: string; readon
   })
 }
 
+type PromptDefinition = NonNullable<Extract<PresetConfigurationRequest, { operation: 'replace' }>['prompts']>[number]
+
+function promptDefinitions(value: unknown): readonly PromptDefinition[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new Error('prompts must be an array')
+  const seen = new Set<string>()
+  return value.map((item, itemIndex) => {
+    const record = object(item, `prompts[${itemIndex}]`)
+    const id = identifier(record.identifier, `prompts[${itemIndex}].identifier`)
+    if (seen.has(id)) throw new Error(`prompts repeats module ${JSON.stringify(id)}`)
+    seen.add(id)
+    if (typeof record.name !== 'string' || record.name.trim() === '') {
+      throw new Error(`prompts[${itemIndex}].name must be a non-empty string`)
+    }
+    if (record.role !== 'system' && record.role !== 'user' && record.role !== 'assistant') {
+      throw new Error(`prompts[${itemIndex}].role is unsupported`)
+    }
+    if (typeof record.content !== 'string') throw new Error(`prompts[${itemIndex}].content must be a string`)
+    return { identifier: id, name: record.name.trim(), role: record.role, content: record.content }
+  })
+}
+
 function finiteOrNull(value: unknown, label: string): number | null {
   if (value === null) return null
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${label} must be a finite number or null`)
@@ -133,6 +155,7 @@ export function parsePresetConfigurationRequest(source: string): PresetConfigura
         operation: 'replace',
         ...common,
         order: order(value.order),
+        ...value.prompts === undefined ? {} : { prompts: promptDefinitions(value.prompts)! },
         content: content(value.content),
         generation: generation(value.generation),
         regex: regex(value.regex),
@@ -195,10 +218,42 @@ export function configurePreset(
   }
   if (request.operation === 'reset') return structuredClone(active.importedPreset)
   if (request.operation === 'replace') {
-    const prompts = new Set(active.preset.prompts.map(item => item.identifier))
+    const currentById = new Map(active.preset.prompts.map(item => [item.identifier, item]))
+    const nextPrompts = request.prompts === undefined
+      ? active.preset.prompts.map(prompt => ({ ...prompt }))
+      : request.prompts.map((definition) => {
+          const current = currentById.get(definition.identifier)
+          if (current === undefined) {
+            return {
+              ...definition,
+              marker: false,
+              systemPrompt: false,
+              forbidOverrides: false,
+            }
+          }
+          if (current.marker && definition.content !== current.content) {
+            throw new Error(`preset module ${JSON.stringify(definition.identifier)} has no editable content`)
+          }
+          return {
+            ...current,
+            name: definition.name,
+            role: definition.role,
+            content: definition.content,
+          }
+        })
+    if (request.prompts !== undefined) {
+      const nextIds = new Set(request.prompts.map(prompt => prompt.identifier))
+      for (const prompt of active.importedPreset.prompts) {
+        if ((prompt.systemPrompt || prompt.marker) && !nextIds.has(prompt.identifier)) {
+          throw new Error(`preset built-in module ${JSON.stringify(prompt.identifier)} cannot be deleted`)
+        }
+      }
+    }
+    const prompts = new Set(nextPrompts.map(item => item.identifier))
+    const nextPreset = { ...active.preset, prompts: nextPrompts }
     for (const entry of request.order) {
       if (!prompts.has(entry.identifier)) throw new Error(`preset has no module ${JSON.stringify(entry.identifier)}`)
-      if (entry.enabled && !canTogglePresetPrompt(active.preset, entry.identifier)) {
+      if (entry.enabled && !canTogglePresetPrompt(nextPreset, entry.identifier)) {
         const current = active.preset.order.find(item => item.identifier === entry.identifier)?.enabled ?? false
         if (!current) throw new Error(`preset module ${JSON.stringify(entry.identifier)} cannot be enabled`)
       }
@@ -218,7 +273,7 @@ export function configurePreset(
     const disabledByIndex = new Map(request.regex.map(entry => [entry.index, entry.disabled]))
     return {
       ...structuredClone(active.preset),
-      prompts: active.preset.prompts.map(prompt => contentById.has(prompt.identifier)
+      prompts: nextPrompts.map(prompt => contentById.has(prompt.identifier)
         ? { ...prompt, content: contentById.get(prompt.identifier)! }
         : { ...prompt }),
       order: request.order.map(item => ({ ...item })),

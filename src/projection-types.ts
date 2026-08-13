@@ -29,9 +29,12 @@ export interface AgentRpProjection {
     readonly prompts: readonly {
       readonly identifier: string
       readonly name: string
+      readonly importedName: string
       readonly role: 'system' | 'user' | 'assistant'
+      readonly importedRole: 'system' | 'user' | 'assistant'
       readonly content: string
       readonly importedContent: string
+      readonly imported: boolean
       readonly contentModified: boolean
       readonly importedAttached: boolean
       readonly importedEnabled: boolean
@@ -46,6 +49,7 @@ export interface AgentRpProjection {
       readonly enabled: boolean
       readonly toggleable: boolean
       readonly editable: boolean
+      readonly deletable: boolean
     }[]
     readonly generation: {
       readonly temperature?: number

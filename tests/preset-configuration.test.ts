@@ -76,6 +76,41 @@ test('edits module switches, order, and generation without changing imported def
   assert.deepEqual(active.importedPreset.generation, { temperature: 0.8, maxTokens: 2048 })
 })
 
+test('adds, runs, edits, and deletes one session-owned module', () => {
+  const active = activePreset()
+  const prompts = active.preset.prompts.map(prompt => ({
+    identifier: prompt.identifier, name: prompt.name, role: prompt.role, content: prompt.content,
+  }))
+  const added = configurePreset(active, {
+    operation: 'replace', revision: 0,
+    prompts: [...prompts, { identifier: 'custom', name: '自定义', role: 'user', content: '只在本会话使用' }],
+    order: [...active.preset.order, { identifier: 'custom', enabled: true }],
+    content: [], generation: {}, regex: [],
+  })
+  assert.equal(added.prompts.at(-1)?.systemPrompt, false)
+  assert.equal(added.prompts.at(-1)?.marker, false)
+  assert.match(assembleSillyTavernPreset(added, {
+    card: {
+      format: 0, version: 2, specVersion: '2.0', name: '角色', description: '', personality: '', scenario: '',
+      firstMessage: '', messageExample: '', alternateGreetings: [], systemPrompt: '', postHistoryInstructions: '',
+      frontend: { regexScripts: [], tavernHelperScriptNames: [] }, degradations: [], raw: {},
+    },
+    worldInfoBefore: [], worldInfoAfter: [], session: Session.create(SessionId('custom-preset-prompt')), pendingMessages: [],
+  }).system, /SillyTavern user prompt · 自定义.*只在本会话使用/su)
+
+  const deleted = configurePreset({ ...active, preset: added, revision: 1 }, {
+    operation: 'replace', revision: 1, prompts,
+    order: active.preset.order, content: [], generation: {}, regex: [],
+  })
+  assert.equal(deleted.prompts.some(prompt => prompt.identifier === 'custom'), false)
+  assert.throws(() => configurePreset(active, {
+    operation: 'replace', revision: 0,
+    prompts: prompts.filter(prompt => prompt.identifier !== 'main'),
+    order: active.preset.order.filter(entry => entry.identifier !== 'main'),
+    content: [], generation: {}, regex: [],
+  }), /built-in module.*cannot be deleted/u)
+})
+
 test('keeps extension markers fixed and restores the exact imported defaults', () => {
   const active = activePreset()
   assert.equal(canTogglePresetPrompt(active.preset, 'style'), true)

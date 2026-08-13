@@ -11,6 +11,7 @@ test('recognizes author-defined preset dividers without changing their prompt en
     { identifier: 'style-heading', name: '----文风要求————', attached: true, enabled: false },
     { identifier: 'style-a', name: '克制', attached: true, enabled: true },
     { identifier: 'style-b', name: '明快', attached: true, enabled: false },
+    { identifier: 'custom', name: '我的提示', attached: true, enabled: true, imported: false },
     { identifier: 'extra', name: '额外模块', attached: false, enabled: false },
   ] as const
 
@@ -23,6 +24,7 @@ test('recognizes author-defined preset dividers without changing their prompt en
   })), [
     { key: 'base', title: '基础提示', enabledCount: 1, identifiers: ['main'] },
     { key: 'section:style-heading', title: '文风要求', enabledCount: 1, identifiers: ['style-heading', 'style-a', 'style-b'] },
+    { key: 'custom', title: '自定义模块', enabledCount: 1, identifiers: ['custom'] },
     { key: 'detached', title: '未加入当前顺序', enabledCount: 0, identifiers: ['extra'] },
   ])
 })

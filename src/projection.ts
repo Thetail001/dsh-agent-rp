@@ -166,6 +166,14 @@ function presetProjection(
     prompts: [...preset.order.flatMap((entry) => {
       const prompt = promptsById.get(entry.identifier)
       return prompt === undefined ? [] : [{
+        ...(() => {
+          const importedPrompt = importedPromptsById.get(prompt.identifier)
+          return {
+            imported: importedPrompt !== undefined,
+            importedName: importedPrompt?.name ?? prompt.name,
+            importedRole: importedPrompt?.role ?? prompt.role,
+          }
+        })(),
         identifier: prompt.identifier,
         name: prompt.name,
         role: prompt.role,
@@ -185,8 +193,17 @@ function presetProjection(
         enabled: entry.enabled,
         toggleable: canTogglePresetPrompt(preset, prompt.identifier),
         editable: canEditPresetPrompt(preset, prompt.identifier),
+        deletable: !prompt.systemPrompt && !prompt.marker,
       }]
     }), ...preset.prompts.filter(prompt => !preset.order.some(entry => entry.identifier === prompt.identifier)).map(prompt => ({
+      ...(() => {
+        const importedPrompt = importedPromptsById.get(prompt.identifier)
+        return {
+          imported: importedPrompt !== undefined,
+          importedName: importedPrompt?.name ?? prompt.name,
+          importedRole: importedPrompt?.role ?? prompt.role,
+        }
+      })(),
       identifier: prompt.identifier,
       name: prompt.name,
       role: prompt.role,
@@ -206,6 +223,7 @@ function presetProjection(
       enabled: false,
       toggleable: canTogglePresetPrompt(preset, prompt.identifier),
       editable: canEditPresetPrompt(preset, prompt.identifier),
+      deletable: !prompt.systemPrompt && !prompt.marker,
     }))],
     generation: {
       ...(generation.temperature === undefined ? {} : { temperature: generation.temperature }),

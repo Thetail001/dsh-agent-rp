@@ -356,7 +356,6 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
   const [collapsedPromptSections, setCollapsedPromptSections] = useState<ReadonlySet<string>>(() => new Set(
     projectPresetPromptSections(preset.prompts).slice(1).map(group => group.key),
   ))
-  const [editedPromptIds, setEditedPromptIds] = useState<ReadonlySet<string>>(() => new Set())
   const [editingPromptId, setEditingPromptId] = useState<string>()
   const [promptFilter, setPromptFilter] = useState<'all' | 'enabled' | 'modified'>('all')
   const [saving, setSaving] = useState(false)
@@ -364,7 +363,10 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const attachedPositionById = new Map(prompts.filter(prompt => prompt.attached).map((prompt, position) => [prompt.identifier, position]))
-  const promptModified = (prompt: PresetPromptProjection): boolean => prompt.content !== prompt.importedContent
+  const promptModified = (prompt: PresetPromptProjection): boolean => !prompt.imported
+    || prompt.name !== prompt.importedName
+    || prompt.role !== prompt.importedRole
+    || prompt.content !== prompt.importedContent
     || prompt.attached !== prompt.importedAttached
     || (prompt.attached && prompt.enabled !== prompt.importedEnabled)
     || (prompt.attached && attachedPositionById.get(prompt.identifier) !== prompt.importedPosition)
@@ -400,18 +402,41 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
     setPrompts(current => current.map(prompt => prompt.identifier === identifier ? update(prompt) : prompt))
   }
   const setPromptContent = (identifier: string, content: string): void => {
-    const openedContent = preset.prompts.find(prompt => prompt.identifier === identifier)?.content
     setPrompt(identifier, prompt => ({
       ...prompt,
       content,
       contentModified: content !== prompt.importedContent,
     }))
-    setEditedPromptIds((edited) => {
-      const next = new Set(edited)
-      if (content === openedContent) next.delete(identifier)
-      else next.add(identifier)
-      return next
-    })
+  }
+  const addPrompt = (): void => {
+    const identifier = crypto.randomUUID()
+    const prompt: PresetPromptProjection = {
+      identifier,
+      name: '新提示模块',
+      importedName: '新提示模块',
+      role: 'system',
+      importedRole: 'system',
+      content: '',
+      importedContent: '',
+      imported: false,
+      contentModified: false,
+      marker: false,
+      systemPrompt: false,
+      forbidOverrides: false,
+      attached: true,
+      importedAttached: false,
+      enabled: false,
+      importedEnabled: false,
+      toggleable: true,
+      editable: true,
+      deletable: true,
+    }
+    setPrompts(current => [
+      ...current.filter(item => item.attached),
+      prompt,
+      ...current.filter(item => !item.attached),
+    ])
+    setEditingPromptId(identifier)
   }
   const exportCopy = (): void => {
     const resolvedTemperature = temperature.trim() === '' ? undefined : Number(temperature)
@@ -498,10 +523,13 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
           identifier: prompt.identifier,
           enabled: prompt.enabled,
         })),
-        content: prompts.filter(prompt => editedPromptIds.has(prompt.identifier)).map(prompt => ({
+        prompts: prompts.map(prompt => ({
           identifier: prompt.identifier,
+          name: prompt.name,
+          role: prompt.role,
           content: prompt.content,
         })),
+        content: [],
         generation: {
           temperature: resolvedTemperature,
           maxTokens: resolvedMaxTokens,
@@ -566,6 +594,7 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
               background: promptFilter === value ? `color-mix(in srgb, ${color} 14%, transparent)` : 'transparent',
               borderColor: promptFilter === value ? `color-mix(in srgb, ${color} 38%, transparent)` : miniButtonStyle.border,
             }}>{label}</button>)}
+            <button type="button" onClick={addPrompt} style={{ ...miniButtonStyle, marginLeft: 'auto' }}>＋ 新建模块</button>
           </div>}
           <div style={{ display: 'flex', fontSize: '11px', justifyContent: 'space-between', margin: '10px 3px 7px', opacity: 0.48 }}>
             <span>{section === 'prompts' ? '提示模块' : '预设正则'}</span><span>{section === 'prompts' ? '顺序与开关' : '开关'}</span>
@@ -602,7 +631,7 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
                 </div>
                 <div style={{ alignItems: 'center', display: 'flex', gap: '5px' }}>
                   {prompt.editable && <button type="button" onClick={() => { setEditingPromptId(prompt.identifier) }} style={miniButtonStyle}>编辑</button>}
-                  {prompt.editable && prompt.content !== prompt.importedContent && <button type="button" onClick={() => { setPromptContent(prompt.identifier, prompt.importedContent) }} style={miniButtonStyle}>恢复正文</button>}
+                  {prompt.imported && prompt.editable && prompt.content !== prompt.importedContent && <button type="button" onClick={() => { setPromptContent(prompt.identifier, prompt.importedContent) }} style={miniButtonStyle}>恢复正文</button>}
                   {prompt.attached && <>
                     <button type="button" aria-label={`上移${prompt.name}`} disabled={attachedIndex <= 0 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, -1) }} style={miniButtonStyle}>↑</button>
                     <button type="button" aria-label={`下移${prompt.name}`} disabled={attachedIndex >= attached.length - 1 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, 1) }} style={miniButtonStyle}>↓</button>
@@ -690,20 +719,34 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
     {editingPrompt !== undefined && <PresetPromptEditorDialog
       prompt={editingPrompt}
       onClose={() => { setEditingPromptId(undefined) }}
-      onApply={(content) => {
-        setPromptContent(editingPrompt.identifier, content)
+      onApply={(value) => {
+        setPrompt(editingPrompt.identifier, prompt => ({
+          ...prompt,
+          name: value.name,
+          role: value.role,
+          content: value.content,
+          contentModified: value.content !== prompt.importedContent,
+        }))
         setEditingPromptId(undefined)
       }}
+      {...editingPrompt.deletable ? { onDelete: () => {
+        setPrompts(current => current.filter(prompt => prompt.identifier !== editingPrompt.identifier))
+        setEditingPromptId(undefined)
+      } } : {}}
     />}
   </div>
 }
 
-function PresetPromptEditorDialog({ prompt, onClose, onApply }: {
+function PresetPromptEditorDialog({ prompt, onClose, onApply, onDelete }: {
   readonly prompt: PresetPromptProjection
   readonly onClose: () => void
-  readonly onApply: (content: string) => void
+  readonly onApply: (value: { readonly name: string; readonly role: PresetPromptProjection['role']; readonly content: string }) => void
+  readonly onDelete?: () => void
 }) {
+  const [name, setName] = useState(prompt.name)
+  const [role, setRole] = useState(prompt.role)
   const [content, setContent] = useState(prompt.content)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   return <div role="dialog" aria-modal="true" aria-label={`编辑${prompt.name || prompt.identifier}`} style={{
     alignItems: 'center', background: 'rgba(0,0,0,.7)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1150,
@@ -713,9 +756,16 @@ function PresetPromptEditorDialog({ prompt, onClose, onApply }: {
       borderRadius: '14px', boxShadow: '0 24px 80px rgba(0,0,0,.5)', display: 'flex', flexDirection: 'column',
       maxHeight: 'min(820px, 90vh)', maxWidth: '760px', overflow: 'hidden', width: 'min(94vw, 760px)',
     }}>
-      <header style={{ borderBottom: '1px solid var(--dsw-alias-border-l2, #343438)', padding: '17px 19px 14px' }}>
-        <h3 style={{ fontSize: '16px', margin: 0 }}>{prompt.name || prompt.identifier}</h3>
-        <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: '10px', marginTop: '5px', opacity: 0.4 }}>{prompt.identifier} · {roleLabel(prompt.role)}</div>
+      <header style={{ borderBottom: '1px solid var(--dsw-alias-border-l2, #343438)', display: 'grid', gap: '8px', gridTemplateColumns: 'minmax(0, 1fr) 130px', padding: '14px 18px' }}>
+        <label style={{ ...fieldLabelStyle, margin: 0 }}>模块名称
+          <input aria-label="模块名称" value={name} onChange={event => { setName(event.target.value) }} style={fieldInputStyle} />
+        </label>
+        <label style={{ ...fieldLabelStyle, margin: 0 }}>消息角色
+          <select aria-label="消息角色" value={role} onChange={event => { setRole(event.target.value as PresetPromptProjection['role']) }} style={fieldInputStyle}>
+            <option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option>
+          </select>
+        </label>
+        <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: '10px', gridColumn: '1 / -1', opacity: 0.4 }}>{prompt.identifier}</div>
       </header>
       <textarea aria-label="提示内容" autoFocus spellCheck={false} value={content} onChange={event => { setContent(event.target.value) }} style={{
         background: 'var(--dsw-alias-bg-layer-1, #202024)', border: 0, color: 'inherit', flex: '1 1 auto',
@@ -724,8 +774,11 @@ function PresetPromptEditorDialog({ prompt, onClose, onApply }: {
       }} />
       <footer style={{ alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #343438)', display: 'flex', gap: '9px', justifyContent: 'flex-end', padding: '12px 18px' }}>
         <span style={{ fontSize: '10px', marginRight: 'auto', opacity: 0.42 }}>{content.length.toLocaleString()} 字符</span>
+        {onDelete !== undefined && (confirmingDelete
+          ? <><span style={{ color: '#e47a7a', fontSize: '11px' }}>永久移除此模块？</span><button type="button" onClick={onDelete} style={{ ...secondaryButtonStyle, borderColor: '#a94f4f', color: '#ef8a8a' }}>确认删除</button></>
+          : <button type="button" onClick={() => { setConfirmingDelete(true) }} style={{ ...secondaryButtonStyle, marginRight: 'auto' }}>删除模块</button>)}
         <button type="button" onClick={onClose} style={secondaryButtonStyle}>取消</button>
-        <button type="button" onClick={() => { onApply(content) }} style={primaryButtonStyle}>应用修改</button>
+        <button type="button" disabled={name.trim() === ''} onClick={() => { onApply({ name: name.trim(), role, content }) }} style={primaryButtonStyle}>应用修改</button>
       </footer>
     </section>
   </div>

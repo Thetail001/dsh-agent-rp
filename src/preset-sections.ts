@@ -6,6 +6,7 @@ export interface PresetSectionPrompt {
   readonly name: string
   readonly attached: boolean
   readonly enabled: boolean
+  readonly imported?: boolean
 }
 
 /** One presentation group without changing the preset's underlying prompt order. */
@@ -36,7 +37,7 @@ export function projectPresetPromptSections<T extends PresetSectionPrompt>(promp
   grouped.push(current)
 
   for (const prompt of prompts) {
-    if (!prompt.attached) continue
+    if (!prompt.attached || prompt.imported === false) continue
     const dividerTitle = presetDividerTitle(prompt.name)
     if (dividerTitle !== undefined) {
       current = {
@@ -48,6 +49,11 @@ export function projectPresetPromptSections<T extends PresetSectionPrompt>(promp
       grouped.push(current)
     }
     current.prompts.push(prompt)
+  }
+
+  const custom = prompts.filter(prompt => prompt.attached && prompt.imported === false)
+  if (custom.length > 0) {
+    grouped.push({ key: 'custom', title: '自定义模块', kind: 'named', prompts: custom })
   }
 
   const detached = prompts.filter(prompt => !prompt.attached)
