@@ -39,6 +39,7 @@ test('keeps one exact reusable Character Card asset with selectable greetings', 
     greetingCount: 2,
     worldInfoCount: 0,
     avatarAvailable: false,
+    imageAssetCount: 0,
     transport: 'json',
     updatedAt: first.updatedAt,
   }])
@@ -57,11 +58,19 @@ test('keeps the original CHARX archive reusable', (context) => {
   raw.spec = 'chara_card_v3'
   raw.spec_version = '3.0'
   data.group_only_greetings = []
-  data.assets = [{ type: 'icon', uri: 'embeded://assets/icon/images/main.png', name: 'main', ext: 'png' }]
+  data.assets = [
+    { type: 'icon', uri: 'embeded://assets/icon/images/main.png', name: 'main', ext: 'png' },
+    { type: 'background', uri: 'embeded://assets/background/images/rain.webp', name: 'rain', ext: 'webp' },
+    { type: 'emotion', uri: 'embeded://assets/emotion/images/smile.png', name: 'smile', ext: 'png' },
+  ]
   const avatar = Uint8Array.from([0x89, 0x50, 0x4e, 0x47])
+  const background = Uint8Array.from([0x52, 0x49, 0x46, 0x46])
+  const emotion = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x01])
   const archive = zipSync({
     'card.json': strToU8(JSON.stringify(raw)),
     'assets/icon/images/main.png': avatar,
+    'assets/background/images/rain.webp': background,
+    'assets/emotion/images/smile.png': emotion,
   })
   const library = new CharacterLibrary({ root })
   const imported = library.import({
@@ -75,5 +84,17 @@ test('keeps the original CHARX archive reusable', (context) => {
   assert.equal(imported.transport, 'charx')
   assert.equal(imported.avatarAvailable, true)
   assert.deepEqual(library.avatar(imported.id), { mediaType: 'image/png', data: avatar })
+  assert.equal(imported.imageAssetCount, 3)
+  assert.deepEqual(imported.imageAssets, [
+    { index: 0, type: 'icon', name: 'main', mediaType: 'image/png' },
+    { index: 1, type: 'background', name: 'rain', mediaType: 'image/webp' },
+    { index: 2, type: 'emotion', name: 'smile', mediaType: 'image/png' },
+  ])
+  assert.deepEqual(library.image(imported.id, 0), {
+    index: 0, type: 'icon', name: 'main', mediaType: 'image/png', data: avatar,
+  })
+  assert.deepEqual(library.image(imported.id, 1)?.data, background)
+  assert.deepEqual(library.image(imported.id, 2)?.data, emotion)
+  assert.equal(library.image(imported.id, 3), undefined)
   assert.deepEqual(library.asset(imported.id).data, archive)
 })

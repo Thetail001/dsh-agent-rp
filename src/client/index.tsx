@@ -23,6 +23,7 @@ import {
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
 import {
   CHARACTER_LIBRARY_PATH,
+  characterLibraryImageUrl,
   encodeCharacterLibrarySessionRequest,
   type CharacterLibraryDetail,
   type CharacterLibrarySummary,
@@ -90,7 +91,10 @@ const statusPlaceholder = '<StatusPlaceHolderImpl/>'
 
 type RoleplayViewMode = 'immersive' | 'debug'
 
+type RoleplayBackgroundChoice = 'auto' | 'off' | number
+
 const roleplayViewListeners = new Map<SessionId, Set<() => void>>()
+const roleplayBackgroundListeners = new Map<SessionId, Set<() => void>>()
 
 function roleplayViewKey(sessionId: SessionId): string {
   return `dsh.agent-rp.view.${sessionId}`
@@ -116,6 +120,81 @@ function useRoleplayViewMode(sessionId: SessionId): RoleplayViewMode {
       if (listeners.size === 0) roleplayViewListeners.delete(sessionId)
     }
   }, () => readRoleplayViewMode(sessionId), () => 'immersive')
+}
+
+function roleplayBackgroundKey(sessionId: SessionId): string {
+  return `dsh.agent-rp.background.${sessionId}`
+}
+
+function readRoleplayBackground(sessionId: SessionId): RoleplayBackgroundChoice {
+  const value = localStorage.getItem(roleplayBackgroundKey(sessionId))
+  if (value === 'off') return 'off'
+  if (value !== null && /^\d+$/u.test(value)) return Number(value)
+  return 'auto'
+}
+
+function setRoleplayBackground(sessionId: SessionId, choice: RoleplayBackgroundChoice): void {
+  if (choice === 'auto') localStorage.removeItem(roleplayBackgroundKey(sessionId))
+  else localStorage.setItem(roleplayBackgroundKey(sessionId), String(choice))
+  for (const listener of roleplayBackgroundListeners.get(sessionId) ?? []) listener()
+}
+
+function useRoleplayBackground(sessionId: SessionId | undefined): RoleplayBackgroundChoice {
+  return useSyncExternalStore(callback => {
+    if (sessionId === undefined) return () => {}
+    const listeners = roleplayBackgroundListeners.get(sessionId) ?? new Set<() => void>()
+    listeners.add(callback)
+    roleplayBackgroundListeners.set(sessionId, listeners)
+    return () => {
+      listeners.delete(callback)
+      if (listeners.size === 0) roleplayBackgroundListeners.delete(sessionId)
+    }
+  }, () => sessionId === undefined ? 'auto' : readRoleplayBackground(sessionId), () => 'auto')
+}
+
+async function characterLibraryJson<T>(path = ''): Promise<T> {
+  const response = await fetch(`${CHARACTER_LIBRARY_PATH}${path}`, { headers: { accept: 'application/json' } })
+  const value = await response.json() as { readonly error?: string } & T
+  if (!response.ok) throw new Error(value.error ?? `角色库请求失败（${response.status}）`)
+  return value
+}
+
+async function fetchCharacterDetail(id: string): Promise<CharacterLibraryDetail> {
+  const value = await characterLibraryJson<{ readonly format: 0; readonly entry: CharacterLibraryDetail }>(
+    `/${encodeURIComponent(id)}`,
+  )
+  return value.entry
+}
+
+function useCharacterDetail(libraryId: string | undefined): CharacterLibraryDetail | undefined {
+  const [detail, setDetail] = useState<CharacterLibraryDetail>()
+  useEffect(() => {
+    let current = true
+    setDetail(undefined)
+    if (libraryId === undefined) return () => { current = false }
+    void fetchCharacterDetail(libraryId).then(value => {
+      if (current) setDetail(value)
+    }, () => {
+      if (current) setDetail(undefined)
+    })
+    return () => { current = false }
+  }, [libraryId])
+  return detail
+}
+
+function backgroundAssets(detail: CharacterLibraryDetail | undefined) {
+  return detail?.imageAssets.filter(asset => asset.type === 'background') ?? []
+}
+
+function selectedBackground(
+  detail: CharacterLibraryDetail | undefined,
+  choice: RoleplayBackgroundChoice,
+) {
+  if (choice === 'off') return undefined
+  const backgrounds = backgroundAssets(detail)
+  return choice === 'auto'
+    ? backgrounds.find(asset => asset.name.trim().toLocaleLowerCase() === 'main') ?? backgrounds[0]
+    : backgrounds.find(asset => asset.index === choice)
 }
 
 const cardFrameCompatibility = `<style>
@@ -346,6 +425,60 @@ function DetailSection({ title, text }: { readonly title: string; readonly text:
   </section>
 }
 
+function CharacterAssetsSection({ detail, sessionId }: {
+  readonly detail: CharacterLibraryDetail
+  readonly sessionId?: SessionId
+}) {
+  const backgroundChoice = useRoleplayBackground(sessionId)
+  const backgrounds = backgroundAssets(detail)
+  const expressions = detail.imageAssets.filter(asset => asset.type === 'emotion' || asset.type === 'expression')
+  if (backgrounds.length + expressions.length === 0) return null
+  return <section style={{ marginTop: '20px' }}>
+    <h3 style={{ fontSize: '12px', fontWeight: 620, margin: '0 0 9px', opacity: .58 }}>卡片资源</h3>
+    {backgrounds.length > 0 && <>
+      <div style={{ alignItems: 'center', display: 'flex', fontSize: '12px', marginBottom: '8px' }}>
+        <span style={{ opacity: .64 }}>背景</span>
+        {sessionId !== undefined && <select aria-label="选择会话背景" value={String(backgroundChoice)} onChange={event => {
+          const value = event.target.value
+          setRoleplayBackground(sessionId, value === 'auto' || value === 'off' ? value : Number(value))
+        }} style={{
+          background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+          borderRadius: '7px', color: 'inherit', font: 'inherit', fontSize: '11px', marginLeft: 'auto', padding: '5px 7px',
+        }}>
+          <option value="auto">跟随角色卡</option>
+          <option value="off">不使用背景</option>
+          {backgrounds.map(asset => <option key={asset.index} value={asset.index}>{asset.name || `背景 ${asset.index + 1}`}</option>)}
+        </select>}
+      </div>
+      <div style={{ display: 'grid', gap: '7px', gridTemplateColumns: 'repeat(auto-fill, minmax(92px, 1fr))' }}>
+        {backgrounds.map(asset => <figure key={asset.index} style={{ margin: 0, minWidth: 0 }}>
+          <img src={characterLibraryImageUrl(detail.id, asset.index)} alt={asset.name || '角色背景'} loading="lazy" style={{
+            aspectRatio: '16 / 9', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '8px',
+            display: 'block', objectFit: 'cover', width: '100%',
+          }} />
+          <figcaption style={{ fontSize: '10px', marginTop: '4px', opacity: .48, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {asset.name || `背景 ${asset.index + 1}`}
+          </figcaption>
+        </figure>)}
+      </div>
+    </>}
+    {expressions.length > 0 && <>
+      <div style={{ fontSize: '12px', margin: backgrounds.length === 0 ? '0 0 8px' : '16px 0 8px', opacity: .64 }}>表情资源</div>
+      <div style={{ display: 'grid', gap: '7px', gridTemplateColumns: 'repeat(auto-fill, minmax(64px, 1fr))' }}>
+        {expressions.map(asset => <figure key={asset.index} style={{ margin: 0, minWidth: 0 }}>
+          <img src={characterLibraryImageUrl(detail.id, asset.index)} alt={asset.name || '角色表情'} loading="lazy" style={{
+            aspectRatio: '1', background: 'color-mix(in srgb, currentColor 5%, transparent)',
+            border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '8px', display: 'block', objectFit: 'contain', width: '100%',
+          }} />
+          <figcaption style={{ fontSize: '10px', marginTop: '4px', opacity: .48, overflow: 'hidden', textAlign: 'center', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {asset.name || `表情 ${asset.index + 1}`}
+          </figcaption>
+        </figure>)}
+      </div>
+    </>}
+  </section>
+}
+
 function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
   configureWorldInfo,
@@ -364,6 +497,7 @@ function RoleplayHeader({
   const [aliasError, setAliasError] = useState<string>()
   const [renaming, setRenaming] = useState(false)
   const viewMode = useRoleplayViewMode(sessionId)
+  const characterDetail = useCharacterDetail(projection?.avatarLibraryId)
   const rootRef = useRef<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
     if (viewMode === 'debug') return
@@ -468,6 +602,9 @@ function RoleplayHeader({
           {(projection.frontend?.tavernHelperScriptNames.length ?? 0) > 0 && <span style={chipStyle}>
             {projection.mvu === undefined ? 'MVU · 未初始化' : `MVU · 已接通${projection.mvu.updateCount === 0 ? '' : ` · ${projection.mvu.updateCount} 次更新`}`}
           </span>}
+          {(characterDetail?.imageAssets.length ?? 0) > 0 && <span style={chipStyle}>
+            卡片资源 · {characterDetail?.imageAssets.length} 张图片
+          </span>}
           {projection.preset !== undefined && <span style={chipStyle}>
             预设 · {projection.preset.name} · {projection.preset.enabledCount}/{projection.preset.promptCount} 项启用
           </span>}
@@ -512,6 +649,7 @@ function RoleplayHeader({
         {projection.persona !== undefined && <DetailSection title={`Persona · ${projection.persona.name}`} text={
           projection.persona.description || '没有额外人物设定'
         } />}
+        {characterDetail !== undefined && <CharacterAssetsSection detail={characterDetail} sessionId={sessionId} />}
         {projection.preset !== undefined && <DetailSection title="运行预设" text={[
           `${projection.preset.promptCount} 个提示模块，当前启用 ${projection.preset.enabledCount} 个`,
           projection.preset.appliedGeneration.length === 0
@@ -950,6 +1088,7 @@ function CharacterLibraryDialog({
             </div>
             <div style={{ fontSize: '11px', marginTop: '5px', opacity: .5 }}>
               V{entry.cardVersion} · {entry.greetingCount} 个开场{entry.worldInfoCount === 0 ? '' : ` · ${entry.worldInfoCount} 条世界书`}
+              {entry.imageAssetCount === 0 ? '' : ` · ${entry.imageAssetCount} 张图片`}
             </div>
           </button>)}
         </div>
@@ -966,6 +1105,7 @@ function CharacterLibraryDialog({
         </header>
         <div style={{ flex: 1, minHeight: 0, overflowX: 'hidden', overflowY: 'auto', padding: '4px 20px 22px' }}>
           {selected !== undefined && <>
+            <CharacterAssetsSection detail={selected} />
             <label style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '8px 0 8px', opacity: .65 }}>选择开场</label>
             <div style={{ display: 'grid', gap: '8px' }}>
               {selected.greetings.map((greeting, index) => <button key={index} type="button" aria-pressed={greetingIndex === index}
@@ -1951,8 +2091,36 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
   const chat = useSession(state => state.chat)
   const viewMode = useRoleplayViewMode(sessionId)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const characterDetail = useCharacterDetail(projection?.avatarLibraryId)
+  const backgroundChoice = useRoleplayBackground(sessionId)
+  const background = selectedBackground(characterDetail, backgroundChoice)
   const displayName = projection === undefined ? undefined : roleplayDisplayName(summary, projection)
   const placeholder = displayName === undefined ? undefined : `和${displayName}说点什么…`
+  useLayoutEffect(() => {
+    const scroll = rootRef.current?.closest<HTMLElement>('[data-conversation-scroll]')
+    if (scroll == null || background === undefined || projection?.avatarLibraryId === undefined || viewMode !== 'immersive') return
+    const previous = {
+      attachment: scroll.style.getPropertyValue('background-attachment'),
+      image: scroll.style.getPropertyValue('background-image'),
+      position: scroll.style.getPropertyValue('background-position'),
+      repeat: scroll.style.getPropertyValue('background-repeat'),
+      size: scroll.style.getPropertyValue('background-size'),
+    }
+    scroll.dataset.agentRpBackground = 'true'
+    scroll.style.setProperty('background-attachment', 'local')
+    scroll.style.setProperty('background-image', `linear-gradient(rgba(10,11,15,.76),rgba(10,11,15,.88)),url("${characterLibraryImageUrl(projection.avatarLibraryId, background.index)}")`)
+    scroll.style.setProperty('background-position', 'center')
+    scroll.style.setProperty('background-repeat', 'no-repeat')
+    scroll.style.setProperty('background-size', 'cover')
+    return () => {
+      delete scroll.dataset.agentRpBackground
+      for (const [property, value] of Object.entries(previous)) {
+        const cssProperty = `background-${property === 'image' ? 'image' : property}`
+        if (value === '') scroll.style.removeProperty(cssProperty)
+        else scroll.style.setProperty(cssProperty, value)
+      }
+    }
+  }, [background?.index, projection?.avatarLibraryId, viewMode])
   useLayoutEffect(() => {
     const inputRoot = rootRef.current?.parentElement
     const card = inputRoot?.querySelector<HTMLElement>('[data-composer-card]')

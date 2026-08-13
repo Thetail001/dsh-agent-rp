@@ -5,6 +5,15 @@ import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
 /** Same-origin endpoint served by the Agent RP Host plugin. */
 export const CHARACTER_LIBRARY_PATH = '/api/agent-rp/characters'
 
+/** One inert embedded image exposed from a CHARX archive. */
+export interface CharacterLibraryImage {
+  /** Stable index in the Character Card V3 assets array. */
+  readonly index: number
+  readonly type: string
+  readonly name: string
+  readonly mediaType: string
+}
+
 /** One compact reusable Character Card shown in the library. */
 export interface CharacterLibrarySummary {
   readonly id: string
@@ -14,6 +23,7 @@ export interface CharacterLibrarySummary {
   readonly greetingCount: number
   readonly worldInfoCount: number
   readonly avatarAvailable: boolean
+  readonly imageAssetCount: number
   readonly transport: 'png' | 'json' | 'charx'
   readonly updatedAt: number
 }
@@ -23,6 +33,12 @@ export interface CharacterLibraryDetail extends CharacterLibrarySummary {
   readonly originalFilename: string
   readonly mediaType: string
   readonly greetings: readonly string[]
+  readonly imageAssets: readonly CharacterLibraryImage[]
+}
+
+/** Same-origin URL for one validated inert CHARX image. */
+export function characterLibraryImageUrl(id: string, index: number): string {
+  return `${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(id)}/images/${index}`
 }
 
 /** Explicit model-free request embedded beside one selected card attachment. */

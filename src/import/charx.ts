@@ -28,6 +28,7 @@ const IMAGE_MEDIA_TYPES: Readonly<Record<string, string>> = {
 
 /** One card-declared embedded image safe to expose as inert media. */
 export interface CharxImageAsset {
+  readonly index: number
   readonly type: string
   readonly name: string
   readonly path: string
@@ -100,13 +101,14 @@ function embeddedPath(uri: string): string | undefined {
 
 /** Resolve card-declared embedded image assets, declining code and unknown media. */
 export function charxImageAssets(charx: ImportedCharx): readonly CharxImageAsset[] {
-  return (charx.card.assets ?? []).flatMap(asset => {
+  return (charx.card.assets ?? []).flatMap((asset, index) => {
     const path = embeddedPath(asset.uri)
     const ext = asset.ext.trim().toLocaleLowerCase().replace(/^\./u, '')
     const mediaType = IMAGE_MEDIA_TYPES[ext]
     const data = path === undefined ? undefined : charx.entries.get(path)
     if (path === undefined || mediaType === undefined || data === undefined) return []
     return [{
+      index,
       type: asset.type.trim().toLocaleLowerCase(),
       name: asset.name,
       path,

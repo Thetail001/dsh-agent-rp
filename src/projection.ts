@@ -48,6 +48,7 @@ const projectionSchema = {
         || !Number.isSafeInteger(record.currentReplySeq) || record.currentReplySeq < 0))
       || !validCardVersion
       || (record.avatarAttachmentId !== undefined && typeof record.avatarAttachmentId !== 'string')
+      || (record.avatarLibraryId !== undefined && typeof record.avatarLibraryId !== 'string')
       || typeof record.importedMessageCount !== 'number' || !Number.isSafeInteger(record.importedMessageCount)
       || record.importedMessageCount < 0
       || typeof record.worldInfoCount !== 'number' || !Number.isSafeInteger(record.worldInfoCount)

@@ -16,8 +16,10 @@ import type { CharacterImportTransport } from './import/session-character.ts'
 import type { ImportedCharacterCard } from './import/types.ts'
 import { parseCharacterCardJson, parseCharacterCardJsonBytes } from './import/character-card.ts'
 import { readCharacterCardPng } from './import/png.ts'
-import { charxAvatar, parseCharx } from './import/charx.ts'
-import type { CharacterLibraryDetail, CharacterLibrarySummary } from './character-library-protocol.ts'
+import { charxAvatar, charxImageAssets, parseCharx } from './import/charx.ts'
+import type {
+  CharacterLibraryDetail, CharacterLibraryImage, CharacterLibrarySummary,
+} from './character-library-protocol.ts'
 
 const META_SUFFIX = '.meta.json'
 const ID_PATTERN = /^card-[a-f0-9]{32}$/u
@@ -60,6 +62,10 @@ export interface CharacterLibraryAvatar {
   readonly data: Uint8Array
 }
 
+export interface CharacterLibraryImageAsset extends CharacterLibraryImage {
+  readonly data: Uint8Array
+}
+
 function object(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${label} must be an object`)
   return value as Record<string, unknown>
@@ -87,7 +93,12 @@ function safeFilename(value: string | undefined, transport: 'png' | 'json' | 'ch
   return name === '' ? fallback : name.slice(0, 240)
 }
 
-function summary(meta: StoredCharacterMetadata, card: ImportedCharacterCard, avatarAvailable: boolean): CharacterLibrarySummary {
+function summary(
+  meta: StoredCharacterMetadata,
+  card: ImportedCharacterCard,
+  avatarAvailable: boolean,
+  imageAssetCount: number,
+): CharacterLibrarySummary {
   return {
     id: meta.id,
     name: card.name,
@@ -96,6 +107,7 @@ function summary(meta: StoredCharacterMetadata, card: ImportedCharacterCard, ava
     greetingCount: 1 + card.alternateGreetings.length,
     worldInfoCount: card.lorebook?.entries.length ?? 0,
     avatarAvailable,
+    imageAssetCount,
     transport: meta.transport,
     updatedAt: meta.updatedAt,
   }
@@ -123,10 +135,11 @@ export class CharacterLibrary {
     const entry = this.readId(id)
     const parsed = this.parseStored(entry.meta, entry.data)
     return {
-      ...summary(entry.meta, parsed.card, parsed.avatar !== undefined),
+      ...summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length),
       originalFilename: entry.meta.originalFilename,
       mediaType: entry.meta.mediaType,
       greetings: [parsed.card.firstMessage, ...parsed.card.alternateGreetings],
+      imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
     }
   }
 
@@ -135,7 +148,7 @@ export class CharacterLibrary {
     const entry = this.readId(id)
     const parsed = this.parseStored(entry.meta, entry.data)
     return {
-      summary: summary(entry.meta, parsed.card, parsed.avatar !== undefined),
+      summary: summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length),
       originalFilename: entry.meta.originalFilename,
       mediaType: entry.meta.mediaType,
       data: entry.data,
@@ -146,6 +159,13 @@ export class CharacterLibrary {
   avatar(id: string): CharacterLibraryAvatar | undefined {
     const entry = this.readId(id)
     return this.parseStored(entry.meta, entry.data).avatar
+  }
+
+  /** Load one card-declared embedded image by its stable V3 asset index. */
+  image(id: string, index: number): CharacterLibraryImageAsset | undefined {
+    if (!Number.isSafeInteger(index) || index < 0) return undefined
+    const entry = this.readId(id)
+    return this.parseStored(entry.meta, entry.data).images.find(image => image.index === index)
   }
 
   /** Save one already validated card, deduplicating exact original bytes. */
@@ -207,19 +227,28 @@ export class CharacterLibrary {
   private parseStored(meta: StoredCharacterMetadata, data: Uint8Array): {
     readonly card: ImportedCharacterCard
     readonly avatar?: CharacterLibraryAvatar
+    readonly images: readonly CharacterLibraryImageAsset[]
   } {
-    if (meta.transport === 'json') return { card: parseCharacterCardJsonBytes(data) }
+    if (meta.transport === 'json') return { card: parseCharacterCardJsonBytes(data), images: [] }
     if (meta.transport === 'charx') {
       const charx = parseCharx(data)
       const avatar = charxAvatar(charx)
+      const images = charxImageAssets(charx).map(image => ({
+        index: image.index,
+        type: image.type,
+        name: image.name,
+        mediaType: image.mediaType,
+        data: image.data,
+      }))
       return {
         card: charx.card,
+        images,
         ...(avatar === undefined ? {} : { avatar: { mediaType: avatar.mediaType, data: avatar.data } }),
       }
     }
     const payload = readCharacterCardPng(data)
     if (payload.keyword !== meta.metadataKeyword) throw new Error('character library PNG metadata keyword changed')
-    return { card: parseCharacterCardJson(payload.json), avatar: { mediaType: 'image/png', data } }
+    return { card: parseCharacterCardJson(payload.json), avatar: { mediaType: 'image/png', data }, images: [] }
   }
 
   private readId(id: string): { readonly meta: StoredCharacterMetadata; readonly data: Uint8Array } {

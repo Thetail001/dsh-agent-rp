@@ -40,7 +40,7 @@ test('imports Character Card V3 and embedded files from a bounded CHARX archive'
   assert.equal(imported.card.nickname, '棠棠')
   assert.deepEqual(imported.entries.get('assets/icon/images/main.png'), Uint8Array.from([0x89, 0x50, 0x4e, 0x47]))
   assert.deepEqual(charxAvatar(imported), {
-    type: 'icon', name: 'main', path: 'assets/icon/images/main.png', mediaType: 'image/png',
+    index: 0, type: 'icon', name: 'main', path: 'assets/icon/images/main.png', mediaType: 'image/png',
     data: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]),
   })
 })
