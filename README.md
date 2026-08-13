@@ -19,14 +19,20 @@
 
 ## 安装
 
-需要已经公开发布的 DSH，以及 Node.js 和 pnpm。克隆仓库后运行：
+需要已经公开发布的 DSH，以及 Node.js 和 pnpm。无需克隆仓库，直接从公开仓库安装：
 
 ```powershell
-pnpm install
-pnpm run build
-npx -p @deepseek-ai/dsh@latest dsh plugin --profile web add .
+npx -p @deepseek-ai/dsh@latest dsh plugin --profile web add github:hewzhew/dsh-agent-rp#main
 npx -p @deepseek-ai/dsh@latest dsh --profile web
 ```
+
+以后更新插件时运行：
+
+```powershell
+npx -p @deepseek-ai/dsh@latest dsh plugin --profile web update @dsh-external/dsh-agent-rp
+```
+
+这种安装方式不会依赖某个长期留在原位的本地克隆目录。贡献者需要修改源码时，才应克隆仓库并在仓库根目录运行 `pnpm install`、`pnpm run build` 与 `dsh plugin --profile web add .`。
 
 早期安装器写入的版本不会自动迁移。若启动错误中出现 `.dsh\plugins\dsh-agent-rp`，请先把该目录移出 `plugins` 目录作备份，确认 DSH 能启动后，再按上面的 profile 命令安装。不要删除整个 `.dsh`，会话数据与旧插件目录不是一回事。
 
