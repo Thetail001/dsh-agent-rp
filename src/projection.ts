@@ -142,6 +142,7 @@ function presetProjection(
   const promptsById = new Map(preset.prompts.map(prompt => [prompt.identifier, prompt]))
   const importedPromptsById = new Map(importedPreset.prompts.map(prompt => [prompt.identifier, prompt]))
   const importedOrderById = new Map(importedPreset.order.map((entry, position) => [entry.identifier, { ...entry, position }]))
+  const regexScripts = presetRegexScripts(preset)
   const appliedGeneration = [
     generation.temperature === undefined ? undefined : 'temperature',
     generation.maxTokens === undefined ? undefined : 'maxTokens（受模型上限约束）',
@@ -247,7 +248,10 @@ function presetProjection(
     degradedRoleCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier) && prompt.role !== 'system').length,
     preservedInChatCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier) && prompt.injectionPosition === 1).length,
     regexScriptCount: preset.extensionSummary.regexScriptCount,
-    regexScripts: presetRegexScripts(preset).map((script, index) => ({ ...script, index })),
+    enabledRegexScriptCount: regexScripts.filter(script => !script.disabled).length,
+    activeDisplayRegexCount: regexScripts.filter(script => !script.disabled && script.markdownOnly).length,
+    preservedPromptRegexCount: regexScripts.filter(script => !script.disabled && script.promptOnly).length,
+    regexScripts: regexScripts.map((script, index) => ({ ...script, index })),
     appliedGeneration,
     preservedGeneration,
     omittedExtensions: [

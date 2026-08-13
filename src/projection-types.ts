@@ -74,6 +74,9 @@ export interface AgentRpProjection {
     readonly degradedRoleCount: number
     readonly preservedInChatCount: number
     readonly regexScriptCount: number
+    readonly enabledRegexScriptCount: number
+    readonly activeDisplayRegexCount: number
+    readonly preservedPromptRegexCount: number
     readonly regexScripts: readonly (ImportedRegexScript & { readonly index: number })[]
     readonly appliedGeneration: readonly string[]
     readonly preservedGeneration: readonly string[]

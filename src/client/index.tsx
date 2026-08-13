@@ -306,7 +306,9 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar, con
           projection.preset.preservedInChatCount === 0
             ? ''
             : `${projection.preset.preservedInChatCount} 项聊天内注入已保留；当前 Host 暂不执行`,
-          projection.preset.regexScriptCount === 0 ? '' : `${projection.preset.regexScriptCount} 条预设正则已载入；显示规则生效，生成规则保留待 Host 提供无损上下文投影`,
+          projection.preset.regexScriptCount === 0 ? '' : `${projection.preset.enabledRegexScriptCount}/${projection.preset.regexScriptCount} 条正则启用`,
+          projection.preset.activeDisplayRegexCount === 0 ? '' : `${projection.preset.activeDisplayRegexCount} 条显示规则正在运行`,
+          projection.preset.preservedPromptRegexCount === 0 ? '' : `${projection.preset.preservedPromptRegexCount} 条生成规则已保留；等待 Host 提供独立模型消息视图`,
         ].filter(Boolean).join('\n')} />}
         {projection.description === '' && projection.personality === '' && projection.scenario === '' && <p style={{ fontSize: '13px', lineHeight: 1.7, marginTop: '22px', opacity: 0.62 }}>
           当前只迁移了聊天记录，没有对应角色卡；再次迁移时可将角色卡和 JSONL 放在同一条消息中
