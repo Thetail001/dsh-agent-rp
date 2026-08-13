@@ -30,6 +30,14 @@ test('keeps one exact reusable Character Card asset with selectable greetings', 
     transport: { transport: 'json' },
   })
 
+  assert.equal(library.importWithOutcome({
+    data,
+    filename: 'another-name.json',
+    mediaType: 'application/json',
+    card,
+    transport: { transport: 'json' },
+  }).outcome, 'existing')
+
   assert.equal(duplicate.id, first.id)
   assert.deepEqual(library.list(), [{
     id: first.id,
@@ -63,9 +71,10 @@ test('keeps one exact reusable Character Card asset with selectable greetings', 
   assert.deepEqual(library.asset(first.id).data, data)
 
   assert.equal(library.archive(first.id).archived, true)
-  const browserImport = library.importFile({ data, filename: '白露.json', mediaType: 'application/json' })
-  assert.equal(browserImport.id, first.id)
-  assert.equal(browserImport.archived, false)
+  const browserImport = library.importFileWithOutcome({ data, filename: '白露.json', mediaType: 'application/json' })
+  assert.equal(browserImport.entry.id, first.id)
+  assert.equal(browserImport.entry.archived, false)
+  assert.equal(browserImport.outcome, 'restored')
 
   const png = new Uint8Array(readFileSync('tests/fixtures/manual-character-card.png'))
   const pngImport = library.importFile({ data: png, filename: '白露.png', mediaType: 'image/png' })

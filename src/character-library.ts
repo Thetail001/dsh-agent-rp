@@ -18,7 +18,7 @@ import { parseCharacterCardJson, parseCharacterCardJsonBytes } from './import/ch
 import { readCharacterCardPng } from './import/png.ts'
 import { charxAvatar, charxImageAssets, parseCharx } from './import/charx.ts'
 import type {
-  CharacterLibraryDetail, CharacterLibraryImage, CharacterLibrarySummary,
+  CharacterLibraryDetail, CharacterLibraryImage, CharacterLibraryImportResult, CharacterLibrarySummary,
 } from './character-library-protocol.ts'
 
 const META_SUFFIX = '.meta.json'
@@ -183,12 +183,19 @@ export class CharacterLibrary {
 
   /** Save one already validated card, deduplicating exact original bytes. */
   import(input: CharacterLibraryImport): CharacterLibraryDetail {
+    return this.importWithOutcome(input).entry
+  }
+
+  /** Save one validated card and report whether it was added, reused, or restored. */
+  importWithOutcome(input: CharacterLibraryImport): CharacterLibraryImportResult {
     const digest = createHash('sha256').update(input.data).digest('hex')
     const id = `card-${digest.slice(0, 32)}`
     const existingMeta = this.metaPath(id)
     if (existsSync(existingMeta)) {
       const existing = this.get(id)
-      return existing.archived ? this.restore(id) : existing
+      return existing.archived
+        ? { entry: this.restore(id), outcome: 'restored' }
+        : { entry: existing, outcome: 'existing' }
     }
     mkdirSync(this.root, { recursive: true, mode: 0o700 })
     const now = Date.now()
@@ -216,7 +223,12 @@ export class CharacterLibrary {
     } catch (error: unknown) {
       rmSync(assetStaging, { force: true })
       rmSync(metaStaging, { force: true })
-      if (existsSync(existingMeta)) return this.get(id)
+      if (existsSync(existingMeta)) {
+        const existing = this.get(id)
+        return existing.archived
+          ? { entry: this.restore(id), outcome: 'restored' }
+          : { entry: existing, outcome: 'existing' }
+      }
       rmSync(assetPath, { force: true })
       throw error
     }
@@ -224,25 +236,30 @@ export class CharacterLibrary {
     if (detail.name !== input.card.name || detail.cardVersion !== input.card.version) {
       throw new Error('stored character card does not match the validated import')
     }
-    return detail
+    return { entry: detail, outcome: 'created' }
   }
 
   /** Parse and save one supported Character Card file selected from the local browser. */
   importFile(input: CharacterLibraryFileImport): CharacterLibraryDetail {
+    return this.importFileWithOutcome(input).entry
+  }
+
+  /** Parse one browser-selected card file and report its library import outcome. */
+  importFileWithOutcome(input: CharacterLibraryFileImport): CharacterLibraryImportResult {
     const filename = input.filename.trim()
     const mediaType = input.mediaType?.split(';', 1)[0]?.trim().toLocaleLowerCase()
     if (/\.charx$/iu.test(filename) || mediaType === 'application/zip') {
       const card = parseCharx(input.data).card
-      return this.import({ ...input, card, transport: { transport: 'charx' } })
+      return this.importWithOutcome({ ...input, card, transport: { transport: 'charx' } })
     }
     if (/\.json$/iu.test(filename) || mediaType === 'application/json') {
       const card = parseCharacterCardJsonBytes(input.data)
-      return this.import({ ...input, card, transport: { transport: 'json' } })
+      return this.importWithOutcome({ ...input, card, transport: { transport: 'json' } })
     }
     if (/\.png$/iu.test(filename) || mediaType === 'image/png') {
       const payload = readCharacterCardPng(input.data)
       const card = parseCharacterCardJson(payload.json)
-      return this.import({
+      return this.importWithOutcome({
         ...input,
         card,
         transport: { transport: 'png', metadataKeyword: payload.keyword },

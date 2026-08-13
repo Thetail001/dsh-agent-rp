@@ -96,12 +96,12 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
             fail(response, 400, '角色卡文件名缺失')
             return
           }
-          const entry = library.importFile({
+          const result = library.importFileWithOutcome({
             data: await readUpload(request),
             filename,
             ...(request.headers['content-type'] === undefined ? {} : { mediaType: request.headers['content-type'] }),
           })
-          json(response, 200, { format: 0, entry })
+          json(response, 200, { format: 0, ...result })
           return
         }
         if (request.method === 'POST' && parts.length === 2 && parts[0] !== undefined

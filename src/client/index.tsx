@@ -27,6 +27,7 @@ import {
   encodeCharacterLibrarySessionRequest,
   type CharacterLibraryCollection,
   type CharacterLibraryDetail,
+  type CharacterLibraryImportResult,
   type CharacterLibrarySummary,
 } from '../character-library-protocol.ts'
 import {
@@ -62,7 +63,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly listCharacters: (collection?: CharacterLibraryCollection) => Promise<readonly CharacterLibrarySummary[]>
   readonly readCharacter: (id: string) => Promise<CharacterLibraryDetail>
   readonly setCharacterArchived: (id: string, archived: boolean) => Promise<CharacterLibraryDetail>
-  readonly importCharacterFile: (file: File) => Promise<CharacterLibraryDetail>
+  readonly importCharacterFile: (file: File) => Promise<CharacterLibraryImportResult>
   readonly startCharacterSession: (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -1268,7 +1269,8 @@ function CharacterLibraryDialog({
     setDraggingFile(false)
     setError(undefined)
     setActionNotice(undefined)
-    void importCharacterFile(file).then(entry => listCharacters('active').then(value => ({ entry, value }))).then(({ entry, value }) => {
+    void importCharacterFile(file).then(result => listCharacters('active').then(value => ({ result, value }))).then(({ result, value }) => {
+      const { entry, outcome } = result
       setCollection('active')
       setCharacterQuery('')
       setEntries(value)
@@ -1276,7 +1278,9 @@ function CharacterLibraryDialog({
       setGreetingIndex(0)
       setLoadingId(undefined)
       setImporting(false)
-      setActionNotice(`已导入「${entry.displayName}」`)
+      setActionNotice(outcome === 'created' ? `已加入角色库「${entry.displayName}」`
+        : outcome === 'restored' ? `已恢复「${entry.displayName}」`
+          : `角色库中已有「${entry.displayName}」`)
     }).catch(importError => {
       setImporting(false)
       setError(importError instanceof Error ? importError.message : String(importError))
@@ -2823,15 +2827,22 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `角色库请求失败（${response.status}）`)
     return value.entry
   }
-  const importCharacterFile = async (file: File): Promise<CharacterLibraryDetail> => {
+  const importCharacterFile = async (file: File): Promise<CharacterLibraryImportResult> => {
     const response = await fetch(`${CHARACTER_LIBRARY_PATH}/import?filename=${encodeURIComponent(file.name)}`, {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': file.type || 'application/octet-stream' },
       body: file,
     })
-    const value = await response.json() as { readonly error?: string; readonly format?: 0; readonly entry?: CharacterLibraryDetail }
-    if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `角色卡导入失败（${response.status}）`)
-    return value.entry
+    const value = await response.json() as {
+      readonly error?: string
+      readonly format?: 0
+      readonly entry?: CharacterLibraryDetail
+      readonly outcome?: CharacterLibraryImportResult['outcome']
+    }
+    if (!response.ok || value.entry === undefined || value.outcome === undefined) {
+      throw new Error(value.error ?? `角色卡导入失败（${response.status}）`)
+    }
+    return { entry: value.entry, outcome: value.outcome }
   }
   const startCharacterSession = async (
     sessionId: SessionId,

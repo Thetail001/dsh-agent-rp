@@ -43,6 +43,15 @@ export interface CharacterLibraryDetail extends CharacterLibrarySummary {
   readonly imageAssets: readonly CharacterLibraryImage[]
 }
 
+/** What changed when one local card file was added to the library. */
+export type CharacterLibraryImportOutcome = 'created' | 'existing' | 'restored'
+
+/** Browser-safe result of importing one local card file. */
+export interface CharacterLibraryImportResult {
+  readonly entry: CharacterLibraryDetail
+  readonly outcome: CharacterLibraryImportOutcome
+}
+
 /** Same-origin URL for one validated inert CHARX image. */
 export function characterLibraryImageUrl(id: string, index: number): string {
   return `${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(id)}/images/${index}`
