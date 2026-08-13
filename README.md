@@ -1,21 +1,25 @@
 # DSH Agent RP
 
-Turn a SillyTavern character and its chat history into a native DSH `角色会话`.
+把 SillyTavern 角色卡、预设和聊天记录带进 DSH，在原生会话里继续一段角色对话。
 
-## What works
+这是一个面向下一代 Agent RP 的公开预览版。现在已经可以从角色库选择角色，设置开场和 Persona，并在 DSH 会话中使用角色卡、世界书、预设、轻前端与持久记忆。欢迎带着自己有权使用的卡片来体验，也欢迎一起补全不同卡片生态的兼容性。
 
-- Character Card V1/V2/V3 import from PNG or JSON, including alternate greetings.
-- SillyTavern JSONL chat import, either alone or together with its character card.
-- Character lorebooks and standalone World Info JSON with the supported matching rules.
-- Character-owned display regex, lightweight HTML interfaces, and MVU state restoration.
-- A focused roleplay shell with character information, persistent status, editable action suggestions, and explicit long-term memories.
-- Imported attachments and lossless source metadata remain available for restart and later migration.
+## 现在可以体验什么
 
-The character is the top-level Agent. Roleplay starts in the ordinary conversation instead of creating a narrator, coordinator, or Character subagent.
+- 导入 Character Card V1/V2/V3：PNG、JSON 与 CHARX。
+- 保存角色到可视化角色库，收起或恢复角色，不影响已有对话。
+- 选择默认或备选开场，并为玩家选择可复用 Persona。
+- 导入 SillyTavern JSONL 聊天记录，或与对应角色卡一起迁移。
+- 使用角色世界书、独立 World Info、SillyTavern Chat Completion 预设。
+- 运行角色自带的显示正则、轻量 HTML 界面与 MVU 状态。
+- 重写、续写和切换回复版本，并保留明确的长期记忆。
+- 在沉浸视图与调试视图之间切换，检查实际生效的提示内容。
 
-## Install
+角色本身就是顶层 Agent。这里没有额外的旁白、协调器或 Character 子代理，角色对话直接发生在普通会话中。
 
-Authenticate npm for the private `@deepseek-ai` packages, then clone this repository and run:
+## 安装
+
+需要已经公开发布的 DSH，以及 Node.js 和 pnpm。克隆仓库后运行：
 
 ```powershell
 pnpm install
@@ -24,16 +28,30 @@ npx -p @deepseek-ai/dsh@latest dsh plugin --profile web add .
 npx -p @deepseek-ai/dsh@latest dsh --profile web
 ```
 
-Start a new conversation, choose `角色会话`, and attach either:
+如果你正在参与 DSH 内测并使用指定 RC 版本，请把上面两处 `@latest` 换成对应版本；不要在 Issue 或日志里公开自己的 NPM Token。
 
-- one Character Card PNG/JSON;
-- one SillyTavern chat JSONL; or
-- the matching card and JSONL together for a complete migration.
+## 第一次开聊
 
-The import creates a new roleplay conversation and never modifies the source file or source conversation.
+1. 在 DSH 中新建空白会话。
+2. 点击输入框下方的「选择角色」。
+3. 选择已有角色，或导入 PNG、JSON、CHARX 角色卡。
+4. 选择开场与 Persona，然后点击「开始对话」。
+5. 进入会话后，可在标题栏打开角色信息、角色库、预设、世界书或调试视图。
 
-## Current boundary
+无需预先选择某个 Agent 预设；从空白的标准会话选择角色时，插件会自动进入角色会话。已经有聊天内容的普通会话不会被修改。
 
-This milestone targets single-character SillyTavern migration and lightweight card interfaces. It does not yet provide group chat, multiplayer, or full compatibility with heavy independent frontends. Executable card HTML runs in a sandboxed, network-disabled iframe without same-origin access.
+要迁移旧聊天，可在角色会话中附加一份 SillyTavern JSONL；将对应角色卡和 JSONL 放在同一条消息中，可以一次迁移角色身份与历史记录。导入会创建新的角色对话，不会修改源文件或来源会话。
 
-See [SillyTavern compatibility](docs/sillytavern-compatibility.md) for format details and deliberate degradation behavior.
+## 目前的范围
+
+这个里程碑聚焦单角色 RP、SillyTavern 迁移与轻前端卡片。群聊、多人互动和重前端/独立前端尚未纳入当前兼容范围。可执行卡片 HTML 会在禁用网络且没有同源权限的沙箱 iframe 中运行。
+
+更具体的格式支持与降级方式见 [SillyTavern 兼容说明](docs/sillytavern-compatibility.md)。
+
+## 反馈与贡献
+
+如果一张卡片的纯文本部分、世界书、预设或轻前端在 DSH 中表现不对，欢迎提交 Issue。请说明卡片格式、预期表现、实际表现与最小复现步骤；不要上传无权公开的角色卡、私有社区内容、Token 或完整 Session Log。
+
+代码、兼容样本、交互设计和文档改进都欢迎。开始前请阅读 [贡献指南](CONTRIBUTING.md)。
+
+本项目采用 [MIT License](LICENSE)。
