@@ -6,6 +6,10 @@ import { parseCharacterCardJson } from './character-card.ts'
 import { CHARACTER_IMPORT_DEGRADATIONS } from './types.ts'
 import type { CharacterCardPngPayload, CharacterImportDegradation, ImportedCharacterCard } from './types.ts'
 import type { SessionPersonaSnapshot } from '../persona-library-protocol.ts'
+import {
+  parseSillyTavernChatCommandRecord,
+  type SillyTavernChatCommandRecord,
+} from '../sillytavern-chat-protocol.ts'
 
 const CHARACTER_LIBRARY_RESULT_PREFIX = 'agent-rp-character-library-v0:'
 
@@ -65,6 +69,7 @@ export interface CharacterLibraryLaunchRecord {
   readonly libraryId: string
   readonly meta: CharacterImportMeta
   readonly persona?: SessionPersonaSnapshot
+  readonly chat?: SillyTavernChatCommandRecord
 }
 
 /** Reconstruct the normalized active card from its preserved JSON. */
@@ -126,14 +131,15 @@ export function decodeCharacterLibraryLaunch(source: string | undefined): Charac
   if (record === null || typeof record !== 'object' || Array.isArray(record)
     || record.format !== 0 || typeof record.libraryId !== 'string'
     || !/^card-[a-f0-9]{32}$/u.test(record.libraryId)
-    || Object.keys(record).some(key => key !== 'format' && key !== 'libraryId' && key !== 'meta' && key !== 'persona')) {
+    || Object.keys(record).some(key => key !== 'format' && key !== 'libraryId' && key !== 'meta' && key !== 'persona' && key !== 'chat')) {
     throw new Error('角色库启动结果字段无效')
   }
   const meta = parseCharacterImportMeta(record.meta)
   const persona = record.persona === undefined ? undefined : parsePersonaSnapshot(record.persona)
+  const chat = record.chat === undefined ? undefined : parseSillyTavernChatCommandRecord(record.chat)
   if (meta.result.libraryId !== record.libraryId
     || meta.result.sourceAttachmentId !== `library:${record.libraryId}`
-    || meta.result.userName !== persona?.name) {
+    || (persona !== undefined && meta.result.userName !== persona.name)) {
     throw new Error('角色库启动结果来源无效')
   }
   return {
@@ -141,6 +147,7 @@ export function decodeCharacterLibraryLaunch(source: string | undefined): Charac
     libraryId: record.libraryId,
     meta,
     ...(persona === undefined ? {} : { persona }),
+    ...(chat === undefined ? {} : { chat }),
   }
 }
 
@@ -288,7 +295,8 @@ export function readActiveSessionCharacter(events: readonly SessionEvent[]): Act
       const launch = decodeCharacterLibraryLaunch(event.data.text)
       if (launch !== undefined) {
         const source = events[launch.meta.result.sourceEventSeq]
-        if (source?.type !== 'command/run' || source.data.name !== 'rp-character-library'
+        if (source?.type !== 'command/run'
+          || (source.data.name !== 'rp-character-library' && source.data.name !== 'rp-chat-import')
           || source.seq >= event.seq || String(source.data.commandId) !== String(event.data.commandId)) {
           throw new Error('角色库启动结果没有对应的命令来源')
         }

@@ -40,6 +40,11 @@ import {
   type PersonaLibrarySaveRequest,
   type SessionPersonaSnapshot,
 } from '../persona-library-protocol.ts'
+import {
+  SILLYTAVERN_CHAT_PATH,
+  type SillyTavernChatLaunchRequest,
+  type SillyTavernChatUploadResponse,
+} from '../sillytavern-chat-protocol.ts'
 
 interface ImportHintProps {
   readonly sessionId: SessionId
@@ -54,8 +59,20 @@ interface ImportHintProps {
 }
 
 interface DraftResolver {
-  readonly draftAttachments: (ids: readonly string[]) => readonly DraftAttachmentLike[]
+  readonly draftAttachments: (ids: readonly string[]) => readonly DraftRuntimeAttachment[]
+  readonly releaseDraftAttachment?: (id: string) => void
 }
+
+interface DraftRuntimeAttachment extends DraftAttachmentLike {
+  readonly id: string
+  readonly file: File
+}
+
+type MigrateSillyTavernDraft = (
+  sourceSessionId: SessionId,
+  attachments: readonly DraftRuntimeAttachment[],
+  inputActions: ImportHintProps['inputActions'],
+) => Promise<void>
 
 type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly loadAvatar: (attachmentId: string) => Promise<string | undefined>
@@ -68,6 +85,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly readCharacter: (id: string) => Promise<CharacterLibraryDetail>
   readonly setCharacterArchived: (id: string, archived: boolean) => Promise<CharacterLibraryDetail>
   readonly importCharacterFile: (file: File) => Promise<CharacterLibraryImportResult>
+  readonly migrateChat: (sessionId: SessionId, chatFile: File, cardFile?: File) => Promise<void>
   readonly startCharacterSession: (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -585,11 +603,69 @@ function useNarrowCharacterLibrary(): boolean {
   )
 }
 
+function SillyTavernImportDialog({ onClose, onImport }: {
+  readonly onClose: () => void
+  readonly onImport: (chatFile: File, cardFile?: File) => Promise<void>
+}) {
+  const chatRef = useRef<HTMLInputElement | null>(null)
+  const cardRef = useRef<HTMLInputElement | null>(null)
+  const [chatFile, setChatFile] = useState<File>()
+  const [cardFile, setCardFile] = useState<File>()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+  return <div role="dialog" aria-modal="true" aria-label="迁移 SillyTavern 聊天" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.66)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1250,
+  }} onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #151518)', border: '1px solid var(--dsw-alias-border-l2, #38383d)',
+      borderRadius: '16px', boxShadow: '0 24px 80px rgba(0,0,0,.5)', maxWidth: '520px', padding: '24px', width: 'min(94vw, 520px)',
+    }}>
+      <h2 style={{ fontSize: '17px', margin: 0 }}>迁移 SillyTavern 聊天</h2>
+      <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '9px 0 20px', opacity: .58 }}>
+        选择导出的 JSONL。角色卡可选；一同选择时，新会话会直接采用这张卡
+      </p>
+      {error !== undefined && <p role="alert" style={{ color: '#e47a7a', fontSize: '12px', margin: '0 0 12px' }}>{error}</p>}
+      <input ref={chatRef} type="file" accept=".jsonl,application/x-ndjson" hidden onChange={event => {
+        const file = event.currentTarget.files?.[0]
+        event.currentTarget.value = ''
+        if (file !== undefined) setChatFile(file)
+      }} />
+      <input ref={cardRef} type="file" accept=".png,.json,.charx,image/png,application/json" hidden onChange={event => {
+        const file = event.currentTarget.files?.[0]
+        event.currentTarget.value = ''
+        if (file !== undefined) setCardFile(file)
+      }} />
+      <div style={{ display: 'grid', gap: '8px' }}>
+        <button type="button" disabled={busy} onClick={() => { chatRef.current?.click() }} style={{ ...secondaryButtonStyle, textAlign: 'left' }}>
+          {chatFile === undefined ? '选择聊天记录 JSONL' : `聊天记录 · ${chatFile.name}`}
+        </button>
+        <button type="button" disabled={busy} onClick={() => { cardRef.current?.click() }} style={{ ...secondaryButtonStyle, textAlign: 'left' }}>
+          {cardFile === undefined ? '选择角色卡（可选）' : `角色卡 · ${cardFile.name}`}
+        </button>
+      </div>
+      <div style={{ display: 'flex', gap: '9px', justifyContent: 'flex-end', marginTop: '22px' }}>
+        <button type="button" disabled={busy} onClick={onClose} style={secondaryButtonStyle}>取消</button>
+        <button type="button" disabled={busy || chatFile === undefined} onClick={() => {
+          if (chatFile === undefined) return
+          setBusy(true)
+          setError(undefined)
+          void onImport(chatFile, cardFile).then(onClose, (reason: unknown) => {
+            setError(reason instanceof Error ? reason.message : String(reason))
+            setBusy(false)
+          })
+        }} style={primaryButtonStyle}>{busy ? '正在迁移…' : '创建新会话'}</button>
+      </div>
+    </section>
+  </div>
+}
+
 type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick<HeaderProps,
   | 'listCharacters'
   | 'readCharacter'
   | 'setCharacterArchived'
   | 'importCharacterFile'
+  | 'migrateChat'
   | 'startCharacterSession'
   | 'listPersonas'
   | 'savePersona'
@@ -598,10 +674,11 @@ type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick
 
 function BlankRoleplayLauncher({
   session, sessionId,
-  listCharacters, readCharacter, setCharacterArchived, importCharacterFile, startCharacterSession,
+  listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, startCharacterSession,
   listPersonas, savePersona, deletePersona,
 }: BlankRoleplayLauncherProps) {
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [migrationOpen, setMigrationOpen] = useState(false)
   if (!session.blank) return null
   return <>
     <button type="button" onClick={() => { setLibraryOpen(true) }} style={{
@@ -613,6 +690,10 @@ function BlankRoleplayLauncher({
       <span aria-hidden="true" style={{ color, fontSize: '15px', lineHeight: 1 }}>✦</span>
       选择角色
     </button>
+    <button type="button" onClick={() => { setMigrationOpen(true) }} style={{
+      background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
+      color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '5px 9px', whiteSpace: 'nowrap',
+    }}>迁移聊天</button>
     {libraryOpen && <CharacterLibraryDialog
       currentCharacterName=""
       listCharacters={listCharacters}
@@ -627,13 +708,15 @@ function BlankRoleplayLauncher({
       savePersona={savePersona}
       deletePersona={deletePersona}
     />}
+    {migrationOpen && <SillyTavernImportDialog onClose={() => { setMigrationOpen(false) }}
+      onImport={(chatFile, cardFile) => migrateChat(sessionId, chatFile, cardFile)} />}
   </>
 }
 
 function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
   configureWorldInfo,
-  listCharacters, readCharacter, setCharacterArchived, importCharacterFile, startCharacterSession,
+  listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, startCharacterSession,
   listPersonas, savePersona, deletePersona,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
@@ -644,6 +727,7 @@ function RoleplayHeader({
   const [presetOpen, setPresetOpen] = useState(false)
   const [worldInfoOpen, setWorldInfoOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [migrationOpen, setMigrationOpen] = useState(false)
   const [aliasDraft, setAliasDraft] = useState('')
   const [aliasError, setAliasError] = useState<string>()
   const [renaming, setRenaming] = useState(false)
@@ -710,6 +794,10 @@ function RoleplayHeader({
         background: `color-mix(in srgb, ${color} 10%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>角色库</button>
+      <button type="button" onClick={() => { setMigrationOpen(true) }} style={{
+        background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
+        color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
+      }}>迁移聊天</button>
       <button type="button" onClick={() => { setPresetOpen(true) }} style={{
         background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)',
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
@@ -731,6 +819,8 @@ function RoleplayHeader({
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>当前状态</button>}
     </div>
+    {migrationOpen && <SillyTavernImportDialog onClose={() => { setMigrationOpen(false) }}
+      onImport={(chatFile, cardFile) => migrateChat(sessionId, chatFile, cardFile)} />}
     {open && <div role="dialog" aria-modal="true" aria-label={`${displayName}的角色信息`} style={{
       alignItems: 'stretch', background: 'rgba(0,0,0,.48)', display: 'flex', inset: 0,
       justifyContent: 'flex-end', position: 'fixed', zIndex: 1000,
@@ -2820,17 +2910,18 @@ const actionStyle = {
   cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '5px 9px',
 } as const
 
-function importHintComponent(ctx: Context): (props: ImportHintProps) => JSX.Element | null {
+function importHintComponent(ctx: Context, migrateDraft: MigrateSillyTavernDraft): (props: ImportHintProps) => JSX.Element | null {
   return function SillyTavernImportHint({ input, inputActions, sessionId }: ImportHintProps): JSX.Element | null {
+    const [busy, setBusy] = useState(false)
+    const [error, setError] = useState<string>()
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
     if (summary?.agentPreset !== 'agent-rp') return null
     const scoped = ctx.sessions.scope(sessionId)
     const conversation = scoped?.get('conversation') as (IConversation & Partial<DraftResolver>) | undefined
     const ids = [...new Set([...(input.attachmentIds ?? []), ...(input.imageIds ?? [])])]
     const draftAttachments = conversation?.draftAttachments
-    const selected = selectSillyTavernDraft(
-      typeof draftAttachments === 'function' ? draftAttachments.call(conversation, ids) : [],
-    )
+    const attachments = typeof draftAttachments === 'function' ? draftAttachments.call(conversation, ids) : []
+    const selected = selectSillyTavernDraft(attachments)
     if (selected === undefined) return null
     const blank = input.draft.trim() === ''
     const chat = selected.kind === 'chat'
@@ -2846,7 +2937,15 @@ function importHintComponent(ctx: Context): (props: ImportHintProps) => JSX.Elem
         <div style={{ fontSize: '12px', lineHeight: 1.45, marginTop: '2px', opacity: 0.62 }}>{migration
           ? '将创建一个角色会话，并保留原聊天历史'
           : chat ? '将从这份记录创建新的角色会话' : blank ? '请选择导入类型' : '发送后开始导入'}</div>
+        {error !== undefined && <div style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '4px' }}>{error}</div>}
       </div>
+      {(chat || migration) && <button type="button" style={{ ...actionStyle, marginLeft: 'auto' }} disabled={busy} onClick={() => {
+        setBusy(true)
+        setError(undefined)
+        void migrateDraft(sessionId, attachments, inputActions).catch((reason: unknown) => {
+          setError(reason instanceof Error ? reason.message : String(reason))
+        }).finally(() => { setBusy(false) })
+      }}>{busy ? '正在迁移…' : migration ? '迁移' : '导入'}</button>}
       {!chat && !migration && blank && <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginLeft: 'auto' }}>
         <button type="button" style={actionStyle} onClick={() => { inputActions.setDraft('请导入这张角色卡') }}>角色卡</button>
         {selected.kind === 'json-resource' && <button type="button" style={actionStyle} onClick={() => { inputActions.setDraft('请导入这本世界书') }}>世界书</button>}
@@ -2928,6 +3027,30 @@ export function apply(ctx: ClientContext): void {
     }
     return { entry: value.entry, outcome: value.outcome }
   }
+  const createRoleplaySession = async (sourceSessionId: SessionId): Promise<SessionId> => {
+    const current = ctx.sessions.list.getSnapshot().byId[sourceSessionId]
+    const workspace = ctx.workspaces.list.getSnapshot().items.find(item => item.sessionIds.includes(sourceSessionId))
+    const created = await (ctx.sessions as unknown as {
+      create(options?: { readonly cwd?: string; readonly workspaceId?: string }): Promise<SessionId>
+    }).create(workspace === undefined
+      ? current?.cwd === undefined ? {} : { cwd: current.cwd }
+      : { workspaceId: workspace.workspaceId })
+    const connection = ctx.get('connection') as {
+      readonly api: {
+        readonly agentPresets: {
+          select(input: { readonly sessionId: SessionId; readonly agentPreset: string }): Promise<{
+            readonly result:
+            | { readonly ok: true; readonly value: { readonly agentPreset: string } }
+            | { readonly ok: false; readonly error: { readonly message: string } }
+          }>
+        }
+      }
+    }
+    const selected = await connection.api.agentPresets.select({ sessionId: created, agentPreset: 'agent-rp' })
+    if (!selected.result.ok) throw new Error(selected.result.error.message)
+    ctx.sessions.noteAgentPreset(created, selected.result.value.agentPreset)
+    return created
+  }
   const startCharacterSession = async (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -2980,29 +3103,57 @@ export function apply(ctx: ClientContext): void {
     greetingIndex: number,
     persona?: SessionPersonaSnapshot,
   ): Promise<void> => {
-    const current = ctx.sessions.list.getSnapshot().byId[sessionId]
-    const workspace = ctx.workspaces.list.getSnapshot().items.find(item => item.sessionIds.includes(sessionId))
-    const created = await (ctx.sessions as unknown as {
-      create(options?: { readonly cwd?: string; readonly workspaceId?: string }): Promise<SessionId>
-    }).create(workspace === undefined
-      ? current?.cwd === undefined ? {} : { cwd: current.cwd }
-      : { workspaceId: workspace.workspaceId })
-    const connection = ctx.get('connection') as {
-      readonly api: {
-        readonly agentPresets: {
-          select(input: { readonly sessionId: SessionId; readonly agentPreset: string }): Promise<{
-            readonly result:
-            | { readonly ok: true; readonly value: { readonly agentPreset: string } }
-            | { readonly ok: false; readonly error: { readonly message: string } }
-          }>
-        }
-      }
-    }
-    const selected = await connection.api.agentPresets.select({ sessionId: created, agentPreset: 'agent-rp' })
-    if (!selected.result.ok) throw new Error(selected.result.error.message)
-    ctx.sessions.noteAgentPreset(created, selected.result.value.agentPreset)
+    const created = await createRoleplaySession(sessionId)
     await startCharacterSession(created, character, greetingIndex, persona)
     ctx.sessions.open(created)
+  }
+  const migrateChat = async (sourceSessionId: SessionId, chatFile: File, cardFile?: File): Promise<void> => {
+    if (!/\.jsonl$/iu.test(chatFile.name)) throw new Error('请选择 SillyTavern 导出的 JSONL 聊天记录')
+    const character = cardFile === undefined ? undefined : await importCharacterFile(cardFile)
+    const response = await fetch(`${SILLYTAVERN_CHAT_PATH}?filename=${encodeURIComponent(chatFile.name)}`, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': chatFile.type || 'application/x-ndjson' },
+      body: chatFile,
+    })
+    const responseText = await response.text()
+    let value: { readonly error?: string } & Partial<SillyTavernChatUploadResponse>
+    try {
+      value = JSON.parse(responseText) as typeof value
+    } catch {
+      throw new Error(response.ok ? 'Host 返回了无法识别的聊天迁移结果' : `聊天记录上传失败（${response.status}）`)
+    }
+    if (!response.ok || value.upload === undefined) throw new Error(value.error ?? `聊天记录上传失败（${response.status}）`)
+    const created = await createRoleplaySession(sourceSessionId)
+    const scope = ctx.sessions.scope(created)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('新角色会话不可用')
+    const request: SillyTavernChatLaunchRequest = {
+      format: 0,
+      importId: value.upload.id,
+      ...(character === undefined ? {} : { characterId: character.entry.id }),
+    }
+    const result = await session.command(`/rp-chat-import ${JSON.stringify(request)}`)
+    if (!result.ok) throw new Error(result.error.message)
+    if (!result.value.matched) throw new Error('当前 Host 未启用聊天迁移命令')
+    const title = character?.entry.displayName ?? value.upload.characterName ?? chatFile.name.replace(/\.jsonl$/iu, '')
+    if (title.trim() !== '') await renameSession(created, title.trim())
+    ctx.sessions.open(created)
+  }
+  const migrateSillyTavernDraft: MigrateSillyTavernDraft = async (sourceSessionId, attachments, inputActions) => {
+    const chatAttachment = attachments.find(attachment => attachment.kind === 'file' && /\.jsonl$/iu.test(attachment.file.name))
+    if (chatAttachment === undefined) throw new Error('没有找到 JSONL 聊天记录')
+    const cardAttachment = attachments.find(attachment => attachment !== chatAttachment)
+    await migrateChat(sourceSessionId, chatAttachment.file, cardAttachment?.file)
+    const sourceConversation = ctx.sessions.scope(sourceSessionId)?.get('conversation') as (IConversation & Partial<DraftResolver>) | undefined
+    const actions = inputActions as typeof inputActions & {
+      readonly removeAttachment?: (id: string) => void
+      readonly removeImage?: (id: string) => void
+    }
+    for (const attachment of attachments) {
+      actions.removeAttachment?.(attachment.id)
+      actions.removeImage?.(attachment.id)
+      sourceConversation?.releaseDraftAttachment?.(attachment.id)
+    }
   }
   const personaLibraryJson = async <T,>(
     init?: { readonly method: 'POST'; readonly body: PersonaLibrarySaveRequest },
@@ -3098,12 +3249,15 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} startCharacterSession={startCharacterFromCurrentSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left', id: 'agent-rp-blank-launcher', order: -100,
-  }, props => <BlankRoleplayLauncher {...props} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} startCharacterSession={startCharacterFromBlankSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  }, props => <BlankRoleplayLauncher {...props} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromBlankSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-character-library',
+  }, () => null))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-chat-import',
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',
@@ -3130,5 +3284,5 @@ export function apply(ctx: ClientContext): void {
   }, roleplayComposerDockComponent(ctx)))
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock', id: 'agent-rp-sillytavern-import-hint', order: -10,
-  }, importHintComponent(ctx)))
+  }, importHintComponent(ctx, migrateSillyTavernDraft)))
 }

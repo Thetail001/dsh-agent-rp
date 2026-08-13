@@ -90,6 +90,9 @@ import {
 import { installPersonaLibraryHttp } from './persona-library-http.ts'
 import { PersonaLibrary } from './persona-library.ts'
 import { parseSessionPersona, readSessionPersona } from './session-persona.ts'
+import { executeSillyTavernChatCommand } from './sillytavern-chat-command.ts'
+import { installSillyTavernChatHttp } from './sillytavern-chat-http.ts'
+import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
 import { executeGenerationCommand } from './generation.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
 import { configuredLorebook, readWorldInfoConfiguration } from './world-info-configuration-core.ts'
@@ -437,6 +440,7 @@ export function installAgentRp(
   const characterLibrary = new CharacterLibrary(options.characterLibraryRoot === undefined
     ? {}
     : { root: options.characterLibraryRoot })
+  const chatLibrary = new SillyTavernChatLibrary()
 
   commands.register({
     name: 'rp-character-library',
@@ -444,6 +448,13 @@ export function installAgentRp(
     input: { hint: '<private character-library payload>' },
     recordInput: false,
     handler: invocation => executeCharacterLibraryCommand(characterLibrary, invocation),
+  })
+  commands.register({
+    name: 'rp-chat-import',
+    description: 'migrate one Host-owned SillyTavern chat into this Session',
+    input: { hint: '<private SillyTavern chat payload>' },
+    recordInput: false,
+    handler: invocation => executeSillyTavernChatCommand(chatLibrary, characterLibrary, invocation),
   })
   commands.register({
     name: 'rp-preset-configure',
@@ -940,6 +951,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
     const characterLibrary = new CharacterLibrary()
     const personaLibrary = new PersonaLibrary()
     const presetLibrary = new PresetLibrary()
+    const chatLibrary = new SillyTavernChatLibrary()
     let mountedServer: AgentRpHttpServer | undefined
     const mountHost = (serviceName: 'httpServer' | 'webServer'): void => {
       ctx.inject([serviceName], webCtx => {
@@ -952,6 +964,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
         installCharacterLibraryHttp(webCtx, characterLibrary, server)
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
         installPresetLibraryHttp(webCtx, presetLibrary, server)
+        installSillyTavernChatHttp(webCtx, chatLibrary, server)
       })
     }
     mountHost('httpServer')

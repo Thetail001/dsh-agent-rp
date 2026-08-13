@@ -3,7 +3,7 @@
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
 import { parseCharacterCardJson } from './import/character-card.ts'
-import { decodeCharacterLibraryLaunch, type CharacterImportMeta } from './import/session-character.ts'
+import { decodeCharacterLibraryLaunch, type CharacterImportMeta, type CharacterLibraryLaunchRecord } from './import/session-character.ts'
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import type { WorldInfoImportMeta } from './import/session-world-info.ts'
 import { parseWorldInfoJson } from './import/world-info.ts'
@@ -25,6 +25,7 @@ import {
   type SessionLorebookSource,
 } from './world-info-configuration-core.ts'
 import type { WorldInfoConfigurationState } from './world-info-configuration-types.ts'
+import { decodeSillyTavernChatCommandRecord, type SillyTavernChatCommandRecord } from './sillytavern-chat-protocol.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -507,6 +508,46 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
           ...(identity?.userName === undefined ? {} : { userName: identity.userName }),
           importedMessageCount: event.data.messages.length,
         },
+      }
+    }
+    if (event.type === 'command/done' && event.data.kind === 'success') {
+      let chat: SillyTavernChatCommandRecord | undefined
+      let launch: CharacterLibraryLaunchRecord | undefined
+      try {
+        launch = decodeCharacterLibraryLaunch(event.data.text)
+        chat = decodeSillyTavernChatCommandRecord(event.data.text) ?? launch?.chat
+      } catch {
+        return withSurface
+      }
+      if (chat !== undefined) {
+        const withChat = {
+          ...withSurface,
+          character: {
+            ...withSurface.character,
+            ...(withSurface.character.source === 'preset' && chat.characterName !== undefined
+              ? { characterName: chat.characterName, source: 'sillytavern-chat' as const }
+              : {}),
+            ...(chat.userName === undefined ? {} : { userName: chat.userName }),
+            importedMessageCount: chat.messageCount,
+          },
+        }
+        if (launch === undefined) return withChat
+        const projected = cardProjection(withChat.character, launch.meta)
+        const { avatarAttachmentId: _avatarAttachmentId, ...libraryCharacter } = projected.character
+        const card = parseCharacterCardJson(JSON.stringify(launch.meta.raw))
+        const cardLorebook = cardLorebookSource(launch.meta)
+        const { cardLorebook: _previousLorebook, ...withoutCardLorebook } = withChat
+        return {
+          ...withoutCardLorebook,
+          character: {
+            ...libraryCharacter,
+            avatarLibraryId: launch.libraryId,
+            ...(launch.persona === undefined ? {} : { persona: launch.persona }),
+          },
+          cardWorldInfoCount: projected.lorebookEntries,
+          ...(cardLorebook === undefined ? {} : { cardLorebook }),
+          mvu: readCurrentMvuState(card, []),
+        }
       }
     }
     if (event.type === 'agent-rp/character-card-seed') {

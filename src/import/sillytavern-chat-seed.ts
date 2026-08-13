@@ -11,6 +11,11 @@ import {
   type SessionEvent,
 } from '@deepseek-ai/dsh-session'
 import type { FileAttachmentRef } from './session-character.ts'
+import { decodeCharacterLibraryLaunch } from './session-character.ts'
+import {
+  decodeSillyTavernChatCommandRecord,
+  type SillyTavernChatCommandRecord,
+} from '../sillytavern-chat-protocol.ts'
 import type { ImportedSillyTavernChat, ImportedSillyTavernChatMessage } from './types.ts'
 
 /** Durable import metadata that points back to the original JSONL attachment. */
@@ -102,6 +107,22 @@ export function readSillyTavernChatIdentity(
 ): SillyTavernChatIdentity | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
+    if (event?.type === 'command/done' && event.data.kind === 'success') {
+      let command: SillyTavernChatCommandRecord | undefined
+      try {
+        command = decodeSillyTavernChatCommandRecord(event.data.text)
+          ?? decodeCharacterLibraryLaunch(event.data.text)?.chat
+      } catch {
+        continue
+      }
+      if (command !== undefined && command.characterName !== undefined) {
+        return {
+          characterName: command.characterName,
+          ...(command.userName === undefined ? {} : { userName: command.userName }),
+        }
+      }
+      continue
+    }
     if (event?.type !== 'agent-rp/sillytavern-chat-import') continue
     const header = event.data.header
     if (typeof header !== 'object' || header === null || Array.isArray(header)) return undefined
