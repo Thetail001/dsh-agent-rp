@@ -18,7 +18,7 @@ interface AgentPresetGateway {
   mount(agentCtx: Context, id?: string): Promise<unknown>
 }
 
-interface WorkspaceGateway {
+interface WorkspaceRegistryGateway {
   list(): readonly {
     readonly id: string
     readonly sessionIds: readonly SessionId[]
@@ -161,7 +161,7 @@ export async function launchAgentRpSession(
       ctx.logger.warn(`agent-rp: Session ${JSON.stringify(sessionId)} title was not applied: ${String(error)}`)
     }
   }
-  const workspaces = ctx.get('workspace') as WorkspaceGateway | undefined
+  const workspaces = ctx.get('workspaceRegistry') as WorkspaceRegistryGateway | undefined
   const workspace = workspaces?.list().find(item => item.sessionIds.includes(sourceId))
   if (workspace !== undefined) {
     try {
