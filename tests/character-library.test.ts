@@ -40,6 +40,7 @@ test('keeps one exact reusable Character Card asset with selectable greetings', 
     worldInfoCount: 0,
     avatarAvailable: false,
     imageAssetCount: 0,
+    archived: false,
     transport: 'json',
     updatedAt: first.updatedAt,
   }])
@@ -47,6 +48,16 @@ test('keeps one exact reusable Character Card asset with selectable greetings', 
     '门还没锁，你进来吧。',
     '今天来得很早。',
   ])
+  assert.deepEqual(library.asset(first.id).data, data)
+
+  assert.equal(library.archive(first.id).archived, true)
+  assert.deepEqual(library.list(), [])
+  assert.deepEqual(library.list('archived').map(entry => entry.id), [first.id])
+  assert.deepEqual(library.asset(first.id).data, data)
+
+  assert.equal(library.restore(first.id).archived, false)
+  assert.deepEqual(library.list().map(entry => entry.id), [first.id])
+  assert.deepEqual(library.list('archived'), [])
   assert.deepEqual(library.asset(first.id).data, data)
 })
 

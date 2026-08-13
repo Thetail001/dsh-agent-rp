@@ -34,6 +34,7 @@ interface StoredCharacterMetadata {
   readonly bytes: number
   readonly createdAt: number
   readonly updatedAt: number
+  readonly archivedAt?: number
 }
 
 /** Original validated card submitted to the reusable library. */
@@ -81,7 +82,9 @@ function parseMetadata(value: unknown): StoredCharacterMetadata {
     || typeof meta.mediaType !== 'string' || meta.mediaType.trim() === '' || !validTransport
     || typeof meta.bytes !== 'number' || !Number.isSafeInteger(meta.bytes) || meta.bytes < 1
     || typeof meta.createdAt !== 'number' || !Number.isSafeInteger(meta.createdAt) || meta.createdAt < 0
-    || typeof meta.updatedAt !== 'number' || !Number.isSafeInteger(meta.updatedAt) || meta.updatedAt < 0) {
+    || typeof meta.updatedAt !== 'number' || !Number.isSafeInteger(meta.updatedAt) || meta.updatedAt < 0
+    || (meta.archivedAt !== undefined
+      && (typeof meta.archivedAt !== 'number' || !Number.isSafeInteger(meta.archivedAt) || meta.archivedAt < 0))) {
     throw new Error('character library metadata has invalid fields')
   }
   return meta as unknown as StoredCharacterMetadata
@@ -108,6 +111,7 @@ function summary(
     worldInfoCount: card.lorebook?.entries.length ?? 0,
     avatarAvailable,
     imageAssetCount,
+    archived: meta.archivedAt !== undefined,
     transport: meta.transport,
     updatedAt: meta.updatedAt,
   }
@@ -121,12 +125,13 @@ export class CharacterLibrary {
     this.root = resolve(options.root ?? dshHomePath('agent-rp', 'characters'))
   }
 
-  /** List valid cards newest first without returning greeting bodies or file bytes. */
-  list(): readonly CharacterLibrarySummary[] {
+  /** List active or archived cards newest first without returning greeting bodies or file bytes. */
+  list(collection: 'active' | 'archived' = 'active'): readonly CharacterLibrarySummary[] {
     if (!existsSync(this.root)) return []
     return readdirSync(this.root)
       .filter(filename => filename.endsWith(META_SUFFIX))
       .map(filename => this.readEntry(join(this.root, filename)).summary)
+      .filter(entry => entry.archived === (collection === 'archived'))
       .sort((left, right) => right.updatedAt - left.updatedAt || left.displayName.localeCompare(right.displayName))
   }
 
@@ -173,7 +178,10 @@ export class CharacterLibrary {
     const digest = createHash('sha256').update(input.data).digest('hex')
     const id = `card-${digest.slice(0, 32)}`
     const existingMeta = this.metaPath(id)
-    if (existsSync(existingMeta)) return this.get(id)
+    if (existsSync(existingMeta)) {
+      const existing = this.get(id)
+      return existing.archived ? this.restore(id) : existing
+    }
     mkdirSync(this.root, { recursive: true, mode: 0o700 })
     const now = Date.now()
     const transport = input.transport.transport
@@ -211,6 +219,24 @@ export class CharacterLibrary {
     return detail
   }
 
+  /** Hide one reusable card from the everyday collection without touching its original asset. */
+  archive(id: string): CharacterLibraryDetail {
+    const entry = this.readId(id)
+    if (entry.meta.archivedAt !== undefined) return this.get(id)
+    const now = Date.now()
+    this.writeMetadata({ ...entry.meta, archivedAt: now, updatedAt: now })
+    return this.get(id)
+  }
+
+  /** Return one archived card to the everyday collection without changing its original asset. */
+  restore(id: string): CharacterLibraryDetail {
+    const entry = this.readId(id)
+    if (entry.meta.archivedAt === undefined) return this.get(id)
+    const { archivedAt: _archivedAt, ...active } = entry.meta
+    this.writeMetadata({ ...active, updatedAt: Date.now() })
+    return this.get(id)
+  }
+
   private assertId(id: string): void {
     if (!ID_PATTERN.test(id)) throw new Error('角色库 id 无效')
   }
@@ -222,6 +248,16 @@ export class CharacterLibrary {
 
   private assetPath(meta: StoredCharacterMetadata): string {
     return join(this.root, `${meta.id}.${meta.transport}`)
+  }
+
+  private writeMetadata(meta: StoredCharacterMetadata): void {
+    const staging = join(this.root, `.${meta.id}.${process.pid}.${randomUUID()}.meta.tmp`)
+    try {
+      writeFileSync(staging, `${JSON.stringify(meta, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+      renameSync(staging, this.metaPath(meta.id))
+    } finally {
+      rmSync(staging, { force: true })
+    }
   }
 
   private parseStored(meta: StoredCharacterMetadata, data: Uint8Array): {

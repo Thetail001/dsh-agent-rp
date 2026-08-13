@@ -1,4 +1,4 @@
-/** Same-origin read-only HTTP surface for the local Character Card library. */
+/** Same-origin HTTP surface for the local Character Card library. */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
@@ -44,7 +44,7 @@ function pathParts(request: IncomingMessage): readonly string[] {
   return pathname.slice(CHARACTER_LIBRARY_PATH.length + 1).split('/').map(decodeURIComponent)
 }
 
-/** Register local list, detail, and immutable asset reads for the Roleplay UI. */
+/** Register local library reads plus reversible archive operations for the Roleplay UI. */
 export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibrary): void {
   ctx.effect(() => ctx.httpServer.register({
     kind: 'prefix',
@@ -57,21 +57,28 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
         fail(response, 403, 'forbidden')
         return
       }
-      if (request.method !== 'GET') {
-        response.setHeader('allow', 'GET')
-        fail(response, 405, 'method not allowed')
-        return
-      }
       try {
-        if (parts.length === 0) {
-          json(response, 200, { format: 0, entries: library.list() })
+        if (request.method === 'GET' && parts.length === 0) {
+          const url = new URL(request.url ?? '/', 'http://agent-rp.local')
+          const collection = url.searchParams.get('collection')
+          if (collection !== null && collection !== 'active' && collection !== 'archived') {
+            fail(response, 400, 'invalid character collection')
+            return
+          }
+          json(response, 200, { format: 0, entries: library.list(collection ?? 'active') })
           return
         }
-        if (parts.length === 1 && parts[0] !== undefined) {
+        if (request.method === 'GET' && parts.length === 1 && parts[0] !== undefined) {
           json(response, 200, { format: 0, entry: library.get(parts[0]) })
           return
         }
-        if (parts.length === 2 && parts[0] !== undefined && parts[1] === 'asset') {
+        if (request.method === 'POST' && parts.length === 2 && parts[0] !== undefined
+          && (parts[1] === 'archive' || parts[1] === 'restore')) {
+          const entry = parts[1] === 'archive' ? library.archive(parts[0]) : library.restore(parts[0])
+          json(response, 200, { format: 0, entry })
+          return
+        }
+        if (request.method === 'GET' && parts.length === 2 && parts[0] !== undefined && parts[1] === 'asset') {
           const asset = library.asset(parts[0])
           response.writeHead(200, {
             'cache-control': 'private, max-age=31536000, immutable',
@@ -83,7 +90,7 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
           response.end(asset.data)
           return
         }
-        if (parts.length === 2 && parts[0] !== undefined && parts[1] === 'avatar') {
+        if (request.method === 'GET' && parts.length === 2 && parts[0] !== undefined && parts[1] === 'avatar') {
           const avatar = library.avatar(parts[0])
           if (avatar === undefined) {
             fail(response, 404, 'avatar not found')
@@ -99,7 +106,7 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
           response.end(avatar.data)
           return
         }
-        if (parts.length === 3 && parts[0] !== undefined && parts[1] === 'images' && parts[2] !== undefined) {
+        if (request.method === 'GET' && parts.length === 3 && parts[0] !== undefined && parts[1] === 'images' && parts[2] !== undefined) {
           const index = /^\d+$/u.test(parts[2]) ? Number(parts[2]) : Number.NaN
           const image = library.image(parts[0], index)
           if (image === undefined) {
@@ -114,6 +121,11 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
             'x-content-type-options': 'nosniff',
           })
           response.end(image.data)
+          return
+        }
+        if (request.method !== 'GET' && request.method !== 'POST') {
+          response.setHeader('allow', 'GET, POST')
+          fail(response, 405, 'method not allowed')
           return
         }
         fail(response, 404, 'not found')

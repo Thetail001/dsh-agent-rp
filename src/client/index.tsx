@@ -25,6 +25,7 @@ import {
   CHARACTER_LIBRARY_PATH,
   characterLibraryImageUrl,
   encodeCharacterLibrarySessionRequest,
+  type CharacterLibraryCollection,
   type CharacterLibraryDetail,
   type CharacterLibrarySummary,
 } from '../character-library-protocol.ts'
@@ -58,8 +59,9 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly importPreset: (sessionId: SessionId, file: File) => Promise<void>
   readonly managePresetLibrary: (sessionId: SessionId, request: PresetLibraryRequest) => Promise<void>
   readonly configureWorldInfo: (sessionId: SessionId, request: WorldInfoConfigurationRequest) => Promise<void>
-  readonly listCharacters: () => Promise<readonly CharacterLibrarySummary[]>
+  readonly listCharacters: (collection?: CharacterLibraryCollection) => Promise<readonly CharacterLibrarySummary[]>
   readonly readCharacter: (id: string) => Promise<CharacterLibraryDetail>
+  readonly setCharacterArchived: (id: string, archived: boolean) => Promise<CharacterLibraryDetail>
   readonly startCharacterSession: (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -543,7 +545,7 @@ function CharacterAssetsSection({ detail, sessionId }: {
 function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
   configureWorldInfo,
-  listCharacters, readCharacter, startCharacterSession,
+  listCharacters, readCharacter, setCharacterArchived, startCharacterSession,
   listPersonas, savePersona,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
@@ -750,6 +752,7 @@ function RoleplayHeader({
       currentCharacterName={projection.characterName}
       listCharacters={listCharacters}
       readCharacter={readCharacter}
+      setCharacterArchived={setCharacterArchived}
       onClose={() => { setLibraryOpen(false) }}
       onStart={(character, greetingIndex, userName) => startCharacterSession(
         sessionId, character, greetingIndex, userName,
@@ -1050,11 +1053,12 @@ function WorldInfoEntryEditor({ draft, saving, onCancel, onSave }: {
 }
 
 function CharacterLibraryDialog({
-  currentCharacterName, listCharacters, readCharacter, listPersonas, savePersona, onClose, onStart,
+  currentCharacterName, listCharacters, readCharacter, setCharacterArchived, listPersonas, savePersona, onClose, onStart,
 }: {
   readonly currentCharacterName: string
   readonly listCharacters: HeaderProps['listCharacters']
   readonly readCharacter: HeaderProps['readCharacter']
+  readonly setCharacterArchived: HeaderProps['setCharacterArchived']
   readonly listPersonas: HeaderProps['listPersonas']
   readonly savePersona: HeaderProps['savePersona']
   readonly onClose: () => void
@@ -1062,6 +1066,7 @@ function CharacterLibraryDialog({
     character: CharacterLibraryDetail, greetingIndex: number, persona?: SessionPersonaSnapshot,
   ) => Promise<void>
 }) {
+  const [collection, setCollection] = useState<CharacterLibraryCollection>('active')
   const [entries, setEntries] = useState<readonly CharacterLibrarySummary[]>()
   const [selected, setSelected] = useState<CharacterLibraryDetail>()
   const [greetingIndex, setGreetingIndex] = useState(0)
@@ -1073,13 +1078,20 @@ function CharacterLibraryDialog({
   const [savingPersona, setSavingPersona] = useState(false)
   const [loadingId, setLoadingId] = useState<string>()
   const [starting, setStarting] = useState(false)
+  const [updating, setUpdating] = useState(false)
+  const [actionNotice, setActionNotice] = useState<string>()
   const [error, setError] = useState<string>()
   useEffect(() => {
     let current = true
-    void listCharacters().then(value => {
+    setEntries(undefined)
+    setSelected(undefined)
+    setError(undefined)
+    void listCharacters(collection).then(value => {
       if (!current) return
       setEntries(value)
-      const preferred = value.find(entry => entry.displayName === currentCharacterName) ?? value[0]
+      const preferred = collection === 'active'
+        ? value.find(entry => entry.displayName === currentCharacterName) ?? value[0]
+        : value[0]
       if (preferred === undefined) return
       setLoadingId(preferred.id)
       void readCharacter(preferred.id).then(detail => {
@@ -1098,7 +1110,7 @@ function CharacterLibraryDialog({
       setError(listError instanceof Error ? listError.message : String(listError))
     })
     return () => { current = false }
-  }, [currentCharacterName, listCharacters, readCharacter])
+  }, [collection, currentCharacterName, listCharacters, readCharacter])
   useEffect(() => {
     let current = true
     void listPersonas().then(value => {
@@ -1124,6 +1136,36 @@ function CharacterLibraryDialog({
       setError(readError instanceof Error ? readError.message : String(readError))
     })
   }
+  const updateArchiveState = (): void => {
+    if (selected === undefined) return
+    const archived = collection === 'active'
+    const displayName = selected.displayName
+    setUpdating(true)
+    setError(undefined)
+    void setCharacterArchived(selected.id, archived).then(() => listCharacters(collection)).then(value => {
+      setEntries(value)
+      const next = value[0]
+      if (next === undefined) {
+        setSelected(undefined)
+        setLoadingId(undefined)
+        setUpdating(false)
+        setActionNotice(`${archived ? '已收起' : '已恢复'}「${displayName}」`)
+        return
+      }
+      setLoadingId(next.id)
+      return readCharacter(next.id).then(detail => {
+        setSelected(detail)
+        setGreetingIndex(0)
+        setLoadingId(undefined)
+        setUpdating(false)
+        setActionNotice(`${archived ? '已收起' : '已恢复'}「${displayName}」`)
+      })
+    }).catch(updateError => {
+      setLoadingId(undefined)
+      setUpdating(false)
+      setError(updateError instanceof Error ? updateError.message : String(updateError))
+    })
+  }
   return <div role="dialog" aria-modal="true" aria-label="角色库" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.52)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '24px', position: 'fixed', zIndex: 1001,
@@ -1138,11 +1180,20 @@ function CharacterLibraryDialog({
         <div style={{ padding: '22px 20px 14px' }}>
           <h2 style={{ fontSize: '18px', margin: 0 }}>角色库</h2>
           <p style={{ fontSize: '12px', lineHeight: 1.55, margin: '7px 0 0', opacity: .55 }}>选择角色只会创建新会话，不会改动当前聊天</p>
+          <div role="tablist" aria-label="角色库分区" style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '9px', display: 'grid', gap: '3px', gridTemplateColumns: '1fr 1fr', marginTop: '14px', padding: '3px' }}>
+            {([['active', '角色'], ['archived', '已收起']] as const).map(([value, label]) => <button
+              key={value} type="button" role="tab" aria-selected={collection === value}
+              onClick={() => { setCollection(value) }} style={{
+                background: collection === value ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
+                border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px',
+                fontWeight: collection === value ? 620 : 400, padding: '7px 8px',
+              }}>{label}</button>)}
+          </div>
         </div>
         <div style={{ display: 'grid', gap: '6px', minHeight: 0, overflowY: 'auto', padding: '4px 10px 18px' }}>
           {entries === undefined && <div style={{ fontSize: '13px', opacity: .55, padding: '16px 10px' }}>正在读取角色…</div>}
           {entries?.length === 0 && <div style={{ fontSize: '13px', lineHeight: 1.65, opacity: .62, padding: '16px 10px' }}>
-            角色库还是空的。导入一张角色卡后，它会自动保存在这里
+            {collection === 'active' ? '角色库还是空的。导入一张角色卡后，它会自动保存在这里' : '还没有收起的角色'}
           </div>}
           {entries?.map(entry => <button key={entry.id} type="button" aria-pressed={selected?.id === entry.id}
             onClick={() => { choose(entry) }} style={{
@@ -1166,8 +1217,12 @@ function CharacterLibraryDialog({
             <div style={{ fontSize: '12px', opacity: .5 }}>开始一段新的角色对话</div>
             <strong style={{ display: 'block', fontSize: '17px', marginTop: '3px' }}>{selected?.displayName ?? '选择角色'}</strong>
           </div>
+          {selected !== undefined && <button type="button" disabled={updating} onClick={updateArchiveState} style={{
+            background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
+            color: 'inherit', cursor: updating ? 'wait' : 'pointer', font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: '6px 10px',
+          }}>{updating ? '处理中…' : collection === 'active' ? '收起角色' : '恢复角色'}</button>}
           <button type="button" aria-label="关闭角色库" onClick={onClose} style={{
-            background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', marginLeft: 'auto', padding: '4px 6px',
+            background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', marginLeft: selected === undefined ? 'auto' : '8px', padding: '4px 6px',
           }}>×</button>
         </header>
         <div style={{ flex: 1, minHeight: 0, overflowX: 'hidden', overflowY: 'auto', padding: '4px 20px 22px' }}>
@@ -1235,11 +1290,13 @@ function CharacterLibraryDialog({
           {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.55, marginTop: '14px' }}>{error}</div>}
         </div>
         <footer style={{ alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '10px', justifyContent: 'flex-end', padding: '14px 20px' }}>
+          {actionNotice !== undefined && <span role="status" style={{ fontSize: '12px', marginRight: 'auto', opacity: .62 }}>{actionNotice}</span>}
+          {actionNotice === undefined && collection === 'archived' && <span style={{ fontSize: '12px', marginRight: 'auto', opacity: .52 }}>恢复后可开始新的对话</span>}
           <button type="button" onClick={onClose} style={{
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '9px',
             color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '8px 13px',
           }}>取消</button>
-          <button type="button" disabled={selected === undefined || starting} onClick={() => {
+          <button type="button" disabled={collection === 'archived' || selected === undefined || starting} onClick={() => {
             if (selected === undefined) return
             setStarting(true)
             setError(undefined)
@@ -1255,7 +1312,7 @@ function CharacterLibraryDialog({
             })
           }} style={{
             background: color, border: 0, borderRadius: '9px', color: '#fff', cursor: starting ? 'wait' : 'pointer',
-            font: 'inherit', fontWeight: 620, opacity: selected === undefined ? .45 : 1, padding: '8px 15px',
+            font: 'inherit', fontWeight: 620, opacity: collection === 'archived' || selected === undefined ? .45 : 1, padding: '8px 15px',
           }}>{starting ? '正在创建…' : '开始对话'}</button>
         </footer>
       </div>
@@ -2561,12 +2618,22 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok) throw new Error(value.error ?? `角色库请求失败（${response.status}）`)
     return value
   }
-  const listCharacters = async (): Promise<readonly CharacterLibrarySummary[]> => {
-    const value = await characterLibraryJson<{ readonly format: 0; readonly entries: readonly CharacterLibrarySummary[] }>()
+  const listCharacters = async (collection: CharacterLibraryCollection = 'active'): Promise<readonly CharacterLibrarySummary[]> => {
+    const query = collection === 'active' ? '' : '?collection=archived'
+    const value = await characterLibraryJson<{ readonly format: 0; readonly entries: readonly CharacterLibrarySummary[] }>(query)
     return value.entries
   }
   const readCharacter = async (id: string): Promise<CharacterLibraryDetail> => {
     const value = await characterLibraryJson<{ readonly format: 0; readonly entry: CharacterLibraryDetail }>(`/${encodeURIComponent(id)}`)
+    return value.entry
+  }
+  const setCharacterArchived = async (id: string, archived: boolean): Promise<CharacterLibraryDetail> => {
+    const operation = archived ? 'archive' : 'restore'
+    const response = await fetch(`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(id)}/${operation}`, {
+      method: 'POST', headers: { accept: 'application/json' },
+    })
+    const value = await response.json() as { readonly error?: string; readonly format?: 0; readonly entry?: CharacterLibraryDetail }
+    if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `角色库请求失败（${response.status}）`)
     return value.entry
   }
   const startCharacterSession = async (
@@ -2714,7 +2781,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} startCharacterSession={startCharacterSession} listPersonas={listPersonas} savePersona={savePersona} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} startCharacterSession={startCharacterSession} listPersonas={listPersonas} savePersona={savePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',
   }, () => null))

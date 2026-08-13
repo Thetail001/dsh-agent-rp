@@ -5,6 +5,9 @@ import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
 /** Same-origin endpoint served by the Agent RP Host plugin. */
 export const CHARACTER_LIBRARY_PATH = '/api/agent-rp/characters'
 
+/** Visible collection selected in the local character library. */
+export type CharacterLibraryCollection = 'active' | 'archived'
+
 /** One inert embedded image exposed from a CHARX archive. */
 export interface CharacterLibraryImage {
   /** Stable index in the Character Card V3 assets array. */
@@ -26,6 +29,7 @@ export interface CharacterLibrarySummary {
   readonly worldInfoCount: number
   readonly avatarAvailable: boolean
   readonly imageAssetCount: number
+  readonly archived: boolean
   readonly transport: 'png' | 'json' | 'charx'
   readonly updatedAt: number
 }
