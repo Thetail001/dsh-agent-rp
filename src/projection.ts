@@ -141,6 +141,7 @@ function presetProjection(
   const enabled = new Set(preset.order.filter(entry => entry.enabled).map(entry => entry.identifier))
   const promptsById = new Map(preset.prompts.map(prompt => [prompt.identifier, prompt]))
   const importedPromptsById = new Map(importedPreset.prompts.map(prompt => [prompt.identifier, prompt]))
+  const importedOrderById = new Map(importedPreset.order.map((entry, position) => [entry.identifier, { ...entry, position }]))
   const appliedGeneration = [
     generation.temperature === undefined ? undefined : 'temperature',
     generation.maxTokens === undefined ? undefined : 'maxTokens（受模型上限约束）',
@@ -169,8 +170,17 @@ function presetProjection(
         name: prompt.name,
         role: prompt.role,
         content: prompt.content,
+        importedContent: importedPromptsById.get(prompt.identifier)?.content ?? prompt.content,
         contentModified: prompt.content !== importedPromptsById.get(prompt.identifier)?.content,
+        importedAttached: importedOrderById.has(prompt.identifier),
+        importedEnabled: importedOrderById.get(prompt.identifier)?.enabled ?? false,
+        ...(importedOrderById.get(prompt.identifier) === undefined ? {} : { importedPosition: importedOrderById.get(prompt.identifier)!.position }),
         marker: prompt.marker,
+        systemPrompt: prompt.systemPrompt,
+        forbidOverrides: prompt.forbidOverrides,
+        ...(prompt.injectionPosition === undefined ? {} : { injectionPosition: prompt.injectionPosition }),
+        ...(prompt.injectionDepth === undefined ? {} : { injectionDepth: prompt.injectionDepth }),
+        ...(prompt.injectionOrder === undefined ? {} : { injectionOrder: prompt.injectionOrder }),
         attached: true,
         enabled: entry.enabled,
         toggleable: canTogglePresetPrompt(preset, prompt.identifier),
@@ -181,8 +191,17 @@ function presetProjection(
       name: prompt.name,
       role: prompt.role,
       content: prompt.content,
+      importedContent: importedPromptsById.get(prompt.identifier)?.content ?? prompt.content,
       contentModified: prompt.content !== importedPromptsById.get(prompt.identifier)?.content,
+      importedAttached: importedOrderById.has(prompt.identifier),
+      importedEnabled: importedOrderById.get(prompt.identifier)?.enabled ?? false,
+      ...(importedOrderById.get(prompt.identifier) === undefined ? {} : { importedPosition: importedOrderById.get(prompt.identifier)!.position }),
       marker: prompt.marker,
+      systemPrompt: prompt.systemPrompt,
+      forbidOverrides: prompt.forbidOverrides,
+      ...(prompt.injectionPosition === undefined ? {} : { injectionPosition: prompt.injectionPosition }),
+      ...(prompt.injectionDepth === undefined ? {} : { injectionDepth: prompt.injectionDepth }),
+      ...(prompt.injectionOrder === undefined ? {} : { injectionOrder: prompt.injectionOrder }),
       attached: false,
       enabled: false,
       toggleable: canTogglePresetPrompt(preset, prompt.identifier),
@@ -192,12 +211,24 @@ function presetProjection(
       ...(generation.temperature === undefined ? {} : { temperature: generation.temperature }),
       ...(generation.maxTokens === undefined ? {} : { maxTokens: generation.maxTokens }),
       ...(generation.reasoningEffort === undefined ? {} : { reasoningEffort: generation.reasoningEffort }),
+      ...(generation.topP === undefined ? {} : { topP: generation.topP }),
+      ...(generation.topK === undefined ? {} : { topK: generation.topK }),
+      ...(generation.topA === undefined ? {} : { topA: generation.topA }),
+      ...(generation.minP === undefined ? {} : { minP: generation.minP }),
+      ...(generation.frequencyPenalty === undefined ? {} : { frequencyPenalty: generation.frequencyPenalty }),
+      ...(generation.presencePenalty === undefined ? {} : { presencePenalty: generation.presencePenalty }),
+      ...(generation.repetitionPenalty === undefined ? {} : { repetitionPenalty: generation.repetitionPenalty }),
     },
+    formats: { ...preset.formats },
     degradedRoleCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier) && prompt.role !== 'system').length,
     regexScriptCount: preset.extensionSummary.regexScriptCount,
     regexScripts: presetRegexScripts(preset).map((script, index) => ({ ...script, index })),
     appliedGeneration,
     preservedGeneration,
+    omittedExtensions: [
+      preset.extensionSummary.hasSPreset ? 'SPreset' : undefined,
+      preset.extensionSummary.hasTavernHelper ? 'Tavern Helper' : undefined,
+    ].filter((value): value is string => value !== undefined),
   }
 }
 

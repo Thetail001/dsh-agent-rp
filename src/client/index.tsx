@@ -11,6 +11,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
 import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
+import { exportSillyTavernPresetJson } from '../preset-export.ts'
 import { projectPresetPromptSections } from '../preset-sections.ts'
 import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay } from '../frontend-regex.ts'
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
@@ -357,15 +358,23 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
   ))
   const [editedPromptIds, setEditedPromptIds] = useState<ReadonlySet<string>>(() => new Set())
   const [editingPromptId, setEditingPromptId] = useState<string>()
+  const [promptFilter, setPromptFilter] = useState<'all' | 'enabled' | 'modified'>('all')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string>()
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const normalizedQuery = query.trim().toLocaleLowerCase()
+  const attachedPositionById = new Map(prompts.filter(prompt => prompt.attached).map((prompt, position) => [prompt.identifier, position]))
+  const promptModified = (prompt: PresetPromptProjection): boolean => prompt.content !== prompt.importedContent
+    || prompt.attached !== prompt.importedAttached
+    || (prompt.attached && prompt.enabled !== prompt.importedEnabled)
+    || (prompt.attached && attachedPositionById.get(prompt.identifier) !== prompt.importedPosition)
   const promptSections = projectPresetPromptSections(prompts)
   const visiblePromptSections = promptSections.flatMap((group) => {
-    if (normalizedQuery === '') return [group]
-    const groupMatches = group.title.toLocaleLowerCase().includes(normalizedQuery)
-    const matchingPrompts = groupMatches ? group.prompts : group.prompts.filter(prompt =>
+    const filteredPrompts = group.prompts.filter(prompt => promptFilter === 'all'
+      || (promptFilter === 'enabled' && prompt.enabled)
+      || (promptFilter === 'modified' && promptModified(prompt)))
+    const groupMatches = normalizedQuery === '' || group.title.toLocaleLowerCase().includes(normalizedQuery)
+    const matchingPrompts = groupMatches ? filteredPrompts : filteredPrompts.filter(prompt =>
       prompt.name.toLocaleLowerCase().includes(normalizedQuery)
       || prompt.identifier.toLocaleLowerCase().includes(normalizedQuery))
     return matchingPrompts.length === 0 ? [] : [{
@@ -391,14 +400,68 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
     setPrompts(current => current.map(prompt => prompt.identifier === identifier ? update(prompt) : prompt))
   }
   const setPromptContent = (identifier: string, content: string): void => {
-    const original = preset.prompts.find(prompt => prompt.identifier === identifier)?.content
-    setPrompt(identifier, prompt => ({ ...prompt, content }))
-    setEditedPromptIds((current) => {
-      const next = new Set(current)
-      if (content === original) next.delete(identifier)
+    const openedContent = preset.prompts.find(prompt => prompt.identifier === identifier)?.content
+    setPrompt(identifier, prompt => ({
+      ...prompt,
+      content,
+      contentModified: content !== prompt.importedContent,
+    }))
+    setEditedPromptIds((edited) => {
+      const next = new Set(edited)
+      if (content === openedContent) next.delete(identifier)
       else next.add(identifier)
       return next
     })
+  }
+  const exportCopy = (): void => {
+    const resolvedTemperature = temperature.trim() === '' ? undefined : Number(temperature)
+    const resolvedMaxTokens = maxTokens.trim() === '' ? undefined : Number(maxTokens)
+    if (resolvedTemperature !== undefined && (!Number.isFinite(resolvedTemperature) || resolvedTemperature < 0 || resolvedTemperature > 2)) {
+      setError('温度需填写 0 到 2 之间的数字')
+      return
+    }
+    if (resolvedMaxTokens !== undefined && (!Number.isSafeInteger(resolvedMaxTokens) || resolvedMaxTokens < 1)) {
+      setError('最大输出需填写正整数')
+      return
+    }
+    setError(undefined)
+    const exportJson = exportSillyTavernPresetJson({
+      prompts: prompts.map(prompt => ({
+        identifier: prompt.identifier,
+        name: prompt.name,
+        role: prompt.role,
+        content: prompt.content,
+        marker: prompt.marker,
+        systemPrompt: prompt.systemPrompt,
+        forbidOverrides: prompt.forbidOverrides,
+        ...(prompt.injectionPosition === undefined ? {} : { injectionPosition: prompt.injectionPosition }),
+        ...(prompt.injectionDepth === undefined ? {} : { injectionDepth: prompt.injectionDepth }),
+        ...(prompt.injectionOrder === undefined ? {} : { injectionOrder: prompt.injectionOrder }),
+      })),
+      order: prompts.filter(prompt => prompt.attached).map(prompt => ({ identifier: prompt.identifier, enabled: prompt.enabled })),
+      generation: {
+        ...(preset.generation.topP === undefined ? {} : { topP: preset.generation.topP }),
+        ...(preset.generation.topK === undefined ? {} : { topK: preset.generation.topK }),
+        ...(preset.generation.topA === undefined ? {} : { topA: preset.generation.topA }),
+        ...(preset.generation.minP === undefined ? {} : { minP: preset.generation.minP }),
+        ...(preset.generation.frequencyPenalty === undefined ? {} : { frequencyPenalty: preset.generation.frequencyPenalty }),
+        ...(preset.generation.presencePenalty === undefined ? {} : { presencePenalty: preset.generation.presencePenalty }),
+        ...(preset.generation.repetitionPenalty === undefined ? {} : { repetitionPenalty: preset.generation.repetitionPenalty }),
+        ...(resolvedTemperature === undefined ? {} : { temperature: resolvedTemperature }),
+        ...(resolvedMaxTokens === undefined ? {} : { maxTokens: resolvedMaxTokens }),
+        ...(reasoningEffort === '' ? {} : { reasoningEffort }),
+      },
+      formats: preset.formats,
+      regexScripts: regexScripts.map(({ index: _index, ...script }) => script),
+    })
+    const blob = new Blob([exportJson], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${preset.name.replace(/[\\/:*?"<>|]+/gu, '_')} · Agent RP 副本.json`
+    anchor.click()
+    anchor.remove()
+    setTimeout(() => { URL.revokeObjectURL(url) }, 0)
   }
   const move = (identifier: string, direction: -1 | 1): void => {
     setPrompts((current) => {
@@ -497,6 +560,13 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
             background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
             borderRadius: '9px', color: 'inherit', font: 'inherit', fontSize: '13px', outline: 'none', padding: '9px 11px',
           }} />
+          {section === 'prompts' && <div style={{ display: 'flex', gap: '5px', marginTop: '8px' }}>
+            {([['all', '全部'], ['enabled', '已启用'], ['modified', '已修改']] as const).map(([value, label]) => <button key={value} type="button" onClick={() => { setPromptFilter(value) }} style={{
+              ...miniButtonStyle,
+              background: promptFilter === value ? `color-mix(in srgb, ${color} 14%, transparent)` : 'transparent',
+              borderColor: promptFilter === value ? `color-mix(in srgb, ${color} 38%, transparent)` : miniButtonStyle.border,
+            }}>{label}</button>)}
+          </div>}
           <div style={{ display: 'flex', fontSize: '11px', justifyContent: 'space-between', margin: '10px 3px 7px', opacity: 0.48 }}>
             <span>{section === 'prompts' ? '提示模块' : '预设正则'}</span><span>{section === 'prompts' ? '顺序与开关' : '开关'}</span>
           </div>
@@ -526,12 +596,13 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
                   <div style={{ alignItems: 'center', display: 'flex', gap: '7px', minWidth: 0 }}>
                     <span style={{ fontSize: '13px', fontWeight: 560, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prompt.name || prompt.identifier}</span>
                     <span style={{ fontSize: '10px', opacity: 0.48 }}>{prompt.marker ? '结构位' : roleLabel(prompt.role)}</span>
-                    {(prompt.contentModified || editedPromptIds.has(prompt.identifier)) && <span style={{ color, fontSize: '10px', opacity: 0.82 }}>已修改</span>}
+                    {promptModified(prompt) && <span style={{ color, fontSize: '10px', opacity: 0.82 }}>已修改</span>}
                   </div>
                   <div title={prompt.identifier} style={{ fontFamily: 'ui-monospace, monospace', fontSize: '10px', marginTop: '3px', opacity: 0.38, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prompt.identifier}</div>
                 </div>
                 <div style={{ alignItems: 'center', display: 'flex', gap: '5px' }}>
                   {prompt.editable && <button type="button" onClick={() => { setEditingPromptId(prompt.identifier) }} style={miniButtonStyle}>编辑</button>}
+                  {prompt.editable && prompt.content !== prompt.importedContent && <button type="button" onClick={() => { setPromptContent(prompt.identifier, prompt.importedContent) }} style={miniButtonStyle}>恢复正文</button>}
                   {prompt.attached && <>
                     <button type="button" aria-label={`上移${prompt.name}`} disabled={attachedIndex <= 0 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, -1) }} style={miniButtonStyle}>↑</button>
                     <button type="button" aria-label={`下移${prompt.name}`} disabled={attachedIndex >= attached.length - 1 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, 1) }} style={miniButtonStyle}>↓</button>
@@ -591,6 +662,9 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
           <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '16px 1px 0', opacity: 0.46 }}>
             修改只影响当前角色会话。未填写的参数跟随会话与模型设置
           </p>
+          {preset.omittedExtensions.length > 0 && <p style={{ fontSize: '10px', lineHeight: 1.5, margin: '9px 1px 0', opacity: 0.38 }}>
+            兼容副本不包含未执行扩展：{preset.omittedExtensions.join('、')}
+          </p>}
         </aside>
       </div>
       <footer className="agent-rp-preset-footer" style={{ alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #343438)', display: 'flex', gap: '9px', justifyContent: 'flex-end', minHeight: '64px', padding: '12px 20px' }}>
@@ -608,6 +682,7 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
           })
         }} />
         <button type="button" disabled={saving} onClick={() => { importInputRef.current?.click() }} style={secondaryButtonStyle}>替换预设</button>
+        <button type="button" disabled={saving} onClick={exportCopy} title={preset.omittedExtensions.length === 0 ? '导出当前配置' : `不包含未执行扩展：${preset.omittedExtensions.join('、')}`} style={secondaryButtonStyle}>导出副本</button>
         <button type="button" disabled={saving} onClick={onClose} style={secondaryButtonStyle}>取消</button>
         <button type="button" disabled={saving} onClick={() => { void save() }} style={primaryButtonStyle}>{saving ? '保存中…' : '保存到此会话'}</button>
       </footer>

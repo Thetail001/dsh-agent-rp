@@ -31,8 +31,17 @@ export interface AgentRpProjection {
       readonly name: string
       readonly role: 'system' | 'user' | 'assistant'
       readonly content: string
+      readonly importedContent: string
       readonly contentModified: boolean
+      readonly importedAttached: boolean
+      readonly importedEnabled: boolean
+      readonly importedPosition?: number
       readonly marker: boolean
+      readonly systemPrompt: boolean
+      readonly forbidOverrides: boolean
+      readonly injectionPosition?: number
+      readonly injectionDepth?: number
+      readonly injectionOrder?: number
       readonly attached: boolean
       readonly enabled: boolean
       readonly toggleable: boolean
@@ -42,12 +51,25 @@ export interface AgentRpProjection {
       readonly temperature?: number
       readonly maxTokens?: number
       readonly reasoningEffort?: string
+      readonly topP?: number
+      readonly topK?: number
+      readonly topA?: number
+      readonly minP?: number
+      readonly frequencyPenalty?: number
+      readonly presencePenalty?: number
+      readonly repetitionPenalty?: number
+    }
+    readonly formats: {
+      readonly worldInfo: string
+      readonly scenario: string
+      readonly personality: string
     }
     readonly degradedRoleCount: number
     readonly regexScriptCount: number
     readonly regexScripts: readonly (ImportedRegexScript & { readonly index: number })[]
     readonly appliedGeneration: readonly string[]
     readonly preservedGeneration: readonly string[]
+    readonly omittedExtensions: readonly string[]
   }
   readonly source: 'character-card' | 'sillytavern-chat' | 'preset'
 }
