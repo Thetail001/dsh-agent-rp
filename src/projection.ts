@@ -25,6 +25,7 @@ const projectionSchema = {
       || record?.source === 'sillytavern-chat' || record?.source === 'preset'
     if (record === null || typeof record !== 'object'
       || typeof record.characterName !== 'string'
+      || (record.originalCharacterName !== undefined && typeof record.originalCharacterName !== 'string')
       || typeof record.description !== 'string'
       || typeof record.personality !== 'string'
       || typeof record.scenario !== 'string'
@@ -80,6 +81,7 @@ function cardProjection(
   return {
     character: {
       characterName: card.nickname?.trim() || card.name,
+      originalCharacterName: card.name,
       description: card.description.trim(),
       personality: card.personality.trim(),
       scenario: card.scenario.trim(),
@@ -543,5 +545,5 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     presetLibrary: state.presetLibrary,
     ...(state.lastRequest === undefined ? {} : { lastRequest: state.lastRequest }),
   }),
-  stateVersion: 2,
+  stateVersion: 3,
 }

@@ -10,7 +10,7 @@ import type { IConversation } from '@deepseek-ai/dsh-client-ui-conversation/clie
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import { createRoot, type Root } from 'react-dom/client'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
 import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
 import { exportSillyTavernPresetJson } from '../preset-export.ts'
@@ -39,6 +39,7 @@ interface DraftResolver {
 
 type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly loadAvatar: (attachmentId: string) => Promise<string | undefined>
+  readonly renameSession: (sessionId: SessionId, title: string) => Promise<void>
   readonly configurePreset: (sessionId: SessionId, request: PresetConfigurationRequest) => Promise<void>
   readonly importPreset: (sessionId: SessionId, file: File) => Promise<void>
   readonly managePresetLibrary: (sessionId: SessionId, request: PresetLibraryRequest) => Promise<void>
@@ -48,6 +49,36 @@ type ComposerDockProps = PropsRuntime<'conversation.composer.dock'>
 
 const color = 'var(--dsw-alias-state-business-primary, #6f78e8)'
 const statusPlaceholder = '<StatusPlaceHolderImpl/>'
+
+type RoleplayViewMode = 'immersive' | 'debug'
+
+const roleplayViewListeners = new Map<SessionId, Set<() => void>>()
+
+function roleplayViewKey(sessionId: SessionId): string {
+  return `dsh.agent-rp.view.${sessionId}`
+}
+
+function readRoleplayViewMode(sessionId: SessionId): RoleplayViewMode {
+  return localStorage.getItem(roleplayViewKey(sessionId)) === 'debug' ? 'debug' : 'immersive'
+}
+
+function setRoleplayViewMode(sessionId: SessionId, mode: RoleplayViewMode): void {
+  if (mode === 'immersive') localStorage.removeItem(roleplayViewKey(sessionId))
+  else localStorage.setItem(roleplayViewKey(sessionId), mode)
+  for (const listener of roleplayViewListeners.get(sessionId) ?? []) listener()
+}
+
+function useRoleplayViewMode(sessionId: SessionId): RoleplayViewMode {
+  return useSyncExternalStore(callback => {
+    const listeners = roleplayViewListeners.get(sessionId) ?? new Set<() => void>()
+    listeners.add(callback)
+    roleplayViewListeners.set(sessionId, listeners)
+    return () => {
+      listeners.delete(callback)
+      if (listeners.size === 0) roleplayViewListeners.delete(sessionId)
+    }
+  }, () => readRoleplayViewMode(sessionId), () => 'immersive')
+}
 
 const cardFrameCompatibility = `<style>
 html{background:transparent!important;color-scheme:dark;scrollbar-color:rgba(145,158,181,.58) transparent;scrollbar-width:thin}
@@ -165,6 +196,10 @@ function roleplaySummary(summary: SessionSummary | undefined, projection: AgentR
   }
 }
 
+function roleplayDisplayName(summary: SessionSummary | undefined, projection: AgentRpProjection): string {
+  return summary?.title?.trim() || projection.characterName
+}
+
 function Avatar({ projection, loadAvatar, size = 40 }: {
   readonly projection: AgentRpProjection
   readonly loadAvatar: HeaderProps['loadAvatar']
@@ -222,7 +257,7 @@ function DetailSection({ title, text }: { readonly title: string; readonly text:
 }
 
 function RoleplayHeader({
-  sessionId, useProjection, useSessions, loadAvatar, configurePreset, importPreset, managePresetLibrary,
+  sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projected = useProjection('agentRp')
@@ -230,8 +265,13 @@ function RoleplayHeader({
   const [open, setOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
   const [presetOpen, setPresetOpen] = useState(false)
+  const [aliasDraft, setAliasDraft] = useState('')
+  const [aliasError, setAliasError] = useState<string>()
+  const [renaming, setRenaming] = useState(false)
+  const viewMode = useRoleplayViewMode(sessionId)
   const rootRef = useRef<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
+    if (viewMode === 'debug') return
     const root = rootRef.current
     const header = root?.closest('header')
     if (root == null || header == null) return
@@ -243,8 +283,12 @@ function RoleplayHeader({
       ...actionSiblings,
       ...secondaryTabs,
     ])
-  }, [projection !== undefined])
+  }, [projection !== undefined, viewMode])
   if (projection === undefined) return null
+  const displayName = roleplayDisplayName(summary, projection)
+  const displayProjection = displayName === projection.characterName
+    ? projection
+    : { ...projection, characterName: displayName }
   const imported = projection.importedMessageCount > 0
   const status = projection.frontend === undefined || projection.mvu === undefined
     ? undefined
@@ -260,11 +304,11 @@ function RoleplayHeader({
     : cardFrameSource(statusHtml, projection.mvu.statData)
   return <>
     <div ref={rootRef} data-agent-rp-header style={{ alignItems: 'center', display: 'flex', gap: '10px', marginRight: 'auto', minWidth: 0 }}>
-      <Avatar projection={projection} loadAvatar={loadAvatar} />
+      <Avatar projection={displayProjection} loadAvatar={loadAvatar} />
       <div style={{ minWidth: 0 }}>
         <div style={{ alignItems: 'baseline', display: 'flex', gap: '8px', minWidth: 0 }}>
           <strong style={{ fontSize: '15px', fontWeight: 620, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {projection.characterName}
+            {displayName}
           </strong>
           <span style={{ fontSize: '11px', opacity: 0.48, whiteSpace: 'nowrap' }}>{imported ? '已迁移对话' : '角色对话'}</span>
         </div>
@@ -280,12 +324,19 @@ function RoleplayHeader({
         background: `color-mix(in srgb, ${color} 10%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>预设</button>
+      <button type="button" aria-pressed={viewMode === 'debug'} onClick={() => {
+        setRoleplayViewMode(sessionId, viewMode === 'immersive' ? 'debug' : 'immersive')
+      }} style={{
+        background: viewMode === 'debug' ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
+        border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px', color: 'inherit', cursor: 'pointer',
+        font: 'inherit', fontSize: '12px', padding: '6px 10px',
+      }}>{viewMode === 'debug' ? '返回沉浸' : '调试'}</button>
       {statusSource !== undefined && <button type="button" onClick={() => { setStatusOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>当前状态</button>}
     </div>
-    {open && <div role="dialog" aria-modal="true" aria-label={`${projection.characterName}的角色信息`} style={{
+    {open && <div role="dialog" aria-modal="true" aria-label={`${displayName}的角色信息`} style={{
       alignItems: 'stretch', background: 'rgba(0,0,0,.48)', display: 'flex', inset: 0,
       justifyContent: 'flex-end', position: 'fixed', zIndex: 1000,
     }} onMouseDown={event => { if (event.target === event.currentTarget) setOpen(false) }}>
@@ -294,9 +345,9 @@ function RoleplayHeader({
         boxShadow: '-18px 0 44px rgba(0,0,0,.2)', maxWidth: '92vw', overflowY: 'auto', padding: '24px', width: '380px',
       }}>
         <div style={{ alignItems: 'center', display: 'flex', gap: '13px' }}>
-          <Avatar projection={projection} loadAvatar={loadAvatar} size={54} />
+          <Avatar projection={displayProjection} loadAvatar={loadAvatar} size={54} />
           <div style={{ minWidth: 0 }}>
-            <h2 style={{ fontSize: '18px', margin: 0 }}>{projection.characterName}</h2>
+            <h2 style={{ fontSize: '18px', margin: 0 }}>{displayName}</h2>
             <div style={{ fontSize: '12px', marginTop: '5px', opacity: 0.52 }}>
               {projection.cardVersion === undefined ? '角色会话' : `角色卡 V${projection.cardVersion}`}
             </div>
@@ -317,6 +368,40 @@ function RoleplayHeader({
             预设 · {projection.preset.name} · {projection.preset.enabledCount}/{projection.preset.promptCount} 项启用
           </span>}
         </div>
+        <form style={{ marginTop: '20px' }} onSubmit={event => {
+          event.preventDefault()
+          const alias = aliasDraft.trim()
+          if (alias === '') {
+            setAliasError('显示名不能为空')
+            return
+          }
+          setRenaming(true)
+          setAliasError(undefined)
+          void renameSession(sessionId, alias).then(() => {
+            setRenaming(false)
+          }, error => {
+            setRenaming(false)
+            setAliasError(error instanceof Error ? error.message : String(error))
+          })
+        }}>
+          <label htmlFor={`agent-rp-alias-${sessionId}`} style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '7px', opacity: 0.56 }}>
+            显示名
+          </label>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <input id={`agent-rp-alias-${sessionId}`} value={aliasDraft} placeholder={displayName} onChange={event => { setAliasDraft(event.target.value) }} style={{
+              background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+              borderRadius: '8px', color: 'inherit', flex: 1, font: 'inherit', minWidth: 0, padding: '7px 9px',
+            }} />
+            <button type="submit" disabled={renaming} style={{
+              background: `color-mix(in srgb, ${color} 14%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 32%, transparent)`,
+              borderRadius: '8px', color: 'inherit', cursor: renaming ? 'wait' : 'pointer', font: 'inherit', padding: '7px 10px',
+            }}>{renaming ? '保存中' : '保存'}</button>
+          </div>
+          {aliasError !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', marginTop: '6px' }}>{aliasError}</div>}
+          {projection.originalCharacterName !== undefined && <div style={{ fontSize: '11px', lineHeight: 1.5, marginTop: '7px', opacity: 0.48 }}>
+            原始卡名：{projection.originalCharacterName}
+          </div>}
+        </form>
         <DetailSection title="角色简介" text={projection.description} />
         <DetailSection title="性格" text={projection.personality} />
         <DetailSection title="当前场景" text={projection.scenario} />
@@ -345,7 +430,7 @@ function RoleplayHeader({
       </aside>
     </div>}
     {statusOpen && statusSource !== undefined && <RoleplayStatusDialog
-      characterName={projection.characterName}
+      characterName={displayName}
       source={statusSource}
       onClose={() => { setStatusOpen(false) }}
     />}
@@ -1261,16 +1346,25 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
   const summary = useSessions(state => state.byId[sessionId])
   const projection = roleplaySummary(summary, useProjection('agentRp'))
   const chat = useSession(state => state.chat)
+  const viewMode = useRoleplayViewMode(sessionId)
   const rootRef = useRef<HTMLDivElement | null>(null)
-  const placeholder = projection === undefined ? undefined : `和${projection.characterName}说点什么…`
+  const displayName = projection === undefined ? undefined : roleplayDisplayName(summary, projection)
+  const placeholder = displayName === undefined ? undefined : `和${displayName}说点什么…`
   useLayoutEffect(() => {
     const inputRoot = rootRef.current?.parentElement
     const card = inputRoot?.querySelector<HTMLElement>('[data-composer-card]')
     const textarea = card?.querySelector<HTMLTextAreaElement>('textarea')
     if (inputRoot == null || textarea == null || placeholder === undefined) return
     const previousPlaceholder = textarea.getAttribute('placeholder')
-    inputRoot.dataset.agentRpInput = ''
     textarea.setAttribute('placeholder', placeholder)
+    if (viewMode === 'debug') {
+      return () => {
+        if (textarea.getAttribute('placeholder') !== placeholder) return
+        if (previousPlaceholder === null) textarea.removeAttribute('placeholder')
+        else textarea.setAttribute('placeholder', previousPlaceholder)
+      }
+    }
+    inputRoot.dataset.agentRpInput = ''
     const hiddenControls = new Map<HTMLElement, { display: string; priority: string }>()
     const hide = (element: Element): void => {
       if (!(element instanceof HTMLElement) || hiddenControls.has(element)) return
@@ -1306,11 +1400,12 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
       if (previousPlaceholder === null) textarea.removeAttribute('placeholder')
       else textarea.setAttribute('placeholder', previousPlaceholder)
     }
-  }, [placeholder])
+  }, [placeholder, viewMode])
   useEffect(() => {
-    const frontend = projection?.frontend
-    if (frontend === undefined || projection === undefined
-      || frontend.regexScripts.length + (projection.preset?.regexScripts.length ?? 0) === 0) return
+    if (projection === undefined) return
+    const frontend = projection.frontend
+    const hasDisplayRules = viewMode === 'immersive' && frontend !== undefined
+      && frontend.regexScripts.length + (projection.preset?.regexScripts.length ?? 0) > 0
     const mounted = new Map<HTMLElement, Root>()
     const hiddenTranscriptDetails = new Map<HTMLElement, { readonly display: string; readonly priority: string }>()
     const hideTranscriptDetail = (element: HTMLElement): void => {
@@ -1372,30 +1467,34 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
     const scan = (): void => {
       const scroll = rootRef.current?.closest('[data-conversation-scroll]')
       if (scroll === null || scroll === undefined) return
-      for (const item of scroll.querySelectorAll<HTMLElement>(
-        '[data-chat-flow-kind="context"], [data-chat-flow-kind="tool-call"]',
-      )) hideTranscriptDetail(item)
-      for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="turn-error"]')) {
-        if (item.textContent?.includes('agent-rp/character-card-seed has invalid provenance')) {
-          hideTranscriptDetail(item)
+      if (viewMode === 'immersive') {
+        for (const item of scroll.querySelectorAll<HTMLElement>(
+          '[data-chat-flow-kind="context"], [data-chat-flow-kind="tool-call"], [data-chat-flow-kind="command"], '
+          + '[data-chat-flow-kind="manual-compaction"], [data-chat-flow-kind="compaction"], '
+          + '[data-chat-flow-kind="model-retry"], [data-chat-flow-kind="unknown"]',
+        )) hideTranscriptDetail(item)
+        for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="turn-error"]')) {
+          if (item.textContent?.includes('agent-rp/character-card-seed has invalid provenance')) {
+            hideTranscriptDetail(item)
+          }
         }
-      }
-      for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="user"]')) {
-        if (item.dataset.agentRpSetupCollapsed === 'true'
-          || !item.textContent?.includes('🎬 档案提交完毕指令：')) continue
-        const content = item.firstElementChild as HTMLElement | null
-        if (content === null) continue
-        const details = document.createElement('details')
-        details.style.cssText = 'font-size:12px;opacity:.72;'
-        const summary = document.createElement('summary')
-        summary.textContent = '角色设定已提交'
-        summary.style.cssText = 'cursor:pointer;list-style:none;'
-        const original = content.cloneNode(true) as HTMLElement
-        original.style.cssText = 'margin-top:8px;max-height:240px;overflow:auto;white-space:pre-wrap;'
-        details.append(summary, original)
-        content.style.display = 'none'
-        item.insertBefore(details, content.nextSibling)
-        item.dataset.agentRpSetupCollapsed = 'true'
+        for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="user"]')) {
+          if (item.dataset.agentRpSetupCollapsed === 'true'
+            || !item.textContent?.includes('🎬 档案提交完毕指令：')) continue
+          const content = item.firstElementChild as HTMLElement | null
+          if (content === null) continue
+          const details = document.createElement('details')
+          details.style.cssText = 'font-size:12px;opacity:.72;'
+          const summaryElement = document.createElement('summary')
+          summaryElement.textContent = '角色设定已提交'
+          summaryElement.style.cssText = 'cursor:pointer;list-style:none;'
+          const original = content.cloneNode(true) as HTMLElement
+          original.style.cssText = 'margin-top:8px;max-height:240px;overflow:auto;white-space:pre-wrap;'
+          details.append(summaryElement, original)
+          content.style.display = 'none'
+          item.insertBefore(details, content.nextSibling)
+          item.dataset.agentRpSetupCollapsed = 'true'
+        }
       }
       for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="assistant-step"]')) {
         const key = item.dataset.chatFlowKey
@@ -1403,9 +1502,12 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
         const node = chat.nodes.get(key)
         if (node?.kind !== 'assistant-step') continue
         const data = node.data as { readonly blocks?: readonly { readonly kind: string; readonly text?: string }[] }
-        for (const button of item.querySelectorAll<HTMLButtonElement>('button')) {
-          if (button.textContent?.trimStart().startsWith('Think')) hideTranscriptDetail(button)
+        if (viewMode === 'immersive') {
+          for (const element of item.querySelectorAll<HTMLElement>('[data-variant="think"]')) {
+            hideTranscriptDetail(element)
+          }
         }
+        if (!hasDisplayRules || frontend === undefined) continue
         const raw = data.blocks?.flatMap(block => block.kind === 'text' && block.text !== undefined ? [block.text] : []).join('\n') ?? ''
         if (raw === '') continue
         const depth = Math.max(0, chat.order.length - chat.order.indexOf(key) - 1)
@@ -1447,11 +1549,13 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
         delete item.dataset.agentRpSetupCollapsed
       }
     }
-  }, [chat, projection])
+  }, [chat, projection, viewMode])
   if (projection === undefined) return null
   return <div ref={rootRef} data-agent-rp-status>
     <RoleplayStatusLine
-      projection={projection}
+      projection={summary?.title?.trim() && summary.title.trim() !== projection.characterName
+        ? { ...projection, characterName: summary.title.trim() }
+        : projection}
       running={useSession(state => state.running)}
     />
   </div>
@@ -1558,6 +1662,13 @@ export const inject = ['connection', 'slots', 'sessions']
 /** Register the Agent RP header, composer presentation, and import affordance. */
 export function apply(ctx: ClientContext): void {
   const loadAvatar = avatarLoader(ctx)
+  const renameSession = async (sessionId: SessionId, title: string): Promise<void> => {
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const result = await session.rename(title)
+    if (!result.ok) throw new Error(result.error.message)
+  }
   const importPreset = async (sessionId: SessionId, file: File): Promise<void> => {
     if (!/\.json$/iu.test(file.name)) throw new Error('请选择 SillyTavern 预设 JSON 文件')
     const scope = ctx.sessions.scope(sessionId)
@@ -1629,7 +1740,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',
   }, () => null))

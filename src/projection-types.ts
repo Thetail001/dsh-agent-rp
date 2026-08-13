@@ -6,7 +6,10 @@ import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 
 /** Current character identity and migration summary for one Roleplay Session. */
 export interface AgentRpProjection {
+  /** Character name used by the prompt and card macros. */
   readonly characterName: string
+  /** Lossless card title when the card supplies a shorter runtime nickname. */
+  readonly originalCharacterName?: string
   readonly description: string
   readonly personality: string
   readonly scenario: string
