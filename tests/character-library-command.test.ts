@@ -8,10 +8,8 @@ import { CommandId } from '@deepseek-ai/dsh-commands'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from '../src/character-library.ts'
 import { executeCharacterLibraryCommand } from '../src/character-library-command.ts'
-import { readActiveSessionCharacter } from '../src/import/session-character.ts'
-import { agentRpProjectionDefinition } from '../src/projection.ts'
 
-test('starts one local character without sending its asset to a model', (context) => {
+test('rejects the obsolete live-Agent character launch command', (context) => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-character-command-'))
   context.after(() => { rmSync(root, { recursive: true, force: true }) })
   const library = new CharacterLibrary({ root })
@@ -27,19 +25,10 @@ test('starts one local character without sending its asset to a model', (context
     name: 'rp-character-library',
     source: { kind: 'user' },
   })
-  const result = executeCharacterLibraryCommand(library, {
+  assert.throws(() => executeCharacterLibraryCommand(library, {
     commandId,
     agent,
     rawInput: JSON.stringify({ format: 0, characterId: entry.id, greetingIndex: 1 }),
-  })
-  agent.session.append('command/done', { commandId, ...result })
-
-  assert.equal(readActiveSessionCharacter(agent.session.events)?.result.libraryId, entry.id)
-  assert.deepEqual(agent.session.deriveMessages().map(message => message.content[0]), [
-    { type: 'text', text: '今天来得很早。' },
-  ])
-  assert.equal(agent.session.events.some(event => event.type === 'user/message'), false)
-  let state = agentRpProjectionDefinition.init()
-  for (const event of agent.session.events) state = agentRpProjectionDefinition.apply(state, event)
-  assert.equal(agentRpProjectionDefinition.view(state).avatarLibraryId, entry.id)
+  }), /旧角色启动入口已停用/u)
+  assert.equal(agent.session.events.some(event => event.type === 'turn/start'), false)
 })

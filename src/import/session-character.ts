@@ -270,19 +270,26 @@ export function readActiveSessionCharacter(events: readonly SessionEvent[]): Act
   let active: ActiveSessionCharacter | undefined
   for (const event of events) {
     if (event.type === 'agent-rp/character-card-seed') {
-      const attachment = event.data.source.attachments[0]
       const meta = parseCharacterImportMeta(event.data.meta as unknown as JsonValue)
       const result = meta.result
       const card = parseCharacterCardJson(JSON.stringify(meta.raw))
       const expectedGreeting = [card.firstMessage, ...card.alternateGreetings][result.greetingIndex]
-      const validTransport = result.transport === 'json'
-        ? isJsonCharacterCardAttachment(attachment)
-        : result.transport === 'charx'
-          ? isCharxCharacterCardAttachment(attachment)
-          : isPngCharacterCardAttachment(attachment)
-      if (event.data.format !== 0 || event.data.source.attachmentConsumer !== 'dsh-agent-rp'
-        || !validTransport || result.sourceEventSeq !== event.seq
-        || result.sourceAttachmentId !== String(attachment.attachmentId)
+      const libraryId = 'characterLibraryId' in event.data.source
+        ? event.data.source.characterLibraryId
+        : undefined
+      const attachment = 'attachments' in event.data.source ? event.data.source.attachments[0] : undefined
+      const validSource = libraryId === undefined
+        ? 'attachmentConsumer' in event.data.source && attachment !== undefined
+          && event.data.source.attachmentConsumer === 'dsh-agent-rp'
+          && (result.transport === 'json'
+            ? isJsonCharacterCardAttachment(attachment)
+            : result.transport === 'charx'
+              ? isCharxCharacterCardAttachment(attachment)
+              : isPngCharacterCardAttachment(attachment))
+          && result.sourceAttachmentId === String(attachment.attachmentId)
+        : /^card-[a-f0-9]{32}$/u.test(libraryId) && result.libraryId === libraryId
+          && result.sourceAttachmentId === `library:${libraryId}`
+      if (event.data.format !== 0 || !validSource || result.sourceEventSeq !== event.seq
         || result.name !== card.name || result.cardVersion !== card.version
         || result.selectedGreeting !== expectedGreeting
         || JSON.stringify(result.degradations) !== JSON.stringify(card.degradations)) {

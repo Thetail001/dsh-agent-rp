@@ -20,6 +20,71 @@ interface SourceLine {
   readonly text: string
 }
 
+const HTML_DISPLAY_TAGS = new Set([
+  'a', 'abbr', 'address', 'area', 'article', 'aside', 'audio', 'b', 'base', 'bdi', 'bdo',
+  'blockquote', 'body', 'br', 'button', 'canvas', 'caption', 'cite', 'code', 'col', 'colgroup',
+  'data', 'datalist', 'dd', 'del', 'details', 'dfn', 'dialog', 'div', 'dl', 'dt', 'em',
+  'embed', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4',
+  'h5', 'h6', 'head', 'header', 'hgroup', 'hr', 'html', 'i', 'iframe', 'img', 'input',
+  'ins', 'kbd', 'label', 'legend', 'li', 'link', 'main', 'map', 'mark', 'menu', 'meta',
+  'meter', 'nav', 'noscript', 'object', 'ol', 'optgroup', 'option', 'output', 'p', 'picture',
+  'pre', 'progress', 'q', 'rp', 'rt', 'ruby', 's', 'samp', 'script', 'search', 'section',
+  'select', 'slot', 'small', 'source', 'span', 'strong', 'style', 'sub', 'summary', 'sup',
+  'table', 'tbody', 'td', 'template', 'textarea', 'tfoot', 'th', 'thead', 'time', 'title',
+  'tr', 'track', 'u', 'ul', 'var', 'video', 'wbr',
+])
+
+function stripUnknownTagsOutsideCode(value: string): string {
+  let result = ''
+  let cursor = 0
+  let codeTicks = 0
+  while (cursor < value.length) {
+    if (value[cursor] === '`') {
+      let end = cursor + 1
+      while (value[end] === '`') end += 1
+      const ticks = end - cursor
+      if (codeTicks === 0) codeTicks = ticks
+      else if (ticks === codeTicks) codeTicks = 0
+      result += value.slice(cursor, end)
+      cursor = end
+      continue
+    }
+    if (codeTicks === 0 && value[cursor] === '<') {
+      const tag = value.slice(cursor).match(/^<\/?([A-Za-z][A-Za-z0-9:_-]*)(?:\s[^<>]*?)?\s*\/?>/u)
+      const name = tag?.[1]?.toLowerCase()
+      if (tag?.[0] !== undefined && name !== undefined && !HTML_DISPLAY_TAGS.has(name)) {
+        cursor += tag[0].length
+        continue
+      }
+    }
+    result += value[cursor]
+    cursor += 1
+  }
+  return result
+}
+
+/**
+ * Match SillyTavern's Markdown display for model-defined wrapper elements.
+ * Unknown HTML-like tags are discarded there while their text remains. Code
+ * examples and fenced blocks keep their source spelling.
+ */
+export function normalizeSillyTavernMarkdown(value: string): string {
+  let fence: { readonly marker: string; readonly length: number } | undefined
+  return sourceLines(value).map(line => {
+    const candidate = line.text.match(/^ {0,3}(`{3,}|~{3,})/u)?.[1]
+    if (candidate !== undefined) {
+      if (fence === undefined) {
+        fence = { marker: candidate[0] ?? '', length: candidate.length }
+      } else if (candidate[0] === fence.marker && candidate.length >= fence.length
+        && /^ {0,3}(`{3,}|~{3,})[ \t]*(?:\r\n|\r|\n|$)$/u.test(line.text)) {
+        fence = undefined
+      }
+      return line.text
+    }
+    return fence === undefined ? stripUnknownTagsOutsideCode(line.text) : line.text
+  }).join('')
+}
+
 function sourceLines(value: string): SourceLine[] {
   const lines: SourceLine[] = []
   const pattern = /[^\r\n]*(?:\r\n|\r|\n|$)/gu
@@ -39,13 +104,14 @@ function isFrontendDocument(info: string, source: string): boolean {
 }
 
 function appendMarkdown(segments: CharacterDisplaySegment[], text: string): void {
-  if (text === '') return
+  const normalized = normalizeSillyTavernMarkdown(text)
+  if (normalized === '') return
   const previous = segments.at(-1)
   if (previous?.kind === 'markdown') {
-    segments[segments.length - 1] = { kind: 'markdown', text: previous.text + text }
+    segments[segments.length - 1] = { kind: 'markdown', text: previous.text + normalized }
     return
   }
-  segments.push({ kind: 'markdown', text })
+  segments.push({ kind: 'markdown', text: normalized })
 }
 
 /**

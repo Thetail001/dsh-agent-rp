@@ -32,7 +32,6 @@ import {
   type CharacterLibraryCollection,
   type CharacterLibraryDetail,
   type CharacterLibraryImportResult,
-  type CharacterLibraryLaunchRequest,
   type CharacterLibrarySummary,
 } from '../character-library-protocol.ts'
 import {
@@ -43,9 +42,13 @@ import {
 } from '../persona-library-protocol.ts'
 import {
   SILLYTAVERN_CHAT_PATH,
-  type SillyTavernChatLaunchRequest,
   type SillyTavernChatUploadResponse,
 } from '../sillytavern-chat-protocol.ts'
+import {
+  AGENT_RP_SESSION_PATH,
+  type AgentRpSessionLaunchRequest,
+  type AgentRpSessionLaunchResponse,
+} from '../session-launch-protocol.ts'
 import {
   WORLD_INFO_LIBRARY_PATH,
   type WorldInfoLibraryLaunchRequest,
@@ -3435,29 +3438,29 @@ export function apply(ctx: ClientContext): void {
     }
     return { entry: value.entry, outcome: value.outcome }
   }
-  const createRoleplaySession = async (sourceSessionId: SessionId): Promise<SessionId> => {
-    const current = ctx.sessions.list.getSnapshot().byId[sourceSessionId]
-    const workspace = ctx.workspaces.list.getSnapshot().items.find(item => item.sessionIds.includes(sourceSessionId))
-    const created = await (ctx.sessions as unknown as {
-      create(options?: { readonly cwd?: string; readonly workspaceId?: string }): Promise<SessionId>
-    }).create(workspace === undefined
-      ? current?.cwd === undefined ? {} : { cwd: current.cwd }
-      : { workspaceId: workspace.workspaceId })
-    const connection = ctx.get('connection') as {
-      readonly api: {
-        readonly agentPresets: {
-          select(input: { readonly sessionId: SessionId; readonly agentPreset: string }): Promise<{
-            readonly result:
-            | { readonly ok: true; readonly value: { readonly agentPreset: string } }
-            | { readonly ok: false; readonly error: { readonly message: string } }
-          }>
-        }
-      }
+  const launchRoleplaySession = async (request: AgentRpSessionLaunchRequest): Promise<SessionId> => {
+    const response = await fetch(AGENT_RP_SESSION_PATH, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+    const responseText = await response.text()
+    let value: { readonly error?: string } & Partial<AgentRpSessionLaunchResponse>
+    try {
+      value = JSON.parse(responseText) as typeof value
+    } catch {
+      throw new Error(response.ok ? 'Host 返回了无法识别的角色会话' : `角色会话创建失败（${response.status}）`)
     }
-    const selected = await connection.api.agentPresets.select({ sessionId: created, agentPreset: 'agent-rp' })
-    if (!selected.result.ok) throw new Error(selected.result.error.message)
-    ctx.sessions.noteAgentPreset(created, selected.result.value.agentPreset)
-    return created
+    if (!response.ok || value.sessionId === undefined) {
+      throw new Error(value.error ?? `角色会话创建失败（${response.status}）`)
+    }
+    const sessionId = value.sessionId as SessionId
+    await (ctx.sessions as unknown as { refresh(): Promise<void> }).refresh()
+    if (ctx.sessions.list.getSnapshot().byId[sessionId] === undefined) {
+      throw new Error('角色会话已创建，但客户端尚未收到它；请刷新页面后重试')
+    }
+    ctx.sessions.open(sessionId)
+    return sessionId
   }
   const startCharacterSession = async (
     sessionId: SessionId,
@@ -3465,19 +3468,14 @@ export function apply(ctx: ClientContext): void {
     greetingIndex: number,
     persona?: SessionPersonaSnapshot,
   ): Promise<void> => {
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
-    const request: CharacterLibraryLaunchRequest = {
+    await launchRoleplaySession({
       format: 0,
+      sourceSessionId: sessionId,
+      kind: 'character',
       characterId: character.id,
       greetingIndex,
       ...(persona === undefined ? {} : { persona }),
-    }
-    const result = await session.command(`/rp-character-library ${JSON.stringify(request)}`)
-    if (!result.ok) throw new Error(result.error.message)
-    if (!result.value.matched) throw new Error('当前 Host 未启用角色库启动命令')
-    await renameSession(sessionId, character.displayName)
+    })
   }
   const startCharacterFromBlankSession = async (
     sessionId: SessionId,
@@ -3487,22 +3485,6 @@ export function apply(ctx: ClientContext): void {
   ): Promise<void> => {
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
     if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话选择角色')
-    if (summary.agentPreset !== 'agent-rp') {
-      const connection = ctx.get('connection') as {
-        readonly api: {
-          readonly agentPresets: {
-            select(input: { readonly sessionId: SessionId; readonly agentPreset: string }): Promise<{
-              readonly result:
-                | { readonly ok: true; readonly value: { readonly agentPreset: string } }
-                | { readonly ok: false; readonly error: { readonly message: string } }
-            }>
-          }
-        }
-      }
-      const response = await connection.api.agentPresets.select({ sessionId, agentPreset: 'agent-rp' })
-      if (!response.result.ok) throw new Error(response.result.error.message)
-      ctx.sessions.noteAgentPreset(sessionId, response.result.value.agentPreset)
-    }
     await startCharacterSession(sessionId, character, greetingIndex, persona)
   }
   const startCharacterFromCurrentSession = async (
@@ -3511,9 +3493,7 @@ export function apply(ctx: ClientContext): void {
     greetingIndex: number,
     persona?: SessionPersonaSnapshot,
   ): Promise<void> => {
-    const created = await createRoleplaySession(sessionId)
-    await startCharacterSession(created, character, greetingIndex, persona)
-    ctx.sessions.open(created)
+    await startCharacterSession(sessionId, character, greetingIndex, persona)
   }
   const migrateChat = async (sourceSessionId: SessionId, chatFile: File, cardFile?: File): Promise<void> => {
     if (!/\.jsonl$/iu.test(chatFile.name)) throw new Error('请选择 SillyTavern 导出的 JSONL 聊天记录')
@@ -3531,21 +3511,13 @@ export function apply(ctx: ClientContext): void {
       throw new Error(response.ok ? 'Host 返回了无法识别的聊天迁移结果' : `聊天记录上传失败（${response.status}）`)
     }
     if (!response.ok || value.upload === undefined) throw new Error(value.error ?? `聊天记录上传失败（${response.status}）`)
-    const created = await createRoleplaySession(sourceSessionId)
-    const scope = ctx.sessions.scope(created)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('新角色会话不可用')
-    const request: SillyTavernChatLaunchRequest = {
+    await launchRoleplaySession({
       format: 0,
+      sourceSessionId,
+      kind: 'chat',
       importId: value.upload.id,
       ...(character === undefined ? {} : { characterId: character.entry.id }),
-    }
-    const result = await session.command(`/rp-chat-import ${JSON.stringify(request)}`)
-    if (!result.ok) throw new Error(result.error.message)
-    if (!result.value.matched) throw new Error('当前 Host 未启用聊天迁移命令')
-    const title = character?.entry.displayName ?? value.upload.characterName ?? chatFile.name.replace(/\.jsonl$/iu, '')
-    if (title.trim() !== '') await renameSession(created, title.trim())
-    ctx.sessions.open(created)
+    })
   }
   const migrateSillyTavernDraft: MigrateSillyTavernDraft = async (sourceSessionId, attachments, inputActions) => {
     const chatAttachment = attachments.find(attachment => attachment.kind === 'file' && /\.jsonl$/iu.test(attachment.file.name))

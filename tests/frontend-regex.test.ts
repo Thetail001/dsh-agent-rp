@@ -3,6 +3,7 @@ import test from 'node:test'
 import type { ImportedRegexScript } from '../src/import/types.ts'
 import {
   AI_OUTPUT_PLACEMENT,
+  normalizeSillyTavernMarkdown,
   renderCharacterDisplay,
   renderCharacterPromptView,
   splitCharacterDisplay,
@@ -73,4 +74,16 @@ test('keeps prose and each fenced frontend document in source order', () => {
 test('leaves ordinary fenced code and inline HTML in native Markdown', () => {
   const source = '前文\n\n```ts\nconst body = "<body>"\n```\n\n<div>片段</div>'
   assert.deepEqual(splitCharacterDisplay(source), [{ kind: 'markdown', text: source }])
+})
+
+test('hides model-defined wrapper tags while preserving their displayed text', () => {
+  assert.equal(normalizeSillyTavernMarkdown('<content>\n正文\n</content>'), '\n正文\n')
+  assert.equal(normalizeSillyTavernMarkdown('<details><summary>展开</summary>正文</details>'),
+    '<details><summary>展开</summary>正文</details>')
+})
+
+test('keeps unknown tags inside inline and fenced code examples', () => {
+  const source = ['正文 <content>内容</content> `示例 <content>`', '', '```xml', '<content>示例</content>', '```'].join('\n')
+  assert.equal(normalizeSillyTavernMarkdown(source),
+    ['正文 内容 `示例 <content>`', '', '```xml', '<content>示例</content>', '```'].join('\n'))
 })

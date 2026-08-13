@@ -611,12 +611,17 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     }
     if (event.type === 'agent-rp/character-card-seed') {
       const projected = cardProjection(withSurface.character, event.data.meta)
+      const libraryId = 'characterLibraryId' in event.data.source
+        ? event.data.source.characterLibraryId
+        : undefined
       const card = parseCharacterCardJson(JSON.stringify(event.data.meta.raw))
       const cardLorebook = cardLorebookSource(event.data.meta)
       const { cardLorebook: _previousLorebook, ...withoutCardLorebook } = withSurface
       return {
         ...withoutCardLorebook,
-        character: projected.character,
+        character: libraryId === undefined
+          ? projected.character
+          : { ...projected.character, avatarLibraryId: libraryId },
         cardWorldInfoCount: projected.lorebookEntries,
         ...(cardLorebook === undefined ? {} : { cardLorebook }),
         mvu: readCurrentMvuState(card, []) ,

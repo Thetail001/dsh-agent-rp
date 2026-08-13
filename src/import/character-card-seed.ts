@@ -14,9 +14,13 @@ import type {} from '../session-persona.ts'
 /** Durable provenance for one Character Card used to seed a new Session. */
 export interface CharacterCardSeedRecord {
   readonly format: 0
-  readonly source: {
+  readonly source:
+  | {
     readonly attachmentConsumer: 'dsh-agent-rp'
     readonly attachments: readonly [CharacterCardAttachmentRef]
+  }
+  | {
+    readonly characterLibraryId: string
   }
   readonly meta: CharacterImportMeta
 }
@@ -66,13 +70,16 @@ export function createCharacterCardSessionSeed(
   const { raw, ...result } = value
   const meta: CharacterImportMeta = { format: 0, result, raw }
   const time = Date.now()
+  const fromLibrary = libraryId !== undefined && String(attachment.attachmentId) === `library:${libraryId}`
   const events: SessionEvent[] = [{
     type: 'agent-rp/character-card-seed',
     seq: 0,
     time,
     data: {
       format: 0,
-      source: { attachmentConsumer: 'dsh-agent-rp', attachments: [attachment] },
+      source: fromLibrary
+        ? { characterLibraryId: libraryId }
+        : { attachmentConsumer: 'dsh-agent-rp', attachments: [attachment] },
       meta,
     },
     ignorable: true,
