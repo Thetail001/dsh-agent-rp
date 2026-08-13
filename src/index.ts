@@ -9,6 +9,7 @@ import type { ScopeKey } from '@deepseek-ai/dsh-scope'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
+import type {} from '@deepseek-ai/dsh-host-webserver'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import {
@@ -75,6 +76,12 @@ import { assembleSillyTavernPreset } from './preset-prompt.ts'
 import { configurePresetFromCommand } from './preset-configuration.ts'
 import { PresetLibrary } from './preset-library.ts'
 import { executePresetLibraryCommand } from './preset-library-command.ts'
+import { CharacterLibrary } from './character-library.ts'
+import { installCharacterLibraryHttp } from './character-library-http.ts'
+import {
+  CHARACTER_LIBRARY_SESSION_PREFIX,
+  type CharacterLibrarySessionRequest,
+} from './character-library-protocol.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -220,10 +227,36 @@ export function isCharacterCardSessionOffer(
   if (!agentRpActive) return false
   const text = content.filter(part => part.type === 'text').map(part => part.text).join('\n')
   const attachments = content.filter(part => part.type !== 'text')
-  return /^请导入这张角色卡$/u.test(text.trim())
+  return parseCharacterCardSessionRequest(text) !== undefined
     && attachments.length === 1
     && attachments[0] !== undefined
     && isCharacterCardOffer(attachments[0])
+}
+
+/** Parse a legacy direct import or an explicit character-library launch. */
+export function parseCharacterCardSessionRequest(text: string): CharacterLibrarySessionRequest | undefined {
+  const source = text.trim()
+  if (source === '请导入这张角色卡') return { format: 0, greetingIndex: 0 }
+  if (!source.startsWith(`${CHARACTER_LIBRARY_SESSION_PREFIX}\n`)) return undefined
+  let value: unknown
+  try {
+    value = JSON.parse(source.slice(CHARACTER_LIBRARY_SESSION_PREFIX.length + 1))
+  } catch {
+    return undefined
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const keys = Object.keys(record)
+  if (record.format !== 0 || typeof record.greetingIndex !== 'number'
+    || !Number.isSafeInteger(record.greetingIndex) || record.greetingIndex < 0
+    || (record.userName !== undefined && (typeof record.userName !== 'string'
+      || record.userName.trim() === '' || record.userName.trim().length > 120))
+    || keys.some(key => key !== 'format' && key !== 'greetingIndex' && key !== 'userName')) return undefined
+  return {
+    format: 0,
+    greetingIndex: record.greetingIndex,
+    ...(typeof record.userName === 'string' ? { userName: record.userName.trim() } : {}),
+  }
 }
 
 /** Canonical output schema for one accepted `remember` call. */
@@ -344,7 +377,11 @@ function importedCharacter(agentsByScope: WeakMap<ScopeKey, Agent>, scope: Scope
  * @param agent - published top-level Agent whose scope owns every registration.
  * @param config - normalized character configuration.
  */
-export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
+export function installAgentRp(
+  ctx: Context,
+  config: ResolvedConfig,
+  options: { readonly characterLibraryRoot?: string } = {},
+): void {
   const agentsByScope = new WeakMap<ScopeKey, Agent>()
   const agentsBySession = new Map<string, Agent>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
@@ -352,6 +389,10 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
   const gateway = (ctx as Context & { apiProxy: PromptAttachmentGateway }).apiProxy
   const commands = (ctx as Context & { commands: HumanCommandGateway }).commands
   const presetLibrary = new PresetLibrary()
+  const characterLibrary = new CharacterLibrary(options.characterLibraryRoot === undefined
+    ? {}
+    : { root: options.characterLibraryRoot })
+
   commands.register({
     name: 'rp-preset-configure',
     description: 'update this roleplay Session preset',
@@ -394,6 +435,13 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       const transport = payload === undefined
         ? { transport: 'json' as const }
         : { transport: 'png' as const, metadataKeyword: payload.keyword }
+      characterLibrary.import({
+        data: storedCard.data,
+        ...(storedCard.ref.name === undefined ? {} : { filename: storedCard.ref.name }),
+        ...(storedCard.ref.mediaType === undefined ? {} : { mediaType: storedCard.ref.mediaType }),
+        card,
+        transport,
+      })
       const chat = parseSillyTavernChatBytes(chatBytes)
       return {
         seed: createSillyTavernMigrationSeed(card, storedCard.ref, transport, chat, chatAttachment),
@@ -435,11 +483,28 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       const card = payload === undefined
         ? parseCharacterCardJsonBytes(stored.data)
         : parseCharacterCardJson(payload.json)
-      const greeting = substituteCardMacros(card.firstMessage, card)
+      const request = parseCharacterCardSessionRequest(input.text)
+      if (request === undefined) throw new Error('Character Card import request is invalid')
+      const greetings = [card.firstMessage, ...card.alternateGreetings]
+      const selectedGreeting = greetings[request.greetingIndex]
+      if (selectedGreeting === undefined) {
+        throw new Error(`角色卡没有第 ${request.greetingIndex + 1} 条开场白`)
+      }
+      const transport = payload === undefined
+        ? { transport: 'json' as const }
+        : { transport: 'png' as const, metadataKeyword: payload.keyword }
+      characterLibrary.import({
+        data: stored.data,
+        ...(stored.ref.name === undefined ? {} : { filename: stored.ref.name }),
+        ...(stored.ref.mediaType === undefined ? {} : { mediaType: stored.ref.mediaType }),
+        card,
+        transport,
+      })
+      const greeting = substituteCardMacros(selectedGreeting, card, request.userName)
       return {
-        seed: createCharacterCardSessionSeed(card, stored.ref, 0, greeting, payload === undefined
-          ? { transport: 'json' }
-          : { transport: 'png', metadataKeyword: payload.keyword }),
+        seed: createCharacterCardSessionSeed(
+          card, stored.ref, request.greetingIndex, greeting, transport, request.userName,
+        ),
         title: card.nickname?.trim() || card.name,
       }
     },
@@ -484,14 +549,14 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
         return renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter)
       }
       const card = cardFromImportMeta(active.meta)
+      const userName = active.result.userName ?? readSillyTavernChatIdentity(agent.session.events)?.userName
       const mvu = readCurrentMvuState(card, agent.session.events)
       const characterLore = renderImportedLorebook(card, agent.session, pendingMessages, mvu?.statData)
       const preset = readActiveSessionPreset(agent.session.events)?.preset
       if (preset !== undefined) {
-        const presetUserName = readSillyTavernChatIdentity(agent.session.events)?.userName
         const assembled = assembleSillyTavernPreset(preset, {
           card,
-          ...(presetUserName === undefined ? {} : { userName: presetUserName }),
+          ...(userName === undefined ? {} : { userName }),
           worldInfoBefore: [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
           worldInfoAfter: [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
           session: agent.session,
@@ -506,7 +571,7 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
         card,
         [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
         [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
-        readSillyTavernChatIdentity(agent.session.events)?.userName,
+        userName,
         mvu !== undefined,
       )
     },
@@ -705,6 +770,13 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
         const reader = ctx.attachments as unknown as FileAttachmentReader
         const stored = await reader.readFile(attachment, exec.signal)
         const card = parseCharacterCardJsonBytes(stored.data)
+        characterLibrary.import({
+          data: stored.data,
+          filename: stored.ref.name,
+          ...(stored.ref.mediaType === undefined ? {} : { mediaType: stored.ref.mediaType }),
+          card,
+          transport: { transport: 'json' },
+        })
         return prepareCharacterImportResult(
           card,
           { transport: 'json' },
@@ -717,6 +789,13 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
       const stored = await ctx.attachments.readImage(attachment, exec.signal)
       const payload = readCharacterCardPng(stored.data)
       const card = parseCharacterCardJson(payload.json)
+      characterLibrary.import({
+        data: stored.data,
+        ...(stored.ref.name === undefined ? {} : { filename: stored.ref.name }),
+        mediaType: stored.ref.mediaType,
+        card,
+        transport: { transport: 'png', metadataKeyword: payload.keyword },
+      })
       return prepareCharacterImportResult(card, {
         transport: 'png',
         metadataKeyword: payload.keyword,
@@ -785,6 +864,9 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
 export function apply(ctx: Context, config: AgentRpConfig): void {
   const resolved = resolveConfig(config)
   if (resolved.mode === 'host') {
+    ctx.inject(['httpServer'], webCtx => {
+      installCharacterLibraryHttp(webCtx, new CharacterLibrary())
+    })
     ctx.inject(['sessionProjections'], projectionCtx => {
       projectionCtx.sessionProjections.register(agentRpProjectionDefinition)
     })

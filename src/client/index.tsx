@@ -20,6 +20,12 @@ import {
   type CharacterDisplaySegment,
 } from '../frontend-regex.ts'
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
+import {
+  CHARACTER_LIBRARY_PATH,
+  encodeCharacterLibrarySessionRequest,
+  type CharacterLibraryDetail,
+  type CharacterLibrarySummary,
+} from '../character-library-protocol.ts'
 
 interface ImportHintProps {
   readonly sessionId: SessionId
@@ -43,6 +49,14 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly configurePreset: (sessionId: SessionId, request: PresetConfigurationRequest) => Promise<void>
   readonly importPreset: (sessionId: SessionId, file: File) => Promise<void>
   readonly managePresetLibrary: (sessionId: SessionId, request: PresetLibraryRequest) => Promise<void>
+  readonly listCharacters: () => Promise<readonly CharacterLibrarySummary[]>
+  readonly readCharacter: (id: string) => Promise<CharacterLibraryDetail>
+  readonly startCharacterSession: (
+    sessionId: SessionId,
+    character: CharacterLibraryDetail,
+    greetingIndex: number,
+    userName?: string,
+  ) => Promise<void>
 }
 
 type ComposerDockProps = PropsRuntime<'conversation.composer.dock'>
@@ -258,6 +272,7 @@ function DetailSection({ title, text }: { readonly title: string; readonly text:
 
 function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
+  listCharacters, readCharacter, startCharacterSession,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projected = useProjection('agentRp')
@@ -265,6 +280,7 @@ function RoleplayHeader({
   const [open, setOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
   const [presetOpen, setPresetOpen] = useState(false)
+  const [libraryOpen, setLibraryOpen] = useState(false)
   const [aliasDraft, setAliasDraft] = useState('')
   const [aliasError, setAliasError] = useState<string>()
   const [renaming, setRenaming] = useState(false)
@@ -320,8 +336,12 @@ function RoleplayHeader({
         background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
         color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', marginLeft: '8px', padding: '6px 10px',
       }}>角色信息</button>
-      <button type="button" onClick={() => { setPresetOpen(true) }} style={{
+      <button type="button" onClick={() => { setLibraryOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 10%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
+        borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
+      }}>角色库</button>
+      <button type="button" onClick={() => { setPresetOpen(true) }} style={{
+        background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)',
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>预设</button>
       <button type="button" aria-pressed={viewMode === 'debug'} onClick={() => {
@@ -434,6 +454,15 @@ function RoleplayHeader({
       source={statusSource}
       onClose={() => { setStatusOpen(false) }}
     />}
+    {libraryOpen && <CharacterLibraryDialog
+      currentCharacterName={projection.characterName}
+      listCharacters={listCharacters}
+      readCharacter={readCharacter}
+      onClose={() => { setLibraryOpen(false) }}
+      onStart={(character, greetingIndex, userName) => startCharacterSession(
+        sessionId, character, greetingIndex, userName,
+      )}
+    />}
     {presetOpen && (projection.preset === undefined
       ? <PresetImportDialog
           entries={projection.presetLibrary}
@@ -451,6 +480,160 @@ function RoleplayHeader({
           onLibrary={request => managePresetLibrary(sessionId, request)}
         />)}
   </>
+}
+
+function CharacterLibraryDialog({
+  currentCharacterName, listCharacters, readCharacter, onClose, onStart,
+}: {
+  readonly currentCharacterName: string
+  readonly listCharacters: HeaderProps['listCharacters']
+  readonly readCharacter: HeaderProps['readCharacter']
+  readonly onClose: () => void
+  readonly onStart: (
+    character: CharacterLibraryDetail, greetingIndex: number, userName?: string,
+  ) => Promise<void>
+}) {
+  const [entries, setEntries] = useState<readonly CharacterLibrarySummary[]>()
+  const [selected, setSelected] = useState<CharacterLibraryDetail>()
+  const [greetingIndex, setGreetingIndex] = useState(0)
+  const [userName, setUserName] = useState('')
+  const [loadingId, setLoadingId] = useState<string>()
+  const [starting, setStarting] = useState(false)
+  const [error, setError] = useState<string>()
+  useEffect(() => {
+    let current = true
+    void listCharacters().then(value => {
+      if (!current) return
+      setEntries(value)
+      const preferred = value.find(entry => entry.displayName === currentCharacterName) ?? value[0]
+      if (preferred === undefined) return
+      setLoadingId(preferred.id)
+      void readCharacter(preferred.id).then(detail => {
+        if (!current) return
+        setSelected(detail)
+        setGreetingIndex(0)
+        setLoadingId(undefined)
+      }, readError => {
+        if (!current) return
+        setLoadingId(undefined)
+        setError(readError instanceof Error ? readError.message : String(readError))
+      })
+    }, listError => {
+      if (!current) return
+      setEntries([])
+      setError(listError instanceof Error ? listError.message : String(listError))
+    })
+    return () => { current = false }
+  }, [currentCharacterName, listCharacters, readCharacter])
+  const choose = (entry: CharacterLibrarySummary): void => {
+    setLoadingId(entry.id)
+    setError(undefined)
+    void readCharacter(entry.id).then(detail => {
+      setSelected(detail)
+      setGreetingIndex(0)
+      setLoadingId(undefined)
+    }, readError => {
+      setLoadingId(undefined)
+      setError(readError instanceof Error ? readError.message : String(readError))
+    })
+  }
+  return <div role="dialog" aria-modal="true" aria-label="角色库" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.52)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '24px', position: 'fixed', zIndex: 1001,
+  }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+      borderRadius: '16px', boxShadow: '0 22px 80px rgba(0,0,0,.36)', display: 'grid',
+      gridTemplateColumns: 'minmax(210px, .78fr) minmax(330px, 1.35fr)', height: 'min(680px, calc(100vh - 48px))',
+      maxWidth: '980px', overflow: 'hidden', width: 'min(980px, calc(100vw - 48px))',
+    }}>
+      <div style={{ borderRight: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <div style={{ padding: '22px 20px 14px' }}>
+          <h2 style={{ fontSize: '18px', margin: 0 }}>角色库</h2>
+          <p style={{ fontSize: '12px', lineHeight: 1.55, margin: '7px 0 0', opacity: .55 }}>选择角色只会创建新会话，不会改动当前聊天</p>
+        </div>
+        <div style={{ display: 'grid', gap: '6px', minHeight: 0, overflowY: 'auto', padding: '4px 10px 18px' }}>
+          {entries === undefined && <div style={{ fontSize: '13px', opacity: .55, padding: '16px 10px' }}>正在读取角色…</div>}
+          {entries?.length === 0 && <div style={{ fontSize: '13px', lineHeight: 1.65, opacity: .62, padding: '16px 10px' }}>
+            角色库还是空的。导入一张角色卡后，它会自动保存在这里
+          </div>}
+          {entries?.map(entry => <button key={entry.id} type="button" aria-pressed={selected?.id === entry.id}
+            onClick={() => { choose(entry) }} style={{
+              background: selected?.id === entry.id ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
+              border: selected?.id === entry.id ? `1px solid color-mix(in srgb, ${color} 36%, transparent)` : '1px solid transparent',
+              borderRadius: '10px', color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '11px', textAlign: 'left',
+            }}>
+            <div style={{ fontSize: '13px', fontWeight: 620, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {entry.displayName}{loadingId === entry.id ? ' · 读取中' : ''}
+            </div>
+            <div style={{ fontSize: '11px', marginTop: '5px', opacity: .5 }}>
+              V{entry.cardVersion} · {entry.greetingCount} 个开场{entry.worldInfoCount === 0 ? '' : ` · ${entry.worldInfoCount} 条世界书`}
+            </div>
+          </button>)}
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <header style={{ alignItems: 'center', display: 'flex', padding: '18px 20px 12px' }}>
+          <div>
+            <div style={{ fontSize: '12px', opacity: .5 }}>开始一段新的角色对话</div>
+            <strong style={{ display: 'block', fontSize: '17px', marginTop: '3px' }}>{selected?.displayName ?? '选择角色'}</strong>
+          </div>
+          <button type="button" aria-label="关闭角色库" onClick={onClose} style={{
+            background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', marginLeft: 'auto', padding: '4px 6px',
+          }}>×</button>
+        </header>
+        <div style={{ flex: 1, minHeight: 0, overflowX: 'hidden', overflowY: 'auto', padding: '4px 20px 22px' }}>
+          {selected !== undefined && <>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '8px 0 8px', opacity: .65 }}>选择开场</label>
+            <div style={{ display: 'grid', gap: '8px' }}>
+              {selected.greetings.map((greeting, index) => <button key={index} type="button" aria-pressed={greetingIndex === index}
+                onClick={() => { setGreetingIndex(index) }} style={{
+                  background: greetingIndex === index ? `color-mix(in srgb, ${color} 13%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
+                  border: greetingIndex === index ? `1px solid color-mix(in srgb, ${color} 38%, transparent)` : '1px solid var(--dsw-alias-border-l2, #39393c)',
+                  borderRadius: '10px', color: 'inherit', cursor: 'pointer', font: 'inherit', lineHeight: 1.6,
+                  maxHeight: greetingIndex === index ? '170px' : '78px', overflow: 'hidden', padding: '11px 12px', textAlign: 'left', whiteSpace: 'pre-wrap',
+                }}>
+                <span style={{ display: 'block', fontSize: '11px', fontWeight: 620, marginBottom: '4px', opacity: .5 }}>
+                  {index === 0 ? '默认开场' : `备选开场 ${index}`}
+                </span>
+                <span style={{ fontSize: '13px' }}>{greeting.trim() === '' ? '无开场白' : greeting}</span>
+              </button>)}
+            </div>
+            <label htmlFor="agent-rp-session-user-name" style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '20px 0 7px', opacity: .65 }}>
+              这段对话里，角色怎么称呼你
+            </label>
+            <input id="agent-rp-session-user-name" value={userName} maxLength={120} placeholder="可稍后加入 Persona；现在可留空"
+              onChange={event => { setUserName(event.target.value) }} style={{
+                background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+                borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 10px', width: '100%',
+              }} />
+          </>}
+          {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.55, marginTop: '14px' }}>{error}</div>}
+        </div>
+        <footer style={{ alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '10px', justifyContent: 'flex-end', padding: '14px 20px' }}>
+          <button type="button" onClick={onClose} style={{
+            background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '9px',
+            color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '8px 13px',
+          }}>取消</button>
+          <button type="button" disabled={selected === undefined || starting} onClick={() => {
+            if (selected === undefined) return
+            setStarting(true)
+            setError(undefined)
+            void onStart(selected, greetingIndex, userName.trim() || undefined).then(() => {
+              setStarting(false)
+              onClose()
+            }, startError => {
+              setStarting(false)
+              setError(startError instanceof Error ? startError.message : String(startError))
+            })
+          }} style={{
+            background: color, border: 0, borderRadius: '9px', color: '#fff', cursor: starting ? 'wait' : 'pointer',
+            font: 'inherit', fontWeight: 620, opacity: selected === undefined ? .45 : 1, padding: '8px 15px',
+          }}>{starting ? '正在创建…' : '开始对话'}</button>
+        </footer>
+      </div>
+    </section>
+  </div>
 }
 
 type PresetProjection = NonNullable<AgentRpProjection['preset']>
@@ -1669,6 +1852,54 @@ export function apply(ctx: ClientContext): void {
     const result = await session.rename(title)
     if (!result.ok) throw new Error(result.error.message)
   }
+  const characterLibraryJson = async <T,>(path = ''): Promise<T> => {
+    const response = await fetch(`${CHARACTER_LIBRARY_PATH}${path}`, {
+      headers: { accept: 'application/json' },
+    })
+    const value = await response.json() as { readonly error?: string } & T
+    if (!response.ok) throw new Error(value.error ?? `角色库请求失败（${response.status}）`)
+    return value
+  }
+  const listCharacters = async (): Promise<readonly CharacterLibrarySummary[]> => {
+    const value = await characterLibraryJson<{ readonly format: 0; readonly entries: readonly CharacterLibrarySummary[] }>()
+    return value.entries
+  }
+  const readCharacter = async (id: string): Promise<CharacterLibraryDetail> => {
+    const value = await characterLibraryJson<{ readonly format: 0; readonly entry: CharacterLibraryDetail }>(`/${encodeURIComponent(id)}`)
+    return value.entry
+  }
+  const startCharacterSession = async (
+    sessionId: SessionId,
+    character: CharacterLibraryDetail,
+    greetingIndex: number,
+    userName?: string,
+  ): Promise<void> => {
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const response = await fetch(`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(character.id)}/asset`)
+    if (!response.ok) throw new Error(`无法读取角色卡原文件（${response.status}）`)
+    const data = base64(new Uint8Array(await response.arrayBuffer()))
+    const attachment = character.transport === 'png'
+      ? { type: 'image' as const, data, mediaType: 'image/png' as const, name: character.originalFilename }
+      : { type: 'file' as const, data, mediaType: character.mediaType, name: character.originalFilename }
+    const importerSession = session as unknown as {
+      prompt(content: Array<typeof attachment | { readonly type: 'text'; readonly text: string }>, mode: 'queue'):
+      Promise<
+        | { readonly ok: true; readonly value: unknown }
+        | { readonly ok: false; readonly error: { readonly message: string } }
+      >
+    }
+    const result = await importerSession.prompt([attachment, {
+      type: 'text',
+      text: encodeCharacterLibrarySessionRequest({
+        format: 0,
+        greetingIndex,
+        ...(userName === undefined ? {} : { userName }),
+      }),
+    }], 'queue')
+    if (!result.ok) throw new Error(result.error.message)
+  }
   const importPreset = async (sessionId: SessionId, file: File): Promise<void> => {
     if (!/\.json$/iu.test(file.name)) throw new Error('请选择 SillyTavern 预设 JSON 文件')
     const scope = ctx.sessions.scope(sessionId)
@@ -1740,7 +1971,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} listCharacters={listCharacters} readCharacter={readCharacter} startCharacterSession={startCharacterSession} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',
   }, () => null))

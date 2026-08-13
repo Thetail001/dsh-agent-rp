@@ -1,0 +1,87 @@
+/** Same-origin read-only HTTP surface for the local Character Card library. */
+
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-host-webserver'
+import { CharacterLibrary } from './character-library.ts'
+import { CHARACTER_LIBRARY_PATH } from './character-library-protocol.ts'
+
+function trustedBrowserRequest(request: IncomingMessage): boolean {
+  const host = request.headers.host
+  if (host === undefined || host.trim() === '' || request.headers['sec-fetch-site'] === 'cross-site') return false
+  const origin = request.headers.origin
+  if (origin === undefined) return true
+  try {
+    const parsed = new URL(origin)
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
+  } catch {
+    return false
+  }
+}
+
+function json(response: ServerResponse, status: number, value: unknown): void {
+  const body = Buffer.from(JSON.stringify(value), 'utf8')
+  response.writeHead(status, {
+    'cache-control': 'no-store',
+    'content-length': String(body.byteLength),
+    'content-type': 'application/json; charset=utf-8',
+  })
+  response.end(body)
+}
+
+function fail(response: ServerResponse, status: number, message: string): void {
+  json(response, status, { error: message })
+}
+
+function pathParts(request: IncomingMessage): readonly string[] {
+  const pathname = new URL(request.url ?? '/', 'http://agent-rp.local').pathname
+  if (pathname === CHARACTER_LIBRARY_PATH) return []
+  if (!pathname.startsWith(`${CHARACTER_LIBRARY_PATH}/`)) return ['invalid']
+  return pathname.slice(CHARACTER_LIBRARY_PATH.length + 1).split('/').map(decodeURIComponent)
+}
+
+/** Register local list, detail, and immutable asset reads for the Roleplay UI. */
+export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibrary): void {
+  ctx.effect(() => ctx.httpServer.register({
+    kind: 'prefix',
+    path: CHARACTER_LIBRARY_PATH,
+    handler(request, response) {
+      if (!trustedBrowserRequest(request)) {
+        fail(response, 403, 'forbidden')
+        return
+      }
+      if (request.method !== 'GET') {
+        response.setHeader('allow', 'GET')
+        fail(response, 405, 'method not allowed')
+        return
+      }
+      const parts = pathParts(request)
+      try {
+        if (parts.length === 0) {
+          json(response, 200, { format: 0, entries: library.list() })
+          return
+        }
+        if (parts.length === 1 && parts[0] !== undefined) {
+          json(response, 200, { format: 0, entry: library.get(parts[0]) })
+          return
+        }
+        if (parts.length === 2 && parts[0] !== undefined && parts[1] === 'asset') {
+          const asset = library.asset(parts[0])
+          response.writeHead(200, {
+            'cache-control': 'private, max-age=31536000, immutable',
+            'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(asset.originalFilename)}`,
+            'content-length': String(asset.data.byteLength),
+            'content-type': asset.mediaType,
+            'x-content-type-options': 'nosniff',
+          })
+          response.end(asset.data)
+          return
+        }
+        fail(response, 404, 'not found')
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error)
+        fail(response, /角色库中没有/u.test(message) ? 404 : 500, message)
+      }
+    },
+  }), 'agent-rp: character library HTTP')
+}

@@ -1,0 +1,39 @@
+/** Browser-safe character-library values shared by the Host and Roleplay UI. */
+
+/** Same-origin endpoint served by the Agent RP Host plugin. */
+export const CHARACTER_LIBRARY_PATH = '/api/agent-rp/characters'
+
+/** One compact reusable Character Card shown in the library. */
+export interface CharacterLibrarySummary {
+  readonly id: string
+  readonly name: string
+  readonly displayName: string
+  readonly cardVersion: 1 | 2 | 3
+  readonly greetingCount: number
+  readonly worldInfoCount: number
+  readonly avatarAvailable: boolean
+  readonly transport: 'png' | 'json'
+  readonly updatedAt: number
+}
+
+/** Details loaded only after a user selects one library card. */
+export interface CharacterLibraryDetail extends CharacterLibrarySummary {
+  readonly originalFilename: string
+  readonly mediaType: string
+  readonly greetings: readonly string[]
+}
+
+/** Explicit model-free request embedded beside one selected card attachment. */
+export interface CharacterLibrarySessionRequest {
+  readonly format: 0
+  readonly greetingIndex: number
+  readonly userName?: string
+}
+
+/** Stable text prefix recognized by the Character Card Session importer. */
+export const CHARACTER_LIBRARY_SESSION_PREFIX = '请从角色库开始新会话'
+
+/** Serialize a library launch without exposing its controls to the model. */
+export function encodeCharacterLibrarySessionRequest(request: CharacterLibrarySessionRequest): string {
+  return `${CHARACTER_LIBRARY_SESSION_PREFIX}\n${JSON.stringify(request)}`
+}

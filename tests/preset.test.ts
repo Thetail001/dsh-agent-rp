@@ -14,6 +14,7 @@ import { resolveConfig } from '../src/config.ts'
 import {
   installAgentRp,
   isCharacterCardSessionOffer,
+  parseCharacterCardSessionRequest,
   isSillyTavernChatOffer,
   isSillyTavernPresetOffer,
 } from '../src/index.ts'
@@ -107,7 +108,9 @@ test('claims character-card images for every Agent joined to the preset, includi
   root.provide('tools' as never, { register: () => () => {} } as never)
   root.provide('commands' as never, { register: () => () => {} } as never)
   root.provide('attachments' as never, {} as never)
-  installAgentRp(preset.ctx, resolveConfig({ mode: 'character' }))
+  const characterLibraryRoot = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-runtime-library-'))
+  context.after(() => { rmSync(characterLibraryRoot, { recursive: true, force: true }) })
+  installAgentRp(preset.ctx, resolveConfig({ mode: 'character' }), { characterLibraryRoot })
   const consumer = claims.get('dsh-agent-rp')
   const chatImporter = importers.get('dsh-agent-rp:sillytavern-chat')
   const cardImporter = importers.get('dsh-agent-rp:character-card')
@@ -222,6 +225,16 @@ test('recognizes one explicitly selected Character Card JSON import', () => {
     { type: 'text', text: '请导入这本世界书' },
     { type: 'file', name: '白露.json' },
   ]), false)
+})
+
+test('accepts only bounded explicit character-library launch controls', () => {
+  assert.deepEqual(parseCharacterCardSessionRequest('请从角色库开始新会话\n{"format":0,"greetingIndex":1,"userName":" 小满 "}'), {
+    format: 0,
+    greetingIndex: 1,
+    userName: '小满',
+  })
+  assert.equal(parseCharacterCardSessionRequest('请从角色库开始新会话\n{"format":0,"greetingIndex":-1}'), undefined)
+  assert.equal(parseCharacterCardSessionRequest('请从角色库开始新会话\n{"format":0,"greetingIndex":0,"path":"D:/secret"}'), undefined)
 })
 
 test('recognizes exactly one JSONL attachment without requiring command text', () => {
