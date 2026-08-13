@@ -141,7 +141,7 @@ export class CharacterLibrary {
       .filter(filename => filename.endsWith(META_SUFFIX))
       .map(filename => this.readEntry(join(this.root, filename)).summary)
       .filter(entry => entry.archived === (collection === 'archived'))
-      .sort((left, right) => right.updatedAt - left.updatedAt || left.displayName.localeCompare(right.displayName))
+      .sort((left, right) => right.importedAt - left.importedAt || left.displayName.localeCompare(right.displayName))
   }
 
   /** Load card metadata and selectable greetings by opaque id. */

@@ -1152,6 +1152,7 @@ function CharacterLibraryDialog({
   const narrow = useNarrowCharacterLibrary()
   const startsInCurrentSession = currentCharacterName === ''
   const [collection, setCollection] = useState<CharacterLibraryCollection>('active')
+  const [characterQuery, setCharacterQuery] = useState('')
   const [entries, setEntries] = useState<readonly CharacterLibrarySummary[]>()
   const [selected, setSelected] = useState<CharacterLibraryDetail>()
   const [greetingIndex, setGreetingIndex] = useState(0)
@@ -1169,8 +1170,10 @@ function CharacterLibraryDialog({
   const [actionNotice, setActionNotice] = useState<string>()
   const [error, setError] = useState<string>()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const selectionRequestRef = useRef(0)
   useEffect(() => {
     let current = true
+    selectionRequestRef.current += 1
     setEntries(undefined)
     setSelected(undefined)
     setError(undefined)
@@ -1181,14 +1184,15 @@ function CharacterLibraryDialog({
         ? value.find(entry => entry.displayName === currentCharacterName) ?? value[0]
         : value[0]
       if (preferred === undefined) return
+      const request = ++selectionRequestRef.current
       setLoadingId(preferred.id)
       void readCharacter(preferred.id).then(detail => {
-        if (!current) return
+        if (!current || selectionRequestRef.current !== request) return
         setSelected(detail)
         setGreetingIndex(0)
         setLoadingId(undefined)
       }, readError => {
-        if (!current) return
+        if (!current || selectionRequestRef.current !== request) return
         setLoadingId(undefined)
         setError(readError instanceof Error ? readError.message : String(readError))
       })
@@ -1213,13 +1217,16 @@ function CharacterLibraryDialog({
     return () => { current = false }
   }, [listPersonas])
   const choose = (entry: CharacterLibrarySummary): void => {
+    const request = ++selectionRequestRef.current
     setLoadingId(entry.id)
     setError(undefined)
     void readCharacter(entry.id).then(detail => {
+      if (selectionRequestRef.current !== request) return
       setSelected(detail)
       setGreetingIndex(0)
       setLoadingId(undefined)
     }, readError => {
+      if (selectionRequestRef.current !== request) return
       setLoadingId(undefined)
       setError(readError instanceof Error ? readError.message : String(readError))
     })
@@ -1232,7 +1239,9 @@ function CharacterLibraryDialog({
     setError(undefined)
     void setCharacterArchived(selected.id, archived).then(() => listCharacters(collection)).then(value => {
       setEntries(value)
-      const next = value[0]
+      const normalizedQuery = characterQuery.trim().toLocaleLowerCase()
+      const next = value.find(entry => normalizedQuery === '' || [entry.displayName, entry.name, entry.originalFilename]
+        .some(text => text.toLocaleLowerCase().includes(normalizedQuery)))
       if (next === undefined) {
         setSelected(undefined)
         setLoadingId(undefined)
@@ -1261,6 +1270,7 @@ function CharacterLibraryDialog({
     setActionNotice(undefined)
     void importCharacterFile(file).then(entry => listCharacters('active').then(value => ({ entry, value }))).then(({ entry, value }) => {
       setCollection('active')
+      setCharacterQuery('')
       setEntries(value)
       setSelected(entry)
       setGreetingIndex(0)
@@ -1272,6 +1282,10 @@ function CharacterLibraryDialog({
       setError(importError instanceof Error ? importError.message : String(importError))
     })
   }
+  const normalizedCharacterQuery = characterQuery.trim().toLocaleLowerCase()
+  const visibleEntries = (entries ?? []).filter(entry => normalizedCharacterQuery === ''
+    || [entry.displayName, entry.name, entry.originalFilename]
+      .some(text => text.toLocaleLowerCase().includes(normalizedCharacterQuery)))
   const duplicateNames = new Set((entries ?? [])
     .filter((entry, index, all) => all.findIndex(candidate => candidate.displayName === entry.displayName) !== index)
     .map(entry => entry.displayName))
@@ -1300,12 +1314,33 @@ function CharacterLibraryDialog({
           <div role="tablist" aria-label="角色库分区" style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '9px', display: 'grid', gap: '3px', gridTemplateColumns: '1fr 1fr', marginTop: '14px', padding: '3px' }}>
             {([['active', '角色'], ['archived', '已收起']] as const).map(([value, label]) => <button
               key={value} type="button" role="tab" aria-selected={collection === value}
-              onClick={() => { setCollection(value) }} style={{
+              onClick={() => { setCollection(value); setCharacterQuery('') }} style={{
                 background: collection === value ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
                 border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px',
                 fontWeight: collection === value ? 620 : 400, padding: '7px 8px',
               }}>{label}</button>)}
           </div>
+          <input type="search" value={characterQuery} aria-label="搜索角色"
+            placeholder="搜索角色或文件名" onChange={event => {
+              const value = event.target.value
+              const normalized = value.trim().toLocaleLowerCase()
+              const matches = (entry: Pick<CharacterLibrarySummary, 'displayName' | 'name' | 'originalFilename'>): boolean => normalized === ''
+                || [entry.displayName, entry.name, entry.originalFilename]
+                  .some(text => text.toLocaleLowerCase().includes(normalized))
+              const next = (entries ?? []).find(matches)
+              setCharacterQuery(value)
+              if (next === undefined) {
+                selectionRequestRef.current += 1
+                setSelected(undefined)
+                setLoadingId(undefined)
+              } else if (selected === undefined || !matches(selected)) {
+                choose(next)
+              }
+            }} style={{
+              background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+              borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', fontSize: '12px',
+              marginTop: '10px', outline: 'none', padding: '8px 10px', width: '100%',
+            }} />
           <input ref={fileInputRef} type="file" accept=".png,.json,.charx,image/png,application/json,application/zip" hidden onChange={event => {
             const file = event.target.files?.[0]
             event.target.value = ''
@@ -1335,7 +1370,10 @@ function CharacterLibraryDialog({
           {entries?.length === 0 && <div style={{ fontSize: '13px', lineHeight: 1.65, opacity: .62, padding: '16px 10px' }}>
             {collection === 'active' ? '角色库还是空的。导入一张角色卡后，它会自动保存在这里' : '还没有收起的角色'}
           </div>}
-          {entries?.map(entry => <button key={entry.id} type="button" aria-pressed={selected?.id === entry.id}
+          {entries !== undefined && entries.length > 0 && visibleEntries.length === 0 && <div style={{ fontSize: '13px', lineHeight: 1.65, opacity: .62, padding: '16px 10px' }}>
+            没有找到匹配的角色
+          </div>}
+          {visibleEntries.map(entry => <button key={entry.id} type="button" aria-pressed={selected?.id === entry.id}
             onClick={() => { choose(entry) }} style={{
               alignItems: 'center',
               background: selected?.id === entry.id ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
@@ -1348,7 +1386,7 @@ function CharacterLibraryDialog({
                 {entry.displayName}{loadingId === entry.id ? ' · 读取中' : ''}
               </div>
               <div style={{ fontSize: '11px', marginTop: '5px', opacity: .5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {duplicateNames.has(entry.displayName) ? `${entry.originalFilename} · ${new Date(entry.importedAt).toLocaleString('zh-CN', { hour12: false })} · ` : ''}
+                {duplicateNames.has(entry.displayName) ? `同名 · ${entry.originalFilename} · ${new Date(entry.importedAt).toLocaleString('zh-CN', { hour12: false })} · ` : ''}
                 V{entry.cardVersion} · {entry.greetingCount} 个开场{entry.worldInfoCount === 0 ? '' : ` · ${entry.worldInfoCount} 条世界书`}
                 {entry.imageAssetCount === 0 ? '' : ` · ${entry.imageAssetCount} 张图片`}
               </div>
