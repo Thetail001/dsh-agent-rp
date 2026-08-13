@@ -9,6 +9,85 @@ export interface RegexCharacter {
   readonly frontend: ImportedCharacterFrontend
 }
 
+/** One ordered piece of a display-regex result. */
+export type CharacterDisplaySegment =
+  | { readonly kind: 'markdown'; readonly text: string }
+  | { readonly kind: 'html'; readonly source: string }
+
+interface SourceLine {
+  readonly start: number
+  readonly end: number
+  readonly text: string
+}
+
+function sourceLines(value: string): SourceLine[] {
+  const lines: SourceLine[] = []
+  const pattern = /[^\r\n]*(?:\r\n|\r|\n|$)/gu
+  for (const match of value.matchAll(pattern)) {
+    const text = match[0]
+    const start = match.index
+    if (text === '' && start === value.length) break
+    lines.push({ start, end: start + text.length, text })
+  }
+  return lines
+}
+
+function isFrontendDocument(info: string, source: string): boolean {
+  const language = info.trim().split(/\s+/u)[0]?.toLowerCase()
+  if (language !== undefined && language !== '') return language === 'html'
+  return /<!doctype\s+html\b|<html(?:\s|>)|<head(?:\s|>)|<body(?:\s|>)/iu.test(source)
+}
+
+function appendMarkdown(segments: CharacterDisplaySegment[], text: string): void {
+  if (text === '') return
+  const previous = segments.at(-1)
+  if (previous?.kind === 'markdown') {
+    segments[segments.length - 1] = { kind: 'markdown', text: previous.text + text }
+    return
+  }
+  segments.push({ kind: 'markdown', text })
+}
+
+/**
+ * Split a display-regex result into native Markdown and isolated HTML documents.
+ * Only fenced frontend documents become executable surfaces; ordinary inline
+ * HTML remains part of the Markdown message.
+ */
+export function splitCharacterDisplay(value: string): CharacterDisplaySegment[] {
+  const lines = sourceLines(value)
+  const segments: CharacterDisplaySegment[] = []
+  let cursor = 0
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (line === undefined) continue
+    const opening = line.text.match(/^ {0,3}(`{3,}|~{3,})[ \t]*([^\r\n]*?)[ \t]*(?:\r\n|\r|\n|$)$/u)
+    if (opening === null) continue
+    const marker = opening[1]
+    if (marker === undefined) continue
+    let closingIndex: number | undefined
+    for (let candidate = index + 1; candidate < lines.length; candidate += 1) {
+      const closing = lines[candidate]?.text.match(/^ {0,3}(`{3,}|~{3,})[ \t]*(?:\r\n|\r|\n|$)$/u)
+      const closingMarker = closing?.[1]
+      if (closingMarker !== undefined && closingMarker[0] === marker[0] && closingMarker.length >= marker.length) {
+        closingIndex = candidate
+        break
+      }
+    }
+    if (closingIndex === undefined) break
+    const closing = lines[closingIndex]
+    if (closing === undefined) break
+    const source = value.slice(line.end, closing.start)
+    if (isFrontendDocument(opening[2] ?? '', source)) {
+      appendMarkdown(segments, value.slice(cursor, line.start))
+      segments.push({ kind: 'html', source })
+      cursor = closing.end
+    }
+    index = closingIndex
+  }
+  appendMarkdown(segments, value.slice(cursor))
+  return segments
+}
+
 function substituteCardMacros(
   value: string,
   card: RegexCharacter,

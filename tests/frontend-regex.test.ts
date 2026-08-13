@@ -5,6 +5,7 @@ import {
   AI_OUTPUT_PLACEMENT,
   renderCharacterDisplay,
   renderCharacterPromptView,
+  splitCharacterDisplay,
 } from '../src/frontend-regex.ts'
 
 const base: ImportedRegexScript = {
@@ -45,4 +46,31 @@ test('supports raw and escaped macro substitution in the find expression', () =>
   const specialCharacter = { name: '(白露)', frontend: { regexScripts: [], tavernHelperScriptNames: [] } }
   assert.equal(renderCharacterDisplay(source, character, AI_OUTPUT_PLACEMENT, 0, '宝宝', raw), 'raw')
   assert.equal(renderCharacterDisplay('宝.宝(白露)', specialCharacter, AI_OUTPUT_PLACEMENT, 0, '宝.宝', escaped), 'escaped')
+})
+
+test('keeps prose and each fenced frontend document in source order', () => {
+  const source = [
+    '正文前',
+    '',
+    '```html',
+    '<!doctype html><html><body>卡一</body></html>',
+    '```',
+    '',
+    '正文中',
+    '',
+    '```html',
+    '<!doctype html><html><body>卡二</body></html>',
+    '```',
+  ].join('\n')
+  assert.deepEqual(splitCharacterDisplay(source), [
+    { kind: 'markdown', text: '正文前\n\n' },
+    { kind: 'html', source: '<!doctype html><html><body>卡一</body></html>\n' },
+    { kind: 'markdown', text: '\n正文中\n\n' },
+    { kind: 'html', source: '<!doctype html><html><body>卡二</body></html>\n' },
+  ])
+})
+
+test('leaves ordinary fenced code and inline HTML in native Markdown', () => {
+  const source = '前文\n\n```ts\nconst body = "<body>"\n```\n\n<div>片段</div>'
+  assert.deepEqual(splitCharacterDisplay(source), [{ kind: 'markdown', text: source }])
 })

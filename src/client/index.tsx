@@ -8,12 +8,17 @@ import type {
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { IConversation } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
+import { createRoot, type Root } from 'react-dom/client'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
 import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
 import { exportSillyTavernPresetJson } from '../preset-export.ts'
 import { projectPresetPromptSections } from '../preset-sections.ts'
-import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay } from '../frontend-regex.ts'
+import {
+  AI_OUTPUT_PLACEMENT, renderCharacterDisplay, splitCharacterDisplay,
+  type CharacterDisplaySegment,
+} from '../frontend-regex.ts'
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
 
 interface ImportHintProps {
@@ -45,17 +50,12 @@ const color = 'var(--dsw-alias-state-business-primary, #6f78e8)'
 const statusPlaceholder = '<StatusPlaceHolderImpl/>'
 
 const cardFrameCompatibility = `<style>
-html,body{width:100%!important;min-width:0!important;height:auto!important;min-height:0!important;margin:0!important;max-width:100%!important;background:transparent!important;color-scheme:dark;scrollbar-color:rgba(145,158,181,.58) transparent;scrollbar-width:thin}
-body{display:block!important;align-items:initial!important;justify-content:initial!important;flex-direction:initial!important;overflow-x:hidden!important}
-body>content{display:block!important;width:100%!important;max-width:100%!important}
+html{background:transparent!important;color-scheme:dark;scrollbar-color:rgba(145,158,181,.58) transparent;scrollbar-width:thin}
 *,*::before,*::after{box-sizing:border-box}
 ::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:999px;background:rgba(145,158,181,.58);background-clip:padding-box}
 img,svg,video,canvas{max-width:100%}
-.form-control,.dynamic-item>*{min-width:0;max-width:100%}
-.add-btn .svg-icon{fill:none!important;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:2}
-@media(max-width:600px){.chapter-section>label{width:100%!important;white-space:nowrap}.chapter-section>.form-control{width:100%!important;flex:none!important}}
 </style>`
 
 function mvuFrameRuntime(statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined): string {
@@ -90,14 +90,33 @@ window._={
 }
 
 function cardFrameSource(
-  rendered: string,
+  source: string,
   statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined,
 ): string {
-  const adapted = rendered
-    .replace(/```html/giu, '')
-    .replace(/```/gu, '')
-    .replaceAll('window.parent?.document ?? window.document', 'window.document')
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}</head><body><textarea id="send_textarea" hidden></textarea><script>${mvuFrameRuntime(statData)}window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}function __dshAdaptChoices(){document.querySelectorAll('.nova-container').forEach(function(container){if(container.dataset.dshAdapted==='true')return;var header=container.querySelector('.nova-header');var content=container.querySelector('.collapsible-content');var group=container.querySelector('.button-group-silent');var submit=container.querySelector('.submit-btn-silent');if(!header||!content||!group)return;var buttons=Array.from(group.querySelectorAll('.action-btn-silent'));if(buttons.length===0)return;container.dataset.dshAdapted='true';header.innerHTML='<span>行动建议</span><small>点选后仍可修改</small>';header.addEventListener('click',function(event){event.stopImmediatePropagation();content.style.display=content.style.display==='none'?'flex':'none';requestAnimationFrame(__dshReportSize)},true);content.style.display='flex';if(submit)submit.style.display='none';buttons.forEach(function(button,index){button.hidden=index>=3;button.addEventListener('click',function(event){event.preventDefault();event.stopImmediatePropagation();var input=document.getElementById('send_textarea');if(!input)return;input.value=(button.getAttribute('data-action')||button.textContent||'').trim();input.dispatchEvent(new Event('input',{bubbles:true}));buttons.forEach(function(item){item.classList.remove('selected')});button.classList.add('selected')},true)});if(buttons.length>3){var more=document.createElement('button');more.type='button';more.className='dsh-choice-more';more.textContent='更多 '+String(buttons.length-3)+' 项';more.addEventListener('click',function(){var opening=buttons[3].hidden;buttons.slice(3).forEach(function(button){button.hidden=!opening});more.textContent=opening?'收起':'更多 '+String(buttons.length-3)+' 项';requestAnimationFrame(__dshReportSize)});content.appendChild(more)}})}addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(input)input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});__dshAdaptChoices();requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>${adapted}${cardFrameCompatibility}<style>.nova-container[data-dsh-adapted="true"]{margin:10px 0!important;padding:0!important}.nova-container[data-dsh-adapted="true"] .mystic-card-silent{border:1px solid rgba(212,175,55,.28)!important;border-radius:12px!important;box-shadow:none!important;max-width:none!important;padding:10px!important}.nova-container[data-dsh-adapted="true"] .nova-header{align-items:center!important;background:transparent!important;border:0!important;box-shadow:none!important;display:flex!important;font-family:inherit!important;justify-content:space-between!important;letter-spacing:0!important;padding:4px 6px 9px!important;text-align:left!important;text-transform:none!important}.nova-container[data-dsh-adapted="true"] .nova-header small{color:var(--roe-text-light,#ddd);font-family:inherit;font-size:11px;font-weight:400;opacity:.5}.nova-container[data-dsh-adapted="true"] .collapsible-content{gap:7px!important;margin-top:0!important}.nova-container[data-dsh-adapted="true"] .button-group-silent{gap:7px!important}.nova-container[data-dsh-adapted="true"] .action-btn-silent{border-left-width:2px!important;border-radius:8px!important;font-family:inherit!important;font-size:13px!important;line-height:1.45!important;padding:9px 12px!important}.nova-container[data-dsh-adapted="true"] .action-btn-silent[hidden]{display:none!important}.nova-container[data-dsh-adapted="true"] .action-btn-silent.selected{border-left-width:3px!important}.nova-container[data-dsh-adapted="true"] .click-order-badge{display:none!important}.dsh-choice-more{background:transparent;border:0;color:var(--roe-gold,#d4af37);cursor:pointer;font:inherit;font-size:12px;opacity:.78;padding:4px 6px;text-align:left}.dsh-choice-more:hover{opacity:1}</style></body></html>`
+  const adapted = source.replaceAll('window.parent?.document ?? window.document', 'window.document')
+  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<script>${mvuFrameRuntime(statData)}window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>`
+  if (/<head(?:\s|>)/iu.test(adapted)) return adapted.replace(/<head([^>]*)>/iu, `<head$1>${head}`)
+  if (/<html(?:\s|>)/iu.test(adapted)) return adapted.replace(/<html([^>]*)>/iu, `<html$1><head>${head}</head>`)
+  return `<!doctype html><html><head>${head}</head><body>${adapted}</body></html>`
+}
+
+function CharacterDisplay({ segments, statData, characterName }: {
+  readonly segments: readonly CharacterDisplaySegment[]
+  readonly statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined
+  readonly characterName: string
+}) {
+  return <div data-agent-rp-character-display style={{ display: 'grid', gap: '10px', minWidth: 0 }}>
+    {segments.map((segment, index) => segment.kind === 'markdown'
+      ? <MarkdownText key={index} text={segment.text} />
+      : <iframe
+          key={index}
+          title={`${characterName}的轻前端界面 ${index + 1}`}
+          data-agent-rp-frame
+          sandbox="allow-scripts"
+          srcDoc={cardFrameSource(segment.source, statData)}
+          style={{ background: 'transparent', border: 0, colorScheme: 'dark', display: 'block', height: '72px', maxWidth: '100%', width: '100%' }}
+        />)}
+  </div>
 }
 
 function initials(name: string): string {
@@ -233,9 +252,12 @@ function RoleplayHeader({
         name: projection.characterName,
         frontend: projection.frontend,
       }, AI_OUTPUT_PLACEMENT, 0, projection.userName, projection.preset?.regexScripts)
-  const statusSource = status === undefined || status === statusPlaceholder || projection.mvu === undefined
+  const statusHtml = status === undefined || status === statusPlaceholder
     ? undefined
-    : cardFrameSource(status, projection.mvu.statData)
+    : splitCharacterDisplay(status).find(segment => segment.kind === 'html')?.source
+  const statusSource = statusHtml === undefined || projection.mvu === undefined
+    ? undefined
+    : cardFrameSource(statusHtml, projection.mvu.statData)
   return <>
     <div ref={rootRef} data-agent-rp-header style={{ alignItems: 'center', display: 'flex', gap: '10px', marginRight: 'auto', minWidth: 0 }}>
       <Avatar projection={projection} loadAvatar={loadAvatar} />
@@ -1289,7 +1311,7 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
     const frontend = projection?.frontend
     if (frontend === undefined || projection === undefined
       || frontend.regexScripts.length + (projection.preset?.regexScripts.length ?? 0) === 0) return
-    const mounted = new Set<HTMLIFrameElement>()
+    const mounted = new Map<HTMLElement, Root>()
     const hiddenTranscriptDetails = new Map<HTMLElement, { readonly display: string; readonly priority: string }>()
     const hideTranscriptDetail = (element: HTMLElement): void => {
       if (hiddenTranscriptDetails.has(element)) return
@@ -1300,14 +1322,15 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
       element.style.setProperty('display', 'none', 'important')
     }
     const bridge = (event: MessageEvent<unknown>): void => {
-      const sourceFrame = [...mounted]
-        .find(frame => frame?.contentWindow === event.source)
+      const sourceFrame = [...mounted.keys()]
+        .flatMap(root => [...root.querySelectorAll<HTMLIFrameElement>('iframe[data-agent-rp-frame]')])
+        .find(frame => frame.contentWindow === event.source)
       if (sourceFrame == null
         || typeof event.data !== 'object' || event.data === null) return
       const message = event.data as { readonly source?: unknown; readonly action?: unknown; readonly value?: unknown }
       if (message.source !== 'dsh-agent-rp-card') return
       if (message.action === 'resize' && typeof message.value === 'number' && Number.isFinite(message.value)) {
-        sourceFrame.style.height = `${Math.min(760, Math.max(72, Math.ceil(message.value)))}px`
+        sourceFrame.style.height = `${Math.max(72, Math.ceil(message.value))}px`
         return
       }
       if (typeof message.value !== 'string' || message.value.length > 65_536) return
@@ -1316,11 +1339,34 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
         return
       }
       if (message.action !== 'trigger-slash') return
-      const match = message.value.match(/^\/send\s+([\s\S]*?)(?:\|\/trigger)?$/u)
-      if (match?.[1] === undefined) return
+      const draft = message.value.match(/^\/setinput\s+([\s\S]*)$/u)
+      if (draft?.[1] !== undefined) {
+        inputActions.setDraft(draft[1])
+        return
+      }
+      const send = message.value.match(/^\/send\s+([\s\S]*?)(?:\|\/trigger)?$/u)
+      if (send?.[1] === undefined) return
       const scoped = ctx.sessions.scope(sessionId)
       const conversation = scoped?.get('conversation') as IConversation | undefined
-      void conversation?.send(match[1])
+      void conversation?.send(send[1])
+    }
+    const mountRenderedDisplay = (
+      item: HTMLElement,
+      original: HTMLElement,
+      segments: readonly CharacterDisplaySegment[],
+    ): void => {
+      const display = document.createElement('div')
+      display.style.cssText = 'display:block;min-width:0;width:100%;'
+      original.style.display = 'none'
+      item.dataset.agentRpFrontend = 'true'
+      item.insertBefore(display, original.nextSibling)
+      const root = createRoot(display)
+      mounted.set(display, root)
+      root.render(<CharacterDisplay
+        segments={segments}
+        statData={projection.mvu?.statData}
+        characterName={projection.characterName}
+      />)
     }
     window.addEventListener('message', bridge)
     const scan = (): void => {
@@ -1367,18 +1413,12 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
           name: projection.characterName,
           frontend,
         }, AI_OUTPUT_PLACEMENT, depth, projection.userName, projection.preset?.regexScripts)
-        if (rendered === raw || !/<(?:!doctype|html|head|body|style|script|div|section|details)\b/iu.test(rendered)) continue
+        if (rendered === raw) continue
+        const segments = splitCharacterDisplay(rendered)
+        if (!segments.some(segment => segment.kind === 'html')) continue
         const original = item.firstElementChild as HTMLElement | null
         if (original === null) continue
-        const frame = document.createElement('iframe')
-        frame.title = `${projection.characterName}的轻前端界面`
-        frame.setAttribute('sandbox', 'allow-scripts')
-        frame.style.cssText = 'border:0;border-radius:12px;display:block;height:180px;max-width:100%;width:100%;background:transparent;color-scheme:dark;'
-        frame.srcdoc = cardFrameSource(rendered, projection.mvu?.statData)
-        original.style.display = 'none'
-        item.insertBefore(frame, original.nextSibling)
-        item.dataset.agentRpFrontend = 'true'
-        mounted.add(frame)
+        mountRenderedDisplay(item, original, segments)
       }
     }
     scan()
@@ -1387,12 +1427,13 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
     return () => {
       observer.disconnect()
       window.removeEventListener('message', bridge)
-      for (const frame of mounted) {
-        const item = frame.closest<HTMLElement>('[data-agent-rp-frontend]')
+      for (const [display, root] of mounted) {
+        const item = display.closest<HTMLElement>('[data-agent-rp-frontend]')
         const original = item?.firstElementChild as HTMLElement | null
         if (original !== null) original.style.removeProperty('display')
         if (item !== null) delete item.dataset.agentRpFrontend
-        frame.remove()
+        root.unmount()
+        display.remove()
       }
       for (const [element, { display, priority }] of hiddenTranscriptDetails) {
         if (display === '') element.style.removeProperty('display')
@@ -1458,7 +1499,10 @@ function importHintComponent(ctx: Context): (props: ImportHintProps) => JSX.Elem
     const scoped = ctx.sessions.scope(sessionId)
     const conversation = scoped?.get('conversation') as (IConversation & Partial<DraftResolver>) | undefined
     const ids = [...new Set([...(input.attachmentIds ?? []), ...(input.imageIds ?? [])])]
-    const selected = selectSillyTavernDraft(conversation?.draftAttachments?.(ids) ?? [])
+    const draftAttachments = conversation?.draftAttachments
+    const selected = selectSillyTavernDraft(
+      typeof draftAttachments === 'function' ? draftAttachments.call(conversation, ids) : [],
+    )
     if (selected === undefined) return null
     const blank = input.draft.trim() === ''
     const chat = selected.kind === 'chat'

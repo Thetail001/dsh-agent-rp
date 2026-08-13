@@ -49,8 +49,10 @@ const client: UserConfig = {
   sourcemap: true,
   clean: false,
   deps: {
-    neverBundle: ['react', 'react/jsx-runtime'],
-    alwaysBundle: id => ['react', 'react/jsx-runtime'].includes(id) ? undefined : true,
+    neverBundle: ['react', 'react/jsx-runtime', 'react-dom/client', '@deepseek-ai/dsh-client-ui-primitives'],
+    alwaysBundle: id => [
+      'react', 'react/jsx-runtime', 'react-dom/client', '@deepseek-ai/dsh-client-ui-primitives',
+    ].includes(id) ? undefined : true,
   },
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'production'),
