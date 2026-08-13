@@ -334,6 +334,7 @@ function RoleplayHeader({
         />
       : <PresetManagerDialog
           preset={projection.preset}
+          lastRequest={projection.lastRequest}
           entries={projection.presetLibrary}
           onClose={() => { setPresetOpen(false) }}
           onImport={file => importPreset(sessionId, file)}
@@ -358,8 +359,9 @@ function roleLabel(role: PresetPromptProjection['role']): string {
   }
 }
 
-function PresetManagerDialog({ preset, entries, onClose, onImport, onSave, onLibrary }: {
+function PresetManagerDialog({ preset, lastRequest, entries, onClose, onImport, onSave, onLibrary }: {
   readonly preset: PresetProjection
+  readonly lastRequest?: AgentRpProjection['lastRequest']
   readonly entries: AgentRpProjection['presetLibrary']
   readonly onClose: () => void
   readonly onImport: (file: File) => Promise<void>
@@ -381,6 +383,7 @@ function PresetManagerDialog({ preset, entries, onClose, onImport, onSave, onLib
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string>()
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [inspectionOpen, setInspectionOpen] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const attachedPositionById = new Map(prompts.filter(prompt => prompt.attached).map((prompt, position) => [prompt.identifier, position]))
@@ -758,6 +761,7 @@ function PresetManagerDialog({ preset, entries, onClose, onImport, onSave, onLib
         }} />
         <button type="button" disabled={saving} onClick={() => { importInputRef.current?.click() }} style={secondaryButtonStyle}>替换预设</button>
         <button type="button" disabled={saving} onClick={() => { setLibraryOpen(true); void onLibrary({ operation: 'list' }) }} style={secondaryButtonStyle}>预设库</button>
+        <button type="button" disabled={saving} onClick={() => { setInspectionOpen(true) }} style={secondaryButtonStyle}>运行检查</button>
         <button type="button" disabled={saving} onClick={exportCopy} title={preset.omittedExtensions.length === 0 ? '导出当前配置' : `不包含未执行扩展：${preset.omittedExtensions.join('、')}`} style={secondaryButtonStyle}>导出副本</button>
         <button type="button" disabled={saving} onClick={() => { void saveToLibrary() }} style={secondaryButtonStyle}>另存为预设</button>
         <button type="button" disabled={saving} onClick={onClose} style={secondaryButtonStyle}>取消</button>
@@ -794,6 +798,129 @@ function PresetManagerDialog({ preset, entries, onClose, onImport, onSave, onLib
         if (request.operation === 'select') onClose()
       }}
     />}
+    {inspectionOpen && <PresetRuntimeInspector
+      preset={preset}
+      lastRequest={lastRequest}
+      onClose={() => { setInspectionOpen(false) }}
+    />}
+  </div>
+}
+
+function requestParameterSummary(request: NonNullable<AgentRpProjection['lastRequest']>): readonly string[] {
+  const config = request.config
+  return [
+    `${config.provider} / ${config.model}`,
+    config.reasoningEffort === undefined ? undefined : `推理 ${config.reasoningEffort}`,
+    config.temperature === undefined ? undefined : `温度 ${config.temperature}`,
+    config.maxTokens === undefined ? undefined : `最大输出 ${config.maxTokens}`,
+    config.stop === undefined || config.stop.length === 0 ? undefined : `${config.stop.length} 个停止词`,
+    request.toolNames.length === 0 ? '未提供工具' : `${request.toolNames.length} 个工具`,
+  ].filter((value): value is string => value !== undefined)
+}
+
+function requestedReasoningDifference(
+  preset: PresetProjection,
+  request: NonNullable<AgentRpProjection['lastRequest']>,
+  requestMatches: boolean,
+): string | undefined {
+  const requested = preset.generation.reasoningEffort
+  const actual = request.config.reasoningEffort
+  if (!requestMatches || requested === undefined || requested === 'auto' || actual === undefined || requested === actual) return undefined
+  return `推理等级不同：预设保存的是 ${requested}，这次实际请求使用 ${actual}。当前模型没有采用预设值`
+}
+
+function PresetRuntimeInspector({ preset, lastRequest, onClose }: {
+  readonly preset: PresetProjection
+  readonly lastRequest?: AgentRpProjection['lastRequest']
+  readonly onClose: () => void
+}) {
+  const enabled = preset.prompts.filter(prompt => prompt.attached && prompt.enabled)
+  const historyIndex = enabled.findIndex(prompt => prompt.identifier === 'chatHistory' && prompt.marker)
+  const requestMatches = lastRequest !== undefined
+    && lastRequest.presetName === preset.name && lastRequest.presetRevision === preset.revision
+  const reasoningDifference = lastRequest === undefined
+    ? undefined
+    : requestedReasoningDifference(preset, lastRequest, requestMatches)
+  return <div role="dialog" aria-modal="true" aria-label="预设运行检查" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.7)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1250,
+  }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #151518)', border: '1px solid var(--dsw-alias-border-l2, #38383d)',
+      borderRadius: '16px', boxShadow: '0 26px 90px rgba(0,0,0,.5)', display: 'flex', flexDirection: 'column',
+      maxHeight: '92vh', maxWidth: '1100px', overflow: 'hidden', width: 'min(96vw, 1100px)',
+    }}>
+      <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #343438)', display: 'flex', gap: '12px', padding: '18px 20px' }}>
+        <div style={{ minWidth: 0 }}>
+          <h2 style={{ fontSize: '17px', margin: 0 }}>运行检查</h2>
+          <div style={{ fontSize: '12px', lineHeight: 1.5, marginTop: '4px', opacity: 0.56 }}>已保存的预设顺序与 Host 最近记录的实际系统提示</div>
+        </div>
+        <button type="button" aria-label="关闭运行检查" onClick={onClose} style={{
+          background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '22px', marginLeft: 'auto', padding: '4px',
+        }}>×</button>
+      </header>
+      <div style={{ borderBottom: '1px solid var(--dsw-alias-border-l2, #343438)', padding: '13px 20px' }}>
+        {lastRequest === undefined
+          ? <div role="status" style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '9px', fontSize: '12px', lineHeight: 1.6, padding: '10px 12px' }}>
+              这段会话还没有真实模型请求。发送一条消息后，这里才会出现实际系统提示和最终参数
+            </div>
+          : <>
+              <div role="status" style={{ color: requestMatches ? 'inherit' : '#d9a85f', fontSize: '12px', lineHeight: 1.5 }}>
+                {requestMatches
+                  ? `当前预设版本与最近记录的请求一致 · ${new Date(lastRequest.time).toLocaleString()}`
+                  : `当前预设在最近记录的请求之后发生过变化 · 右侧仍显示当时实际使用的内容`}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '9px' }}>
+                {requestParameterSummary(lastRequest).map(value => <span key={value} style={chipStyle}>{value}</span>)}
+              </div>
+              {reasoningDifference !== undefined && <div role="note" style={{
+                background: 'rgba(217,168,95,.1)', border: '1px solid rgba(217,168,95,.28)', borderRadius: '9px',
+                color: '#e3b66f', fontSize: '11px', lineHeight: 1.55, marginTop: '10px', padding: '8px 10px',
+              }}>{reasoningDifference}</div>}
+            </>}
+      </div>
+      <div className="agent-rp-runtime-inspector-body" style={{ display: 'grid', flex: '1 1 auto', gridTemplateColumns: 'minmax(280px, .78fr) minmax(360px, 1.22fr)', minHeight: 0, overflow: 'hidden' }}>
+        <section className="agent-rp-runtime-inspector-order" style={{ borderRight: '1px solid var(--dsw-alias-border-l2, #343438)', minHeight: 0, overflowY: 'auto', padding: '17px 18px' }}>
+          <div style={{ alignItems: 'baseline', display: 'flex', gap: '8px', marginBottom: '11px' }}>
+            <h3 style={{ fontSize: '12px', margin: 0 }}>当前组装顺序</h3>
+            <span style={{ fontSize: '10px', opacity: 0.44 }}>{enabled.length} 项启用</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {enabled.map((prompt, index) => {
+              const retained = prompt.injectionPosition === 1
+              const history = prompt.identifier === 'chatHistory' && prompt.marker
+              const placement = retained ? '保留，当前不执行' : history ? '聊天记录位置'
+                : historyIndex >= 0 && index > historyIndex ? '历史之后' : '系统提示'
+              return <div key={prompt.identifier} style={{
+                alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #34343a)',
+                borderRadius: '9px', display: 'grid', gap: '9px', gridTemplateColumns: '25px minmax(0, 1fr) auto', padding: '8px 9px',
+              }}>
+                <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: '10px', opacity: 0.38, textAlign: 'right' }}>{index + 1}</span>
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: 'block', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prompt.name || prompt.identifier}</span>
+                  <span title={prompt.identifier} style={{ display: 'block', fontFamily: 'ui-monospace, monospace', fontSize: '9px', marginTop: '2px', opacity: 0.34, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prompt.identifier}</span>
+                </span>
+                <span style={{ color: retained ? '#d9a85f' : 'inherit', fontSize: '9px', opacity: retained ? 0.9 : 0.48, whiteSpace: 'nowrap' }}>{placement}</span>
+              </div>
+            })}
+          </div>
+        </section>
+        <section style={{ display: 'flex', flexDirection: 'column', minHeight: 0, padding: '17px 18px' }}>
+          <div style={{ alignItems: 'baseline', display: 'flex', gap: '8px', marginBottom: '11px' }}>
+            <h3 style={{ fontSize: '12px', margin: 0 }}>最近记录的实际系统提示</h3>
+            {lastRequest !== undefined && <span style={{ fontSize: '10px', opacity: 0.44 }}>{lastRequest.system.length.toLocaleString()} 字符</span>}
+          </div>
+          <pre style={{
+            background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #34343a)', borderRadius: '10px',
+            flex: '1 1 auto', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: '11px', lineHeight: 1.62,
+            margin: 0, minHeight: '300px', overflow: 'auto', padding: '13px', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          }}>{lastRequest === undefined ? '尚无真实请求' : lastRequest.system || '这一轮没有系统提示'}</pre>
+          <p style={{ fontSize: '10px', lineHeight: 1.5, margin: '9px 1px 0', opacity: 0.42 }}>
+            这里只展示 Host 写入会话记录的 system prompt；聊天历史与用户消息不会复制到检查页
+          </p>
+        </section>
+      </div>
+    </section>
   </div>
 }
 
@@ -1050,6 +1177,17 @@ const presetManagerResponsiveStyle = `
   .agent-rp-preset-generation > p { margin-top: 2px !important; }
   .agent-rp-preset-list { flex: 1 1 auto; }
   .agent-rp-preset-footer { padding: 10px 14px !important; }
+  .agent-rp-runtime-inspector-body {
+    display: flex !important;
+    flex-direction: column !important;
+    overflow-y: auto !important;
+  }
+  .agent-rp-runtime-inspector-order {
+    border-bottom: 1px solid var(--dsw-alias-border-l2, #343438);
+    border-right: 0 !important;
+    flex: 0 0 auto;
+    max-height: 42vh;
+  }
 }
 @media (max-width: 460px) {
   .agent-rp-preset-generation { grid-template-columns: 1fr 1fr; }

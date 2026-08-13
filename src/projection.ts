@@ -38,6 +38,7 @@ const projectionSchema = {
       || (record.frontend !== undefined && (typeof record.frontend !== 'object' || record.frontend === null))
       || (record.preset !== undefined && (typeof record.preset !== 'object' || record.preset === null))
       || !Array.isArray(record.presetLibrary)
+      || (record.lastRequest !== undefined && (typeof record.lastRequest !== 'object' || record.lastRequest === null))
       || !validSource) throw new Error('invalid agentRp projection')
     return value as AgentRpProjection
   },
@@ -46,7 +47,7 @@ const projectionSchema = {
 type ImportCall = 'character-card' | 'world-info' | 'preset'
 
 interface AgentRpProjectionState {
-  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'presetLibrary'>
+  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'presetLibrary' | 'lastRequest'>
   readonly cardWorldInfoCount: number
   readonly standaloneWorldInfos: Readonly<Record<string, number>>
   readonly calls: Readonly<Record<string, ImportCall>>
@@ -54,6 +55,7 @@ interface AgentRpProjectionState {
   readonly preset?: AgentRpProjection['preset']
   readonly presetState?: ActiveSessionPreset
   readonly presetLibrary: AgentRpProjection['presetLibrary']
+  readonly lastRequest?: AgentRpProjection['lastRequest']
 }
 
 const INITIAL_CHARACTER: AgentRpProjectionState['character'] = {
@@ -385,6 +387,30 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         return state
       }
     }
+    if (event.type === 'request/header') {
+      const config = event.data.header.config
+      return {
+        ...state,
+        lastRequest: {
+          eventSeq: event.seq,
+          time: event.time,
+          ...(state.presetState === undefined ? {} : {
+            presetName: state.presetState.result.name,
+            presetRevision: state.presetState.revision,
+          }),
+          system: event.data.header.system ?? '',
+          config: {
+            provider: config.provider,
+            model: config.model,
+            ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: String(config.reasoningEffort) }),
+            ...(config.temperature === undefined ? {} : { temperature: config.temperature }),
+            ...(config.maxTokens === undefined ? {} : { maxTokens: config.maxTokens }),
+            ...(config.stop === undefined ? {} : { stop: config.stop }),
+          },
+          toolNames: event.data.header.tools?.map(tool => tool.name) ?? [],
+        },
+      }
+    }
     if (event.type === 'assistant/message' && state.mvu !== undefined) {
       const text = event.data.message.content
         .flatMap(block => block.type === 'text' ? [block.text] : [])
@@ -473,6 +499,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     ...(state.mvu === undefined ? {} : { mvu: state.mvu }),
     ...(state.preset === undefined ? {} : { preset: state.preset }),
     presetLibrary: state.presetLibrary,
+    ...(state.lastRequest === undefined ? {} : { lastRequest: state.lastRequest }),
   }),
-  stateVersion: 1,
+  stateVersion: 2,
 }

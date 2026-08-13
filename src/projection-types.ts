@@ -91,6 +91,23 @@ export interface AgentRpProjection {
     readonly regexScriptCount: number
     readonly updatedAt: number
   }[]
+  /** Last Host-recorded request header, used only by the local compatibility inspector. */
+  readonly lastRequest?: {
+    readonly eventSeq: number
+    readonly time: number
+    readonly presetName?: string
+    readonly presetRevision?: number
+    readonly system: string
+    readonly config: {
+      readonly provider: string
+      readonly model: string
+      readonly reasoningEffort?: string
+      readonly temperature?: number
+      readonly maxTokens?: number
+      readonly stop?: readonly string[]
+    }
+    readonly toolNames: readonly string[]
+  }
   readonly source: 'character-card' | 'sillytavern-chat' | 'preset'
 }
 

@@ -150,3 +150,41 @@ test('ignores unrelated command text and rejects malformed marked results', () =
   assert.throws(() => parsePresetLibraryResult('agent-rp:preset-library:v0:{'), /不是有效 JSON/u)
   assert.throws(() => parsePresetLibraryResult('agent-rp:preset-library:v0:{"format":0,"operation":"list","entries":{}}'), /无效字段/u)
 })
+
+test('projects the Host-recorded request instead of reconstructing an inspection guess', () => {
+  const imported = preset()
+  const agent = { session: Session.create(SessionId('request-inspection'), [{
+    type: 'agent-rp/sillytavern-preset-seed', seq: 0, time: 1, ignorable: true,
+    data: {
+      format: 0,
+      source: { attachmentConsumer: 'dsh-agent-rp', attachments: [{
+        kind: 'file', attachmentId: 'sha256:request' as never, bytes: 1,
+        name: 'request.json', mediaType: 'application/json',
+      }] },
+      result: {
+        version: 0, name: imported.name, sourceEventSeq: 0, sourceAttachmentId: 'sha256:request',
+        promptCount: 2, enabledCount: 1, regexScriptCount: 0,
+      },
+      preset: imported,
+    },
+  }]) } as Agent
+  agent.session.append('request/header', {
+    reason: 'initial',
+    header: {
+      config: {
+        provider: 'real-provider', model: 'real-model', reasoningEffort: 'high' as never,
+        temperature: 0.7, maxTokens: 4096,
+      },
+      system: 'Host 最终组装内容',
+      tools: [{ name: 'remember', description: 'memory', parameters: { type: 'object', properties: {} } }],
+    },
+  })
+  const view = projected(agent)
+  assert.equal(view.lastRequest?.system, 'Host 最终组装内容')
+  assert.deepEqual(view.lastRequest?.config, {
+    provider: 'real-provider', model: 'real-model', reasoningEffort: 'high', temperature: 0.7, maxTokens: 4096,
+  })
+  assert.deepEqual(view.lastRequest?.toolNames, ['remember'])
+  assert.equal(view.lastRequest?.presetName, imported.name)
+  assert.equal(view.lastRequest?.presetRevision, 0)
+})
