@@ -96,3 +96,19 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
   assert.equal(preset.regexScripts.filter(script => !script.disabled).length, 22)
   assert.equal(preset.prompts.at(-1)?.content, `内容 ${moduleCount - 1}`)
 })
+
+test('normalizes the model role used by community presets to assistant', () => {
+  const preset = parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [
+      { identifier: 'main', name: '主提示', role: 'system', content: 'main', marker: true },
+      { identifier: 'model-note', name: '模型提示', role: 'model', content: '保持角色语气' },
+    ],
+    prompt_order: [{ character_id: 100001, order: [
+      { identifier: 'main', enabled: true },
+      { identifier: 'model-note', enabled: false },
+    ] }],
+  }), 'community-model-role.json')
+
+  assert.equal(preset.prompts[1]?.role, 'assistant')
+  assert.equal(preset.order[1]?.enabled, false)
+})

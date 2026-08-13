@@ -127,7 +127,7 @@ function prompt(value: unknown, index: number): SillyTavernPresetPrompt {
   const record = object(value, `prompts[${index}]`)
   const identifier = text(record.identifier).trim()
   if (identifier === '') throw new Error(`prompts[${index}].identifier must be non-empty`)
-  const role = record.role ?? 'system'
+  const role = record.role === 'model' ? 'assistant' : record.role ?? 'system'
   if (role !== 'system' && role !== 'user' && role !== 'assistant') {
     throw new Error(`prompts[${index}].role is unsupported`)
   }

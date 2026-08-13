@@ -3435,27 +3435,12 @@ export function apply(ctx: ClientContext): void {
     await managePresetLibrary(sessionId, { operation: 'select', id: value.entry.id })
   }
   const configurePreset = async (sessionId: SessionId, request: PresetConfigurationRequest): Promise<void> => {
-    const connection = ctx.get('connection') as {
-      readonly api: {
-        readonly commands: {
-          execute(input: { readonly sessionId: SessionId; readonly line: string }): Promise<{
-            readonly result: {
-              readonly ok: boolean
-              readonly value?: { readonly matched: boolean }
-              readonly error?: { readonly code: string; readonly message: string }
-            }
-          }>
-        }
-      }
-    }
-    const response = await connection.api.commands.execute({
-      sessionId,
-      line: `/rp-preset-configure ${JSON.stringify(request)}`,
-    })
-    if (!response.result.ok) {
-      throw new Error(response.result.error?.message ?? '预设保存失败')
-    }
-    if (response.result.value?.matched !== true) throw new Error('当前 Host 未启用预设管理命令')
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const response = await session.command(`/rp-preset-configure ${JSON.stringify(request)}`)
+    if (!response.ok) throw new Error(response.error.message)
+    if (!response.value.matched) throw new Error('当前 Host 未启用预设管理命令')
   }
   const managePresetLibrary = async (sessionId: SessionId, request: PresetLibraryRequest): Promise<void> => {
     const scope = ctx.sessions.scope(sessionId)
