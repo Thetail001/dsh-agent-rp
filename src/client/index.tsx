@@ -1425,6 +1425,30 @@ function CharacterLibraryDialog({
           }}>×</button>
         </header>
         <div style={{ flex: 1, minHeight: 0, overflowX: 'hidden', overflowY: 'auto', padding: '4px 20px 22px' }}>
+          {selected === undefined && entries !== undefined && <div style={{
+            alignItems: 'center', display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'center',
+            margin: '0 auto', maxWidth: '380px', minHeight: '240px', textAlign: 'center',
+          }}>
+            <div aria-hidden="true" style={{
+              alignItems: 'center', background: `color-mix(in srgb, ${color} 13%, transparent)`, borderRadius: '18px',
+              color, display: 'flex', fontSize: '24px', height: '54px', justifyContent: 'center', width: '54px',
+            }}>✦</div>
+            <strong style={{ fontSize: '17px', marginTop: '16px' }}>{collection === 'archived'
+              ? '这里还没有收起的角色'
+              : entries.length === 0 ? '从一张角色卡开始' : '没有匹配的角色'}</strong>
+            <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '8px 0 0', opacity: .58 }}>
+              {collection === 'archived'
+                ? '收起的角色会留在本机，随时可以恢复'
+                : entries.length === 0
+                  ? '支持 SillyTavern 的 PNG、JSON 和 CHARX。原始文件保存在本机；开始对话后，角色设定会提供给模型'
+                  : '换个关键词，或清空左侧搜索框'}
+            </p>
+            {collection === 'active' && entries.length === 0 && <button type="button" disabled={importing}
+              onClick={() => { fileInputRef.current?.click() }} style={{
+                background: color, border: 0, borderRadius: '9px', color: '#fff', cursor: importing ? 'wait' : 'pointer',
+                font: 'inherit', fontWeight: 620, marginTop: '18px', opacity: importing ? .58 : 1, padding: '9px 15px',
+              }}>{importing ? '正在导入…' : '选择角色卡'}</button>}
+          </div>}
           {selected !== undefined && <>
             <CharacterAssetsSection detail={selected} />
             <label style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '8px 0 8px', opacity: .65 }}>选择开场</label>
