@@ -3111,6 +3111,7 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
       && frontend.regexScripts.length + (projection.preset?.regexScripts.length ?? 0) > 0
     const mounted = new Map<HTMLElement, Root>()
     const hiddenTranscriptDetails = new Map<HTMLElement, { readonly display: string; readonly priority: string }>()
+    const legacyConversationNotices = new Set<HTMLElement>()
     const hideTranscriptDetail = (element: HTMLElement): void => {
       if (hiddenTranscriptDetails.has(element)) return
       hiddenTranscriptDetails.set(element, {
@@ -3118,6 +3119,17 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
         priority: element.style.getPropertyPriority('display'),
       })
       element.style.setProperty('display', 'none', 'important')
+    }
+    const showLegacyConversationNotice = (item: HTMLElement): void => {
+      if (item.dataset.agentRpLegacyConversation === 'true') return
+      const notice = document.createElement('aside')
+      notice.setAttribute('role', 'status')
+      notice.style.cssText = 'border:1px solid color-mix(in srgb,currentColor 16%,transparent);border-radius:10px;margin:8px 0;padding:12px 14px;font-size:13px;line-height:1.6;opacity:.76;'
+      notice.textContent = '这段会话由早期预览版创建，当前版本无法继续读取它的轮次记录。原会话仍保留；请从标题栏打开“角色库”，选择对应角色后开始新对话。'
+      item.before(notice)
+      item.dataset.agentRpLegacyConversation = 'true'
+      legacyConversationNotices.add(notice)
+      hideTranscriptDetail(item)
     }
     const bridge = (event: MessageEvent<unknown>): void => {
       const sourceFrame = [...mounted.keys()]
@@ -3192,7 +3204,16 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
         for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="turn-error"]')) {
           if (item.textContent?.includes('agent-rp/character-card-seed has invalid provenance')) {
             hideTranscriptDetail(item)
+            continue
           }
+          if (!item.textContent?.includes('received more than one start Match')
+            || item.dataset.agentRpLegacyConversation === 'true') continue
+          showLegacyConversationNotice(item)
+        }
+        for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow] > div')) {
+          if (!item.textContent?.startsWith('历史加载失败：conversation Context')
+            || !item.textContent.includes('received more than one start Match')) continue
+          showLegacyConversationNotice(item)
         }
         for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="user"]')) {
           if (item.dataset.agentRpSetupCollapsed === 'true'
@@ -3288,7 +3309,9 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
       for (const [element, { display, priority }] of hiddenTranscriptDetails) {
         if (display === '') element.style.removeProperty('display')
         else element.style.setProperty('display', display, priority)
+        delete element.dataset.agentRpLegacyConversation
       }
+      for (const notice of legacyConversationNotices) notice.remove()
       const scroll = rootRef.current?.closest('[data-conversation-scroll]')
       for (const item of scroll?.querySelectorAll<HTMLElement>('[data-agent-rp-setup-collapsed="true"]') ?? []) {
         const content = item.firstElementChild as HTMLElement | null
