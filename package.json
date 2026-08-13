@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-agent-rp",
-  "version": "0.0.0-rc.59",
+  "version": "0.0.0-rc.60",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -35,7 +35,8 @@
   "packageManager": "pnpm@11.16.0",
   "scripts": {
     "build": "tsdown",
-    "prepack": "pnpm run build",
+    "check:published-imports": "node scripts/check-published-imports.mjs",
+    "prepack": "pnpm run build && pnpm run check:published-imports",
     "test:focused": "tsdown tests/character-library.test.ts tests/charx.test.ts tests/persona-library.test.ts tests/generation.test.ts tests/config.test.ts tests/frontend-regex.test.ts tests/import.test.ts tests/import-hint.test.ts tests/memory.test.ts tests/prompt.test.ts tests/preset.test.ts tests/preset-configuration.test.ts tests/preset-export.test.ts tests/preset-library.test.ts tests/preset-prompt.test.ts tests/preset-sections.test.ts tests/session-character.test.ts tests/session-world-info.test.ts tests/sillytavern-chat.test.ts tests/sillytavern-chat-seed.test.ts tests/sillytavern-preset.test.ts tests/world-info.test.ts tests/world-info-configuration.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-dist --clean && node --test .test-dist/character-library.test.mjs .test-dist/charx.test.mjs .test-dist/persona-library.test.mjs .test-dist/generation.test.mjs .test-dist/config.test.mjs .test-dist/frontend-regex.test.mjs .test-dist/import.test.mjs .test-dist/import-hint.test.mjs .test-dist/memory.test.mjs .test-dist/prompt.test.mjs .test-dist/preset.test.mjs .test-dist/preset-configuration.test.mjs .test-dist/preset-export.test.mjs .test-dist/preset-library.test.mjs .test-dist/preset-prompt.test.mjs .test-dist/preset-sections.test.mjs .test-dist/session-character.test.mjs .test-dist/session-world-info.test.mjs .test-dist/sillytavern-chat.test.mjs .test-dist/sillytavern-chat-seed.test.mjs .test-dist/sillytavern-preset.test.mjs .test-dist/world-info.test.mjs .test-dist/world-info-configuration.test.mjs",
     "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit"
   },
@@ -61,7 +62,6 @@
     "@deepseek-ai/dsh-timeout": "0.1.0-rc.6",
     "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
     "@deepseek-ai/dsh-user-approval": "0.1.0-rc.6",
-    "@deepseek-ai/schemastery": "3.18.1",
     "@types/node": "^24.10.0",
     "@types/png-chunk-text": "1.0.3",
     "@types/png-chunks-extract": "1.0.2",
@@ -72,7 +72,28 @@
     "tsdown": "0.22.2",
     "typescript": "6.0.3"
   },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-attachment": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-brand": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-conversation": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-primitives": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-home-paths": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-scope": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session-projection": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
   "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.1",
     "fflate": "0.8.3",
     "png-chunk-text": "1.0.0",
     "png-chunks-extract": "1.0.0",

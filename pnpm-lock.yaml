@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: 3.18.1
+        version: 3.18.1
       fflate:
         specifier: 0.8.3
         version: 0.8.3
@@ -84,9 +87,6 @@ importers:
       '@deepseek-ai/dsh-user-approval':
         specifier: 0.1.0-rc.6
         version: 0.1.0-rc.6(dbdaba06c174c5e30e3a58edf3cc27a9)
-      '@deepseek-ai/schemastery':
-        specifier: 3.18.1
-        version: 3.18.1
       '@types/node':
         specifier: ^24.10.0
         version: 24.13.3
