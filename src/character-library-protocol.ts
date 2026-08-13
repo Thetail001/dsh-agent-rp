@@ -65,6 +65,14 @@ export interface CharacterLibrarySessionRequest {
   readonly persona?: SessionPersonaSnapshot
 }
 
+/** Private command payload selecting one Host-owned card without uploading it to a model. */
+export interface CharacterLibraryLaunchRequest {
+  readonly format: 0
+  readonly characterId: string
+  readonly greetingIndex: number
+  readonly persona?: SessionPersonaSnapshot
+}
+
 /** Stable text prefix recognized by the Character Card Session importer. */
 export const CHARACTER_LIBRARY_SESSION_PREFIX = '请从角色库开始新会话'
 

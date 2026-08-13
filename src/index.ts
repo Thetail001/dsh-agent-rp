@@ -2,6 +2,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { CommandId } from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
@@ -79,6 +80,7 @@ import { configurePresetFromCommand } from './preset-configuration.ts'
 import { PresetLibrary } from './preset-library.ts'
 import { executePresetLibraryCommand } from './preset-library-command.ts'
 import { CharacterLibrary } from './character-library.ts'
+import { executeCharacterLibraryCommand } from './character-library-command.ts'
 import { installCharacterLibraryHttp } from './character-library-http.ts'
 import {
   CHARACTER_LIBRARY_SESSION_PREFIX,
@@ -98,7 +100,7 @@ export { Config }
 const CHARACTER_SERVICES = ['agents', 'apiProxy', 'attachments', 'commands', 'llm', 'systemPrompt', 'tools']
 
 interface PromptAttachmentGateway {
-  registerPromptAttachmentConsumer(
+  registerPromptAttachmentConsumer?(
     name: string,
     consumer: (offer: {
       readonly agent: Agent
@@ -109,7 +111,7 @@ interface PromptAttachmentGateway {
       >
     }) => { readonly text: string } | undefined,
   ): () => void
-  registerPromptSessionImporter(
+  registerPromptSessionImporter?(
     name: string,
     importer: {
       recognize(offer: {
@@ -135,7 +137,14 @@ interface HumanCommandGateway {
     readonly name: string
     readonly description: string
     readonly input: { readonly hint: string }
-    readonly handler: typeof configurePresetFromCommand
+    readonly recordInput?: boolean
+    readonly handler: (invocation: {
+      readonly commandId: CommandId
+      readonly agent: Agent
+      readonly rawInput: string
+      readonly signal: AbortSignal
+    }) => { readonly kind: 'success'; readonly text?: string; readonly sourceEventSeq?: number }
+      | Promise<{ readonly kind: 'success'; readonly text?: string; readonly sourceEventSeq?: number }>
   }): () => void
 }
 
@@ -152,7 +161,7 @@ interface FileAttachmentReader {
 
 type PromptImportAttachment = CharacterCardAttachmentRef | FileAttachmentRef
 
-type PromptAttachmentPart = Parameters<Parameters<PromptAttachmentGateway['registerPromptAttachmentConsumer']>[1]>[0]['content'][number]
+type PromptAttachmentPart = Parameters<Parameters<NonNullable<PromptAttachmentGateway['registerPromptAttachmentConsumer']>>[1]>[0]['content'][number]
 
 function decodeCharacterCardAttachment(
   attachment: CharacterCardAttachmentRef,
@@ -429,6 +438,13 @@ export function installAgentRp(
     : { root: options.characterLibraryRoot })
 
   commands.register({
+    name: 'rp-character-library',
+    description: 'start a roleplay Session from one local Character Card',
+    input: { hint: '<private character-library payload>' },
+    recordInput: false,
+    handler: invocation => executeCharacterLibraryCommand(characterLibrary, invocation),
+  })
+  commands.register({
     name: 'rp-preset-configure',
     description: 'update this roleplay Session preset',
     input: { hint: '<private preset-manager payload>' },
@@ -454,9 +470,11 @@ export function installAgentRp(
     recordInput: false,
     handler: executeWorldInfoConfiguration,
   })
-  ctx.effect(() => gateway.registerPromptAttachmentConsumer('dsh-agent-rp', ({ agent, content }) => (
-    claimAgentRpPrompt(agentsByScope.get(agent) === agent, content)
-  )), 'agent-rp: prompt attachment consumer')
+  const registerAttachmentConsumer = gateway.registerPromptAttachmentConsumer?.bind(gateway)
+  if (registerAttachmentConsumer !== undefined) ctx.effect(() => registerAttachmentConsumer(
+    'dsh-agent-rp',
+    ({ agent, content }) => claimAgentRpPrompt(agentsByScope.get(agent) === agent, content),
+  ), 'agent-rp: prompt attachment consumer')
   const registerSessionImporter = gateway.registerPromptSessionImporter?.bind(gateway)
   if (registerSessionImporter !== undefined) ctx.effect(() => registerSessionImporter('dsh-agent-rp:sillytavern-migration', {
     recognize: ({ agent, content }) => isSillyTavernMigrationOffer(agentsByScope.get(agent) === agent, content),

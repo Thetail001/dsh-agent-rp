@@ -2,6 +2,7 @@
 
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
+import { decodeCharacterLibraryLaunch } from './import/session-character.ts'
 
 /** Session event carrying a Persona snapshot independently from the Character Card. */
 export interface PersonaSeedRecord {
@@ -38,6 +39,11 @@ export function parseSessionPersona(value: unknown): SessionPersonaSnapshot {
 export function readSessionPersona(events: readonly SessionEvent[]): SessionPersonaSnapshot | undefined {
   let active: SessionPersonaSnapshot | undefined
   for (const event of events) {
+    if (event.type === 'command/done' && event.data.kind === 'success') {
+      const launch = decodeCharacterLibraryLaunch(event.data.text)
+      if (launch?.persona !== undefined) active = launch.persona
+      continue
+    }
     if (event.type !== 'agent-rp/persona-seed') continue
     if (event.data.format !== 0) throw new Error('Persona Session 事件格式不受支持')
     active = parseSessionPersona(event.data.persona)

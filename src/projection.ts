@@ -3,7 +3,7 @@
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
 import { parseCharacterCardJson } from './import/character-card.ts'
-import type { CharacterImportMeta } from './import/session-character.ts'
+import { decodeCharacterLibraryLaunch, type CharacterImportMeta } from './import/session-character.ts'
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import type { WorldInfoImportMeta } from './import/session-world-info.ts'
 import { parseWorldInfoJson } from './import/world-info.ts'
@@ -520,6 +520,32 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         cardWorldInfoCount: projected.lorebookEntries,
         ...(cardLorebook === undefined ? {} : { cardLorebook }),
         mvu: readCurrentMvuState(card, []) ,
+      }
+    }
+    if (event.type === 'command/done' && event.data.kind === 'success') {
+      let launch
+      try {
+        launch = decodeCharacterLibraryLaunch(event.data.text)
+      } catch {
+        return withSurface
+      }
+      if (launch !== undefined) {
+        const projected = cardProjection(withSurface.character, launch.meta)
+        const { avatarAttachmentId: _avatarAttachmentId, ...libraryCharacter } = projected.character
+        const card = parseCharacterCardJson(JSON.stringify(launch.meta.raw))
+        const cardLorebook = cardLorebookSource(launch.meta)
+        const { cardLorebook: _previousLorebook, ...withoutCardLorebook } = withSurface
+        return {
+          ...withoutCardLorebook,
+          character: {
+            ...libraryCharacter,
+            avatarLibraryId: launch.libraryId,
+            ...(launch.persona === undefined ? {} : { persona: launch.persona }),
+          },
+          cardWorldInfoCount: projected.lorebookEntries,
+          ...(cardLorebook === undefined ? {} : { cardLorebook }),
+          mvu: readCurrentMvuState(card, []),
+        }
       }
     }
     if (event.type === 'agent-rp/sillytavern-preset-seed') {

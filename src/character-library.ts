@@ -65,6 +65,13 @@ interface CharacterLibraryAsset {
   readonly data: Uint8Array
 }
 
+/** Parsed Host-only contents behind one reusable library id. */
+export interface ResolvedCharacterLibraryEntry {
+  readonly detail: CharacterLibraryDetail
+  readonly card: ImportedCharacterCard
+  readonly transport: CharacterImportTransport
+}
+
 export interface CharacterLibraryAvatar {
   readonly mediaType: string
   readonly data: Uint8Array
@@ -153,6 +160,24 @@ export class CharacterLibrary {
       mediaType: entry.meta.mediaType,
       greetings: [parsed.card.firstMessage, ...parsed.card.alternateGreetings],
       imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
+    }
+  }
+
+  /** Resolve one reusable card for a model-free Session launch. */
+  resolve(id: string): ResolvedCharacterLibraryEntry {
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    return {
+      detail: {
+        ...summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length),
+        mediaType: entry.meta.mediaType,
+        greetings: [parsed.card.firstMessage, ...parsed.card.alternateGreetings],
+        imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
+      },
+      card: parsed.card,
+      transport: entry.meta.transport === 'png'
+        ? { transport: 'png', metadataKeyword: entry.meta.metadataKeyword! }
+        : { transport: entry.meta.transport },
     }
   }
 

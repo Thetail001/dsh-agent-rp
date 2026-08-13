@@ -24,10 +24,10 @@ import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.
 import {
   CHARACTER_LIBRARY_PATH,
   characterLibraryImageUrl,
-  encodeCharacterLibrarySessionRequest,
   type CharacterLibraryCollection,
   type CharacterLibraryDetail,
   type CharacterLibraryImportResult,
+  type CharacterLibraryLaunchRequest,
   type CharacterLibrarySummary,
 } from '../character-library-protocol.ts'
 import {
@@ -2526,20 +2526,10 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
     }
   }, [background?.index, projection?.avatarLibraryId, viewMode])
   useLayoutEffect(() => {
-    const inputRoot = rootRef.current?.parentElement
-    const card = inputRoot?.querySelector<HTMLElement>('[data-composer-card]')
-    const textarea = card?.querySelector<HTMLTextAreaElement>('textarea')
-    if (inputRoot == null || textarea == null || placeholder === undefined) return
-    const previousPlaceholder = textarea.getAttribute('placeholder')
-    textarea.setAttribute('placeholder', placeholder)
-    if (viewMode === 'debug') {
-      return () => {
-        if (textarea.getAttribute('placeholder') !== placeholder) return
-        if (previousPlaceholder === null) textarea.removeAttribute('placeholder')
-        else textarea.setAttribute('placeholder', previousPlaceholder)
-      }
-    }
-    inputRoot.dataset.agentRpInput = ''
+    const dock = rootRef.current?.closest<HTMLElement>('[data-slot="conversation.composer.dock"]')
+    const inputRoot = dock?.parentElement
+    if (dock == null || inputRoot == null || placeholder === undefined) return
+    const managedTextareas = new Map<HTMLTextAreaElement, string | null>()
     const hiddenControls = new Map<HTMLElement, { display: string; priority: string }>()
     const hide = (element: Element): void => {
       if (!(element instanceof HTMLElement) || hiddenControls.has(element)) return
@@ -2549,7 +2539,14 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
       })
       element.style.setProperty('display', 'none', 'important')
     }
-    const hideEngineeringControls = (): void => {
+    const refreshComposer = (): void => {
+      const card = inputRoot.querySelector<HTMLElement>('[data-composer-card]')
+      const textarea = card?.querySelector<HTMLTextAreaElement>('textarea')
+      if (textarea != null) {
+        if (!managedTextareas.has(textarea)) managedTextareas.set(textarea, textarea.getAttribute('placeholder'))
+        if (textarea.getAttribute('placeholder') !== placeholder) textarea.setAttribute('placeholder', placeholder)
+      }
+      if (viewMode === 'debug') return
       const row = card?.lastElementChild
       const tools = row?.firstElementChild
       const trailing = row?.lastElementChild
@@ -2558,22 +2555,25 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
         if (element.tagName !== 'BUTTON') hide(element)
       }
       for (const element of Array.from(inputRoot.children)) {
-        if (element !== card && element !== rootRef.current) hide(element)
+        if (element !== card && element !== dock) hide(element)
       }
     }
-    hideEngineeringControls()
-    const observer = new MutationObserver(hideEngineeringControls)
-    observer.observe(inputRoot, { childList: true })
+    if (viewMode !== 'debug') dock.dataset.agentRpInput = ''
+    refreshComposer()
+    const observer = new MutationObserver(refreshComposer)
+    observer.observe(inputRoot, { attributeFilter: ['placeholder'], attributes: true, childList: true, subtree: true })
     return () => {
       observer.disconnect()
       for (const [element, { display, priority }] of hiddenControls) {
         if (display === '') element.style.removeProperty('display')
         else element.style.setProperty('display', display, priority)
       }
-      delete inputRoot.dataset.agentRpInput
-      if (textarea.getAttribute('placeholder') !== placeholder) return
-      if (previousPlaceholder === null) textarea.removeAttribute('placeholder')
-      else textarea.setAttribute('placeholder', previousPlaceholder)
+      delete dock.dataset.agentRpInput
+      for (const [textarea, previousPlaceholder] of managedTextareas) {
+        if (textarea.getAttribute('placeholder') !== placeholder) continue
+        if (previousPlaceholder === null) textarea.removeAttribute('placeholder')
+        else textarea.setAttribute('placeholder', previousPlaceholder)
+      }
     }
   }, [placeholder, viewMode])
   useEffect(() => {
@@ -2878,7 +2878,7 @@ function base64(data: Uint8Array): string {
 }
 
 /** Client services required by the Roleplay shell. */
-export const inject = ['connection', 'slots', 'sessions']
+export const inject = ['connection', 'slots', 'sessions', 'workspaces']
 
 /** Register the Agent RP header, composer presentation, and import affordance. */
 export function apply(ctx: ClientContext): void {
@@ -2942,28 +2942,16 @@ export function apply(ctx: ClientContext): void {
     const scope = ctx.sessions.scope(sessionId)
     const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
     if (session === undefined) throw new Error('当前角色会话不可用')
-    const response = await fetch(`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(character.id)}/asset`)
-    if (!response.ok) throw new Error(`无法读取角色卡原文件（${response.status}）`)
-    const data = base64(new Uint8Array(await response.arrayBuffer()))
-    const attachment = character.transport === 'png'
-      ? { type: 'image' as const, data, mediaType: 'image/png' as const, name: character.originalFilename }
-      : { type: 'file' as const, data, mediaType: character.mediaType, name: character.originalFilename }
-    const importerSession = session as unknown as {
-      prompt(content: Array<typeof attachment | { readonly type: 'text'; readonly text: string }>, mode: 'queue'):
-      Promise<
-        | { readonly ok: true; readonly value: unknown }
-        | { readonly ok: false; readonly error: { readonly message: string } }
-      >
+    const request: CharacterLibraryLaunchRequest = {
+      format: 0,
+      characterId: character.id,
+      greetingIndex,
+      ...(persona === undefined ? {} : { persona }),
     }
-    const result = await importerSession.prompt([attachment, {
-      type: 'text',
-      text: encodeCharacterLibrarySessionRequest({
-        format: 0,
-        greetingIndex,
-        ...(persona === undefined ? {} : { persona }),
-      }),
-    }], 'queue')
+    const result = await session.command(`/rp-character-library ${JSON.stringify(request)}`)
     if (!result.ok) throw new Error(result.error.message)
+    if (!result.value.matched) throw new Error('当前 Host 未启用角色库启动命令')
+    await renameSession(sessionId, character.displayName)
   }
   const startCharacterFromBlankSession = async (
     sessionId: SessionId,
@@ -2990,6 +2978,36 @@ export function apply(ctx: ClientContext): void {
       ctx.sessions.noteAgentPreset(sessionId, response.result.value.agentPreset)
     }
     await startCharacterSession(sessionId, character, greetingIndex, persona)
+  }
+  const startCharacterFromCurrentSession = async (
+    sessionId: SessionId,
+    character: CharacterLibraryDetail,
+    greetingIndex: number,
+    persona?: SessionPersonaSnapshot,
+  ): Promise<void> => {
+    const current = ctx.sessions.list.getSnapshot().byId[sessionId]
+    const workspace = ctx.workspaces.list.getSnapshot().items.find(item => item.sessionIds.includes(sessionId))
+    const created = await (ctx.sessions as unknown as {
+      create(options?: { readonly cwd?: string; readonly workspaceId?: string }): Promise<SessionId>
+    }).create(workspace === undefined
+      ? current?.cwd === undefined ? {} : { cwd: current.cwd }
+      : { workspaceId: workspace.workspaceId })
+    const connection = ctx.get('connection') as {
+      readonly api: {
+        readonly agentPresets: {
+          select(input: { readonly sessionId: SessionId; readonly agentPreset: string }): Promise<{
+            readonly result:
+            | { readonly ok: true; readonly value: { readonly agentPreset: string } }
+            | { readonly ok: false; readonly error: { readonly message: string } }
+          }>
+        }
+      }
+    }
+    const selected = await connection.api.agentPresets.select({ sessionId: created, agentPreset: 'agent-rp' })
+    if (!selected.result.ok) throw new Error(selected.result.error.message)
+    ctx.sessions.noteAgentPreset(created, selected.result.value.agentPreset)
+    await startCharacterSession(created, character, greetingIndex, persona)
+    ctx.sessions.open(created)
   }
   const personaLibraryJson = async <T,>(
     init?: { readonly method: 'POST'; readonly body: PersonaLibrarySaveRequest },
@@ -3112,10 +3130,13 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} startCharacterSession={startCharacterSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} startCharacterSession={startCharacterFromCurrentSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left', id: 'agent-rp-blank-launcher', order: -100,
   }, props => <BlankRoleplayLauncher {...props} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} startCharacterSession={startCharacterFromBlankSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-character-library',
+  }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',
   }, () => null))

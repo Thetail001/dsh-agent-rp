@@ -5,6 +5,9 @@ import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
 import { parseCharacterCardJson } from './character-card.ts'
 import { CHARACTER_IMPORT_DEGRADATIONS } from './types.ts'
 import type { CharacterCardPngPayload, CharacterImportDegradation, ImportedCharacterCard } from './types.ts'
+import type { SessionPersonaSnapshot } from '../persona-library-protocol.ts'
+
+const CHARACTER_LIBRARY_RESULT_PREFIX = 'agent-rp-character-library-v0:'
 
 export interface FileAttachmentRef {
   readonly kind: 'file'
@@ -56,6 +59,14 @@ export interface ActiveSessionCharacter {
   readonly meta: CharacterImportMeta
 }
 
+/** Complete model-free character selection stored by the private library command. */
+export interface CharacterLibraryLaunchRecord {
+  readonly format: 0
+  readonly libraryId: string
+  readonly meta: CharacterImportMeta
+  readonly persona?: SessionPersonaSnapshot
+}
+
 /** Reconstruct the normalized active card from its preserved JSON. */
 export function cardFromImportMeta(meta: CharacterImportMeta): ImportedCharacterCard {
   return parseCharacterCardJson(JSON.stringify(meta.raw))
@@ -89,12 +100,60 @@ function parseResult(value: JsonValue | undefined): CharacterImportResult {
   return record as unknown as CharacterImportResult
 }
 
-function parseMeta(value: JsonValue | undefined): CharacterImportMeta {
+export function parseCharacterImportMeta(value: JsonValue | undefined): CharacterImportMeta {
   const meta = jsonObject(value, 'import_character_card metadata')
   if (meta.format !== 0) throw new Error('import_character_card metadata has an unsupported format')
   const result = parseResult(meta.result)
   if (meta.raw === undefined) throw new Error('import_character_card metadata is missing raw card data')
   return { format: 0, result, raw: meta.raw }
+}
+
+/** Serialize one Host-owned character selection into its command result. */
+export function encodeCharacterLibraryLaunch(record: CharacterLibraryLaunchRecord): string {
+  return `${CHARACTER_LIBRARY_RESULT_PREFIX}${JSON.stringify(record)}`
+}
+
+/** Parse a character-library command result, declining unrelated command output. */
+export function decodeCharacterLibraryLaunch(source: string | undefined): CharacterLibraryLaunchRecord | undefined {
+  if (source?.startsWith(CHARACTER_LIBRARY_RESULT_PREFIX) !== true) return undefined
+  let value: unknown
+  try {
+    value = JSON.parse(source.slice(CHARACTER_LIBRARY_RESULT_PREFIX.length))
+  } catch (error: unknown) {
+    throw new Error('角色库启动结果不是有效 JSON', { cause: error })
+  }
+  const record = value as Record<string, JsonValue> | null
+  if (record === null || typeof record !== 'object' || Array.isArray(record)
+    || record.format !== 0 || typeof record.libraryId !== 'string'
+    || !/^card-[a-f0-9]{32}$/u.test(record.libraryId)
+    || Object.keys(record).some(key => key !== 'format' && key !== 'libraryId' && key !== 'meta' && key !== 'persona')) {
+    throw new Error('角色库启动结果字段无效')
+  }
+  const meta = parseCharacterImportMeta(record.meta)
+  const persona = record.persona === undefined ? undefined : parsePersonaSnapshot(record.persona)
+  if (meta.result.libraryId !== record.libraryId
+    || meta.result.sourceAttachmentId !== `library:${record.libraryId}`
+    || meta.result.userName !== persona?.name) {
+    throw new Error('角色库启动结果来源无效')
+  }
+  return {
+    format: 0,
+    libraryId: record.libraryId,
+    meta,
+    ...(persona === undefined ? {} : { persona }),
+  }
+}
+
+function parsePersonaSnapshot(value: JsonValue): SessionPersonaSnapshot {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('角色库 Persona 快照无效')
+  const record = value as Record<string, JsonValue>
+  if (typeof record.id !== 'string' || !/^persona-[0-9a-f-]+$/u.test(record.id)
+    || typeof record.name !== 'string' || record.name.trim() === '' || record.name.trim().length > 120
+    || typeof record.description !== 'string' || record.description.trim().length > 12_000
+    || Object.keys(record).some(key => key !== 'id' && key !== 'name' && key !== 'description')) {
+    throw new Error('角色库 Persona 快照字段无效')
+  }
+  return { id: record.id, name: record.name.trim(), description: record.description.trim() }
 }
 
 /** Recognize one durable PNG reference usable as a Character Card transport. */
@@ -145,7 +204,7 @@ function sourceAttachments(events: readonly SessionEvent[], sourceEventSeq: numb
 }
 
 function validateImport(events: readonly SessionEvent[], resultEvent: SessionEvent<'tool/result'>): ActiveSessionCharacter {
-  const meta = parseMeta(resultEvent.data.meta)
+  const meta = parseCharacterImportMeta(resultEvent.data.meta)
   const result = meta.result
   const card = parseCharacterCardJson(JSON.stringify(meta.raw))
   const call = resultEvent.sourceEventSeqs?.length === 1 ? events[resultEvent.sourceEventSeqs[0]!] : undefined
@@ -205,7 +264,7 @@ export function readActiveSessionCharacter(events: readonly SessionEvent[]): Act
   for (const event of events) {
     if (event.type === 'agent-rp/character-card-seed') {
       const attachment = event.data.source.attachments[0]
-      const meta = parseMeta(event.data.meta as unknown as JsonValue)
+      const meta = parseCharacterImportMeta(event.data.meta as unknown as JsonValue)
       const result = meta.result
       const card = parseCharacterCardJson(JSON.stringify(meta.raw))
       const expectedGreeting = [card.firstMessage, ...card.alternateGreetings][result.greetingIndex]
@@ -223,6 +282,25 @@ export function readActiveSessionCharacter(events: readonly SessionEvent[]): Act
         throw new Error('agent-rp/character-card-seed has invalid provenance')
       }
       active = { result, meta: { ...meta, raw: card.raw } }
+      continue
+    }
+    if (event.type === 'command/done' && event.data.kind === 'success') {
+      const launch = decodeCharacterLibraryLaunch(event.data.text)
+      if (launch !== undefined) {
+        const source = events[launch.meta.result.sourceEventSeq]
+        if (source?.type !== 'command/run' || source.data.name !== 'rp-character-library'
+          || source.seq >= event.seq || String(source.data.commandId) !== String(event.data.commandId)) {
+          throw new Error('角色库启动结果没有对应的命令来源')
+        }
+        const card = parseCharacterCardJson(JSON.stringify(launch.meta.raw))
+        const expectedGreeting = [card.firstMessage, ...card.alternateGreetings][launch.meta.result.greetingIndex]
+        if (launch.meta.result.name !== card.name || launch.meta.result.cardVersion !== card.version
+          || launch.meta.result.selectedGreeting !== expectedGreeting
+          || JSON.stringify(launch.meta.result.degradations) !== JSON.stringify(card.degradations)) {
+          throw new Error('角色库启动结果与角色卡不一致')
+        }
+        active = { result: launch.meta.result, meta: { ...launch.meta, raw: card.raw } }
+      }
       continue
     }
     if (event.type !== 'tool/result' || event.data.message.content[0].isError === true) continue
@@ -271,4 +349,26 @@ export function prepareCharacterImportResult(
     degradations: [...card.degradations],
     raw: card.raw,
   }
+}
+
+/** Build durable metadata for a card selected from the Host-owned library. */
+export function prepareCharacterLibraryImportMeta(
+  card: ImportedCharacterCard,
+  transport: CharacterImportTransport,
+  sourceEventSeq: number,
+  libraryId: string,
+  greetingIndex: number,
+  userName?: string,
+): CharacterImportMeta {
+  const attachment = {
+    kind: 'file' as const,
+    attachmentId: `library:${libraryId}` as ImageAttachmentRef['attachmentId'],
+    bytes: 1,
+    name: `library.${transport.transport}`,
+  }
+  const value = prepareCharacterImportResult(
+    card, transport, sourceEventSeq, attachment, greetingIndex, userName, libraryId,
+  )
+  const { raw, ...result } = value
+  return { format: 0, result, raw }
 }

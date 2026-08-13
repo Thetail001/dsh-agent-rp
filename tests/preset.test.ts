@@ -214,6 +214,39 @@ test('claims character-card images for every Agent joined to the preset, includi
   })
 })
 
+test('mounts commands when public DSH omits prompt extension gateways', async (context) => {
+  const root = new Context()
+  await root.plugin(AgentRegistry)
+  const preset = createScope(root, {})
+  const commands: string[] = []
+  root.provide('apiProxy' as never, {} as never)
+  root.provide('systemPrompt' as never, { section: () => () => {}, context: () => () => {} } as never)
+  root.provide('tools' as never, { register: () => () => {} } as never)
+  root.provide('commands' as never, {
+    register(definition: { readonly name: string }) {
+      commands.push(definition.name)
+      return () => {}
+    },
+  } as never)
+  root.provide('attachments' as never, {} as never)
+  const characterLibraryRoot = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-public-gateway-'))
+  context.after(() => { rmSync(characterLibraryRoot, { recursive: true, force: true }) })
+
+  installAgentRp(preset.ctx, resolveConfig({ mode: 'character' }), { characterLibraryRoot })
+  assert.deepEqual(commands, [
+    'rp-character-library',
+    'rp-preset-configure',
+    'rp-preset-library',
+    'rp-generation',
+    'rp-world-info',
+  ])
+
+  context.after(async () => {
+    await preset.dispose()
+    await root.fiber.dispose()
+  })
+})
+
 test('recognizes one explicitly selected Character Card JSON import', () => {
   const selected = [
     { type: 'text' as const, text: '请导入这张角色卡' },
