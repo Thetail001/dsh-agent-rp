@@ -10,7 +10,7 @@ import type { ActiveSessionPreset, PresetImportMeta } from './import/session-pre
 import { presetRegexScripts, type ImportedSillyTavernPreset } from './import/sillytavern-preset.ts'
 import type { AgentRpProjection } from './projection-types.ts'
 import { applyMvuReply, readCurrentMvuState } from './mvu.ts'
-import { canTogglePresetPrompt } from './preset-configuration.ts'
+import { canEditPresetPrompt, canTogglePresetPrompt } from './preset-configuration.ts'
 import { configurePreset, parsePresetConfigurationRequest } from './preset-configuration-core.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
@@ -135,10 +135,12 @@ function presetProjection(
   name: string,
   preset: ImportedSillyTavernPreset,
   revision: number,
+  importedPreset: ImportedSillyTavernPreset = preset,
 ): NonNullable<AgentRpProjection['preset']> {
   const generation = preset.generation
   const enabled = new Set(preset.order.filter(entry => entry.enabled).map(entry => entry.identifier))
   const promptsById = new Map(preset.prompts.map(prompt => [prompt.identifier, prompt]))
+  const importedPromptsById = new Map(importedPreset.prompts.map(prompt => [prompt.identifier, prompt]))
   const appliedGeneration = [
     generation.temperature === undefined ? undefined : 'temperature',
     generation.maxTokens === undefined ? undefined : 'maxTokens（受模型上限约束）',
@@ -166,19 +168,25 @@ function presetProjection(
         identifier: prompt.identifier,
         name: prompt.name,
         role: prompt.role,
+        content: prompt.content,
+        contentModified: prompt.content !== importedPromptsById.get(prompt.identifier)?.content,
         marker: prompt.marker,
         attached: true,
         enabled: entry.enabled,
         toggleable: canTogglePresetPrompt(preset, prompt.identifier),
+        editable: canEditPresetPrompt(preset, prompt.identifier),
       }]
     }), ...preset.prompts.filter(prompt => !preset.order.some(entry => entry.identifier === prompt.identifier)).map(prompt => ({
       identifier: prompt.identifier,
       name: prompt.name,
       role: prompt.role,
+      content: prompt.content,
+      contentModified: prompt.content !== importedPromptsById.get(prompt.identifier)?.content,
       marker: prompt.marker,
       attached: false,
       enabled: false,
       toggleable: canTogglePresetPrompt(preset, prompt.identifier),
+      editable: canEditPresetPrompt(preset, prompt.identifier),
     }))],
     generation: {
       ...(generation.temperature === undefined ? {} : { temperature: generation.temperature }),
@@ -255,7 +263,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         const revision = state.presetState.revision + 1
         return {
           ...state,
-          preset: presetProjection(state.preset.name, configured, revision),
+          preset: presetProjection(state.preset.name, configured, revision, state.presetState.importedPreset),
           presetState: { ...state.presetState, preset: configured, revision },
         }
       } catch {

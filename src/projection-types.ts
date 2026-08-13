@@ -30,10 +30,13 @@ export interface AgentRpProjection {
       readonly identifier: string
       readonly name: string
       readonly role: 'system' | 'user' | 'assistant'
+      readonly content: string
+      readonly contentModified: boolean
       readonly marker: boolean
       readonly attached: boolean
       readonly enabled: boolean
       readonly toggleable: boolean
+      readonly editable: boolean
     }[]
     readonly generation: {
       readonly temperature?: number

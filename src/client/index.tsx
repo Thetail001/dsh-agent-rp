@@ -355,6 +355,8 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
   const [collapsedPromptSections, setCollapsedPromptSections] = useState<ReadonlySet<string>>(() => new Set(
     projectPresetPromptSections(preset.prompts).slice(1).map(group => group.key),
   ))
+  const [editedPromptIds, setEditedPromptIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [editingPromptId, setEditingPromptId] = useState<string>()
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string>()
   const importInputRef = useRef<HTMLInputElement | null>(null)
@@ -376,6 +378,7 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
     || script.scriptName.toLocaleLowerCase().includes(normalizedQuery))
   const attached = prompts.filter(prompt => prompt.attached)
   const enabledCount = attached.filter(prompt => prompt.enabled).length
+  const editingPrompt = prompts.find(prompt => prompt.identifier === editingPromptId)
   const togglePromptSection = (key: string): void => {
     setCollapsedPromptSections((current) => {
       const next = new Set(current)
@@ -386,6 +389,16 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
   }
   const setPrompt = (identifier: string, update: (prompt: PresetPromptProjection) => PresetPromptProjection): void => {
     setPrompts(current => current.map(prompt => prompt.identifier === identifier ? update(prompt) : prompt))
+  }
+  const setPromptContent = (identifier: string, content: string): void => {
+    const original = preset.prompts.find(prompt => prompt.identifier === identifier)?.content
+    setPrompt(identifier, prompt => ({ ...prompt, content }))
+    setEditedPromptIds((current) => {
+      const next = new Set(current)
+      if (content === original) next.delete(identifier)
+      else next.add(identifier)
+      return next
+    })
   }
   const move = (identifier: string, direction: -1 | 1): void => {
     setPrompts((current) => {
@@ -421,6 +434,10 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
         order: prompts.filter(prompt => prompt.attached).map(prompt => ({
           identifier: prompt.identifier,
           enabled: prompt.enabled,
+        })),
+        content: prompts.filter(prompt => editedPromptIds.has(prompt.identifier)).map(prompt => ({
+          identifier: prompt.identifier,
+          content: prompt.content,
         })),
         generation: {
           temperature: resolvedTemperature,
@@ -509,10 +526,12 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
                   <div style={{ alignItems: 'center', display: 'flex', gap: '7px', minWidth: 0 }}>
                     <span style={{ fontSize: '13px', fontWeight: 560, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prompt.name || prompt.identifier}</span>
                     <span style={{ fontSize: '10px', opacity: 0.48 }}>{prompt.marker ? '结构位' : roleLabel(prompt.role)}</span>
+                    {(prompt.contentModified || editedPromptIds.has(prompt.identifier)) && <span style={{ color, fontSize: '10px', opacity: 0.82 }}>已修改</span>}
                   </div>
                   <div title={prompt.identifier} style={{ fontFamily: 'ui-monospace, monospace', fontSize: '10px', marginTop: '3px', opacity: 0.38, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prompt.identifier}</div>
                 </div>
                 <div style={{ alignItems: 'center', display: 'flex', gap: '5px' }}>
+                  {prompt.editable && <button type="button" onClick={() => { setEditingPromptId(prompt.identifier) }} style={miniButtonStyle}>编辑</button>}
                   {prompt.attached && <>
                     <button type="button" aria-label={`上移${prompt.name}`} disabled={attachedIndex <= 0 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, -1) }} style={miniButtonStyle}>↑</button>
                     <button type="button" aria-label={`下移${prompt.name}`} disabled={attachedIndex >= attached.length - 1 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, 1) }} style={miniButtonStyle}>↓</button>
@@ -591,6 +610,47 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
         <button type="button" disabled={saving} onClick={() => { importInputRef.current?.click() }} style={secondaryButtonStyle}>替换预设</button>
         <button type="button" disabled={saving} onClick={onClose} style={secondaryButtonStyle}>取消</button>
         <button type="button" disabled={saving} onClick={() => { void save() }} style={primaryButtonStyle}>{saving ? '保存中…' : '保存到此会话'}</button>
+      </footer>
+    </section>
+    {editingPrompt !== undefined && <PresetPromptEditorDialog
+      prompt={editingPrompt}
+      onClose={() => { setEditingPromptId(undefined) }}
+      onApply={(content) => {
+        setPromptContent(editingPrompt.identifier, content)
+        setEditingPromptId(undefined)
+      }}
+    />}
+  </div>
+}
+
+function PresetPromptEditorDialog({ prompt, onClose, onApply }: {
+  readonly prompt: PresetPromptProjection
+  readonly onClose: () => void
+  readonly onApply: (content: string) => void
+}) {
+  const [content, setContent] = useState(prompt.content)
+  return <div role="dialog" aria-modal="true" aria-label={`编辑${prompt.name || prompt.identifier}`} style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.7)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1150,
+  }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #151518)', border: '1px solid var(--dsw-alias-border-l2, #38383d)',
+      borderRadius: '14px', boxShadow: '0 24px 80px rgba(0,0,0,.5)', display: 'flex', flexDirection: 'column',
+      maxHeight: 'min(820px, 90vh)', maxWidth: '760px', overflow: 'hidden', width: 'min(94vw, 760px)',
+    }}>
+      <header style={{ borderBottom: '1px solid var(--dsw-alias-border-l2, #343438)', padding: '17px 19px 14px' }}>
+        <h3 style={{ fontSize: '16px', margin: 0 }}>{prompt.name || prompt.identifier}</h3>
+        <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: '10px', marginTop: '5px', opacity: 0.4 }}>{prompt.identifier} · {roleLabel(prompt.role)}</div>
+      </header>
+      <textarea aria-label="提示内容" autoFocus spellCheck={false} value={content} onChange={event => { setContent(event.target.value) }} style={{
+        background: 'var(--dsw-alias-bg-layer-1, #202024)', border: 0, color: 'inherit', flex: '1 1 auto',
+        font: '13px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace', minHeight: '360px', outline: 'none',
+        padding: '16px 18px', resize: 'none', whiteSpace: 'pre-wrap',
+      }} />
+      <footer style={{ alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #343438)', display: 'flex', gap: '9px', justifyContent: 'flex-end', padding: '12px 18px' }}>
+        <span style={{ fontSize: '10px', marginRight: 'auto', opacity: 0.42 }}>{content.length.toLocaleString()} 字符</span>
+        <button type="button" onClick={onClose} style={secondaryButtonStyle}>取消</button>
+        <button type="button" onClick={() => { onApply(content) }} style={primaryButtonStyle}>应用修改</button>
       </footer>
     </section>
   </div>

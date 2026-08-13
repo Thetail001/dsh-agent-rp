@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { CommandId } from '@deepseek-ai/dsh-commands'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   canTogglePresetPrompt,
   configurePreset,
@@ -9,6 +9,7 @@ import {
 } from '../src/preset-configuration.ts'
 import { createPresetSessionSeed, readActiveSessionPreset } from '../src/import/session-preset.ts'
 import { parseSillyTavernPresetJson } from '../src/import/sillytavern-preset.ts'
+import { assembleSillyTavernPreset } from '../src/preset-prompt.ts'
 import type { FileAttachmentRef } from '../src/import/session-character.ts'
 
 const source = {
@@ -61,6 +62,7 @@ test('edits module switches, order, and generation without changing imported def
       { identifier: 'style', enabled: true },
       { identifier: 'main', enabled: true },
     ],
+    content: [],
     generation: { temperature: 1.1, maxTokens: null, reasoningEffort: 'high' },
     regex: [],
   })
@@ -105,6 +107,7 @@ test('replays the latest session configuration and rejects stale editor revision
         operation: 'replace',
         revision: 0,
         order: preset.order.map(entry => ({ ...entry, enabled: entry.identifier !== 'private-marker' })),
+        content: [{ identifier: 'style', content: 'edited style' }],
         generation: {},
         regex: [],
       }),
@@ -114,6 +117,18 @@ test('replays the latest session configuration and rejects stale editor revision
   const replayed = readActiveSessionPreset([...seed, configured])
   assert.equal(replayed?.revision, 1)
   assert.equal(replayed?.preset.order.find(entry => entry.identifier === 'style')?.enabled, true)
+  assert.equal(replayed?.preset.prompts.find(entry => entry.identifier === 'style')?.content, 'edited style')
+  assert.equal(replayed?.importedPreset.prompts.find(entry => entry.identifier === 'style')?.content, 'style')
+  const assembled = assembleSillyTavernPreset(replayed!.preset, {
+    card: {
+      format: 0, version: 2, specVersion: '2.0', name: '角色', description: '', personality: '', scenario: '',
+      firstMessage: '', messageExample: '', alternateGreetings: [], systemPrompt: '', postHistoryInstructions: '',
+      frontend: { regexScripts: [], tavernHelperScriptNames: [] }, degradations: [], raw: {},
+    },
+    worldInfoBefore: [], worldInfoAfter: [], session: Session.create(SessionId('configured-preset-prompt')), pendingMessages: [],
+  })
+  assert.match(assembled.system, /edited style/u)
+  assert.doesNotMatch(assembled.system, /^style$/mu)
   assert.equal(replayed?.importedPreset.order[1]?.enabled, false)
   assert.throws(() => configurePreset(replayed!, {
     operation: 'toggle', revision: 0, identifier: 'style', enabled: false,
@@ -128,8 +143,12 @@ test('decodes the private manager command at its Host boundary', () => {
   assert.throws(() => parsePresetConfigurationRequest(JSON.stringify({
     operation: 'replace', revision: 0,
     order: [{ identifier: 'style', enabled: true }, { identifier: 'style', enabled: false }],
-    generation: {}, regex: [],
+    content: [], generation: {}, regex: [],
   })), /repeats module/u)
+  assert.throws(() => configurePreset(activePreset(), {
+    operation: 'replace', revision: 0, order: activePreset().preset.order,
+    content: [{ identifier: 'main', content: 'cannot edit a marker' }], generation: {}, regex: [],
+  }), /no editable content/u)
   assert.deepEqual(parsePresetConfigurationRequest(JSON.stringify({
     operation: 'generation', revision: 0, reasoningEffort: 'provider-owned-level',
   })), { operation: 'generation', revision: 0, reasoningEffort: 'provider-owned-level' })
@@ -152,11 +171,11 @@ test('edits preset regex switches independently from prompt modules', () => {
     result: { ...activePreset().result, regexScriptCount: 1 },
   }
   const disabled = configurePreset(active, {
-    operation: 'replace', revision: 0, order: preset.order, generation: {}, regex: [{ index: 0, disabled: true }],
+    operation: 'replace', revision: 0, order: preset.order, content: [], generation: {}, regex: [{ index: 0, disabled: true }],
   })
   assert.equal(disabled.regexScripts[0]?.disabled, true)
   assert.equal(disabled.order[0]?.enabled, true)
   assert.throws(() => configurePreset(active, {
-    operation: 'replace', revision: 0, order: preset.order, generation: {}, regex: [{ index: 1, disabled: true }],
+    operation: 'replace', revision: 0, order: preset.order, content: [], generation: {}, regex: [{ index: 1, disabled: true }],
   }), /does not match/u)
 })

@@ -4,7 +4,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { configurePreset, parsePresetConfigurationRequest } from './preset-configuration-core.ts'
 import { readActiveSessionPreset } from './import/session-preset.ts'
 
-export { canTogglePresetPrompt, configurePreset, parsePresetConfigurationRequest } from './preset-configuration-core.ts'
+export { canEditPresetPrompt, canTogglePresetPrompt, configurePreset, parsePresetConfigurationRequest } from './preset-configuration-core.ts'
 export type { PresetConfigurationRequest } from './preset-configuration-types.ts'
 
 /** Validate one UI-only preset command; its existing command/run event is the durable mutation. */

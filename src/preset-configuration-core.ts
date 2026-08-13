@@ -23,6 +23,12 @@ export function canTogglePresetPrompt(preset: ImportedSillyTavernPreset, identif
   return prompt !== undefined && (!prompt.marker || FORCE_TOGGLE_MARKERS.has(identifier))
 }
 
+/** Whether one module owns literal text that can be edited by the Prompt Manager. */
+export function canEditPresetPrompt(preset: ImportedSillyTavernPreset, identifier: string): boolean {
+  const prompt = preset.prompts.find(item => item.identifier === identifier)
+  return prompt !== undefined && !prompt.marker
+}
+
 function object(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${label} must be an object`)
   return value as Record<string, unknown>
@@ -66,6 +72,20 @@ function regex(value: unknown): readonly { readonly index: number; readonly disa
     seen.add(scriptIndex)
     if (typeof record.disabled !== 'boolean') throw new Error(`regex[${itemIndex}].disabled must be a boolean`)
     return { index: scriptIndex, disabled: record.disabled }
+  })
+}
+
+function content(value: unknown): readonly { readonly identifier: string; readonly content: string }[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error('content must be an array')
+  const seen = new Set<string>()
+  return value.map((item, itemIndex) => {
+    const record = object(item, `content[${itemIndex}]`)
+    const id = identifier(record.identifier, `content[${itemIndex}].identifier`)
+    if (seen.has(id)) throw new Error(`content repeats module ${JSON.stringify(id)}`)
+    seen.add(id)
+    if (typeof record.content !== 'string') throw new Error(`content[${itemIndex}].content must be a string`)
+    return { identifier: id, content: record.content }
   })
 }
 
@@ -113,6 +133,7 @@ export function parsePresetConfigurationRequest(source: string): PresetConfigura
         operation: 'replace',
         ...common,
         order: order(value.order),
+        content: content(value.content),
         generation: generation(value.generation),
         regex: regex(value.regex),
       }
@@ -182,6 +203,13 @@ export function configurePreset(
         if (!current) throw new Error(`preset module ${JSON.stringify(entry.identifier)} cannot be enabled`)
       }
     }
+    const contentById = new Map(request.content.map(entry => [entry.identifier, entry.content]))
+    for (const identifier of contentById.keys()) {
+      if (!prompts.has(identifier)) throw new Error(`preset has no module ${JSON.stringify(identifier)}`)
+      if (!canEditPresetPrompt(active.preset, identifier)) {
+        throw new Error(`preset module ${JSON.stringify(identifier)} has no editable content`)
+      }
+    }
     const scripts = presetRegexScripts(active.preset)
     if (request.regex.length !== scripts.length
       || request.regex.some(entry => entry.index >= scripts.length)) {
@@ -190,6 +218,9 @@ export function configurePreset(
     const disabledByIndex = new Map(request.regex.map(entry => [entry.index, entry.disabled]))
     return {
       ...structuredClone(active.preset),
+      prompts: active.preset.prompts.map(prompt => contentById.has(prompt.identifier)
+        ? { ...prompt, content: contentById.get(prompt.identifier)! }
+        : { ...prompt }),
       order: request.order.map(item => ({ ...item })),
       generation: withGeneration(active.preset.generation, {
         operation: 'generation',

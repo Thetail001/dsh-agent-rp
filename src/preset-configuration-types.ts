@@ -4,6 +4,7 @@ export type PresetConfigurationRequest =
     readonly operation: 'replace'
     readonly revision: number
     readonly order: readonly { readonly identifier: string; readonly enabled: boolean }[]
+    readonly content: readonly { readonly identifier: string; readonly content: string }[]
     readonly generation: {
       readonly temperature?: number | null
       readonly maxTokens?: number | null
