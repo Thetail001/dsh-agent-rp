@@ -73,6 +73,8 @@ import { readCurrentMvuState } from './mvu.ts'
 import { installMvuStreamCompletion } from './mvu-stream.ts'
 import { assembleSillyTavernPreset } from './preset-prompt.ts'
 import { configurePresetFromCommand } from './preset-configuration.ts'
+import { PresetLibrary } from './preset-library.ts'
+import { executePresetLibraryCommand } from './preset-library-command.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -349,11 +351,18 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
   const presetAfterHistoryByAgent = new WeakMap<Agent, string>()
   const gateway = (ctx as Context & { apiProxy: PromptAttachmentGateway }).apiProxy
   const commands = (ctx as Context & { commands: HumanCommandGateway }).commands
+  const presetLibrary = new PresetLibrary()
   commands.register({
     name: 'rp-preset-configure',
     description: 'update this roleplay Session preset',
     input: { hint: '<private preset-manager payload>' },
     handler: configurePresetFromCommand,
+  })
+  commands.register({
+    name: 'rp-preset-library',
+    description: 'manage reusable roleplay presets',
+    input: { hint: '<private preset-library payload>' },
+    handler: invocation => executePresetLibraryCommand(presetLibrary, invocation),
   })
   ctx.effect(() => gateway.registerPromptAttachmentConsumer('dsh-agent-rp', ({ agent, content }) => (
     claimAgentRpPrompt(agentsByScope.get(agent) === agent, content)
@@ -445,8 +454,9 @@ export function installAgentRp(ctx: Context, config: ResolvedConfig): void {
         throw new Error('SillyTavern preset import requires one JSON file')
       }
       const preset = parseSillyTavernPresetBytes(await input.readFile(attachment, signal), attachment.name)
+      const libraryEntry = presetLibrary.import(preset)
       return {
-        seed: createPresetSessionSeed(input.source.session.events, preset, attachment),
+        seed: createPresetSessionSeed(input.source.session.events, libraryEntry.preset, attachment, libraryEntry.id),
         title: readActiveSessionCharacter(input.source.session.events)?.result.name ?? preset.name,
       }
     },

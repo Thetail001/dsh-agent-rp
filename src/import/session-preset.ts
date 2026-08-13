@@ -4,6 +4,7 @@ import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { FileAttachmentRef } from './session-character.ts'
 import type { ImportedSillyTavernPreset } from './sillytavern-preset.ts'
 import { configurePreset, parsePresetConfigurationRequest } from '../preset-configuration-core.ts'
+import { parsePresetLibraryResult } from '../preset-library-protocol.ts'
 
 /** Compact result of importing one preset attachment. */
 export interface PresetImportResult {
@@ -36,6 +37,8 @@ export interface ActiveSessionPreset {
   /** Current edited manager state. */
   readonly preset: ImportedSillyTavernPreset
   readonly revision: number
+  /** Reusable source selected for this snapshot, when one still has a library identity. */
+  readonly libraryId?: string
 }
 
 /** Model-free preset activation retained in one forked roleplay Session. */
@@ -47,12 +50,31 @@ export interface PresetSeedRecord {
   }
   readonly result: PresetImportResult
   readonly preset: ImportedSillyTavernPreset
+  readonly libraryId?: string
 }
 
 declare module '@deepseek-ai/dsh-session' {
   interface SessionEventMap {
     /** Skippable preset activation whose source attachment remains inspectable. */
     'agent-rp/sillytavern-preset-seed': PresetSeedRecord
+  }
+}
+
+function resultFor(
+  preset: ImportedSillyTavernPreset,
+  name: string,
+  sourceEventSeq: number,
+  sourceAttachmentId: string,
+): PresetImportResult {
+  const enabled = new Set(preset.order.filter(item => item.enabled).map(item => item.identifier))
+  return {
+    version: 0,
+    name,
+    sourceEventSeq,
+    sourceAttachmentId,
+    promptCount: preset.prompts.length,
+    enabledCount: preset.prompts.filter(item => enabled.has(item.identifier)).length,
+    regexScriptCount: preset.extensionSummary.regexScriptCount,
   }
 }
 
@@ -87,6 +109,28 @@ export function readActiveSessionPreset(events: readonly SessionEvent[]): Active
         importedPreset: event.data.preset,
         preset: event.data.preset,
         revision: 0,
+        ...(event.data.libraryId === undefined ? {} : { libraryId: event.data.libraryId }),
+      }
+      continue
+    }
+    if (event.type === 'command/done' && event.data.kind === 'success') {
+      const library = parsePresetLibraryResult(event.data.text)
+      if (library === undefined) continue
+      if (library.selected !== undefined) {
+        active = {
+          result: resultFor(
+            library.selected.preset,
+            library.selected.name,
+            event.seq,
+            `library:${library.selected.libraryId}`,
+          ),
+          importedPreset: library.selected.preset,
+          preset: library.selected.preset,
+          revision: 0,
+          libraryId: library.selected.libraryId,
+        }
+      } else if (active !== undefined && library.linkedLibraryId !== undefined) {
+        active = { ...active, libraryId: library.linkedLibraryId }
       }
       continue
     }
@@ -123,6 +167,7 @@ export function createPresetSessionSeed(
   events: readonly SessionEvent[],
   preset: ImportedSillyTavernPreset,
   attachment: FileAttachmentRef,
+  libraryId?: string,
 ): readonly SessionEvent[] {
   const prepared = preparePresetImportResult(preset, events.length, attachment)
   const { preset: _value, ...result } = prepared
@@ -135,6 +180,7 @@ export function createPresetSessionSeed(
       source: { attachmentConsumer: 'dsh-agent-rp', attachments: [attachment] },
       result,
       preset,
+      ...(libraryId === undefined ? {} : { libraryId }),
     },
     ignorable: true,
   }]
@@ -146,15 +192,8 @@ export function preparePresetImportResult(
   sourceEventSeq: number,
   attachment: FileAttachmentRef,
 ): PresetImportValue {
-  const enabled = new Set(preset.order.filter(item => item.enabled).map(item => item.identifier))
   return {
-    version: 0,
-    name: preset.name,
-    sourceEventSeq,
-    sourceAttachmentId: String(attachment.attachmentId),
-    promptCount: preset.prompts.length,
-    enabledCount: preset.prompts.filter(item => enabled.has(item.identifier)).length,
-    regexScriptCount: preset.extensionSummary.regexScriptCount,
+    ...resultFor(preset, preset.name, sourceEventSeq, String(attachment.attachmentId)),
     preset: structuredClone(preset) as unknown as JsonValue,
   }
 }

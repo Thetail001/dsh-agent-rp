@@ -12,6 +12,7 @@ import type { AgentRpProjection } from './projection-types.ts'
 import { applyMvuReply, readCurrentMvuState } from './mvu.ts'
 import { canEditPresetPrompt, canTogglePresetPrompt } from './preset-configuration.ts'
 import { configurePreset, parsePresetConfigurationRequest } from './preset-configuration-core.ts'
+import { parsePresetLibraryResult } from './preset-library-protocol.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -36,6 +37,7 @@ const projectionSchema = {
       || record.worldInfoCount < 0
       || (record.frontend !== undefined && (typeof record.frontend !== 'object' || record.frontend === null))
       || (record.preset !== undefined && (typeof record.preset !== 'object' || record.preset === null))
+      || !Array.isArray(record.presetLibrary)
       || !validSource) throw new Error('invalid agentRp projection')
     return value as AgentRpProjection
   },
@@ -44,13 +46,14 @@ const projectionSchema = {
 type ImportCall = 'character-card' | 'world-info' | 'preset'
 
 interface AgentRpProjectionState {
-  readonly character: Omit<AgentRpProjection, 'worldInfoCount'>
+  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'presetLibrary'>
   readonly cardWorldInfoCount: number
   readonly standaloneWorldInfos: Readonly<Record<string, number>>
   readonly calls: Readonly<Record<string, ImportCall>>
   readonly mvu?: AgentRpProjection['mvu']
   readonly preset?: AgentRpProjection['preset']
   readonly presetState?: ActiveSessionPreset
+  readonly presetLibrary: AgentRpProjection['presetLibrary']
 }
 
 const INITIAL_CHARACTER: AgentRpProjectionState['character'] = {
@@ -136,6 +139,7 @@ function presetProjection(
   preset: ImportedSillyTavernPreset,
   revision: number,
   importedPreset: ImportedSillyTavernPreset = preset,
+  libraryId?: string,
 ): NonNullable<AgentRpProjection['preset']> {
   const generation = preset.generation
   const enabled = new Set(preset.order.filter(entry => entry.enabled).map(entry => entry.identifier))
@@ -160,6 +164,7 @@ function presetProjection(
     generation.reasoningEffort === 'auto' ? 'reasoning_effort（auto，跟随模型）' : undefined,
   ].filter((value): value is string => value !== undefined)
   return {
+    ...(libraryId === undefined ? {} : { libraryId }),
     name,
     promptCount: preset.prompts.length,
     enabledCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier)).length,
@@ -277,6 +282,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     cardWorldInfoCount: 0,
     standaloneWorldInfos: {},
     calls: {},
+    presetLibrary: [],
   }),
   apply(state, event) {
     if (event.type === 'agent-rp/sillytavern-chat-import') {
@@ -309,11 +315,54 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         importedPreset: event.data.preset,
         preset: event.data.preset,
         revision: 0,
+        ...(event.data.libraryId === undefined ? {} : { libraryId: event.data.libraryId }),
       }
       return {
         ...state,
-        preset: presetProjection(event.data.result.name, event.data.preset, 0),
+        preset: presetProjection(event.data.result.name, event.data.preset, 0, event.data.preset, event.data.libraryId),
         presetState,
+      }
+    }
+    if (event.type === 'command/done' && event.data.kind === 'success') {
+      let library
+      try {
+        library = parsePresetLibraryResult(event.data.text)
+      } catch {
+        return state
+      }
+      if (library === undefined) return state
+      if (library.selected !== undefined) {
+        const selected = library.selected
+        const presetState: ActiveSessionPreset = {
+          result: {
+            version: 0,
+            name: selected.name,
+            sourceEventSeq: event.seq,
+            sourceAttachmentId: `library:${selected.libraryId}`,
+            promptCount: selected.preset.prompts.length,
+            enabledCount: selected.preset.order.filter(item => item.enabled).length,
+            regexScriptCount: selected.preset.extensionSummary.regexScriptCount,
+          },
+          importedPreset: selected.preset,
+          preset: selected.preset,
+          revision: 0,
+          libraryId: selected.libraryId,
+        }
+        return {
+          ...state,
+          presetLibrary: library.entries,
+          preset: presetProjection(selected.name, selected.preset, 0, selected.preset, selected.libraryId),
+          presetState,
+        }
+      }
+      if (state.preset === undefined || state.presetState === undefined || library.linkedLibraryId === undefined) {
+        return { ...state, presetLibrary: library.entries }
+      }
+      return {
+        ...state,
+        presetLibrary: library.entries,
+        preset: { ...state.preset, libraryId: library.linkedLibraryId },
+        presetState: { ...state.presetState, libraryId: library.linkedLibraryId },
       }
     }
     if (event.type === 'command/run' && event.data.name === 'rp-preset-configure' && event.data.args !== undefined) {
@@ -323,7 +372,13 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         const revision = state.presetState.revision + 1
         return {
           ...state,
-          preset: presetProjection(state.preset.name, configured, revision, state.presetState.importedPreset),
+          preset: presetProjection(
+            state.preset.name,
+            configured,
+            revision,
+            state.presetState.importedPreset,
+            state.presetState.libraryId,
+          ),
           presetState: { ...state.presetState, preset: configured, revision },
         }
       } catch {
@@ -417,6 +472,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
       + Object.values(state.standaloneWorldInfos).reduce((total, count) => total + count, 0),
     ...(state.mvu === undefined ? {} : { mvu: state.mvu }),
     ...(state.preset === undefined ? {} : { preset: state.preset }),
+    presetLibrary: state.presetLibrary,
   }),
-  stateVersion: 0,
+  stateVersion: 1,
 }

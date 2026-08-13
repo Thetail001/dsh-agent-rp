@@ -36,6 +36,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly loadAvatar: (attachmentId: string) => Promise<string | undefined>
   readonly configurePreset: (sessionId: SessionId, request: PresetConfigurationRequest) => Promise<void>
   readonly importPreset: (sessionId: SessionId, file: File) => Promise<void>
+  readonly managePresetLibrary: (sessionId: SessionId, request: PresetLibraryRequest) => Promise<void>
 }
 
 type ComposerDockProps = PropsRuntime<'conversation.composer.dock'>
@@ -130,14 +131,16 @@ function hideWhileMounted(elements: readonly (HTMLElement | null | undefined)[])
 }
 
 function roleplaySummary(summary: SessionSummary | undefined, projection: AgentRpProjection | undefined) {
+  if (projection !== undefined) return projection
   if (summary?.agentPreset !== 'agent-rp') return undefined
-  return projection ?? {
+  return {
     characterName: summary.displayTitle,
     description: '',
     personality: '',
     scenario: '',
     importedMessageCount: 0,
     worldInfoCount: 0,
+    presetLibrary: [],
     source: 'preset' as const,
   }
 }
@@ -198,7 +201,9 @@ function DetailSection({ title, text }: { readonly title: string; readonly text:
   </section>
 }
 
-function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar, configurePreset, importPreset }: HeaderProps) {
+function RoleplayHeader({
+  sessionId, useProjection, useSessions, loadAvatar, configurePreset, importPreset, managePresetLibrary,
+}: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projected = useProjection('agentRp')
   const projection = roleplaySummary(summary, projected)
@@ -322,20 +327,28 @@ function RoleplayHeader({ sessionId, useProjection, useSessions, loadAvatar, con
     />}
     {presetOpen && (projection.preset === undefined
       ? <PresetImportDialog
+          entries={projection.presetLibrary}
           onClose={() => { setPresetOpen(false) }}
           onImport={file => importPreset(sessionId, file)}
+          onLibrary={request => managePresetLibrary(sessionId, request)}
         />
       : <PresetManagerDialog
           preset={projection.preset}
+          entries={projection.presetLibrary}
           onClose={() => { setPresetOpen(false) }}
           onImport={file => importPreset(sessionId, file)}
           onSave={request => configurePreset(sessionId, request)}
+          onLibrary={request => managePresetLibrary(sessionId, request)}
         />)}
   </>
 }
 
 type PresetProjection = NonNullable<AgentRpProjection['preset']>
 type PresetPromptProjection = PresetProjection['prompts'][number]
+type PresetLibraryEntry = AgentRpProjection['presetLibrary'][number]
+type PresetLibraryRequest = { readonly operation: 'list' }
+  | { readonly operation: 'select' | 'delete'; readonly id: string }
+  | { readonly operation: 'save'; readonly name: string }
 
 function roleLabel(role: PresetPromptProjection['role']): string {
   switch (role) {
@@ -345,11 +358,13 @@ function roleLabel(role: PresetPromptProjection['role']): string {
   }
 }
 
-function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
+function PresetManagerDialog({ preset, entries, onClose, onImport, onSave, onLibrary }: {
   readonly preset: PresetProjection
+  readonly entries: AgentRpProjection['presetLibrary']
   readonly onClose: () => void
   readonly onImport: (file: File) => Promise<void>
   readonly onSave: (request: PresetConfigurationRequest) => Promise<void>
+  readonly onLibrary: (request: PresetLibraryRequest) => Promise<void>
 }) {
   const [prompts, setPrompts] = useState(() => preset.prompts.map(prompt => ({ ...prompt })))
   const [regexScripts, setRegexScripts] = useState(() => preset.regexScripts.map(script => ({ ...script })))
@@ -365,6 +380,7 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
   const [promptFilter, setPromptFilter] = useState<'all' | 'enabled' | 'modified'>('all')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string>()
+  const [libraryOpen, setLibraryOpen] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const attachedPositionById = new Map(prompts.filter(prompt => prompt.attached).map((prompt, position) => [prompt.identifier, position]))
@@ -513,16 +529,16 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
       return [...next, ...detachedPrompts]
     })
   }
-  const save = async (): Promise<void> => {
+  const save = async (close = true): Promise<boolean> => {
     const resolvedTemperature = temperature.trim() === '' ? null : Number(temperature)
     const resolvedMaxTokens = maxTokens.trim() === '' ? null : Number(maxTokens)
     if (resolvedTemperature !== null && (!Number.isFinite(resolvedTemperature) || resolvedTemperature < 0 || resolvedTemperature > 2)) {
       setError('温度需填写 0 到 2 之间的数字')
-      return
+      return false
     }
     if (resolvedMaxTokens !== null && (!Number.isSafeInteger(resolvedMaxTokens) || resolvedMaxTokens < 1)) {
       setError('最大输出需填写正整数')
-      return
+      return false
     }
     setSaving(true)
     setError(undefined)
@@ -551,9 +567,11 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
         },
         regex: regexScripts.map(script => ({ index: script.index, disabled: script.disabled })),
       })
-      onClose()
+      if (close) onClose()
+      return true
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : '预设保存失败')
+      return false
     } finally {
       setSaving(false)
     }
@@ -565,7 +583,21 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
       await onSave({ operation: 'reset', revision: preset.revision })
       onClose()
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : '恢复导入值失败')
+      setError(reason instanceof Error ? reason.message : '恢复预设默认值失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+  const saveToLibrary = async (): Promise<void> => {
+    const name = window.prompt('新预设名称', `${preset.name} · 副本`)?.trim()
+    if (name === undefined || name === '') return
+    if (!await save(false)) return
+    setSaving(true)
+    try {
+      await onLibrary({ operation: 'save', name })
+      onClose()
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : '另存预设失败')
     } finally {
       setSaving(false)
     }
@@ -645,7 +677,7 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
                 </div>
                 <div style={{ alignItems: 'center', display: 'flex', gap: '5px' }}>
                   {prompt.editable && <button type="button" onClick={() => { setEditingPromptId(prompt.identifier) }} style={miniButtonStyle}>编辑</button>}
-                  {prompt.imported && prompt.editable && prompt.content !== prompt.importedContent && <button type="button" onClick={() => { setPromptContent(prompt.identifier, prompt.importedContent) }} style={miniButtonStyle}>恢复正文</button>}
+                  {prompt.imported && prompt.editable && prompt.content !== prompt.importedContent && <button type="button" onClick={() => { setPromptContent(prompt.identifier, prompt.importedContent) }} style={miniButtonStyle}>恢复默认正文</button>}
                   {prompt.attached && <>
                     <button type="button" aria-label={`上移${prompt.name}`} disabled={attachedIndex <= 0 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, -1) }} style={miniButtonStyle}>↑</button>
                     <button type="button" aria-label={`下移${prompt.name}`} disabled={attachedIndex >= attached.length - 1 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, 1) }} style={miniButtonStyle}>↓</button>
@@ -712,7 +744,7 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
       </div>
       <footer className="agent-rp-preset-footer" style={{ alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #343438)', display: 'flex', gap: '9px', justifyContent: 'flex-end', minHeight: '64px', padding: '12px 20px' }}>
         {error !== undefined && <span role="alert" style={{ color: '#e47a7a', fontSize: '12px', marginRight: 'auto' }}>{error}</span>}
-        <button type="button" disabled={saving} onClick={() => { void reset() }} style={{ ...secondaryButtonStyle, marginRight: error === undefined ? 'auto' : undefined }}>恢复导入值</button>
+        <button type="button" disabled={saving} onClick={() => { void reset() }} style={{ ...secondaryButtonStyle, marginRight: error === undefined ? 'auto' : undefined }}>恢复预设默认值</button>
         <input ref={importInputRef} type="file" accept=".json,application/json" hidden onChange={event => {
           const file = event.currentTarget.files?.[0]
           event.currentTarget.value = ''
@@ -725,7 +757,9 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
           })
         }} />
         <button type="button" disabled={saving} onClick={() => { importInputRef.current?.click() }} style={secondaryButtonStyle}>替换预设</button>
+        <button type="button" disabled={saving} onClick={() => { setLibraryOpen(true); void onLibrary({ operation: 'list' }) }} style={secondaryButtonStyle}>预设库</button>
         <button type="button" disabled={saving} onClick={exportCopy} title={preset.omittedExtensions.length === 0 ? '导出当前配置' : `不包含未执行扩展：${preset.omittedExtensions.join('、')}`} style={secondaryButtonStyle}>导出副本</button>
+        <button type="button" disabled={saving} onClick={() => { void saveToLibrary() }} style={secondaryButtonStyle}>另存为预设</button>
         <button type="button" disabled={saving} onClick={onClose} style={secondaryButtonStyle}>取消</button>
         <button type="button" disabled={saving} onClick={() => { void save() }} style={primaryButtonStyle}>{saving ? '保存中…' : '保存到此会话'}</button>
       </footer>
@@ -750,6 +784,15 @@ function PresetManagerDialog({ preset, onClose, onImport, onSave }: {
         setPrompts(current => current.filter(prompt => prompt.identifier !== editingPrompt.identifier))
         setEditingPromptId(undefined)
       } } : {}}
+    />}
+    {libraryOpen && <PresetLibraryDialog
+      entries={entries}
+      {...preset.libraryId === undefined ? {} : { activeId: preset.libraryId }}
+      onClose={() => { setLibraryOpen(false) }}
+      onAction={async request => {
+        await onLibrary(request)
+        if (request.operation === 'select') onClose()
+      }}
     />}
   </div>
 }
@@ -833,13 +876,16 @@ function PresetPromptEditorDialog({ prompt, onClose, onApply, onDelete }: {
   </div>
 }
 
-function PresetImportDialog({ onClose, onImport }: {
+function PresetImportDialog({ entries, onClose, onImport, onLibrary }: {
+  readonly entries: AgentRpProjection['presetLibrary']
   readonly onClose: () => void
   readonly onImport: (file: File) => Promise<void>
+  readonly onLibrary: (request: PresetLibraryRequest) => Promise<void>
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [importing, setImporting] = useState(false)
   const [error, setError] = useState<string>()
+  useEffect(() => { void onLibrary({ operation: 'list' }).catch(() => undefined) }, [])
   return <div role="dialog" aria-modal="true" aria-label="导入预设" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1100,
@@ -850,9 +896,19 @@ function PresetImportDialog({ onClose, onImport }: {
     }}>
       <h2 style={{ fontSize: '17px', margin: 0 }}>为此角色选择预设</h2>
       <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '9px 0 22px', opacity: 0.58 }}>
-        导入 SillyTavern Chat Completion 预设 JSON。导入后可分别调整提示模块、正则脚本与生成参数
+        从预设库选取，或导入 SillyTavern Chat Completion 预设 JSON。选中后会为当前会话创建独立副本
       </p>
       {error !== undefined && <p role="alert" style={{ color: '#e47a7a', fontSize: '12px', margin: '0 0 12px' }}>{error}</p>}
+      {entries.length > 0 && <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginBottom: '20px', maxHeight: '280px', overflowY: 'auto' }}>
+        {entries.map(entry => <PresetLibraryRow key={entry.id} entry={entry} busy={importing} onSelect={() => {
+          setImporting(true)
+          setError(undefined)
+          void onLibrary({ operation: 'select', id: entry.id }).then(onClose, (reason: unknown) => {
+            setError(reason instanceof Error ? reason.message : '预设选择失败')
+            setImporting(false)
+          })
+        }} />)}
+      </div>}
       <input ref={inputRef} type="file" accept=".json,application/json" hidden onChange={event => {
         const file = event.currentTarget.files?.[0]
         event.currentTarget.value = ''
@@ -869,6 +925,73 @@ function PresetImportDialog({ onClose, onImport }: {
         <button type="button" disabled={importing} onClick={() => { inputRef.current?.click() }} style={primaryButtonStyle}>
           {importing ? '导入中…' : '选择预设文件'}
         </button>
+      </div>
+    </section>
+  </div>
+}
+
+function PresetLibraryRow({ entry, active = false, busy = false, onSelect, onDelete }: {
+  readonly entry: PresetLibraryEntry
+  readonly active?: boolean
+  readonly busy?: boolean
+  readonly onSelect: () => void
+  readonly onDelete?: () => void
+}) {
+  return <div style={{
+    alignItems: 'center', background: active ? `color-mix(in srgb, ${color} 12%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
+    border: `1px solid ${active ? `color-mix(in srgb, ${color} 34%, transparent)` : 'var(--dsw-alias-border-l2, #39393f)'}`,
+    borderRadius: '10px', display: 'flex', gap: '10px', padding: '10px 11px',
+  }}>
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: '13px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</div>
+      <div style={{ fontSize: '10px', marginTop: '4px', opacity: 0.48 }}>
+        {entry.enabledCount}/{entry.promptCount} 项启用 · {entry.regexScriptCount} 条正则{active ? ' · 当前来源' : ''}
+      </div>
+    </div>
+    <button type="button" disabled={busy || active} onClick={onSelect} style={{ ...miniButtonStyle, marginLeft: 'auto' }}>{active ? '已选' : '使用'}</button>
+    {onDelete !== undefined && <button type="button" disabled={busy} onClick={onDelete} style={miniButtonStyle}>删除</button>}
+  </div>
+}
+
+function PresetLibraryDialog({ entries, activeId, onClose, onAction }: {
+  readonly entries: AgentRpProjection['presetLibrary']
+  readonly activeId?: string
+  readonly onClose: () => void
+  readonly onAction: (request: PresetLibraryRequest) => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+  return <div role="dialog" aria-modal="true" aria-label="预设库" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.66)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1200,
+  }} onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #151518)', border: '1px solid var(--dsw-alias-border-l2, #38383d)',
+      borderRadius: '16px', boxShadow: '0 24px 80px rgba(0,0,0,.45)', maxWidth: '560px', padding: '22px', width: 'min(94vw, 560px)',
+    }}>
+      <div style={{ alignItems: 'center', display: 'flex', gap: '10px' }}>
+        <div><h2 style={{ fontSize: '17px', margin: 0 }}>预设库</h2><p style={{ fontSize: '12px', margin: '6px 0 0', opacity: 0.52 }}>使用预设只会替换当前会话的独立副本</p></div>
+        <button type="button" disabled={busy} onClick={onClose} aria-label="关闭预设库" style={{ background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '22px', marginLeft: 'auto' }}>×</button>
+      </div>
+      {error !== undefined && <p role="alert" style={{ color: '#e47a7a', fontSize: '12px' }}>{error}</p>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginTop: '18px', maxHeight: '55vh', overflowY: 'auto' }}>
+        {entries.map(entry => <PresetLibraryRow key={entry.id} entry={entry} active={entry.id === activeId} busy={busy} onSelect={() => {
+          setBusy(true)
+          setError(undefined)
+          void onAction({ operation: 'select', id: entry.id }).catch((reason: unknown) => {
+            setError(reason instanceof Error ? reason.message : '预设选择失败')
+            setBusy(false)
+          })
+        }} onDelete={() => {
+          if (!window.confirm(`从预设库删除“${entry.name}”？当前会话不会受影响`)) return
+          setBusy(true)
+          setError(undefined)
+          void onAction({ operation: 'delete', id: entry.id }).then(() => { setBusy(false) }, (reason: unknown) => {
+            setError(reason instanceof Error ? reason.message : '删除失败')
+            setBusy(false)
+          })
+        }} />)}
+        {entries.length === 0 && <div style={{ fontSize: '13px', opacity: 0.52, padding: '30px 8px', textAlign: 'center' }}>预设库还是空的，导入一份 JSON 后会自动收藏</div>}
       </div>
     </section>
   </div>
@@ -1297,11 +1420,35 @@ export function apply(ctx: ClientContext): void {
     }
     if (response.result.value?.matched !== true) throw new Error('当前 Host 未启用预设管理命令')
   }
+  const managePresetLibrary = async (sessionId: SessionId, request: PresetLibraryRequest): Promise<void> => {
+    const connection = ctx.get('connection') as {
+      readonly api: {
+        readonly commands: {
+          execute(input: { readonly sessionId: SessionId; readonly line: string }): Promise<{
+            readonly result: {
+              readonly ok: boolean
+              readonly value?: { readonly matched: boolean }
+              readonly error?: { readonly code: string; readonly message: string }
+            }
+          }>
+        }
+      }
+    }
+    const response = await connection.api.commands.execute({
+      sessionId,
+      line: `/rp-preset-library ${JSON.stringify(request)}`,
+    })
+    if (!response.result.ok) throw new Error(response.result.error?.message ?? '预设库操作失败')
+    if (response.result.value?.matched !== true) throw new Error('当前 Host 未启用预设库')
+  }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} configurePreset={configurePreset} importPreset={importPreset} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',
+  }, () => null))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-preset-library',
   }, () => null))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,

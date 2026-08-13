@@ -22,6 +22,7 @@ export interface AgentRpProjection {
     readonly lastError?: string
   }
   readonly preset?: {
+    readonly libraryId?: string
     readonly name: string
     readonly promptCount: number
     readonly enabledCount: number
@@ -82,6 +83,14 @@ export interface AgentRpProjection {
     readonly preservedGeneration: readonly string[]
     readonly omittedExtensions: readonly string[]
   }
+  readonly presetLibrary: readonly {
+    readonly id: string
+    readonly name: string
+    readonly promptCount: number
+    readonly enabledCount: number
+    readonly regexScriptCount: number
+    readonly updatedAt: number
+  }[]
   readonly source: 'character-card' | 'sillytavern-chat' | 'preset'
 }
 
