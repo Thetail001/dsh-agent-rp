@@ -1893,7 +1893,7 @@ function CharacterLibraryDialog({
         <div style={{ padding: narrow ? '14px 14px 10px' : '22px 20px 14px' }}>
           <h2 style={{ fontSize: '18px', margin: 0 }}>角色库</h2>
           <p style={{ fontSize: '12px', lineHeight: 1.55, margin: '7px 0 0', opacity: .55 }}>
-            {startsInCurrentSession ? '选择角色后，会从当前空白会话开始' : '从这里开始新对话，不会改动当前聊天'}
+            {startsInCurrentSession ? '选择角色后开始一段新对话' : '从这里开始新对话，不会改动当前聊天'}
           </p>
           <div role="tablist" aria-label="角色库分区" style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '9px', display: 'grid', gap: '3px', gridTemplateColumns: '1fr 1fr', marginTop: '14px', padding: '3px' }}>
             {([['active', '角色'], ['archived', '已收起']] as const).map(([value, label]) => <button
@@ -1983,7 +1983,7 @@ function CharacterLibraryDialog({
           {selected !== undefined && <CharacterLibraryAvatar entry={selected} size={42} />}
           <div style={{ marginLeft: selected === undefined ? 0 : '11px', minWidth: 0 }}>
             <div style={{ fontSize: '12px', opacity: .5 }}>
-              {startsInCurrentSession ? '设置这段对话' : '开始一段新的角色对话'}
+              {startsInCurrentSession ? '设置新的角色对话' : '开始一段新的角色对话'}
             </div>
             <strong style={{ display: 'block', fontSize: '17px', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected?.displayName ?? '选择角色'}</strong>
             {selected !== undefined && <span title={selected.originalFilename} style={{ display: 'block', fontSize: '11px', marginTop: '3px', opacity: .46, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected.originalFilename}</span>}
@@ -2165,7 +2165,7 @@ function CharacterLibraryDialog({
           }} style={{
             background: color, border: 0, borderRadius: '9px', color: '#fff', cursor: starting ? 'wait' : 'pointer',
             font: 'inherit', fontWeight: 620, opacity: collection === 'archived' || selected === undefined ? .45 : 1, padding: '8px 15px',
-          }}>{starting ? '正在开始…' : startsInCurrentSession ? '在当前会话开始' : '开始新对话'}</button>
+          }}>{starting ? '正在开始…' : '开始新对话'}</button>
         </footer>
       </div>
     </section>
@@ -3635,6 +3635,14 @@ export function apply(ctx: ClientContext): void {
       ...(persona === undefined ? {} : { persona }),
     })
   }
+  const archiveConsumedBlankSession = async (sessionId: SessionId): Promise<void> => {
+    if (ctx.sessions.list.getSnapshot().byId[sessionId]?.blank !== true) return
+    try {
+      await ctx.workspaces.archiveSession(sessionId)
+    } catch (reason: unknown) {
+      ctx.logger.warn(`agent-rp: blank source Session ${JSON.stringify(sessionId)} remains visible: ${String(reason)}`)
+    }
+  }
   const startCharacterFromBlankSession = async (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -3644,6 +3652,7 @@ export function apply(ctx: ClientContext): void {
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
     if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话选择角色')
     await startCharacterSession(sessionId, character, greetingIndex, persona)
+    await archiveConsumedBlankSession(sessionId)
   }
   const startCharacterFromCurrentSession = async (
     sessionId: SessionId,
@@ -3692,6 +3701,16 @@ export function apply(ctx: ClientContext): void {
       actions.removeImage?.(attachment.id)
       sourceConversation?.releaseDraftAttachment?.(attachment.id)
     }
+  }
+  const migrateChatFromBlankSession = async (
+    sourceSessionId: SessionId,
+    chatFile: File,
+    cardFile?: File,
+  ): Promise<void> => {
+    const summary = ctx.sessions.list.getSnapshot().byId[sourceSessionId]
+    if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话迁移聊天')
+    await migrateChat(sourceSessionId, chatFile, cardFile)
+    await archiveConsumedBlankSession(sourceSessionId)
   }
   const personaLibraryJson = async <T,>(
     init?: { readonly method: 'POST'; readonly body: PersonaLibrarySaveRequest },
@@ -3809,7 +3828,7 @@ export function apply(ctx: ClientContext): void {
   }, props => <WorkspaceSettingsSection {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} />))
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left', id: 'agent-rp-blank-launcher', order: -100,
-  }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromBlankSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-character-library',
   }, () => null))
