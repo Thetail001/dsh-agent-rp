@@ -142,6 +142,47 @@ interface DraftRuntimeAttachment extends DraftAttachmentLike {
   readonly file: File
 }
 
+interface CurrentModelCapabilities {
+  readonly current: {
+    readonly provider: string
+    readonly model: string
+    readonly reasoningEffort?: string
+  }
+  readonly providerName?: string
+  readonly modelName?: string
+  readonly reasoning?: {
+    readonly efforts: readonly {
+      readonly id: string
+      readonly name: string
+      readonly description?: string
+    }[]
+    readonly defaultEffort?: string
+  }
+}
+
+interface ClientModelGateway {
+  readonly api: {
+    readonly sessions: {
+      models(request: { readonly sessionId: SessionId }): Promise<{
+        readonly result:
+        | { readonly ok: true; readonly value: {
+          readonly current: CurrentModelCapabilities['current']
+          readonly groups: readonly {
+            readonly id: string
+            readonly name: string
+            readonly models: readonly {
+              readonly id: string
+              readonly name: string
+              readonly reasoning?: CurrentModelCapabilities['reasoning']
+            }[]
+          }[]
+        } }
+        | { readonly ok: false; readonly error: { readonly message: string } }
+      }>
+    }
+  }
+}
+
 type MigrateSillyTavernDraft = (
   sourceSessionId: SessionId,
   attachments: readonly DraftRuntimeAttachment[],
@@ -171,6 +212,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly savePersona: (request: PersonaLibrarySaveRequest) => Promise<PersonaLibraryEntry>
   readonly deletePersona: (id: string) => Promise<PersonaLibraryEntry>
   readonly applyPersona: (sessionId: SessionId, persona?: SessionPersonaSnapshot) => Promise<void>
+  readonly loadModelCapabilities: (sessionId: SessionId) => Promise<CurrentModelCapabilities>
 }
 
 type ComposerDockProps = PropsRuntime<'conversation.composer.dock'>
@@ -1076,7 +1118,7 @@ function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
   configureWorldInfo, importWorldInfo,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, startCharacterSession,
-  listPersonas, savePersona, deletePersona, applyPersona,
+  listPersonas, savePersona, deletePersona, applyPersona, loadModelCapabilities,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projected = useProjection('agentRp')
@@ -1344,9 +1386,11 @@ function RoleplayHeader({
           onLibrary={request => managePresetLibrary(sessionId, request)}
         />
       : <PresetManagerDialog
+          sessionId={sessionId}
           preset={projection.preset}
           lastRequest={projection.lastRequest}
           entries={projection.presetLibrary}
+          loadModelCapabilities={loadModelCapabilities}
           onClose={() => { setPresetOpen(false) }}
           onImport={file => importPreset(sessionId, file)}
           onSave={request => configurePreset(sessionId, request)}
@@ -2143,10 +2187,14 @@ function roleLabel(role: PresetPromptProjection['role']): string {
   }
 }
 
-function PresetManagerDialog({ preset, lastRequest, entries, onClose, onImport, onSave, onLibrary }: {
+function PresetManagerDialog({
+  sessionId, preset, lastRequest, entries, loadModelCapabilities, onClose, onImport, onSave, onLibrary,
+}: {
+  readonly sessionId: SessionId
   readonly preset: PresetProjection
   readonly lastRequest?: AgentRpProjection['lastRequest']
   readonly entries: AgentRpProjection['presetLibrary']
+  readonly loadModelCapabilities: (sessionId: SessionId) => Promise<CurrentModelCapabilities>
   readonly onClose: () => void
   readonly onImport: (file: File) => Promise<void>
   readonly onSave: (request: PresetConfigurationRequest) => Promise<void>
@@ -2168,7 +2216,23 @@ function PresetManagerDialog({ preset, lastRequest, entries, onClose, onImport, 
   const [error, setError] = useState<string>()
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [inspectionOpen, setInspectionOpen] = useState(false)
+  const [modelCapabilities, setModelCapabilities] = useState<{
+    readonly status: 'loading' | 'ready' | 'error'
+    readonly value?: CurrentModelCapabilities
+    readonly error?: string
+  }>({ status: 'loading' })
   const importInputRef = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void loadModelCapabilities(sessionId).then(value => {
+      if (!cancelled) setModelCapabilities({ status: 'ready', value })
+    }, reason => {
+      if (!cancelled) setModelCapabilities({
+        status: 'error', error: reason instanceof Error ? reason.message : String(reason),
+      })
+    })
+    return () => { cancelled = true }
+  }, [loadModelCapabilities, sessionId])
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const attachedPositionById = new Map(prompts.filter(prompt => prompt.attached).map((prompt, position) => [prompt.identifier, position]))
   const promptModified = (prompt: PresetPromptProjection): boolean => !prompt.imported
@@ -2201,6 +2265,19 @@ function PresetManagerDialog({ preset, lastRequest, entries, onClose, onImport, 
   const attached = prompts.filter(prompt => prompt.attached)
   const enabledCount = attached.filter(prompt => prompt.enabled).length
   const editingPrompt = prompts.find(prompt => prompt.identifier === editingPromptId)
+  const reasoning = modelCapabilities.value?.reasoning
+  const selectedReasoning = reasoning?.efforts.find(effort => effort.id === reasoningEffort)
+  const unsupportedReasoning = reasoningEffort !== '' && reasoningEffort !== 'auto'
+    && modelCapabilities.status === 'ready' && reasoning !== undefined && selectedReasoning === undefined
+  const selectedReasoningLabel = selectedReasoning?.name
+    ?? (reasoningEffort === '' ? '' : reasoningEffort.charAt(0).toLocaleUpperCase() + reasoningEffort.slice(1))
+  const currentReasoningLabel = modelCapabilities.value?.current.reasoningEffort === undefined
+    ? '模型默认等级'
+    : reasoning?.efforts.find(effort => effort.id === modelCapabilities.value?.current.reasoningEffort)?.name
+      ?? modelCapabilities.value.current.reasoningEffort
+  const modelLabel = modelCapabilities.value === undefined
+    ? undefined
+    : modelCapabilities.value.modelName ?? modelCapabilities.value.current.model
   const togglePromptSection = (key: string): void => {
     setCollapsedPromptSections((current) => {
       const next = new Set(current)
@@ -2514,13 +2591,27 @@ function PresetManagerDialog({ preset, lastRequest, entries, onClose, onImport, 
           <label style={fieldLabelStyle}>推理等级
             <select value={reasoningEffort} onChange={event => { setReasoningEffort(event.target.value) }} style={fieldInputStyle}>
               <option value="">跟随会话</option>
-              <option value="auto">自动（跟随模型）</option><option value="off">关闭</option><option value="min">Min</option>
-              <option value="low">Low</option><option value="medium">Medium</option>
-              <option value="high">High</option><option value="xhigh">XHigh</option><option value="max">Max</option>
-              {reasoningEffort !== '' && !['auto', 'off', 'min', 'low', 'medium', 'high', 'xhigh', 'max'].includes(reasoningEffort)
-                && <option value={reasoningEffort}>导入值 · {reasoningEffort}</option>}
+              <option value="auto">自动（跟随模型）</option>
+              {reasoning?.efforts.map(effort => <option key={effort.id} value={effort.id}>{effort.name}</option>)}
+              {reasoningEffort !== '' && reasoningEffort !== 'auto' && selectedReasoning === undefined
+                && <option value={reasoningEffort}>导入值 · {selectedReasoningLabel}</option>}
             </select>
           </label>
+          {modelCapabilities.status === 'loading' && <p role="status" style={{ fontSize: '11px', lineHeight: 1.55, margin: '-3px 1px 12px', opacity: 0.52 }}>
+            正在读取当前模型可用等级…
+          </p>}
+          {modelCapabilities.status === 'error' && <p role="note" style={{ color: '#d9a85f', fontSize: '11px', lineHeight: 1.55, margin: '-3px 1px 12px' }}>
+            暂时无法读取当前模型能力，已保留原预设值
+          </p>}
+          {unsupportedReasoning && <div role="note" style={{
+            background: 'rgba(217,168,95,.1)', border: '1px solid rgba(217,168,95,.28)', borderRadius: '9px',
+            color: '#e3b66f', fontSize: '11px', lineHeight: 1.55, margin: '-3px 1px 12px', padding: '8px 9px',
+          }}>
+            {selectedReasoningLabel} 仍会保留在预设中；{modelLabel} 不支持这个等级，下次回复将沿用会话等级 {currentReasoningLabel}
+          </div>}
+          {!unsupportedReasoning && modelCapabilities.status === 'ready' && reasoning !== undefined && <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '-3px 1px 12px', opacity: 0.52 }}>
+            {modelLabel} 可用：{reasoning.efforts.length === 0 ? '没有可选推理等级' : reasoning.efforts.map(effort => effort.name).join('、')}
+          </p>}
           <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '16px 1px 0', opacity: 0.46 }}>
             修改只影响当前角色会话。未填写的参数跟随会话与模型设置
           </p>
@@ -3439,6 +3530,22 @@ export function apply(ctx: ClientContext): void {
     subscribe: listener => ctx.workspaces.list.subscribe(listener),
   }
   const loadAvatar = avatarLoader(ctx)
+  const loadModelCapabilities = async (sessionId: SessionId): Promise<CurrentModelCapabilities> => {
+    const connection = ctx.get('connection') as ClientModelGateway | undefined
+    if (connection === undefined) throw new Error('当前客户端无法读取模型能力')
+    const { result } = await connection.api.sessions.models({ sessionId })
+    if (!result.ok) throw new Error(result.error.message)
+    const provider = result.value.groups.find(group => group.id === result.value.current.provider)
+    const model = provider?.models.find(entry => entry.id === result.value.current.model)
+    return {
+      current: result.value.current,
+      ...(provider === undefined ? {} : { providerName: provider.name }),
+      ...(model === undefined ? {} : {
+        modelName: model.name,
+        reasoning: model.reasoning ?? { efforts: [] },
+      }),
+    }
+  }
   const renameSession = async (sessionId: SessionId, title: string): Promise<void> => {
     const scope = ctx.sessions.scope(sessionId)
     const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
@@ -3693,7 +3800,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
