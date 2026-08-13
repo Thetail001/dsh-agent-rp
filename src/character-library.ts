@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
-import { dshHomePath } from '@deepseek-ai/dsh-paths'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { CharacterImportTransport } from './import/session-character.ts'
 import type { ImportedCharacterCard } from './import/types.ts'
 import { parseCharacterCardJson, parseCharacterCardJsonBytes } from './import/character-card.ts'

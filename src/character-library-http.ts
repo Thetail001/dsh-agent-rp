@@ -62,7 +62,7 @@ function pathParts(request: IncomingMessage): readonly string[] {
 
 /** Register local library reads plus reversible archive operations for the Roleplay UI. */
 export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibrary): void {
-  ctx.effect(() => ctx.httpServer.register({
+  ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: CHARACTER_LIBRARY_PATH,
     async handler(request, response) {

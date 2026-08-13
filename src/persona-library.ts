@@ -3,7 +3,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { dshHomePath } from '@deepseek-ai/dsh-paths'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { PersonaLibraryEntry, PersonaLibrarySaveRequest } from './persona-library-protocol.ts'
 
 const ID_PATTERN = /^persona-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u

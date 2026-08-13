@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { dshHomePath } from '@deepseek-ai/dsh-paths'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { exportSillyTavernPresetJson } from './preset-export.ts'
 import {
   parseSillyTavernPresetJson,

@@ -55,7 +55,7 @@ function parseSaveRequest(value: unknown): PersonaLibrarySaveRequest {
 
 /** Register local Persona list, read, create, and update operations. */
 export function installPersonaLibraryHttp(ctx: Context, library: PersonaLibrary): void {
-  ctx.effect(() => ctx.httpServer.register({
+  ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: PERSONA_LIBRARY_PATH,
     async handler(request, response) {

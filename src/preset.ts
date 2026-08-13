@@ -12,7 +12,7 @@ import {
 } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join, resolve } from 'node:path'
-import { dshHomePath } from '@deepseek-ai/dsh-paths'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 
 /** Preset id selected by the bundle's profile patch. */
 export const AGENT_RP_PRESET_ID = 'agent-rp'
