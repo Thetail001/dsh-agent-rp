@@ -104,6 +104,7 @@ export function renderImportedCharacterPrompt(
   loreAfter: readonly string[],
   userName?: string,
   mvuEnabled = false,
+  userPersona?: string,
 ): string {
   const name = card.nickname?.trim() || card.name
   const original = `你是${name}。直接以${name}的身份与用户相处和交谈。`
@@ -116,6 +117,7 @@ export function renderImportedCharacterPrompt(
     `角色描述：${substituteCardMacros(card.description, card, userName)}`,
     `性格：${substituteCardMacros(card.personality, card, userName)}`,
     `当前场景：${substituteCardMacros(card.scenario, card, userName)}`,
+    ...(userPersona?.trim() ? [`与角色对话的人：${userPersona.trim()}`] : []),
     ...(card.messageExample.trim().length === 0 ? [] : [`对话示例：\n${substituteCardMacros(card.messageExample, card, userName)}`]),
     ...loreAfter.map(value => substituteCardMacros(value, card, userName)),
     CHARACTER_BEHAVIOR,

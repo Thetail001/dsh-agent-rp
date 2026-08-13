@@ -13,6 +13,7 @@ import { applyMvuReply, readCurrentMvuState } from './mvu.ts'
 import { canEditPresetPrompt, canTogglePresetPrompt } from './preset-configuration.ts'
 import { configurePreset, parsePresetConfigurationRequest } from './preset-configuration-core.ts'
 import { parsePresetLibraryResult } from './preset-library-protocol.ts'
+import { parseSessionPersona } from './session-persona.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -30,6 +31,7 @@ const projectionSchema = {
       || typeof record.personality !== 'string'
       || typeof record.scenario !== 'string'
       || (record.userName !== undefined && typeof record.userName !== 'string')
+      || (record.persona !== undefined && (typeof record.persona !== 'object' || record.persona === null))
       || !validCardVersion
       || (record.avatarAttachmentId !== undefined && typeof record.avatarAttachmentId !== 'string')
       || typeof record.importedMessageCount !== 'number' || !Number.isSafeInteger(record.importedMessageCount)
@@ -86,6 +88,7 @@ function cardProjection(
       personality: card.personality.trim(),
       scenario: card.scenario.trim(),
       ...(result.userName === undefined ? {} : { userName: result.userName }),
+      ...(previous.persona === undefined ? {} : { persona: previous.persona }),
       cardVersion: result.cardVersion,
       ...(result.transport === 'png' ? { avatarAttachmentId: result.sourceAttachmentId } : {}),
       importedMessageCount: previous.importedMessageCount,
@@ -331,6 +334,17 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     presetLibrary: [],
   }),
   apply(state, event) {
+    if (event.type === 'agent-rp/persona-seed') {
+      try {
+        const persona = parseSessionPersona(event.data.persona)
+        return {
+          ...state,
+          character: { ...state.character, userName: persona.name, persona },
+        }
+      } catch {
+        return state
+      }
+    }
     if (event.type === 'agent-rp/sillytavern-chat-import') {
       const identity = readSillyTavernChatIdentity([event])
       return {

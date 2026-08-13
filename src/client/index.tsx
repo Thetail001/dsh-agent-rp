@@ -26,6 +26,12 @@ import {
   type CharacterLibraryDetail,
   type CharacterLibrarySummary,
 } from '../character-library-protocol.ts'
+import {
+  PERSONA_LIBRARY_PATH,
+  type PersonaLibraryEntry,
+  type PersonaLibrarySaveRequest,
+  type SessionPersonaSnapshot,
+} from '../persona-library-protocol.ts'
 
 interface ImportHintProps {
   readonly sessionId: SessionId
@@ -55,8 +61,10 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
     sessionId: SessionId,
     character: CharacterLibraryDetail,
     greetingIndex: number,
-    userName?: string,
+    persona?: SessionPersonaSnapshot,
   ) => Promise<void>
+  readonly listPersonas: () => Promise<readonly PersonaLibraryEntry[]>
+  readonly savePersona: (request: PersonaLibrarySaveRequest) => Promise<PersonaLibraryEntry>
 }
 
 type ComposerDockProps = PropsRuntime<'conversation.composer.dock'>
@@ -273,6 +281,7 @@ function DetailSection({ title, text }: { readonly title: string; readonly text:
 function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
   listCharacters, readCharacter, startCharacterSession,
+  listPersonas, savePersona,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projected = useProjection('agentRp')
@@ -425,6 +434,9 @@ function RoleplayHeader({
         <DetailSection title="角色简介" text={projection.description} />
         <DetailSection title="性格" text={projection.personality} />
         <DetailSection title="当前场景" text={projection.scenario} />
+        {projection.persona !== undefined && <DetailSection title={`Persona · ${projection.persona.name}`} text={
+          projection.persona.description || '没有额外人物设定'
+        } />}
         {projection.preset !== undefined && <DetailSection title="运行预设" text={[
           `${projection.preset.promptCount} 个提示模块，当前启用 ${projection.preset.enabledCount} 个`,
           projection.preset.appliedGeneration.length === 0
@@ -462,6 +474,8 @@ function RoleplayHeader({
       onStart={(character, greetingIndex, userName) => startCharacterSession(
         sessionId, character, greetingIndex, userName,
       )}
+      listPersonas={listPersonas}
+      savePersona={savePersona}
     />}
     {presetOpen && (projection.preset === undefined
       ? <PresetImportDialog
@@ -483,20 +497,27 @@ function RoleplayHeader({
 }
 
 function CharacterLibraryDialog({
-  currentCharacterName, listCharacters, readCharacter, onClose, onStart,
+  currentCharacterName, listCharacters, readCharacter, listPersonas, savePersona, onClose, onStart,
 }: {
   readonly currentCharacterName: string
   readonly listCharacters: HeaderProps['listCharacters']
   readonly readCharacter: HeaderProps['readCharacter']
+  readonly listPersonas: HeaderProps['listPersonas']
+  readonly savePersona: HeaderProps['savePersona']
   readonly onClose: () => void
   readonly onStart: (
-    character: CharacterLibraryDetail, greetingIndex: number, userName?: string,
+    character: CharacterLibraryDetail, greetingIndex: number, persona?: SessionPersonaSnapshot,
   ) => Promise<void>
 }) {
   const [entries, setEntries] = useState<readonly CharacterLibrarySummary[]>()
   const [selected, setSelected] = useState<CharacterLibraryDetail>()
   const [greetingIndex, setGreetingIndex] = useState(0)
-  const [userName, setUserName] = useState('')
+  const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
+  const [personaId, setPersonaId] = useState('')
+  const [editingPersona, setEditingPersona] = useState(false)
+  const [personaName, setPersonaName] = useState('')
+  const [personaDescription, setPersonaDescription] = useState('')
+  const [savingPersona, setSavingPersona] = useState(false)
   const [loadingId, setLoadingId] = useState<string>()
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string>()
@@ -525,6 +546,19 @@ function CharacterLibraryDialog({
     })
     return () => { current = false }
   }, [currentCharacterName, listCharacters, readCharacter])
+  useEffect(() => {
+    let current = true
+    void listPersonas().then(value => {
+      if (!current) return
+      setPersonas(value)
+      setPersonaId(value[0]?.id ?? '')
+    }, listError => {
+      if (!current) return
+      setPersonas([])
+      setError(listError instanceof Error ? listError.message : String(listError))
+    })
+    return () => { current = false }
+  }, [listPersonas])
   const choose = (entry: CharacterLibrarySummary): void => {
     setLoadingId(entry.id)
     setError(undefined)
@@ -599,14 +633,49 @@ function CharacterLibraryDialog({
                 <span style={{ fontSize: '13px' }}>{greeting.trim() === '' ? '无开场白' : greeting}</span>
               </button>)}
             </div>
-            <label htmlFor="agent-rp-session-user-name" style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '20px 0 7px', opacity: .65 }}>
-              这段对话里，角色怎么称呼你
-            </label>
-            <input id="agent-rp-session-user-name" value={userName} maxLength={120} placeholder="可稍后加入 Persona；现在可留空"
-              onChange={event => { setUserName(event.target.value) }} style={{
-                background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
-                borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 10px', width: '100%',
+            <div style={{ alignItems: 'center', display: 'flex', margin: '20px 0 7px' }}>
+              <label htmlFor="agent-rp-session-persona" style={{ fontSize: '12px', fontWeight: 620, opacity: .65 }}>选择你的 Persona</label>
+              <button type="button" onClick={() => {
+                setEditingPersona(value => !value)
+                setPersonaName('')
+                setPersonaDescription('')
+              }} style={{ background: 'transparent', border: 0, color, cursor: 'pointer', font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: 0 }}>
+                {editingPersona ? '收起' : '新建 Persona'}
+              </button>
+            </div>
+            <select id="agent-rp-session-persona" value={personaId} onChange={event => { setPersonaId(event.target.value) }} style={{
+              background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+              borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 10px', width: '100%',
+            }}>
+              <option value="">不使用 Persona</option>
+              {personas?.map(persona => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
+            </select>
+            {personaId !== '' && <div style={{ fontSize: '12px', lineHeight: 1.6, marginTop: '8px', opacity: .58, whiteSpace: 'pre-wrap' }}>
+              {personas?.find(persona => persona.id === personaId)?.description || '只有称呼，没有额外人物设定'}
+            </div>}
+            {editingPersona && <div style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '10px', display: 'grid', gap: '9px', marginTop: '10px', padding: '11px' }}>
+              <input value={personaName} maxLength={120} placeholder="Persona 名称（角色会这样称呼你）" onChange={event => { setPersonaName(event.target.value) }} style={{
+                background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #414147)', borderRadius: '8px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '8px 9px', width: '100%',
               }} />
+              <textarea value={personaDescription} maxLength={12000} rows={4} placeholder="你的身份、外貌、性格或与角色的关系；留白也可以" onChange={event => { setPersonaDescription(event.target.value) }} style={{
+                background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #414147)', borderRadius: '8px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', lineHeight: 1.55, padding: '8px 9px', resize: 'vertical', width: '100%',
+              }} />
+              <button type="button" disabled={savingPersona || personaName.trim() === ''} onClick={() => {
+                setSavingPersona(true)
+                setError(undefined)
+                void savePersona({ format: 0, name: personaName, description: personaDescription }).then(entry => {
+                  setPersonas(current => [entry, ...(current ?? []).filter(item => item.id !== entry.id)])
+                  setPersonaId(entry.id)
+                  setEditingPersona(false)
+                  setSavingPersona(false)
+                }, saveError => {
+                  setSavingPersona(false)
+                  setError(saveError instanceof Error ? saveError.message : String(saveError))
+                })
+              }} style={{ background: color, border: 0, borderRadius: '8px', color: '#fff', cursor: 'pointer', font: 'inherit', justifySelf: 'end', opacity: personaName.trim() === '' ? .45 : 1, padding: '7px 11px' }}>
+                {savingPersona ? '正在保存…' : '保存并选中'}
+              </button>
+            </div>}
           </>}
           {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.55, marginTop: '14px' }}>{error}</div>}
         </div>
@@ -619,7 +688,10 @@ function CharacterLibraryDialog({
             if (selected === undefined) return
             setStarting(true)
             setError(undefined)
-            void onStart(selected, greetingIndex, userName.trim() || undefined).then(() => {
+            const persona = personas?.find(entry => entry.id === personaId)
+            void onStart(selected, greetingIndex, persona === undefined ? undefined : {
+              id: persona.id, name: persona.name, description: persona.description,
+            }).then(() => {
               setStarting(false)
               onClose()
             }, startError => {
@@ -1872,7 +1944,7 @@ export function apply(ctx: ClientContext): void {
     sessionId: SessionId,
     character: CharacterLibraryDetail,
     greetingIndex: number,
-    userName?: string,
+    persona?: SessionPersonaSnapshot,
   ): Promise<void> => {
     const scope = ctx.sessions.scope(sessionId)
     const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
@@ -1895,10 +1967,32 @@ export function apply(ctx: ClientContext): void {
       text: encodeCharacterLibrarySessionRequest({
         format: 0,
         greetingIndex,
-        ...(userName === undefined ? {} : { userName }),
+        ...(persona === undefined ? {} : { persona }),
       }),
     }], 'queue')
     if (!result.ok) throw new Error(result.error.message)
+  }
+  const personaLibraryJson = async <T,>(
+    init?: { readonly method: 'POST'; readonly body: PersonaLibrarySaveRequest },
+  ): Promise<T> => {
+    const response = await fetch(PERSONA_LIBRARY_PATH, init === undefined ? {
+      headers: { accept: 'application/json' },
+    } : {
+      method: init.method,
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify(init.body),
+    })
+    const value = await response.json() as { readonly error?: string } & T
+    if (!response.ok) throw new Error(value.error ?? `Persona 库请求失败（${response.status}）`)
+    return value
+  }
+  const listPersonas = async (): Promise<readonly PersonaLibraryEntry[]> => {
+    const value = await personaLibraryJson<{ readonly format: 0; readonly entries: readonly PersonaLibraryEntry[] }>()
+    return value.entries
+  }
+  const savePersona = async (request: PersonaLibrarySaveRequest): Promise<PersonaLibraryEntry> => {
+    const value = await personaLibraryJson<{ readonly format: 0; readonly entry: PersonaLibraryEntry }>({ method: 'POST', body: request })
+    return value.entry
   }
   const importPreset = async (sessionId: SessionId, file: File): Promise<void> => {
     if (!/\.json$/iu.test(file.name)) throw new Error('请选择 SillyTavern 预设 JSON 文件')
@@ -1971,7 +2065,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} listCharacters={listCharacters} readCharacter={readCharacter} startCharacterSession={startCharacterSession} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} listCharacters={listCharacters} readCharacter={readCharacter} startCharacterSession={startCharacterSession} listPersonas={listPersonas} savePersona={savePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',
   }, () => null))

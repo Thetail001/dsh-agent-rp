@@ -3,6 +3,7 @@
 import type { ImportedCharacterFrontend } from './import/types.ts'
 import type { ImportedRegexScript } from './import/types.ts'
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
+import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
 
 /** Current character identity and migration summary for one Roleplay Session. */
 export interface AgentRpProjection {
@@ -14,6 +15,7 @@ export interface AgentRpProjection {
   readonly personality: string
   readonly scenario: string
   readonly userName?: string
+  readonly persona?: SessionPersonaSnapshot
   readonly cardVersion?: 1 | 2 | 3
   readonly avatarAttachmentId?: string
   readonly importedMessageCount: number

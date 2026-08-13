@@ -82,6 +82,9 @@ import {
   CHARACTER_LIBRARY_SESSION_PREFIX,
   type CharacterLibrarySessionRequest,
 } from './character-library-protocol.ts'
+import { installPersonaLibraryHttp } from './persona-library-http.ts'
+import { PersonaLibrary } from './persona-library.ts'
+import { parseSessionPersona, readSessionPersona } from './session-persona.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -251,11 +254,19 @@ export function parseCharacterCardSessionRequest(text: string): CharacterLibrary
     || !Number.isSafeInteger(record.greetingIndex) || record.greetingIndex < 0
     || (record.userName !== undefined && (typeof record.userName !== 'string'
       || record.userName.trim() === '' || record.userName.trim().length > 120))
-    || keys.some(key => key !== 'format' && key !== 'greetingIndex' && key !== 'userName')) return undefined
+    || keys.some(key => key !== 'format' && key !== 'greetingIndex' && key !== 'userName' && key !== 'persona')) return undefined
+  let persona
+  try {
+    persona = record.persona === undefined ? undefined : parseSessionPersona(record.persona)
+  } catch {
+    return undefined
+  }
+  if (persona !== undefined && typeof record.userName === 'string' && record.userName.trim() !== persona.name) return undefined
   return {
     format: 0,
     greetingIndex: record.greetingIndex,
-    ...(typeof record.userName === 'string' ? { userName: record.userName.trim() } : {}),
+    ...(persona === undefined && typeof record.userName === 'string' ? { userName: record.userName.trim() } : {}),
+    ...(persona === undefined ? {} : { persona }),
   }
 }
 
@@ -500,10 +511,11 @@ export function installAgentRp(
         card,
         transport,
       })
-      const greeting = substituteCardMacros(selectedGreeting, card, request.userName)
+      const userName = request.persona?.name ?? request.userName
+      const greeting = substituteCardMacros(selectedGreeting, card, userName)
       return {
         seed: createCharacterCardSessionSeed(
-          card, stored.ref, request.greetingIndex, greeting, transport, request.userName,
+          card, stored.ref, request.greetingIndex, greeting, transport, userName, request.persona,
         ),
         title: card.nickname?.trim() || card.name,
       }
@@ -549,7 +561,8 @@ export function installAgentRp(
         return renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter)
       }
       const card = cardFromImportMeta(active.meta)
-      const userName = active.result.userName ?? readSillyTavernChatIdentity(agent.session.events)?.userName
+      const persona = readSessionPersona(agent.session.events)
+      const userName = persona?.name ?? active.result.userName ?? readSillyTavernChatIdentity(agent.session.events)?.userName
       const mvu = readCurrentMvuState(card, agent.session.events)
       const characterLore = renderImportedLorebook(card, agent.session, pendingMessages, mvu?.statData)
       const preset = readActiveSessionPreset(agent.session.events)?.preset
@@ -557,6 +570,7 @@ export function installAgentRp(
         const assembled = assembleSillyTavernPreset(preset, {
           card,
           ...(userName === undefined ? {} : { userName }),
+          ...(persona === undefined ? {} : { userPersona: persona.description }),
           worldInfoBefore: [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
           worldInfoAfter: [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
           session: agent.session,
@@ -573,6 +587,7 @@ export function installAgentRp(
         [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
         userName,
         mvu !== undefined,
+        persona?.description,
       )
     },
     complete: true,
@@ -866,6 +881,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
   if (resolved.mode === 'host') {
     ctx.inject(['httpServer'], webCtx => {
       installCharacterLibraryHttp(webCtx, new CharacterLibrary())
+      installPersonaLibraryHttp(webCtx, new PersonaLibrary())
     })
     ctx.inject(['sessionProjections'], projectionCtx => {
       projectionCtx.sessionProjections.register(agentRpProjectionDefinition)

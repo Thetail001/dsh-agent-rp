@@ -8,6 +8,8 @@ import {
   type CharacterImportMeta,
 } from './session-character.ts'
 import type { ImportedCharacterCard } from './types.ts'
+import type { SessionPersonaSnapshot } from '../persona-library-protocol.ts'
+import type {} from '../session-persona.ts'
 
 /** Durable provenance for one Character Card used to seed a new Session. */
 export interface CharacterCardSeedRecord {
@@ -38,6 +40,7 @@ type SessionSeedEvent = SessionEvent extends infer Event
  * @param renderedGreeting - selected greeting after stable identity macro substitution.
  * @param transport - JSON or decoded PNG provenance.
  * @param userName - optional imported user identity for card macros.
+ * @param persona - optional reusable player Persona snapshotted for this Session.
  * @returns validated immutable Session seed.
  */
 export function createCharacterCardSessionSeed(
@@ -47,6 +50,7 @@ export function createCharacterCardSessionSeed(
   renderedGreeting: string,
   transport: CharacterImportTransport = { transport: 'json' },
   userName?: string,
+  persona?: SessionPersonaSnapshot,
 ): readonly SessionEvent[] {
   const value = prepareCharacterImportResult(
     card,
@@ -70,6 +74,15 @@ export function createCharacterCardSessionSeed(
     },
     ignorable: true,
   }]
+  if (persona !== undefined) {
+    events.push({
+      type: 'agent-rp/persona-seed',
+      seq: events.length,
+      time,
+      data: { format: 0, persona },
+      ignorable: true,
+    })
+  }
   if (renderedGreeting.trim() !== '') {
     const push = (event: SessionSeedEvent): void => {
       events.push({ ...event, seq: events.length } as SessionEvent)

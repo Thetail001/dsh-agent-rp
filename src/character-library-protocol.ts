@@ -1,5 +1,7 @@
 /** Browser-safe character-library values shared by the Host and Roleplay UI. */
 
+import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
+
 /** Same-origin endpoint served by the Agent RP Host plugin. */
 export const CHARACTER_LIBRARY_PATH = '/api/agent-rp/characters'
 
@@ -28,6 +30,7 @@ export interface CharacterLibrarySessionRequest {
   readonly format: 0
   readonly greetingIndex: number
   readonly userName?: string
+  readonly persona?: SessionPersonaSnapshot
 }
 
 /** Stable text prefix recognized by the Character Card Session importer. */

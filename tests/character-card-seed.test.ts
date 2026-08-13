@@ -7,6 +7,7 @@ import { parseCharacterCardJsonBytes } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import { readActiveSessionCharacter } from '../src/import/session-character.ts'
 import { substituteCardMacros } from '../src/prompt.ts'
+import { readSessionPersona } from '../src/session-persona.ts'
 
 const attachment = {
   kind: 'file' as const,
@@ -40,4 +41,15 @@ test('keeps an empty greeting as an active blank character Session', () => {
 
   assert.equal(seed.length, 1)
   assert.equal(readActiveSessionCharacter(seed)?.result.name, '白露')
+})
+
+test('snapshots one reusable Persona independently from the Character Card', () => {
+  const card = parseCharacterCardJsonBytes(readFileSync('tests/fixtures/manual-character-card.json'))
+  const persona = { id: 'persona-12345678-1234-4123-8123-123456789abc', name: '小满', description: '怕冷，喜欢旧书。' }
+  const greeting = substituteCardMacros(card.firstMessage, card, persona.name)
+  const seed = createCharacterCardSessionSeed(card, attachment, 0, greeting, { transport: 'json' }, persona.name, persona)
+
+  assert.deepEqual(readSessionPersona(seed), persona)
+  assert.equal(seed[1]?.type, 'agent-rp/persona-seed')
+  assert.equal(seed[4]?.type, 'assistant/message')
 })
