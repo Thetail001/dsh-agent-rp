@@ -13,6 +13,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
 import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
+import type { WorldInfoConfigurationRequest, WorldInfoEditableEntry } from '../world-info-configuration-types.ts'
 import { exportSillyTavernPresetJson } from '../preset-export.ts'
 import { projectPresetPromptSections } from '../preset-sections.ts'
 import {
@@ -55,6 +56,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly configurePreset: (sessionId: SessionId, request: PresetConfigurationRequest) => Promise<void>
   readonly importPreset: (sessionId: SessionId, file: File) => Promise<void>
   readonly managePresetLibrary: (sessionId: SessionId, request: PresetLibraryRequest) => Promise<void>
+  readonly configureWorldInfo: (sessionId: SessionId, request: WorldInfoConfigurationRequest) => Promise<void>
   readonly listCharacters: () => Promise<readonly CharacterLibrarySummary[]>
   readonly readCharacter: (id: string) => Promise<CharacterLibraryDetail>
   readonly startCharacterSession: (
@@ -273,6 +275,7 @@ function roleplaySummary(summary: SessionSummary | undefined, projection: AgentR
     scenario: '',
     importedMessageCount: 0,
     worldInfoCount: 0,
+    worldInfo: { revision: 0, activeCount: 0, books: [] },
     presetLibrary: [],
     generations: [],
     source: 'preset' as const,
@@ -341,6 +344,7 @@ function DetailSection({ title, text }: { readonly title: string; readonly text:
 
 function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
+  configureWorldInfo,
   listCharacters, readCharacter, startCharacterSession,
   listPersonas, savePersona,
 }: HeaderProps) {
@@ -350,6 +354,7 @@ function RoleplayHeader({
   const [open, setOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
   const [presetOpen, setPresetOpen] = useState(false)
+  const [worldInfoOpen, setWorldInfoOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [aliasDraft, setAliasDraft] = useState('')
   const [aliasError, setAliasError] = useState<string>()
@@ -414,6 +419,11 @@ function RoleplayHeader({
         background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)',
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>预设</button>
+      {projection.worldInfo.books.length > 0 && <button type="button" onClick={() => { setWorldInfoOpen(true) }} style={{
+        background: projection.worldInfo.activeCount > 0 ? `color-mix(in srgb, ${color} 12%, transparent)` : 'transparent',
+        border: `1px solid ${projection.worldInfo.activeCount > 0 ? `color-mix(in srgb, ${color} 34%, transparent)` : 'var(--dsw-alias-border-l2, #444)'}`,
+        borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
+      }}>世界书{projection.worldInfo.activeCount === 0 ? '' : ` · ${projection.worldInfo.activeCount}`}</button>}
       <button type="button" aria-pressed={viewMode === 'debug'} onClick={() => {
         setRoleplayViewMode(sessionId, viewMode === 'immersive' ? 'debug' : 'immersive')
       }} style={{
@@ -554,7 +564,280 @@ function RoleplayHeader({
           onSave={request => configurePreset(sessionId, request)}
           onLibrary={request => managePresetLibrary(sessionId, request)}
         />)}
+    {worldInfoOpen && <WorldInfoManagerDialog
+      worldInfo={projection.worldInfo}
+      onClose={() => { setWorldInfoOpen(false) }}
+      onSave={request => configureWorldInfo(sessionId, request)}
+    />}
   </>
+}
+
+type WorldInfoProjection = AgentRpProjection['worldInfo']
+type WorldInfoBookProjection = WorldInfoProjection['books'][number]
+type WorldInfoEntryProjection = WorldInfoBookProjection['entries'][number]
+
+function worldInfoEntryTitle(entry: WorldInfoEntryProjection): string {
+  return entry.name?.trim() || entry.comment?.trim() || entry.keys[0] || (entry.constant ? '常驻设定' : `条目 ${entry.sourceId}`)
+}
+
+function worldInfoReason(entry: WorldInfoEntryProjection): { readonly title: string; readonly detail: string } {
+  switch (entry.reason) {
+    case 'active-constant': return { title: '正在生效', detail: '这是常驻条目，会进入下一次回复的提示' }
+    case 'active-keyword': return {
+      title: '正在生效',
+      detail: `当前对话命中了${entry.matchedKeys.length === 0 ? '关键词' : `“${entry.matchedKeys.join('”“')}”`}`,
+    }
+    case 'disabled': return { title: '已关闭', detail: '打开条目后才会参与匹配' }
+    case 'deleted': return { title: '已从本会话移除', detail: '原始卡片仍完整保留，可以随时恢复' }
+    case 'empty-content': return { title: '没有内容', detail: '条目正文为空，不会进入提示' }
+    case 'decorator-unsupported': return { title: '暂不执行', detail: '正文含有酒馆装饰器；内容已保留，但当前运行层不会执行' }
+    case 'template-unsupported': return { title: '暂不执行', detail: '正文含有可执行模板；内容已保留，但当前运行层不会执行' }
+    case 'regex-unsupported': return { title: '暂不执行', detail: '该条目使用正则关键词；当前只执行确定性的文字匹配' }
+    case 'primary-unmatched': return { title: '等待关键词', detail: entry.keys.length === 0 ? '没有可用于激活的主关键词' : '当前已发送的对话没有命中主关键词' }
+    case 'secondary-unmatched': return { title: '次要条件未满足', detail: '主关键词已经出现，但次要关键词规则尚未满足' }
+    case 'budget-excluded': return { title: '超出预算', detail: '条目已匹配，但本书的 token 预算优先保留了其他条目' }
+  }
+}
+
+function editableFromProjection(entry: WorldInfoEntryProjection): WorldInfoEditableEntry {
+  return {
+    ...(entry.name === undefined ? {} : { name: entry.name }),
+    ...(entry.comment === undefined ? {} : { comment: entry.comment }),
+    keys: entry.keys,
+    secondaryKeys: entry.secondaryKeys,
+    content: entry.content,
+    enabled: entry.enabled,
+    insertionOrder: entry.insertionOrder,
+    selective: entry.selective,
+    constant: entry.constant,
+    caseSensitive: entry.caseSensitive,
+    matchWholeWords: entry.matchWholeWords,
+    secondaryLogic: entry.secondaryLogic,
+    ...(entry.scanDepth === undefined ? {} : { scanDepth: entry.scanDepth }),
+    position: entry.position,
+    ...(entry.priority === undefined ? {} : { priority: entry.priority }),
+    ignoreBudget: entry.ignoreBudget,
+  }
+}
+
+function WorldInfoManagerDialog({ worldInfo, onClose, onSave }: {
+  readonly worldInfo: WorldInfoProjection
+  readonly onClose: () => void
+  readonly onSave: (request: WorldInfoConfigurationRequest) => Promise<void>
+}) {
+  const first = worldInfo.books.flatMap(book => book.entries.map(entry => `${book.id}\u0000${entry.index}`))[0]
+  const [selectedKey, setSelectedKey] = useState(first)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState<WorldInfoEditableEntry>()
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string>()
+  const pair = worldInfo.books.flatMap(book => book.entries.map(entry => ({ book, entry })))
+    .find(({ book, entry }) => `${book.id}\u0000${entry.index}` === selectedKey)
+    ?? worldInfo.books.flatMap(book => book.entries.map(entry => ({ book, entry })))[0]
+  useEffect(() => {
+    if (pair === undefined || editing) return
+    setDraft(editableFromProjection(pair.entry))
+  }, [pair?.book.id, pair?.entry.index, pair?.entry.modified, pair?.entry.deleted, editing])
+  if (pair === undefined) return null
+  const { book, entry } = pair
+  const reason = worldInfoReason(entry)
+  const hasOverrides = worldInfo.books.some(item => item.entries.some(candidate => candidate.modified || candidate.deleted))
+  const mutate = (request: WorldInfoConfigurationRequest, after?: () => void): void => {
+    setSaving(true)
+    setError(undefined)
+    void onSave(request).then(() => {
+      setSaving(false)
+      after?.()
+    }, (saveError: unknown) => {
+      setSaving(false)
+      setError(saveError instanceof Error ? saveError.message : String(saveError))
+    })
+  }
+  return <div role="dialog" aria-modal="true" aria-label="世界书" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.55)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '20px', position: 'fixed', zIndex: 1002,
+  }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+      borderRadius: '16px', boxShadow: '0 24px 90px rgba(0,0,0,.38)', display: 'flex', flexDirection: 'column',
+      maxHeight: 'calc(100vh - 40px)', maxWidth: '1080px', overflow: 'hidden', width: 'min(1080px, calc(100vw - 40px))',
+    }}>
+      <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '12px', padding: '17px 20px' }}>
+        <div>
+          <h2 style={{ fontSize: '18px', margin: 0 }}>世界书</h2>
+          <div style={{ fontSize: '12px', marginTop: '4px', opacity: .52 }}>
+            {worldInfo.books.length} 本 · {worldInfo.books.reduce((sum, item) => sum + item.entries.length, 0)} 条 · 当前激活 {worldInfo.activeCount} 条
+          </div>
+        </div>
+        {hasOverrides && <button type="button" disabled={saving} onClick={() => {
+          mutate({ operation: 'reset-all', revision: worldInfo.revision }, () => { setEditing(false) })
+        }} style={{ ...generationButtonStyle, marginLeft: 'auto' }}>全部恢复原始设置</button>}
+        <button type="button" aria-label="关闭世界书" onClick={onClose} style={{ background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', marginLeft: hasOverrides ? 0 : 'auto', padding: '3px 6px' }}>×</button>
+      </header>
+      <div style={{ display: 'flex', flex: 1, flexWrap: 'wrap', minHeight: 0, overflowY: 'auto' }}>
+        <nav aria-label="世界书条目" style={{
+          borderRight: '1px solid var(--dsw-alias-border-l2, #39393c)', boxSizing: 'border-box',
+          flex: '1 1 250px', maxWidth: '330px', minWidth: '230px', padding: '12px 10px 18px',
+        }}>
+          {worldInfo.books.map(item => <section key={item.id} style={{ marginBottom: '15px' }}>
+            <div style={{ alignItems: 'baseline', display: 'flex', fontSize: '11px', fontWeight: 650, gap: '6px', opacity: .5, padding: '4px 8px 7px' }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</span>
+              <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}>{item.source === 'character' ? '角色卡' : '外部'}</span>
+            </div>
+            <div style={{ display: 'grid', gap: '5px' }}>
+              {item.entries.map(candidate => {
+                const key = `${item.id}\u0000${candidate.index}`
+                return <button key={key} type="button" aria-current={key === selectedKey} onClick={() => {
+                  setSelectedKey(key); setEditing(false); setError(undefined)
+                }} style={{
+                  alignItems: 'center', background: key === selectedKey ? `color-mix(in srgb, ${color} 14%, transparent)` : 'transparent',
+                  border: key === selectedKey ? `1px solid color-mix(in srgb, ${color} 34%, transparent)` : '1px solid transparent',
+                  borderRadius: '9px', color: 'inherit', cursor: 'pointer', display: 'grid', font: 'inherit',
+                  gridTemplateColumns: '8px minmax(0, 1fr)', gap: '8px', padding: '9px 8px', textAlign: 'left',
+                }}>
+                  <span aria-hidden="true" style={{
+                    background: candidate.active ? '#75c79a' : candidate.deleted || !candidate.enabled ? '#6d6d72' : '#c5a769',
+                    borderRadius: '50%', height: '7px', width: '7px',
+                  }} />
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: '12px', fontWeight: 580, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{worldInfoEntryTitle(candidate)}</span>
+                    <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .45 }}>{worldInfoReason(candidate).title}{candidate.modified ? ' · 已修改' : ''}</span>
+                  </span>
+                </button>
+              })}
+            </div>
+          </section>)}
+        </nav>
+        <main style={{ boxSizing: 'border-box', flex: '2 1 480px', minWidth: 0, padding: '22px 24px 28px' }}>
+          {!editing && <>
+            <div style={{ alignItems: 'flex-start', display: 'flex', gap: '12px' }}>
+              <div style={{ minWidth: 0 }}>
+                <h3 style={{ fontSize: '17px', margin: 0 }}>{worldInfoEntryTitle(entry)}</h3>
+                <div style={{ fontSize: '11px', marginTop: '5px', opacity: .48 }}>{book.name} · #{entry.sourceId} · 顺序 {entry.insertionOrder}</div>
+              </div>
+              <span style={{
+                background: entry.active ? 'rgba(76,178,119,.13)' : 'var(--dsw-alias-bg-layer-1, #222226)',
+                border: `1px solid ${entry.active ? 'rgba(91,200,139,.33)' : 'var(--dsw-alias-border-l2, #414146)'}`,
+                borderRadius: '999px', fontSize: '11px', marginLeft: 'auto', padding: '5px 9px', whiteSpace: 'nowrap',
+              }}>{reason.title}</span>
+            </div>
+            <p style={{ fontSize: '12px', lineHeight: 1.6, margin: '14px 0 0', opacity: .6 }}>{reason.detail}</p>
+            {(entry.matchedKeys.length > 0 || entry.matchedSecondaryKeys.length > 0) && <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '12px' }}>
+              {[...entry.matchedKeys, ...entry.matchedSecondaryKeys].map((key, index) => <span key={`${key}-${index}`} style={{ ...chipStyle, color: '#91d8ae' }}>命中 · {key}</span>)}
+            </div>}
+            <section style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)', borderRadius: '11px', marginTop: '18px', padding: '14px 15px' }}>
+              <div style={{ fontSize: '11px', fontWeight: 650, opacity: .48 }}>设定正文</div>
+              <div style={{ fontSize: '13px', lineHeight: 1.72, marginTop: '8px', maxHeight: '240px', overflowY: 'auto', whiteSpace: 'pre-wrap' }}>{entry.content || '（空）'}</div>
+            </section>
+            <div style={{ display: 'grid', gap: '12px', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', marginTop: '17px' }}>
+              <DetailSection title="主关键词" text={entry.constant ? '常驻，无需关键词' : entry.keys.join('、') || '未设置'} />
+              {entry.selective && <DetailSection title="次要关键词" text={entry.secondaryKeys.join('、') || '未设置'} />}
+              <DetailSection title="注入位置" text={entry.position === 'before_char' ? '角色设定之前' : '角色设定之后'} />
+              <DetailSection title="估算占用" text={`约 ${entry.approximateTokens} tokens${book.tokenBudget === undefined ? '' : ` · 本书预算 ${book.tokenBudget}`}`} />
+            </div>
+            {(entry.useRegex || entry.hasDecorators || book.recursiveScanning || book.degradations.length > 0) && <details style={{ fontSize: '12px', lineHeight: 1.65, marginTop: '17px', opacity: .68 }}>
+              <summary style={{ cursor: 'pointer' }}>兼容性信息</summary>
+              <div style={{ marginTop: '7px' }}>{[
+                entry.useRegex ? '正则关键词已保留，当前不执行' : '',
+                entry.hasDecorators ? '装饰器已保留，当前不执行' : '',
+                book.recursiveScanning ? '递归扫描已保留，当前不执行' : '',
+                ...book.degradations,
+              ].filter(Boolean).join('\n')}</div>
+            </details>}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '22px' }}>
+              {!entry.deleted && <button type="button" disabled={saving} onClick={() => {
+                mutate({ operation: 'toggle', revision: worldInfo.revision, bookId: book.id, entryIndex: entry.index, enabled: !entry.enabled })
+              }} style={generationButtonStyle}>{entry.enabled ? '关闭条目' : '打开条目'}</button>}
+              {!entry.deleted && <button type="button" disabled={saving} onClick={() => { setDraft(editableFromProjection(entry)); setEditing(true) }} style={generationButtonStyle}>编辑</button>}
+              <button type="button" disabled={saving} onClick={() => {
+                mutate({ operation: 'delete', revision: worldInfo.revision, bookId: book.id, entryIndex: entry.index, deleted: !entry.deleted })
+              }} style={generationButtonStyle}>{entry.deleted ? '恢复条目' : '从本会话移除'}</button>
+              {(entry.modified || entry.deleted) && <button type="button" disabled={saving} onClick={() => {
+                mutate({ operation: 'reset-entry', revision: worldInfo.revision, bookId: book.id, entryIndex: entry.index })
+              }} style={{ ...generationButtonStyle, marginLeft: 'auto' }}>恢复原始条目</button>}
+            </div>
+          </>}
+          {editing && draft !== undefined && <WorldInfoEntryEditor
+            draft={draft}
+            saving={saving}
+            onCancel={() => { setEditing(false); setError(undefined) }}
+            onSave={value => mutate({
+              operation: 'edit', revision: worldInfo.revision, bookId: book.id, entryIndex: entry.index, entry: value,
+            }, () => { setEditing(false) })}
+          />}
+          {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.55, marginTop: '14px' }}>{error}</div>}
+        </main>
+      </div>
+    </section>
+  </div>
+}
+
+function WorldInfoEntryEditor({ draft, saving, onCancel, onSave }: {
+  readonly draft: WorldInfoEditableEntry
+  readonly saving: boolean
+  readonly onCancel: () => void
+  readonly onSave: (value: WorldInfoEditableEntry) => void
+}) {
+  const [value, setValue] = useState(draft)
+  const inputStyle = {
+    background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #414146)',
+    borderRadius: '8px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '8px 9px', width: '100%',
+  } as const
+  const list = (source: string): readonly string[] => source.split(/[,，\n]/u).map(item => item.trim()).filter(Boolean)
+  return <form onSubmit={event => { event.preventDefault(); onSave(value) }}>
+    <div style={{ alignItems: 'center', display: 'flex', gap: '10px' }}>
+      <div>
+        <h3 style={{ fontSize: '17px', margin: 0 }}>编辑世界书条目</h3>
+        <div style={{ fontSize: '11px', marginTop: '5px', opacity: .48 }}>修改只作用于当前会话，原文件不会被覆盖</div>
+      </div>
+      <button type="button" onClick={onCancel} style={{ ...generationButtonStyle, marginLeft: 'auto' }}>取消</button>
+      <button type="submit" disabled={saving || value.content.trim() === ''} style={{ ...generationButtonStyle, opacity: value.content.trim() === '' ? .35 : 1 }}>{saving ? '保存中…' : '保存'}</button>
+    </div>
+    <div style={{ display: 'grid', gap: '13px', marginTop: '19px' }}>
+      <label style={{ fontSize: '12px' }}>名称
+        <input value={value.name ?? ''} onChange={event => { setValue(current => ({ ...current, name: event.target.value })) }} style={{ ...inputStyle, marginTop: '6px' }} placeholder="可选；留白时显示首个关键词" />
+      </label>
+      <label style={{ fontSize: '12px' }}>设定正文
+        <textarea value={value.content} rows={8} onChange={event => { setValue(current => ({ ...current, content: event.target.value })) }} style={{ ...inputStyle, lineHeight: 1.65, marginTop: '6px', resize: 'vertical' }} />
+      </label>
+      <div style={{ display: 'grid', gap: '12px', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))' }}>
+        <label style={{ fontSize: '12px' }}>主关键词
+          <textarea value={value.keys.join('\n')} rows={3} disabled={value.constant} onChange={event => { setValue(current => ({ ...current, keys: list(event.target.value) })) }} style={{ ...inputStyle, lineHeight: 1.5, marginTop: '6px', opacity: value.constant ? .45 : 1, resize: 'vertical' }} placeholder="每行或逗号分隔" />
+        </label>
+        <label style={{ fontSize: '12px' }}>次要关键词
+          <textarea value={value.secondaryKeys.join('\n')} rows={3} disabled={!value.selective || value.constant} onChange={event => { setValue(current => ({ ...current, secondaryKeys: list(event.target.value) })) }} style={{ ...inputStyle, lineHeight: 1.5, marginTop: '6px', opacity: !value.selective || value.constant ? .45 : 1, resize: 'vertical' }} placeholder="每行或逗号分隔" />
+        </label>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px 20px' }}>
+        {([
+          ['enabled', '启用条目'], ['constant', '常驻'], ['selective', '使用次要关键词'],
+          ['caseSensitive', '区分大小写'], ['matchWholeWords', '完整词匹配'], ['ignoreBudget', '忽略预算'],
+        ] as const).map(([key, label]) => <label key={key} style={{ alignItems: 'center', display: 'flex', fontSize: '12px', gap: '7px' }}>
+          <input type="checkbox" checked={value[key]} onChange={event => { setValue(current => ({ ...current, [key]: event.target.checked })) }} />{label}
+        </label>)}
+      </div>
+      <div style={{ display: 'grid', gap: '12px', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
+        <label style={{ fontSize: '12px' }}>注入位置
+          <select value={value.position} onChange={event => { setValue(current => ({ ...current, position: event.target.value as WorldInfoEditableEntry['position'] })) }} style={{ ...inputStyle, marginTop: '6px' }}>
+            <option value="before_char">角色设定之前</option><option value="after_char">角色设定之后</option>
+          </select>
+        </label>
+        <label style={{ fontSize: '12px' }}>次要条件
+          <select disabled={!value.selective} value={value.secondaryLogic} onChange={event => { setValue(current => ({ ...current, secondaryLogic: event.target.value as WorldInfoEditableEntry['secondaryLogic'] })) }} style={{ ...inputStyle, marginTop: '6px', opacity: value.selective ? 1 : .45 }}>
+            <option value="and-any">任意命中</option><option value="and-all">全部命中</option><option value="not-any">全部不出现</option><option value="not-all">不是全部出现</option>
+          </select>
+        </label>
+        <label style={{ fontSize: '12px' }}>顺序
+          <input type="number" value={value.insertionOrder} onChange={event => { setValue(current => ({ ...current, insertionOrder: Number(event.target.value) })) }} style={{ ...inputStyle, marginTop: '6px' }} />
+        </label>
+        <label style={{ fontSize: '12px' }}>扫描深度
+          <input type="number" min={0} value={value.scanDepth ?? ''} placeholder="继承世界书" onChange={event => { setValue(current => {
+            const next = { ...current }; if (event.target.value === '') delete next.scanDepth; else next.scanDepth = Number(event.target.value); return next
+          }) }} style={{ ...inputStyle, marginTop: '6px' }} />
+        </label>
+      </div>
+    </div>
+  </form>
 }
 
 function CharacterLibraryDialog({
@@ -2167,6 +2450,14 @@ export function apply(ctx: ClientContext): void {
     if (!response.result.ok) throw new Error(response.result.error?.message ?? '预设库操作失败')
     if (response.result.value?.matched !== true) throw new Error('当前 Host 未启用预设库')
   }
+  const configureWorldInfo = async (sessionId: SessionId, request: WorldInfoConfigurationRequest): Promise<void> => {
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const response = await session.command(`/rp-world-info ${JSON.stringify(request)}`)
+    if (!response.ok) throw new Error(response.error.message)
+    if (!response.value.matched) throw new Error('当前 Host 未启用世界书管理')
+  }
   const runGeneration = async (
     sessionId: SessionId,
     request: { readonly operation: 'regenerate' | 'continue'; readonly replySeq: number }
@@ -2181,7 +2472,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} listCharacters={listCharacters} readCharacter={readCharacter} startCharacterSession={startCharacterSession} listPersonas={listPersonas} savePersona={savePersona} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} startCharacterSession={startCharacterSession} listPersonas={listPersonas} savePersona={savePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',
   }, () => null))
@@ -2190,6 +2481,9 @@ export function apply(ctx: ClientContext): void {
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-generation',
+  }, () => null))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-world-info',
   }, () => null))
   ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
     name: 'conversation.chat.turnTail',

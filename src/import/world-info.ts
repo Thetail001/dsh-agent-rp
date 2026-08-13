@@ -95,6 +95,11 @@ function parseEntry(
   const recursive = entry.excludeRecursion === true || entry.preventRecursion === true || entry.delayUntilRecursion === true
   const useRegex = [...keys, ...secondaryKeys].some(isDelimitedRegex)
   const decorated = hasDecorator(content)
+  const uid = entry.uid
+  if (uid !== undefined && uid !== null && typeof uid !== 'string' && typeof uid !== 'number') {
+    throw new Error(`${path}.uid must be a string or number`)
+  }
+  const displayName = optionalString(entry.comment, `${path}.comment`)
   const supportedPosition = position === 0 || position === 1
   if (useRegex) degradations.add('entry-regex')
   if (decorated) degradations.add('entry-decorators')
@@ -107,6 +112,8 @@ function parseEntry(
   const scanDepth = optionalFiniteNumber(entry.scanDepth, `${path}.scanDepth`)
   if (scanDepth !== undefined && scanDepth < 0) throw new Error(`${path}.scanDepth must not be negative`)
   return {
+    sourceId: uid === undefined || uid === null ? id : String(uid),
+    ...(displayName === undefined ? {} : { name: displayName }),
     keys,
     secondaryKeys,
     content,

@@ -86,6 +86,8 @@ import { installPersonaLibraryHttp } from './persona-library-http.ts'
 import { PersonaLibrary } from './persona-library.ts'
 import { parseSessionPersona, readSessionPersona } from './session-persona.ts'
 import { executeGenerationCommand } from './generation.ts'
+import { configuredLorebook, readWorldInfoConfiguration } from './world-info-configuration-core.ts'
+import { executeWorldInfoConfiguration, readSessionLorebookSources } from './world-info-configuration.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -424,6 +426,13 @@ export function installAgentRp(
     recordInput: false,
     handler: executeGenerationCommand,
   })
+  commands.register({
+    name: 'rp-world-info',
+    description: 'manage this roleplay Session world info',
+    input: { hint: '<private world-info-manager payload>' },
+    recordInput: false,
+    handler: executeWorldInfoConfiguration,
+  })
   ctx.effect(() => gateway.registerPromptAttachmentConsumer('dsh-agent-rp', ({ agent, content }) => (
     claimAgentRpPrompt(agentsByScope.get(agent) === agent, content)
   )), 'agent-rp: prompt attachment consumer')
@@ -555,7 +564,17 @@ export function installAgentRp(
       if (agent !== undefined) pendingMessagesByAgent.delete(agent)
       const active = importedCharacter(agentsByScope, scope)
       if (agent === undefined) return renderCharacterPrompt(config)
-      const worldInfos = readActiveSessionWorldInfos(agent.session.events).map(imported => imported.worldInfo)
+      const sources = readSessionLorebookSources(agent)
+      const worldInfoConfiguration = readWorldInfoConfiguration(agent.session.events)
+      const configuredSources = sources.map(source => ({
+        source,
+        configured: configuredLorebook(source, worldInfoConfiguration).lorebook,
+      }))
+      const worldInfos = readActiveSessionWorldInfos(agent.session.events).map(imported => {
+        const id = `standalone:${imported.result.sourceAttachmentId}`
+        const configured = configuredSources.find(value => value.source.id === id)?.configured
+        return configured === undefined ? imported.worldInfo : { ...imported.worldInfo, lorebook: configured }
+      })
       const standaloneLore = renderImportedWorldInfos(worldInfos, agent.session, pendingMessages)
       if (active === undefined) {
         const importedChat = readSillyTavernChatIdentity(agent.session.events)
@@ -568,7 +587,9 @@ export function installAgentRp(
         }
         return renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter)
       }
-      const card = cardFromImportMeta(active.meta)
+      const importedCard = cardFromImportMeta(active.meta)
+      const cardLorebook = configuredSources.find(value => value.source.source === 'character')?.configured
+      const card = cardLorebook === undefined ? importedCard : { ...importedCard, lorebook: cardLorebook }
       const persona = readSessionPersona(agent.session.events)
       const userName = persona?.name ?? active.result.userName ?? readSillyTavernChatIdentity(agent.session.events)?.userName
       const mvu = readCurrentMvuState(card, agent.session.events)

@@ -94,6 +94,7 @@ test('imports V2 lorebook and activates constant, primary, and selective entries
         recursive_scanning: false,
         extensions: { 'fixture/book': true },
         entries: [{
+          id: null,
           keys: [],
           content: '海城终年多雾。',
           extensions: {},
@@ -124,6 +125,7 @@ test('imports V2 lorebook and activates constant, primary, and selective entries
 
   assert.deepEqual(active.beforeCharacter, ['海城终年多雾。'])
   assert.deepEqual(active.afterCharacter, ['旧钟楼每天午夜停摆一分钟。', '蓝灯是返航信号。'])
+  assert.equal(card.lorebook?.entries[0]?.sourceId, '0')
   assert.deepEqual(card.raw, raw)
 })
 

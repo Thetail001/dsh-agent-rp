@@ -109,7 +109,17 @@ function parseLorebookEntry(value: JsonValue, index: number, version: CharacterC
     throw new Error(`${path}.position must be before_char or after_char`)
   }
   const content = requiredString(entry.content, `${path}.content`)
+  const sourceIdValue = entry.id
+  if (sourceIdValue !== undefined && sourceIdValue !== null
+    && typeof sourceIdValue !== 'string' && typeof sourceIdValue !== 'number') {
+    throw new Error(`${path}.id must be a string or number`)
+  }
+  const name = optionalString(entry.name, `${path}.name`)
+  const comment = optionalString(entry.comment, `${path}.comment`)
   return {
+    sourceId: sourceIdValue === undefined || sourceIdValue === null ? String(index) : String(sourceIdValue),
+    ...(name === undefined ? {} : { name }),
+    ...(comment === undefined ? {} : { comment }),
     keys: stringArray(entry.keys, `${path}.keys`),
     secondaryKeys: stringArray(entry.secondary_keys, `${path}.secondary_keys`),
     content,

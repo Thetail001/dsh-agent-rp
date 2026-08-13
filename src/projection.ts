@@ -6,6 +6,7 @@ import { parseCharacterCardJson } from './import/character-card.ts'
 import type { CharacterImportMeta } from './import/session-character.ts'
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import type { WorldInfoImportMeta } from './import/session-world-info.ts'
+import { parseWorldInfoJson } from './import/world-info.ts'
 import type { ActiveSessionPreset, PresetImportMeta } from './import/session-preset.ts'
 import { presetRegexScripts, type ImportedSillyTavernPreset } from './import/sillytavern-preset.ts'
 import type { AgentRpProjection } from './projection-types.ts'
@@ -15,6 +16,15 @@ import { configurePreset, parsePresetConfigurationRequest } from './preset-confi
 import { parsePresetLibraryResult } from './preset-library-protocol.ts'
 import { parseSessionPersona } from './session-persona.ts'
 import { decodeGenerationState, type GenerationStateRecord } from './generation.ts'
+import { inspectLorebook } from './import/lorebook.ts'
+import type { ImportedWorldInfo } from './import/types.ts'
+import {
+  configuredLorebook,
+  decodeWorldInfoConfiguration,
+  editableWorldInfoEntry,
+  type SessionLorebookSource,
+} from './world-info-configuration-core.ts'
+import type { WorldInfoConfigurationState } from './world-info-configuration-types.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -42,6 +52,7 @@ const projectionSchema = {
       || record.importedMessageCount < 0
       || typeof record.worldInfoCount !== 'number' || !Number.isSafeInteger(record.worldInfoCount)
       || record.worldInfoCount < 0
+      || typeof record.worldInfo !== 'object' || record.worldInfo === null
       || (record.frontend !== undefined && (typeof record.frontend !== 'object' || record.frontend === null))
       || (record.preset !== undefined && (typeof record.preset !== 'object' || record.preset === null))
       || !Array.isArray(record.presetLibrary)
@@ -54,9 +65,12 @@ const projectionSchema = {
 type ImportCall = 'character-card' | 'world-info' | 'preset'
 
 interface AgentRpProjectionState {
-  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'presetLibrary' | 'lastRequest' | 'generations'>
+  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'worldInfo' | 'presetLibrary' | 'lastRequest' | 'generations'>
   readonly cardWorldInfoCount: number
-  readonly standaloneWorldInfos: Readonly<Record<string, number>>
+  readonly cardLorebook?: SessionLorebookSource
+  readonly standaloneWorldInfos: Readonly<Record<string, SessionLorebookSource>>
+  readonly worldInfoConfiguration: WorldInfoConfigurationState
+  readonly surface: readonly { readonly seq: number; readonly text?: string }[]
   readonly calls: Readonly<Record<string, ImportCall>>
   readonly mvu?: AgentRpProjection['mvu']
   readonly preset?: AgentRpProjection['preset']
@@ -103,6 +117,107 @@ function cardProjection(
     },
     lorebookEntries: card.lorebook?.entries.length ?? 0,
   }
+}
+
+function cardLorebookSource(meta: CharacterImportMeta): SessionLorebookSource | undefined {
+  const card = parseCharacterCardJson(JSON.stringify(meta.raw))
+  if (card.lorebook === undefined) return undefined
+  return {
+    id: `character:${meta.result.sourceAttachmentId}`,
+    name: card.lorebook.name?.trim() || `${card.nickname?.trim() || card.name}的世界书`,
+    source: 'character',
+    lorebook: card.lorebook,
+    degradations: card.degradations.filter(value => value.startsWith('lorebook-')),
+  }
+}
+
+function standaloneLorebookSource(meta: WorldInfoImportMeta): SessionLorebookSource {
+  const worldInfo = JSON.parse(JSON.stringify(meta.raw)) as ImportedWorldInfo['raw']
+  const parsed = parseWorldInfoJson(JSON.stringify(worldInfo))
+  return {
+    id: `standalone:${meta.result.sourceAttachmentId}`,
+    name: meta.result.name,
+    source: 'standalone',
+    lorebook: parsed.lorebook,
+    degradations: meta.result.degradations,
+  }
+}
+
+function surfaceText(event: SessionEvent): string | undefined {
+  if (event.type === 'user/message') {
+    if (event.data.source.kind !== 'user' && event.data.source.kind !== 'model') return undefined
+    return event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+  }
+  if (event.type === 'assistant/message') {
+    if (event.data.message.source.kind !== 'model') return undefined
+    return event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+  }
+  return undefined
+}
+
+function applySurface(
+  surface: AgentRpProjectionState['surface'],
+  event: SessionEvent,
+): AgentRpProjectionState['surface'] {
+  if (event.type !== 'user/message' && event.type !== 'assistant/message' && event.type !== 'tool/result') return surface
+  const text = surfaceText(event)
+  const node = text === undefined ? { seq: event.seq } : { seq: event.seq, text }
+  const operation = event.surfaceOp
+  if (operation === undefined) return surface
+  if (operation === 'append') return [...surface, node]
+  const start = surface.findIndex(value => value.seq === operation.start)
+  const end = surface.findIndex(value => value.seq === operation.end)
+  if (start < 0 || end < start) return surface
+  return [
+    ...surface.slice(0, start),
+    node,
+    ...surface.slice(end + 1),
+  ]
+}
+
+function worldInfoProjection(state: AgentRpProjectionState): AgentRpProjection['worldInfo'] {
+  const sources = [
+    ...(state.cardLorebook === undefined ? [] : [state.cardLorebook]),
+    ...Object.values(state.standaloneWorldInfos),
+  ]
+  const messages = state.surface.flatMap(node => node.text === undefined ? [] : [node.text])
+  let activeCount = 0
+  const books = sources.map(source => {
+    const configured = configuredLorebook(source, state.worldInfoConfiguration)
+    const inspected = inspectLorebook(configured.lorebook, messages)
+    const overrides = new Map(state.worldInfoConfiguration.overrides
+      .filter(item => item.bookId === source.id).map(item => [item.entryIndex, item]))
+    return {
+      id: source.id,
+      name: source.name,
+      source: source.source,
+      ...(source.lorebook.scanDepth === undefined ? {} : { scanDepth: source.lorebook.scanDepth }),
+      ...(source.lorebook.tokenBudget === undefined ? {} : { tokenBudget: source.lorebook.tokenBudget }),
+      recursiveScanning: source.lorebook.recursiveScanning,
+      degradations: source.degradations,
+      entries: configured.lorebook.entries.map((entry, index) => {
+        const decision = inspected.entries[index]!
+        const override = overrides.get(index)
+        const deleted = configured.deleted.has(index)
+        if (decision.active && !deleted) activeCount += 1
+        return {
+          index,
+          sourceId: entry.sourceId,
+          ...editableWorldInfoEntry(entry),
+          useRegex: entry.useRegex,
+          hasDecorators: entry.hasDecorators,
+          active: decision.active && !deleted,
+          reason: deleted ? 'deleted' as const : decision.reason,
+          matchedKeys: decision.matchedKeys,
+          matchedSecondaryKeys: decision.matchedSecondaryKeys,
+          approximateTokens: decision.approximateTokens,
+          modified: override?.entry !== undefined,
+          deleted,
+        }
+      }),
+    }
+  })
+  return { revision: state.worldInfoConfiguration.revision, activeCount, books }
 }
 
 function toolCallId(event: Extract<SessionEvent, { type: 'tool/result' }>): string | undefined {
@@ -336,11 +451,15 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     character: INITIAL_CHARACTER,
     cardWorldInfoCount: 0,
     standaloneWorldInfos: {},
+    worldInfoConfiguration: { format: 0, revision: 0, overrides: [] },
+    surface: [],
     calls: {},
     presetLibrary: [],
     generations: {},
   }),
   apply(state, event) {
+    const surface = applySurface(state.surface, event)
+    const withSurface = surface === state.surface ? state : { ...state, surface }
     const generation = event.type === 'command/done' && event.data.kind === 'success'
       ? decodeGenerationState(event.data.text)
       : event.type === ('agent-rp/generation-state' as SessionEvent['type'])
@@ -348,30 +467,39 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         : undefined
     if (generation !== undefined) {
       return {
-        ...state,
+        ...withSurface,
         ...(generation.mvu === undefined ? {} : { mvu: generation.mvu }),
         generations: { ...state.generations, [generation.groupId]: generation },
         currentReplySeq: generation.anchorSeq,
       }
     }
+    if (event.type === 'command/done' && event.data.kind === 'success') {
+      let worldInfoConfiguration
+      try {
+        worldInfoConfiguration = decodeWorldInfoConfiguration(event.data.text)
+      } catch {
+        return withSurface
+      }
+      if (worldInfoConfiguration !== undefined) return { ...withSurface, worldInfoConfiguration }
+    }
     if (event.type === 'agent-rp/persona-seed') {
       try {
         const persona = parseSessionPersona(event.data.persona)
         return {
-          ...state,
-          character: { ...state.character, userName: persona.name, persona },
+          ...withSurface,
+          character: { ...withSurface.character, userName: persona.name, persona },
         }
       } catch {
-        return state
+        return withSurface
       }
     }
     if (event.type === 'agent-rp/sillytavern-chat-import') {
       const identity = readSillyTavernChatIdentity([event])
       return {
-        ...state,
+        ...withSurface,
         character: {
-          ...state.character,
-          ...(state.character.source === 'preset' && identity !== undefined
+          ...withSurface.character,
+          ...(withSurface.character.source === 'preset' && identity !== undefined
             ? { characterName: identity.characterName, source: 'sillytavern-chat' as const }
             : {}),
           ...(identity?.userName === undefined ? {} : { userName: identity.userName }),
@@ -380,12 +508,15 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
       }
     }
     if (event.type === 'agent-rp/character-card-seed') {
-      const projected = cardProjection(state.character, event.data.meta)
+      const projected = cardProjection(withSurface.character, event.data.meta)
       const card = parseCharacterCardJson(JSON.stringify(event.data.meta.raw))
+      const cardLorebook = cardLorebookSource(event.data.meta)
+      const { cardLorebook: _previousLorebook, ...withoutCardLorebook } = withSurface
       return {
-        ...state,
+        ...withoutCardLorebook,
         character: projected.character,
         cardWorldInfoCount: projected.lorebookEntries,
+        ...(cardLorebook === undefined ? {} : { cardLorebook }),
         mvu: readCurrentMvuState(card, []) ,
       }
     }
@@ -398,7 +529,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         ...(event.data.libraryId === undefined ? {} : { libraryId: event.data.libraryId }),
       }
       return {
-        ...state,
+        ...withSurface,
         preset: presetProjection(event.data.result.name, event.data.preset, 0, event.data.preset, event.data.libraryId),
         presetState,
       }
@@ -408,9 +539,9 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
       try {
         library = parsePresetLibraryResult(event.data.text)
       } catch {
-        return state
+        return withSurface
       }
-      if (library === undefined) return state
+      if (library === undefined) return withSurface
       if (library.selected !== undefined) {
         const selected = library.selected
         const presetState: ActiveSessionPreset = {
@@ -429,52 +560,52 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
           libraryId: selected.libraryId,
         }
         return {
-          ...state,
+          ...withSurface,
           presetLibrary: library.entries,
           preset: presetProjection(selected.name, selected.preset, 0, selected.preset, selected.libraryId),
           presetState,
         }
       }
-      if (state.preset === undefined || state.presetState === undefined || library.linkedLibraryId === undefined) {
-        return { ...state, presetLibrary: library.entries }
+      if (withSurface.preset === undefined || withSurface.presetState === undefined || library.linkedLibraryId === undefined) {
+        return { ...withSurface, presetLibrary: library.entries }
       }
       return {
-        ...state,
+        ...withSurface,
         presetLibrary: library.entries,
-        preset: { ...state.preset, libraryId: library.linkedLibraryId },
-        presetState: { ...state.presetState, libraryId: library.linkedLibraryId },
+        preset: { ...withSurface.preset, libraryId: library.linkedLibraryId },
+        presetState: { ...withSurface.presetState, libraryId: library.linkedLibraryId },
       }
     }
     if (event.type === 'command/run' && event.data.name === 'rp-preset-configure' && event.data.args !== undefined) {
-      if (state.preset === undefined || state.presetState === undefined) return state
+      if (withSurface.preset === undefined || withSurface.presetState === undefined) return withSurface
       try {
-        const configured = configurePreset(state.presetState, parsePresetConfigurationRequest(event.data.args))
-        const revision = state.presetState.revision + 1
+        const configured = configurePreset(withSurface.presetState, parsePresetConfigurationRequest(event.data.args))
+        const revision = withSurface.presetState.revision + 1
         return {
-          ...state,
+          ...withSurface,
           preset: presetProjection(
-            state.preset.name,
+            withSurface.preset.name,
             configured,
             revision,
-            state.presetState.importedPreset,
-            state.presetState.libraryId,
+            withSurface.presetState.importedPreset,
+            withSurface.presetState.libraryId,
           ),
-          presetState: { ...state.presetState, preset: configured, revision },
+          presetState: { ...withSurface.presetState, preset: configured, revision },
         }
       } catch {
-        return state
+        return withSurface
       }
     }
     if (event.type === 'request/header') {
       const config = event.data.header.config
       return {
-        ...state,
+        ...withSurface,
         lastRequest: {
           eventSeq: event.seq,
           time: event.time,
-          ...(state.presetState === undefined ? {} : {
-            presetName: state.presetState.result.name,
-            presetRevision: state.presetState.revision,
+          ...(withSurface.presetState === undefined ? {} : {
+            presetName: withSurface.presetState.result.name,
+            presetRevision: withSurface.presetState.revision,
           }),
           system: event.data.header.system ?? '',
           config: {
@@ -493,22 +624,22 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
       const text = event.data.message.content
         .flatMap(block => block.type === 'text' ? [block.text] : [])
         .join('\n')
-      const nextState = text.trim() === '' ? state : { ...state, currentReplySeq: event.seq }
-      if (state.mvu === undefined || !/<UpdateVariable(?:variable)?>/iu.test(text)) return nextState
+      const nextState = text.trim() === '' ? withSurface : { ...withSurface, currentReplySeq: event.seq }
+      if (withSurface.mvu === undefined || !/<UpdateVariable(?:variable)?>/iu.test(text)) return nextState
       try {
-        const update = applyMvuReply(state.mvu.statData, text)
+        const update = applyMvuReply(withSurface.mvu.statData, text)
         return update === undefined ? nextState : {
           ...nextState,
           mvu: {
             statData: update.statData,
-            updateCount: state.mvu.updateCount + 1,
+            updateCount: withSurface.mvu.updateCount + 1,
           },
         }
       } catch (error: unknown) {
         return {
           ...nextState,
           mvu: {
-            ...state.mvu,
+            ...withSurface.mvu,
             lastError: error instanceof Error ? error.message : String(error),
           },
         }
@@ -520,35 +651,38 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         : event.data.name === 'import_world_info' ? 'world-info'
           : event.data.name === 'import_sillytavern_preset' ? 'preset' : undefined
       return kind === undefined
-        ? state
-        : { ...state, calls: { ...state.calls, [String(event.data.callId)]: kind } }
+        ? withSurface
+        : { ...withSurface, calls: { ...withSurface.calls, [String(event.data.callId)]: kind } }
     }
-    if (event.type !== 'tool/result') return state
+    if (event.type !== 'tool/result') return withSurface
     const callId = toolCallId(event)
-    if (callId === undefined) return state
-    const kind = state.calls[callId]
-    if (kind === undefined) return state
-    const calls = withoutCall(state.calls, callId)
-    if (toolFailed(event)) return { ...state, calls }
+    if (callId === undefined) return withSurface
+    const kind = withSurface.calls[callId]
+    if (kind === undefined) return withSurface
+    const calls = withoutCall(withSurface.calls, callId)
+    if (toolFailed(event)) return { ...withSurface, calls }
     if (kind === 'character-card') {
       const meta = parseCharacterMeta(event.data.meta)
-      if (meta === undefined) return { ...state, calls }
-      const projected = cardProjection(state.character, meta)
+      if (meta === undefined) return { ...withSurface, calls }
+      const projected = cardProjection(withSurface.character, meta)
       const card = parseCharacterCardJson(JSON.stringify(meta.raw))
+      const cardLorebook = cardLorebookSource(meta)
+      const { cardLorebook: _previousLorebook, ...withoutCardLorebook } = withSurface
       return {
-        ...state,
+        ...withoutCardLorebook,
         calls,
         character: projected.character,
         cardWorldInfoCount: projected.lorebookEntries,
+        ...(cardLorebook === undefined ? {} : { cardLorebook }),
         mvu: readCurrentMvuState(card, []),
       }
     }
     if (kind === 'preset') {
       const meta = parsePresetMeta(event.data.meta)
       return meta === undefined
-        ? { ...state, calls }
+        ? { ...withSurface, calls }
         : {
-            ...state,
+            ...withSurface,
             calls,
             preset: presetProjection(meta.result.name, meta.preset, 0),
             presetState: {
@@ -561,20 +695,21 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     }
     const meta = parseWorldInfoMeta(event.data.meta)
     return meta === undefined
-      ? { ...state, calls }
+      ? { ...withSurface, calls }
       : {
-          ...state,
+          ...withSurface,
           calls,
           standaloneWorldInfos: {
-            ...state.standaloneWorldInfos,
-            [meta.result.sourceAttachmentId]: meta.result.entryCount,
+            ...withSurface.standaloneWorldInfos,
+            [meta.result.sourceAttachmentId]: standaloneLorebookSource(meta),
           },
         }
   },
   view: state => ({
     ...state.character,
     worldInfoCount: state.cardWorldInfoCount
-      + Object.values(state.standaloneWorldInfos).reduce((total, count) => total + count, 0),
+      + Object.values(state.standaloneWorldInfos).reduce((total, source) => total + source.lorebook.entries.length, 0),
+    worldInfo: worldInfoProjection(state),
     ...(state.mvu === undefined ? {} : { mvu: state.mvu }),
     ...(state.preset === undefined ? {} : { preset: state.preset }),
     presetLibrary: state.presetLibrary,
@@ -588,5 +723,5 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     })),
     ...(state.currentReplySeq === undefined ? {} : { currentReplySeq: state.currentReplySeq }),
   }),
-  stateVersion: 4,
+  stateVersion: 5,
 }

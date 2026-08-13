@@ -20,6 +20,49 @@ export interface AgentRpProjection {
   readonly avatarAttachmentId?: string
   readonly importedMessageCount: number
   readonly worldInfoCount: number
+  /** Imported lorebooks, current session overlays, and next-request activation evidence. */
+  readonly worldInfo: {
+    readonly revision: number
+    readonly activeCount: number
+    readonly books: readonly {
+      readonly id: string
+      readonly name: string
+      readonly source: 'character' | 'standalone'
+      readonly scanDepth?: number
+      readonly tokenBudget?: number
+      readonly recursiveScanning: boolean
+      readonly degradations: readonly string[]
+      readonly entries: readonly {
+        readonly index: number
+        readonly sourceId: string
+        readonly name?: string
+        readonly comment?: string
+        readonly keys: readonly string[]
+        readonly secondaryKeys: readonly string[]
+        readonly content: string
+        readonly enabled: boolean
+        readonly insertionOrder: number
+        readonly selective: boolean
+        readonly constant: boolean
+        readonly caseSensitive: boolean
+        readonly matchWholeWords: boolean
+        readonly secondaryLogic: 'and-any' | 'and-all' | 'not-any' | 'not-all'
+        readonly scanDepth?: number
+        readonly position: 'before_char' | 'after_char'
+        readonly priority?: number
+        readonly ignoreBudget: boolean
+        readonly useRegex: boolean
+        readonly hasDecorators: boolean
+        readonly active: boolean
+        readonly reason: import('./import/lorebook.ts').LorebookActivationReason
+        readonly matchedKeys: readonly string[]
+        readonly matchedSecondaryKeys: readonly string[]
+        readonly approximateTokens: number
+        readonly modified: boolean
+        readonly deleted: boolean
+      }[]
+    }[]
+  }
   readonly frontend?: ImportedCharacterFrontend
   readonly mvu?: {
     readonly statData: JsonValue

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { activateLorebook } from '../src/import/lorebook.ts'
+import { activateLorebook, inspectLorebook } from '../src/import/lorebook.ts'
 import { parseWorldInfoJson, parseWorldInfoJsonBytes } from '../src/import/world-info.ts'
 
 function world(entries: object): string {
@@ -129,6 +129,14 @@ test('decodes standalone World Info as strict UTF-8 and rejects malformed entrie
   assert.throws(() => parseWorldInfoJson(world({ bad: { key: 'not an array' } })), /entries.bad.key/u)
 })
 
+test('treats a null World Info uid as an omitted source identifier', () => {
+  const book = parseWorldInfoJson(world({
+    fallback: { uid: null, key: [], content: '常驻。', constant: true, order: 1, position: 0 },
+  }))
+
+  assert.equal(book.lorebook.entries[0]?.sourceId, 'fallback')
+})
+
 test('supports negative secondary logic and whole-word matching', () => {
   const book = parseWorldInfoJson(world({
     notAny: {
@@ -163,4 +171,39 @@ test('keeps phrase keys literal when whole-word matching is enabled', () => {
     beforeCharacter: [],
     afterCharacter: ['The old clock is imported.'],
   })
+})
+
+test('explains the same active entries used by prompt rendering', () => {
+  const book = parseWorldInfoJson(world({
+    constant: { key: [], content: '常驻。', constant: true, order: 30, position: 0 },
+    matched: { key: ['钟楼'], content: '钟楼。', order: 20, position: 1 },
+    absent: { key: ['港口'], content: '港口。', order: 10, position: 1 },
+    regex: { key: ['/秘密/i'], content: '正则。', order: 0, position: 1 },
+  }))
+  const inspected = inspectLorebook(book.lorebook, ['去钟楼。'])
+
+  assert.deepEqual({ beforeCharacter: inspected.beforeCharacter, afterCharacter: inspected.afterCharacter },
+    activateLorebook(book.lorebook, ['去钟楼。']))
+  assert.deepEqual(inspected.entries.map(entry => ({ active: entry.active, reason: entry.reason, keys: entry.matchedKeys })), [
+    { active: true, reason: 'active-constant', keys: [] },
+    { active: true, reason: 'active-keyword', keys: ['钟楼'] },
+    { active: false, reason: 'primary-unmatched', keys: [] },
+    { active: false, reason: 'regex-unsupported', keys: [] },
+  ])
+})
+
+test('activates constant entries without evaluating their regex keywords', () => {
+  const book = parseWorldInfoJson(world({
+    constantRegex: {
+      key: ['/unused/i'],
+      content: '常驻内容。',
+      constant: true,
+      order: 1,
+      position: 0,
+    },
+  }))
+  const inspected = inspectLorebook(book.lorebook, [])
+
+  assert.deepEqual(inspected.beforeCharacter, ['常驻内容。'])
+  assert.equal(inspected.entries[0]?.reason, 'active-constant')
 })

@@ -43,6 +43,12 @@ export interface ImportedCharacterFrontend {
 
 /** Supported runtime behavior of one lorebook entry. */
 export interface ImportedLorebookEntry {
+  /** Stable source-local identifier retained for display and diagnostics. */
+  readonly sourceId: string
+  /** Optional author-facing entry title. */
+  readonly name?: string
+  /** Optional author note shown only in management UI. */
+  readonly comment?: string
   readonly keys: readonly string[]
   readonly secondaryKeys: readonly string[]
   readonly content: string
