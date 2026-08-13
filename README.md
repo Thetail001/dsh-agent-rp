@@ -28,7 +28,7 @@ npx -p @deepseek-ai/dsh@latest dsh plugin --profile web add .
 npx -p @deepseek-ai/dsh@latest dsh --profile web
 ```
 
-早期安装器写入的版本不会自动迁移。若启动错误中出现 `.dsh\plugins\dsh-agent-rp`，请先把该目录改名为 `dsh-agent-rp.disabled`，确认 DSH 能启动后，再按上面的 profile 命令安装。不要删除整个 `.dsh`，会话数据与旧插件目录不是一回事。
+早期安装器写入的版本不会自动迁移。若启动错误中出现 `.dsh\plugins\dsh-agent-rp`，请先把该目录移出 `plugins` 目录作备份，确认 DSH 能启动后，再按上面的 profile 命令安装。不要删除整个 `.dsh`，会话数据与旧插件目录不是一回事。
 
 如果你正在参与 DSH 内测并使用指定 RC 版本，请把上面两处 `@latest` 换成对应版本；不要在 Issue 或日志里公开自己的 NPM Token。
 
