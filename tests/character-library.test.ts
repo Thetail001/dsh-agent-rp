@@ -59,6 +59,16 @@ test('keeps one exact reusable Character Card asset with selectable greetings', 
   assert.deepEqual(library.list().map(entry => entry.id), [first.id])
   assert.deepEqual(library.list('archived'), [])
   assert.deepEqual(library.asset(first.id).data, data)
+
+  assert.equal(library.archive(first.id).archived, true)
+  const browserImport = library.importFile({ data, filename: '白露.json', mediaType: 'application/json' })
+  assert.equal(browserImport.id, first.id)
+  assert.equal(browserImport.archived, false)
+
+  const png = new Uint8Array(readFileSync('tests/fixtures/manual-character-card.png'))
+  const pngImport = library.importFile({ data: png, filename: '白露.png', mediaType: 'image/png' })
+  assert.equal(pngImport.transport, 'png')
+  assert.deepEqual(library.asset(pngImport.id).data, png)
 })
 
 test('keeps the original CHARX archive reusable', (context) => {
@@ -91,6 +101,8 @@ test('keeps the original CHARX archive reusable', (context) => {
     card: parseCharx(archive).card,
     transport: { transport: 'charx' },
   })
+
+  assert.equal(library.importFile({ data: archive, filename: '白露.charx' }).id, imported.id)
 
   assert.equal(imported.transport, 'charx')
   assert.equal(imported.avatarAvailable, true)

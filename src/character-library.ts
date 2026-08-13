@@ -46,6 +46,13 @@ export interface CharacterLibraryImport {
   readonly transport: CharacterImportTransport
 }
 
+/** Raw local file selected from the browser-owned character library. */
+export interface CharacterLibraryFileImport {
+  readonly data: Uint8Array
+  readonly filename: string
+  readonly mediaType?: string
+}
+
 /** Filesystem location override used by focused checks and portable deployments. */
 export interface CharacterLibraryOptions {
   readonly root?: string
@@ -217,6 +224,30 @@ export class CharacterLibrary {
       throw new Error('stored character card does not match the validated import')
     }
     return detail
+  }
+
+  /** Parse and save one supported Character Card file selected from the local browser. */
+  importFile(input: CharacterLibraryFileImport): CharacterLibraryDetail {
+    const filename = input.filename.trim()
+    const mediaType = input.mediaType?.split(';', 1)[0]?.trim().toLocaleLowerCase()
+    if (/\.charx$/iu.test(filename) || mediaType === 'application/zip') {
+      const card = parseCharx(input.data).card
+      return this.import({ ...input, card, transport: { transport: 'charx' } })
+    }
+    if (/\.json$/iu.test(filename) || mediaType === 'application/json') {
+      const card = parseCharacterCardJsonBytes(input.data)
+      return this.import({ ...input, card, transport: { transport: 'json' } })
+    }
+    if (/\.png$/iu.test(filename) || mediaType === 'image/png') {
+      const payload = readCharacterCardPng(input.data)
+      const card = parseCharacterCardJson(payload.json)
+      return this.import({
+        ...input,
+        card,
+        transport: { transport: 'png', metadataKeyword: payload.keyword },
+      })
+    }
+    throw new Error('请选择 PNG、JSON 或 CHARX 角色卡')
   }
 
   /** Hide one reusable card from the everyday collection without touching its original asset. */

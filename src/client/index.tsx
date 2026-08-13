@@ -62,6 +62,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly listCharacters: (collection?: CharacterLibraryCollection) => Promise<readonly CharacterLibrarySummary[]>
   readonly readCharacter: (id: string) => Promise<CharacterLibraryDetail>
   readonly setCharacterArchived: (id: string, archived: boolean) => Promise<CharacterLibraryDetail>
+  readonly importCharacterFile: (file: File) => Promise<CharacterLibraryDetail>
   readonly startCharacterSession: (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -545,7 +546,7 @@ function CharacterAssetsSection({ detail, sessionId }: {
 function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
   configureWorldInfo,
-  listCharacters, readCharacter, setCharacterArchived, startCharacterSession,
+  listCharacters, readCharacter, setCharacterArchived, importCharacterFile, startCharacterSession,
   listPersonas, savePersona,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
@@ -753,6 +754,7 @@ function RoleplayHeader({
       listCharacters={listCharacters}
       readCharacter={readCharacter}
       setCharacterArchived={setCharacterArchived}
+      importCharacterFile={importCharacterFile}
       onClose={() => { setLibraryOpen(false) }}
       onStart={(character, greetingIndex, userName) => startCharacterSession(
         sessionId, character, greetingIndex, userName,
@@ -1053,12 +1055,14 @@ function WorldInfoEntryEditor({ draft, saving, onCancel, onSave }: {
 }
 
 function CharacterLibraryDialog({
-  currentCharacterName, listCharacters, readCharacter, setCharacterArchived, listPersonas, savePersona, onClose, onStart,
+  currentCharacterName, listCharacters, readCharacter, setCharacterArchived, importCharacterFile,
+  listPersonas, savePersona, onClose, onStart,
 }: {
   readonly currentCharacterName: string
   readonly listCharacters: HeaderProps['listCharacters']
   readonly readCharacter: HeaderProps['readCharacter']
   readonly setCharacterArchived: HeaderProps['setCharacterArchived']
+  readonly importCharacterFile: HeaderProps['importCharacterFile']
   readonly listPersonas: HeaderProps['listPersonas']
   readonly savePersona: HeaderProps['savePersona']
   readonly onClose: () => void
@@ -1079,8 +1083,11 @@ function CharacterLibraryDialog({
   const [loadingId, setLoadingId] = useState<string>()
   const [starting, setStarting] = useState(false)
   const [updating, setUpdating] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [draggingFile, setDraggingFile] = useState(false)
   const [actionNotice, setActionNotice] = useState<string>()
   const [error, setError] = useState<string>()
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   useEffect(() => {
     let current = true
     setEntries(undefined)
@@ -1166,6 +1173,24 @@ function CharacterLibraryDialog({
       setError(updateError instanceof Error ? updateError.message : String(updateError))
     })
   }
+  const importFile = (file: File): void => {
+    setImporting(true)
+    setDraggingFile(false)
+    setError(undefined)
+    setActionNotice(undefined)
+    void importCharacterFile(file).then(entry => listCharacters('active').then(value => ({ entry, value }))).then(({ entry, value }) => {
+      setCollection('active')
+      setEntries(value)
+      setSelected(entry)
+      setGreetingIndex(0)
+      setLoadingId(undefined)
+      setImporting(false)
+      setActionNotice(`已导入「${entry.displayName}」`)
+    }).catch(importError => {
+      setImporting(false)
+      setError(importError instanceof Error ? importError.message : String(importError))
+    })
+  }
   return <div role="dialog" aria-modal="true" aria-label="角色库" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.52)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '24px', position: 'fixed', zIndex: 1001,
@@ -1189,6 +1214,29 @@ function CharacterLibraryDialog({
                 fontWeight: collection === value ? 620 : 400, padding: '7px 8px',
               }}>{label}</button>)}
           </div>
+          <input ref={fileInputRef} type="file" accept=".png,.json,.charx,image/png,application/json,application/zip" hidden onChange={event => {
+            const file = event.target.files?.[0]
+            event.target.value = ''
+            if (file !== undefined) importFile(file)
+          }} />
+          <button type="button" disabled={importing} onClick={() => { fileInputRef.current?.click() }}
+            onDragEnter={event => { event.preventDefault(); setDraggingFile(true) }}
+            onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDraggingFile(true) }}
+            onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingFile(false) }}
+            onDrop={event => {
+              event.preventDefault()
+              const file = event.dataTransfer.files[0]
+              if (file === undefined) setDraggingFile(false)
+              else importFile(file)
+            }} style={{
+              background: draggingFile ? `color-mix(in srgb, ${color} 16%, transparent)` : 'transparent',
+              border: `1px dashed ${draggingFile ? `color-mix(in srgb, ${color} 65%, transparent)` : 'var(--dsw-alias-border-l2, #444)'}`,
+              borderRadius: '9px', color: 'inherit', cursor: importing ? 'wait' : 'pointer', display: 'block', font: 'inherit',
+              marginTop: '10px', opacity: importing ? .58 : 1, padding: '9px 10px', textAlign: 'left', width: '100%',
+            }}>
+            <span style={{ display: 'block', fontSize: '12px', fontWeight: 620 }}>{importing ? '正在导入…' : draggingFile ? '松开即可导入' : '导入角色卡'}</span>
+            <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .5 }}>PNG · JSON · CHARX，也可拖到这里</span>
+          </button>
         </div>
         <div style={{ display: 'grid', gap: '6px', minHeight: 0, overflowY: 'auto', padding: '4px 10px 18px' }}>
           {entries === undefined && <div style={{ fontSize: '13px', opacity: .55, padding: '16px 10px' }}>正在读取角色…</div>}
@@ -2636,6 +2684,16 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `角色库请求失败（${response.status}）`)
     return value.entry
   }
+  const importCharacterFile = async (file: File): Promise<CharacterLibraryDetail> => {
+    const response = await fetch(`${CHARACTER_LIBRARY_PATH}/import?filename=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': file.type || 'application/octet-stream' },
+      body: file,
+    })
+    const value = await response.json() as { readonly error?: string; readonly format?: 0; readonly entry?: CharacterLibraryDetail }
+    if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `角色卡导入失败（${response.status}）`)
+    return value.entry
+  }
   const startCharacterSession = async (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -2781,7 +2839,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} startCharacterSession={startCharacterSession} listPersonas={listPersonas} savePersona={savePersona} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} startCharacterSession={startCharacterSession} listPersonas={listPersonas} savePersona={savePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',
   }, () => null))

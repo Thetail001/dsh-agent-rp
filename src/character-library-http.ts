@@ -5,6 +5,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { CharacterLibrary } from './character-library.ts'
 import { CHARACTER_LIBRARY_PATH } from './character-library-protocol.ts'
+import { MAX_CHARX_BYTES } from './import/charx.ts'
 
 function trustedBrowserRequest(request: IncomingMessage, sandboxedImage: boolean): boolean {
   const host = request.headers.host
@@ -37,6 +38,21 @@ function fail(response: ServerResponse, status: number, message: string): void {
   json(response, status, { error: message })
 }
 
+async function readUpload(request: IncomingMessage): Promise<Uint8Array> {
+  const declared = Number(request.headers['content-length'])
+  if (Number.isFinite(declared) && declared > MAX_CHARX_BYTES) throw new Error('角色卡文件过大')
+  const chunks: Buffer[] = []
+  let bytes = 0
+  for await (const chunk of request) {
+    const data = Buffer.from(chunk as Uint8Array)
+    bytes += data.byteLength
+    if (bytes > MAX_CHARX_BYTES) throw new Error('角色卡文件过大')
+    chunks.push(data)
+  }
+  if (bytes === 0) throw new Error('角色卡文件为空')
+  return new Uint8Array(Buffer.concat(chunks))
+}
+
 function pathParts(request: IncomingMessage): readonly string[] {
   const pathname = new URL(request.url ?? '/', 'http://agent-rp.local').pathname
   if (pathname === CHARACTER_LIBRARY_PATH) return []
@@ -49,7 +65,7 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
   ctx.effect(() => ctx.httpServer.register({
     kind: 'prefix',
     path: CHARACTER_LIBRARY_PATH,
-    handler(request, response) {
+    async handler(request, response) {
       const parts = pathParts(request)
       const sandboxedImage = parts.length === 3 && parts[0] !== undefined
         && parts[1] === 'images' && parts[2] !== undefined && /^\d+$/u.test(parts[2])
@@ -70,6 +86,21 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
         }
         if (request.method === 'GET' && parts.length === 1 && parts[0] !== undefined) {
           json(response, 200, { format: 0, entry: library.get(parts[0]) })
+          return
+        }
+        if (request.method === 'POST' && parts.length === 1 && parts[0] === 'import') {
+          const url = new URL(request.url ?? '/', 'http://agent-rp.local')
+          const filename = url.searchParams.get('filename')?.trim()
+          if (filename === undefined || filename === '') {
+            fail(response, 400, '角色卡文件名缺失')
+            return
+          }
+          const entry = library.importFile({
+            data: await readUpload(request),
+            filename,
+            ...(request.headers['content-type'] === undefined ? {} : { mediaType: request.headers['content-type'] }),
+          })
+          json(response, 200, { format: 0, entry })
           return
         }
         if (request.method === 'POST' && parts.length === 2 && parts[0] !== undefined
@@ -131,7 +162,7 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
         fail(response, 404, 'not found')
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)
-        fail(response, /角色库中没有/u.test(message) ? 404 : 500, message)
+        fail(response, /角色库中没有/u.test(message) ? 404 : /过大/u.test(message) ? 413 : 400, message)
       }
     },
   }), 'agent-rp: character library HTTP')
