@@ -14,7 +14,7 @@ This reference defines what the Agent RP importer preserves and what it executes
 | Unknown card fields and `extensions` values | Yes | Preserved without entering the prompt unless a supported field owns the behavior |
 | Future V3 minor versions | Degraded | Imported and preserved; the result reports that future behavior may be inactive |
 | Independent SillyTavern World Info JSON | Yes | Session-owned literal-key safe subset; original JSON and unsupported fields remain exportable |
-| CHARX | Not yet | Planned for a later migration layer |
+| Character Card V3 CHARX | Yes | Root `card.json`, original archive, embedded icon, background, emotion/expression images, and other card fields above; unsupported asset types remain preserved but inert |
 
 Card `system_prompt` replaces the fallback identity instruction when non-empty and supports `{{original}}`. `post_history_instructions` is appended after the Agent RP behavioral contract. `{{char}}`, `<char>`, and `<bot>` resolve to the V3 nickname when present, otherwise the card name.
 
@@ -32,7 +32,7 @@ V3 regex keys, recursive scanning, and decorated content are retained but never 
 
 ## Security and degradation
 
-The importer never executes card scripts, regex replacement scripts, lorebook regular expressions, decorators, or extension code. Remote and data-URL assets are neither fetched nor decoded. Asset records, group-only greetings, and unknown extensions remain in preserved raw JSON. Standalone JSON must be a `.json` file containing valid UTF-8; the Host stores it as an opaque attachment, so neither its bytes nor its path are sent to the model.
+The importer never executes card scripts, regex replacement scripts, lorebook regular expressions, decorators, or extension code. Remote and data-URL assets are neither fetched nor decoded. CHARX reads declared embedded PNG, JPEG, WebP, GIF, and AVIF images as inert local media; code, audio, video, models, fonts, and unknown asset types remain inside the preserved archive and are not executed. Asset records, group-only greetings, and unknown extensions remain in preserved raw JSON. Standalone JSON must be a `.json` file containing valid UTF-8; the Host stores it as an opaque attachment, so neither its bytes nor its path are sent to the model.
 
 ## Public format sources
 
