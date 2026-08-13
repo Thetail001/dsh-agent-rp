@@ -149,6 +149,7 @@ function presetProjection(
   const importedPromptsById = new Map(importedPreset.prompts.map(prompt => [prompt.identifier, prompt]))
   const importedOrderById = new Map(importedPreset.order.map((entry, position) => [entry.identifier, { ...entry, position }]))
   const regexScripts = presetRegexScripts(preset)
+  const compatibility = preset.extensionCompatibility
   const appliedGeneration = [
     generation.temperature === undefined ? undefined : 'temperature',
     generation.maxTokens === undefined ? undefined : 'maxTokens（受模型上限约束）',
@@ -165,6 +166,46 @@ function presetProjection(
     generation.repetitionPenalty === undefined ? undefined : 'repetition_penalty',
     generation.reasoningEffort === 'auto' ? 'reasoning_effort（auto，跟随模型）' : undefined,
   ].filter((value): value is string => value !== undefined)
+  const extensionStatus: NonNullable<AgentRpProjection['preset']>['extensionStatus'] = compatibility === undefined
+    ? [
+        preset.extensionSummary.hasSPreset ? {
+          name: 'SPreset', detail: '旧导入未记录子功能状态，需重新导入后核对', state: 'unsupported' as const,
+        } : undefined,
+        preset.extensionSummary.hasTavernHelper ? {
+          name: 'Tavern Helper', detail: '旧导入未记录脚本状态，需重新导入后核对', state: 'unsupported' as const,
+        } : undefined,
+      ].filter((value): value is NonNullable<typeof value> => value !== undefined)
+    : [
+    compatibility?.macroNestEnabled === undefined ? undefined : {
+      name: '嵌套宏',
+      detail: compatibility.macroNestEnabled
+        ? '已由 Agent RP 组装器执行'
+        : '原预设未启用',
+      state: compatibility.macroNestEnabled ? 'active' as const : 'inactive' as const,
+    },
+    compatibility?.chatSquashEnabled === undefined ? undefined : {
+      name: 'Chat Squash',
+      detail: compatibility.chatSquashEnabled
+        ? '原预设已启用，当前 Host 尚未执行'
+        : '原预设已关闭，无需执行',
+      state: compatibility.chatSquashEnabled ? 'unsupported' as const : 'inactive' as const,
+    },
+    compatibility?.regexBindingEnabled === undefined ? undefined : {
+      name: '预设正则绑定',
+      detail: compatibility.regexBindingEnabled
+        ? '绑定扩展已启用；当前仅执行预设自带正则'
+        : compatibility.regexBindingMatchesPresetScripts === true
+          ? '绑定扩展已关闭；同一批预设正则已由 Agent RP 接管'
+          : '原预设已关闭，无需执行',
+      state: compatibility.regexBindingEnabled ? 'unsupported' as const
+        : compatibility.regexBindingMatchesPresetScripts === true ? 'active' as const : 'inactive' as const,
+    },
+    compatibility?.tavernHelperScriptCount === undefined ? undefined : {
+      name: 'Tavern Helper 脚本',
+      detail: `${compatibility.enabledTavernHelperScriptCount ?? 0}/${compatibility.tavernHelperScriptCount} 个在原预设中开启；依赖酒馆页面 API 的脚本不会执行`,
+      state: (compatibility.enabledTavernHelperScriptCount ?? 0) === 0 ? 'inactive' as const : 'unsupported' as const,
+    },
+      ].filter((value): value is NonNullable<typeof value> => value !== undefined)
   return {
     ...(libraryId === undefined ? {} : { libraryId }),
     name,
@@ -265,6 +306,7 @@ function presetProjection(
       preset.extensionSummary.hasSPreset ? 'SPreset' : undefined,
       preset.extensionSummary.hasTavernHelper ? 'Tavern Helper' : undefined,
     ].filter((value): value is string => value !== undefined),
+    extensionStatus,
   }
 }
 

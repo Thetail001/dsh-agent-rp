@@ -82,6 +82,11 @@ export interface AgentRpProjection {
     readonly appliedGeneration: readonly string[]
     readonly preservedGeneration: readonly string[]
     readonly omittedExtensions: readonly string[]
+    readonly extensionStatus: readonly {
+      readonly name: string
+      readonly detail: string
+      readonly state: 'active' | 'inactive' | 'unsupported'
+    }[]
   }
   readonly presetLibrary: readonly {
     readonly id: string

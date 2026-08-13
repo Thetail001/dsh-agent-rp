@@ -24,7 +24,7 @@ function preset(name = '通用预设') {
       { identifier: 'main', enabled: true },
       { identifier: 'style', enabled: false },
     ] }],
-    extensions: { regex_scripts: [], SPreset: { retained: true } },
+    extensions: { regex_scripts: [], SPreset: { MacroNest: true } },
   }), `${name}.json`)
 }
 
@@ -57,6 +57,16 @@ test('stores reusable presets outside settings and returns detached session defa
   assert.equal(library.import(preset()).id, imported.id)
   assert.deepEqual(library.list().map(item => item.name), ['通用预设'])
   assert.equal(library.get(imported.id).preset.extensionSummary.hasSPreset, true)
+  assert.deepEqual(library.get(imported.id).preset.extensionCompatibility, { macroNestEnabled: true })
+  const withoutMacroNest = library.import(parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [{ identifier: 'main', name: '主提示', role: 'system', content: '默认正文' },
+      { identifier: 'style', name: '风格', role: 'system', content: '简短' }],
+    prompt_order: [{ character_id: 100001, order: [
+      { identifier: 'main', enabled: true }, { identifier: 'style', enabled: false },
+    ] }],
+    extensions: { regex_scripts: [], SPreset: { MacroNest: false } },
+  }), '通用预设.json'))
+  assert.notEqual(withoutMacroNest.id, imported.id)
 
   const selected = library.get(imported.id)
   const active = {
@@ -86,6 +96,9 @@ test('selects, saves, lists, and deletes library presets without mutating an act
   assert.equal(active?.libraryId, imported.id)
   assert.equal(active?.preset.name, '通用预设')
   assert.equal(projected(agent).preset?.libraryId, imported.id)
+  assert.deepEqual(projected(agent).preset?.extensionStatus, [{
+    name: '嵌套宏', detail: '已由 Agent RP 组装器执行', state: 'active',
+  }])
   assert.deepEqual(projected(agent).presetLibrary.map(item => item.id), [imported.id])
 
   invoke(agent, library, { operation: 'save', name: '我的副本' })

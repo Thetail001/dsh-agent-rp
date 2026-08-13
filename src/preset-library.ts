@@ -16,6 +16,7 @@ import { exportSillyTavernPresetJson } from './preset-export.ts'
 import {
   parseSillyTavernPresetJson,
   type ImportedSillyTavernPreset,
+  type SillyTavernPresetExtensionCompatibility,
 } from './import/sillytavern-preset.ts'
 
 const FILE_SUFFIX = '.json'
@@ -43,6 +44,7 @@ interface StoredMetadata {
   readonly updatedAt: number
   readonly hasSPreset: boolean
   readonly hasTavernHelper: boolean
+  readonly extensionCompatibility?: SillyTavernPresetExtensionCompatibility
 }
 
 interface StoredPreset extends Record<string, unknown> {
@@ -68,7 +70,19 @@ function metadata(value: unknown): StoredMetadata {
     || typeof source.hasSPreset !== 'boolean' || typeof source.hasTavernHelper !== 'boolean') {
     throw new Error('preset library metadata has invalid fields')
   }
+  if (source.extensionCompatibility !== undefined) validateExtensionCompatibility(source.extensionCompatibility)
   return source as unknown as StoredMetadata
+}
+
+function validateExtensionCompatibility(value: unknown): void {
+  const compatibility = record(value, 'preset extension compatibility')
+  const booleans = ['macroNestEnabled', 'chatSquashEnabled', 'regexBindingEnabled', 'regexBindingMatchesPresetScripts']
+  const counts = ['tavernHelperScriptCount', 'enabledTavernHelperScriptCount']
+  if (booleans.some(key => compatibility[key] !== undefined && typeof compatibility[key] !== 'boolean')
+    || counts.some(key => compatibility[key] !== undefined
+      && (typeof compatibility[key] !== 'number' || !Number.isSafeInteger(compatibility[key]) || compatibility[key] < 0))) {
+    throw new Error('preset extension compatibility has invalid fields')
+  }
 }
 
 function normalizedName(value: string): string {
@@ -99,6 +113,7 @@ function importedId(preset: ImportedSillyTavernPreset): string {
     formats: preset.formats,
     regexScripts: preset.regexScripts,
     extensionSummary: preset.extensionSummary,
+    extensionCompatibility: preset.extensionCompatibility,
   })).digest('hex')
   return `import-${digest.slice(0, 24)}`
 }
@@ -119,6 +134,7 @@ function storedDocument(
     updatedAt,
     hasSPreset: preset.extensionSummary.hasSPreset,
     hasTavernHelper: preset.extensionSummary.hasTavernHelper,
+    ...(preset.extensionCompatibility === undefined ? {} : { extensionCompatibility: preset.extensionCompatibility }),
   }
   return `${JSON.stringify(document, null, 2)}\n`
 }
@@ -193,6 +209,7 @@ export class PresetLibrary {
         hasSPreset: meta.hasSPreset,
         hasTavernHelper: meta.hasTavernHelper,
       },
+      ...(meta.extensionCompatibility === undefined ? {} : { extensionCompatibility: meta.extensionCompatibility }),
     }
     return { ...summary(meta.id, meta.name, preset, meta.updatedAt), preset }
   }

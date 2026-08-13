@@ -41,6 +41,16 @@ export interface SillyTavernPresetGeneration {
   readonly repetitionPenalty?: number
 }
 
+/** Non-executable extension settings used to explain native coverage accurately. */
+export interface SillyTavernPresetExtensionCompatibility {
+  readonly macroNestEnabled?: boolean
+  readonly chatSquashEnabled?: boolean
+  readonly regexBindingEnabled?: boolean
+  readonly regexBindingMatchesPresetScripts?: boolean
+  readonly tavernHelperScriptCount?: number
+  readonly enabledTavernHelperScriptCount?: number
+}
+
 /** Normalized executable portion of one Chat Completion preset. */
 export interface ImportedSillyTavernPreset {
   readonly format: 0
@@ -60,6 +70,7 @@ export interface ImportedSillyTavernPreset {
     readonly hasSPreset: boolean
     readonly hasTavernHelper: boolean
   }
+  readonly extensionCompatibility?: SillyTavernPresetExtensionCompatibility
 }
 
 /** Read preset scripts from the current normalized shape or a pre-regex session snapshot. */
@@ -80,6 +91,36 @@ function optionalFinite(value: unknown, label: string): number | undefined {
   if (value === undefined || value === null) return undefined
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${label} must be a finite number`)
   return value
+}
+
+function optionalObject(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function extensionCompatibility(
+  extensions: Record<string, unknown>,
+  rawRegex: unknown,
+): SillyTavernPresetExtensionCompatibility | undefined {
+  const spreset = optionalObject(extensions.SPreset)
+  const chatSquash = optionalObject(spreset?.ChatSquash)
+  const regexBinding = optionalObject(spreset?.RegexBinding)
+  const helper = optionalObject(extensions.tavern_helper)
+  const helperScripts = Array.isArray(helper?.scripts) ? helper.scripts : undefined
+  const compatibility: SillyTavernPresetExtensionCompatibility = {
+    ...(typeof spreset?.MacroNest === 'boolean' ? { macroNestEnabled: spreset.MacroNest } : {}),
+    ...(typeof chatSquash?.enabled === 'boolean' ? { chatSquashEnabled: chatSquash.enabled } : {}),
+    ...(typeof regexBinding?.enabled === 'boolean' ? { regexBindingEnabled: regexBinding.enabled } : {}),
+    ...(Array.isArray(regexBinding?.regexes) && Array.isArray(rawRegex)
+      ? { regexBindingMatchesPresetScripts: JSON.stringify(regexBinding.regexes) === JSON.stringify(rawRegex) }
+      : {}),
+    ...(helperScripts === undefined ? {} : {
+      tavernHelperScriptCount: helperScripts.length,
+      enabledTavernHelperScriptCount: helperScripts.filter(value => optionalObject(value)?.enabled === true).length,
+    }),
+  }
+  return Object.keys(compatibility).length === 0 ? undefined : compatibility
 }
 
 function prompt(value: unknown, index: number): SillyTavernPresetPrompt {
@@ -155,6 +196,7 @@ export function parseSillyTavernPresetJson(source: string, fileName = 'SillyTave
         if (!Array.isArray(rawRegex)) throw new Error('extensions.regex_scripts must be an array')
         return rawRegex.map((value, index) => parseRegexScript(value as JsonValue, `extensions.regex_scripts[${index}]`))
       })()
+  const compatibility = extensionCompatibility(extensions, rawRegex)
   return {
     format: 0,
     name: fileName.replace(/\.json$/iu, '').trim() || 'SillyTavern preset',
@@ -183,6 +225,7 @@ export function parseSillyTavernPresetJson(source: string, fileName = 'SillyTave
       hasSPreset: extensions.SPreset !== undefined && extensions.SPreset !== null,
       hasTavernHelper: extensions.tavern_helper !== undefined && extensions.tavern_helper !== null,
     },
+    ...(compatibility === undefined ? {} : { extensionCompatibility: compatibility }),
   }
 }
 

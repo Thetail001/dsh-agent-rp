@@ -42,8 +42,28 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
         minDepth: null,
         maxDepth: null,
       })),
-      SPreset: {},
-      tavern_helper: {},
+      SPreset: {
+        MacroNest: true,
+        ChatSquash: { enabled: false },
+        RegexBinding: {
+          enabled: false,
+          regexes: Array.from({ length: 40 }, (_, index) => ({
+            scriptName: `正则 ${index}`,
+            findRegex: '/old/gu',
+            replaceString: 'new',
+            trimStrings: [],
+            placement: [2],
+            disabled: index >= 22,
+            markdownOnly: true,
+            promptOnly: false,
+            runOnEdit: false,
+            substituteRegex: 0,
+            minDepth: null,
+            maxDepth: null,
+          })),
+        },
+      },
+      tavern_helper: { scripts: [{ enabled: true }, { enabled: false }] },
     },
   }), 'V18.json')
 
@@ -63,6 +83,14 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
     regexScriptCount: 40,
     hasSPreset: true,
     hasTavernHelper: true,
+  })
+  assert.deepEqual(preset.extensionCompatibility, {
+    macroNestEnabled: true,
+    chatSquashEnabled: false,
+    regexBindingEnabled: false,
+    regexBindingMatchesPresetScripts: true,
+    tavernHelperScriptCount: 2,
+    enabledTavernHelperScriptCount: 1,
   })
   assert.equal(preset.regexScripts.length, 40)
   assert.equal(preset.regexScripts.filter(script => !script.disabled).length, 22)
