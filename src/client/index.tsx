@@ -1209,7 +1209,7 @@ function CharacterLibraryDialog({
     void listPersonas().then(value => {
       if (!current) return
       setPersonas(value)
-      setPersonaId(value[0]?.id ?? '')
+      setPersonaId('')
     }, listError => {
       if (!current) return
       setPersonas([])
@@ -1435,27 +1435,27 @@ function CharacterLibraryDialog({
               </button>)}
             </div>
             <div style={{ alignItems: 'center', display: 'flex', margin: '20px 0 7px' }}>
-              <label htmlFor="agent-rp-session-persona" style={{ fontSize: '12px', fontWeight: 620, opacity: .65 }}>选择你的 Persona</label>
+              <label htmlFor="agent-rp-session-persona" style={{ fontSize: '12px', fontWeight: 620, opacity: .65 }}>你的身份（Persona）</label>
               <button type="button" onClick={() => {
                 setEditingPersona(value => !value)
                 setPersonaName('')
                 setPersonaDescription('')
               }} style={{ background: 'transparent', border: 0, color, cursor: 'pointer', font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: 0 }}>
-                {editingPersona ? '收起' : '新建 Persona'}
+                {editingPersona ? '收起' : '新建身份'}
               </button>
             </div>
             <select id="agent-rp-session-persona" value={personaId} onChange={event => { setPersonaId(event.target.value) }} style={{
               background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
               borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 10px', width: '100%',
             }}>
-              <option value="">不使用 Persona</option>
+              <option value="">暂不设置</option>
               {personas?.map(persona => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
             </select>
             {personaId !== '' && <div style={{ fontSize: '12px', lineHeight: 1.6, marginTop: '8px', opacity: .58, whiteSpace: 'pre-wrap' }}>
               {personas?.find(persona => persona.id === personaId)?.description || '只有称呼，没有额外人物设定'}
             </div>}
             {editingPersona && <div style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '10px', display: 'grid', gap: '9px', marginTop: '10px', padding: '11px' }}>
-              <input value={personaName} maxLength={120} placeholder="Persona 名称（角色会这样称呼你）" onChange={event => { setPersonaName(event.target.value) }} style={{
+              <input value={personaName} maxLength={120} placeholder="称呼（角色会这样称呼你）" onChange={event => { setPersonaName(event.target.value) }} style={{
                 background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #414147)', borderRadius: '8px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '8px 9px', width: '100%',
               }} />
               <textarea value={personaDescription} maxLength={12000} rows={4} placeholder="你的身份、外貌、性格或与角色的关系；留白也可以" onChange={event => { setPersonaDescription(event.target.value) }} style={{
