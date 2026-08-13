@@ -1096,6 +1096,26 @@ function RoleplayHeader({
   const characterDetail = useCharacterDetail(projection?.avatarLibraryId)
   const expressionChoice = useRoleplayExpression(sessionId)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const settingsRef = useRef<HTMLDetailsElement | null>(null)
+  const settingsSummaryRef = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    if (!settingsOpen) return
+    const closeOutside = (event: PointerEvent): void => {
+      if (event.target instanceof Node && !settingsRef.current?.contains(event.target)) setSettingsOpen(false)
+    }
+    const closeWithEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setSettingsOpen(false)
+      settingsSummaryRef.current?.focus()
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeWithEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeWithEscape)
+    }
+  }, [settingsOpen])
   useLayoutEffect(() => {
     if (viewMode === 'debug') return
     const root = rootRef.current
@@ -1160,8 +1180,8 @@ function RoleplayHeader({
         border: `1px solid ${projection.persona === undefined ? 'var(--dsw-alias-border-l2, #444)' : `color-mix(in srgb, ${color} 34%, transparent)`}`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>身份{projection.persona === undefined ? '' : ` · ${projection.persona.name}`}</button>
-      <details open={settingsOpen} onToggle={event => { setSettingsOpen(event.currentTarget.open) }} style={{ position: 'relative' }}>
-        <summary role="button" aria-expanded={settingsOpen} aria-haspopup="menu" style={{
+      <details ref={settingsRef} open={settingsOpen} onToggle={event => { setSettingsOpen(event.currentTarget.open) }} style={{ position: 'relative' }}>
+        <summary ref={settingsSummaryRef} role="button" aria-expanded={settingsOpen} aria-haspopup="menu" style={{
           background: projection.worldInfo.activeCount > 0 ? `color-mix(in srgb, ${color} 10%, transparent)` : 'transparent',
           border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px', color: 'inherit', cursor: 'pointer',
           fontSize: '12px', listStyle: 'none', padding: '6px 10px', whiteSpace: 'nowrap',
