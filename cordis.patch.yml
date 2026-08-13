@@ -1,7 +1,3 @@
-- id: agent-presets
-  config:
-    default: agent-rp
-
 - insert:
     - id: dsh-agent-rp-host
       name: '@dsh-external/dsh-agent-rp'
