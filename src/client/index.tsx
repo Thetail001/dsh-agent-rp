@@ -579,6 +579,49 @@ function useNarrowCharacterLibrary(): boolean {
   )
 }
 
+type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick<HeaderProps,
+  | 'listCharacters'
+  | 'readCharacter'
+  | 'setCharacterArchived'
+  | 'importCharacterFile'
+  | 'startCharacterSession'
+  | 'listPersonas'
+  | 'savePersona'
+>
+
+function BlankRoleplayLauncher({
+  session, sessionId,
+  listCharacters, readCharacter, setCharacterArchived, importCharacterFile, startCharacterSession,
+  listPersonas, savePersona,
+}: BlankRoleplayLauncherProps) {
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  if (!session.blank) return null
+  return <>
+    <button type="button" onClick={() => { setLibraryOpen(true) }} style={{
+      alignItems: 'center', background: `color-mix(in srgb, ${color} 14%, transparent)`,
+      border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`, borderRadius: '8px',
+      color: 'inherit', cursor: 'pointer', display: 'inline-flex', font: 'inherit', fontSize: '12px',
+      fontWeight: 620, gap: '6px', padding: '5px 9px', whiteSpace: 'nowrap',
+    }}>
+      <span aria-hidden="true" style={{ color, fontSize: '15px', lineHeight: 1 }}>✦</span>
+      选择角色
+    </button>
+    {libraryOpen && <CharacterLibraryDialog
+      currentCharacterName=""
+      listCharacters={listCharacters}
+      readCharacter={readCharacter}
+      setCharacterArchived={setCharacterArchived}
+      importCharacterFile={importCharacterFile}
+      onClose={() => { setLibraryOpen(false) }}
+      onStart={(character, greetingIndex, persona) => startCharacterSession(
+        sessionId, character, greetingIndex, persona,
+      )}
+      listPersonas={listPersonas}
+      savePersona={savePersona}
+    />}
+  </>
+}
+
 function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
   configureWorldInfo,
@@ -2774,6 +2817,32 @@ export function apply(ctx: ClientContext): void {
     }], 'queue')
     if (!result.ok) throw new Error(result.error.message)
   }
+  const startCharacterFromBlankSession = async (
+    sessionId: SessionId,
+    character: CharacterLibraryDetail,
+    greetingIndex: number,
+    persona?: SessionPersonaSnapshot,
+  ): Promise<void> => {
+    const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
+    if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话选择角色')
+    if (summary.agentPreset !== 'agent-rp') {
+      const connection = ctx.get('connection') as {
+        readonly api: {
+          readonly agentPresets: {
+            select(input: { readonly sessionId: SessionId; readonly agentPreset: string }): Promise<{
+              readonly result:
+                | { readonly ok: true; readonly value: { readonly agentPreset: string } }
+                | { readonly ok: false; readonly error: { readonly message: string } }
+            }>
+          }
+        }
+      }
+      const response = await connection.api.agentPresets.select({ sessionId, agentPreset: 'agent-rp' })
+      if (!response.result.ok) throw new Error(response.result.error.message)
+      ctx.sessions.noteAgentPreset(sessionId, response.result.value.agentPreset)
+    }
+    await startCharacterSession(sessionId, character, greetingIndex, persona)
+  }
   const personaLibraryJson = async <T,>(
     init?: { readonly method: 'POST'; readonly body: PersonaLibrarySaveRequest },
   ): Promise<T> => {
@@ -2888,6 +2957,9 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
   }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} startCharacterSession={startCharacterSession} listPersonas={listPersonas} savePersona={savePersona} />))
+  ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
+    name: 'conversation.input.left', id: 'agent-rp-blank-launcher', order: -100,
+  }, props => <BlankRoleplayLauncher {...props} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} startCharacterSession={startCharacterFromBlankSession} listPersonas={listPersonas} savePersona={savePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',
   }, () => null))
