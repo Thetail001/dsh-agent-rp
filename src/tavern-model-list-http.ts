@@ -103,9 +103,10 @@ export async function fetchTavernModelList(
   signal: AbortSignal = AbortSignal.timeout(15_000),
 ): Promise<TavernModelListResponse> {
   const parsed = request(input)
+  const endpoint = tavernModelListEndpoint(parsed.apiurl)
   let response: Response
   try {
-    response = await fetch(tavernModelListEndpoint(parsed.apiurl), {
+    response = await fetch(endpoint, {
       headers: {
         accept: 'application/json',
         ...(parsed.key === undefined || parsed.key === '' ? {} : { authorization: `Bearer ${parsed.key}` }),
