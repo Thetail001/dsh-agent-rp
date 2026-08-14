@@ -71,6 +71,12 @@ import {
 } from '../sillytavern-chat-protocol.ts'
 import { SILLYTAVERN_CHAT_EXPORT_PATH } from '../sillytavern-chat-export-protocol.ts'
 import {
+  AGENT_RP_MEMORY_PATH,
+  type AgentRpMemoryCommandRequest,
+  type AgentRpMemoryResponse,
+  type AgentRpMemoryView,
+} from '../memory-protocol.ts'
+import {
   AGENT_RP_SESSION_PATH,
   type AgentRpSessionLaunchRequest,
   type AgentRpSessionLaunchResponse,
@@ -296,6 +302,8 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
     presetId?: string,
   ) => Promise<void>
   readonly exportChat: (sessionId: SessionId) => Promise<void>
+  readonly listMemory: (sessionId: SessionId) => Promise<readonly AgentRpMemoryView[]>
+  readonly manageMemory: (sessionId: SessionId, request: AgentRpMemoryCommandRequest) => Promise<void>
   readonly startCharacterSession: (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -2060,6 +2068,7 @@ function RoleplayHeader({
   configureWorldInfo, importWorldInfo,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, migrateRpDistributionChat,
   startCharacterSession, exportChat,
+  listMemory, manageMemory,
   listPresets, listPersonas, savePersona, deletePersona, applyPersona, loadModelCapabilities,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
@@ -2072,6 +2081,7 @@ function RoleplayHeader({
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [migrationOpen, setMigrationOpen] = useState(false)
   const [personaOpen, setPersonaOpen] = useState(false)
+  const [memoryOpen, setMemoryOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string>()
@@ -2185,6 +2195,7 @@ function RoleplayHeader({
               setExportError(reason instanceof Error ? reason.message : String(reason))
             }).finally(() => { setExporting(false) })
           }} style={headerMenuItemStyle}>{exporting ? '正在导出…' : '导出聊天'}</button>
+          <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setMemoryOpen(true) }} style={headerMenuItemStyle}>记忆</button>
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setPresetOpen(true) }} style={headerMenuItemStyle}>预设</button>
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setWorldInfoOpen(true) }} style={headerMenuItemStyle}>
             世界书{projection.worldInfo.activeCount === 0 ? '' : ` · ${projection.worldInfo.activeCount}`}
@@ -2216,6 +2227,11 @@ function RoleplayHeader({
       deletePersona={deletePersona}
       onApply={persona => applyPersona(sessionId, persona)}
       onClose={() => { setPersonaOpen(false) }}
+    />}
+    {memoryOpen && <MemoryManagerDialog
+      onClose={() => { setMemoryOpen(false) }}
+      load={() => listMemory(sessionId)}
+      onManage={request => manageMemory(sessionId, request)}
     />}
     {open && <div role="dialog" aria-modal="true" aria-label={`${displayName}的角色信息`} style={{
       alignItems: 'stretch', background: 'rgba(0,0,0,.48)', display: 'flex', inset: 0,
@@ -2363,6 +2379,132 @@ function RoleplayHeader({
       onSave={request => configureWorldInfo(sessionId, request)}
     />}
   </>
+}
+
+const memoryKindLabels: Record<AgentRpMemoryView['kind'], string> = {
+  fact: '事实',
+  promise: '约定',
+  relationship: '关系',
+  preference: '偏好',
+  event: '共同经历',
+}
+
+function MemoryManagerDialog({ load, onManage, onClose }: {
+  readonly load: () => Promise<readonly AgentRpMemoryView[]>
+  readonly onManage: (request: AgentRpMemoryCommandRequest) => Promise<void>
+  readonly onClose: () => void
+}) {
+  const [memories, setMemories] = useState<readonly AgentRpMemoryView[]>()
+  const [editing, setEditing] = useState<AgentRpMemoryView>()
+  const [kind, setKind] = useState<AgentRpMemoryView['kind']>('fact')
+  const [subject, setSubject] = useState('')
+  const [text, setText] = useState('')
+  const [forgetting, setForgetting] = useState<string>()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+  const refresh = (): Promise<void> => load().then(setMemories)
+  useEffect(() => {
+    let current = true
+    void load().then(value => { if (current) setMemories(value) }, reason => {
+      if (current) setError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { current = false }
+  }, [])
+  const beginCorrection = (memory: AgentRpMemoryView): void => {
+    setEditing(memory)
+    setKind(memory.kind)
+    setSubject(memory.subject)
+    setText(memory.text)
+    setForgetting(undefined)
+    setError(undefined)
+  }
+  const run = (request: AgentRpMemoryCommandRequest): void => {
+    setBusy(true)
+    setError(undefined)
+    void onManage(request).then(refresh).then(() => {
+      setEditing(undefined)
+      setForgetting(undefined)
+    }).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => { setBusy(false) })
+  }
+  return <div role="dialog" aria-modal="true" aria-label="角色记忆" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1200,
+  }} onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #3e3e43)',
+      borderRadius: '14px', boxShadow: '0 18px 58px rgba(0,0,0,.42)', maxHeight: 'min(720px, 86vh)',
+      maxWidth: '640px', overflowY: 'auto', padding: '20px', width: '100%',
+    }}>
+      <header style={{ alignItems: 'start', display: 'flex', gap: '16px', justifyContent: 'space-between' }}>
+        <div>
+          <h2 style={{ fontSize: '17px', margin: 0 }}>角色记忆</h2>
+          <p style={{ fontSize: '12px', lineHeight: 1.55, margin: '5px 0 0', opacity: .58 }}>
+            这些内容会在之后的回复中继续生效。纠正和忘记都会保留在本机会话历史中
+          </p>
+        </div>
+        <button type="button" disabled={busy} onClick={onClose} style={{
+          background: 'transparent', border: 0, color: 'inherit', cursor: busy ? 'default' : 'pointer',
+          font: 'inherit', fontSize: '18px', opacity: .6, padding: '0 3px',
+        }} aria-label="关闭记忆管理">×</button>
+      </header>
+      {memories === undefined && error === undefined && <p role="status" style={{ fontSize: '13px', margin: '24px 0 4px', opacity: .58 }}>正在读取记忆…</p>}
+      {memories?.length === 0 && <div style={{
+        background: 'var(--dsw-alias-bg-layer-1, #222226)', borderRadius: '10px', marginTop: '18px', padding: '20px', textAlign: 'center',
+      }}>
+        <strong style={{ display: 'block', fontSize: '13px' }}>还没有持久记忆</strong>
+        <span style={{ display: 'block', fontSize: '12px', marginTop: '6px', opacity: .52 }}>角色在确实值得长期保留时才会记下来</span>
+      </div>}
+      {memories !== undefined && memories.length > 0 && <div style={{ display: 'grid', gap: '10px', marginTop: '18px' }}>
+        {memories.map(memory => <article key={memory.id} style={{
+          background: 'var(--dsw-alias-bg-layer-1, #222226)', border: '1px solid var(--dsw-alias-border-l2, #3e3e43)',
+          borderRadius: '11px', padding: '13px',
+        }}>
+          <div style={{ alignItems: 'center', display: 'flex', gap: '7px' }}>
+            <strong style={{ fontSize: '13px' }}>{memory.subject}</strong>
+            <span style={{
+              background: `color-mix(in srgb, ${color} 13%, transparent)`, borderRadius: '999px',
+              fontSize: '10px', opacity: .82, padding: '2px 7px',
+            }}>{memoryKindLabels[memory.kind]}</span>
+            {memory.source === 'user' && <span style={{ fontSize: '10px', marginLeft: 'auto', opacity: .45 }}>由你修正</span>}
+          </div>
+          {editing?.id === memory.id
+            ? <div style={{ display: 'grid', gap: '9px', marginTop: '12px' }}>
+                <div style={{ display: 'grid', gap: '9px', gridTemplateColumns: '120px minmax(0, 1fr)' }}>
+                  <select value={kind} onChange={event => { setKind(event.target.value as AgentRpMemoryView['kind']) }} style={settingsFieldStyle}>
+                    {Object.entries(memoryKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                  <input value={subject} maxLength={120} onChange={event => { setSubject(event.target.value) }} aria-label="记忆主题" style={settingsFieldStyle} />
+                </div>
+                <textarea value={text} maxLength={1000} rows={4} onChange={event => { setText(event.target.value) }} aria-label="记忆内容" style={{ ...settingsFieldStyle, lineHeight: 1.55, resize: 'vertical' }} />
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                  <button type="button" disabled={busy} onClick={() => { setEditing(undefined) }} style={headerMenuItemStyle}>取消</button>
+                  <button type="button" disabled={busy || subject.trim() === '' || text.trim() === ''} onClick={() => { run({
+                    format: 0, operation: 'correct', id: memory.id, kind, subject: subject.trim(), text: text.trim(),
+                  }) }} style={{
+                    background: color, border: 0, borderRadius: '8px', color: '#fff', cursor: busy ? 'default' : 'pointer',
+                    font: 'inherit', fontSize: '12px', padding: '7px 12px',
+                  }}>{busy ? '正在保存…' : '保存纠正'}</button>
+                </div>
+              </div>
+            : <>
+                <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>{memory.text}</p>
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '10px' }}>
+                  <button type="button" disabled={busy} onClick={() => { beginCorrection(memory) }} style={headerMenuItemStyle}>纠正</button>
+                  <button type="button" disabled={busy} onClick={() => {
+                    if (forgetting === memory.id) run({ format: 0, operation: 'forget', id: memory.id })
+                    else { setForgetting(memory.id); setEditing(undefined) }
+                  }} style={{ ...headerMenuItemStyle, color: forgetting === memory.id ? 'var(--dsw-alias-state-danger, #e06470)' : 'inherit' }}>
+                    {forgetting === memory.id ? '确认忘记' : '忘记'}
+                  </button>
+                </div>
+              </>}
+        </article>)}
+      </div>}
+      {error !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #e06470)', fontSize: '12px', lineHeight: 1.5, margin: '14px 0 0' }}>{error}</p>}
+    </section>
+  </div>
 }
 
 type WorldInfoProjection = AgentRpProjection['worldInfo']
@@ -5925,6 +6067,28 @@ export function apply(ctx: ClientContext): void {
       window.setTimeout(() => { URL.revokeObjectURL(objectUrl) }, 0)
     }
   }
+  const listMemory = async (sessionId: SessionId): Promise<readonly AgentRpMemoryView[]> => {
+    const response = await fetch(`${AGENT_RP_MEMORY_PATH}?sessionId=${encodeURIComponent(sessionId)}`, {
+      headers: { accept: 'application/json' },
+    })
+    const value = await response.json() as Partial<AgentRpMemoryResponse> & { readonly error?: string }
+    if (!response.ok || value.format !== 0 || !Array.isArray(value.memories)
+      || value.memories.some(memory => typeof memory !== 'object' || memory === null
+        || typeof memory.id !== 'string' || typeof memory.subject !== 'string' || typeof memory.text !== 'string'
+        || !['fact', 'promise', 'relationship', 'preference', 'event'].includes(memory.kind)
+        || (memory.source !== 'character' && memory.source !== 'user'))) {
+      throw new Error(value.error ?? `记忆读取失败（${response.status}）`)
+    }
+    return value.memories
+  }
+  const manageMemory = async (sessionId: SessionId, request: AgentRpMemoryCommandRequest): Promise<void> => {
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const response = await session.command(`/rp-memory ${JSON.stringify(request)}`)
+    if (!response.ok) throw new Error(response.error.message)
+    if (!response.value.matched) throw new Error('当前 Host 未启用记忆管理')
+  }
   const characterLibraryJson = async <T,>(path = ''): Promise<T> => {
     const response = await fetch(`${CHARACTER_LIBRARY_PATH}${path}`, {
       headers: { accept: 'application/json' },
@@ -6413,7 +6577,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} migrateRpDistributionChat={migrateRpDistributionChat} exportChat={exportChat} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} migrateRpDistributionChat={migrateRpDistributionChat} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -6445,6 +6609,9 @@ export function apply(ctx: ClientContext): void {
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-persona',
+  }, () => null))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-memory',
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',

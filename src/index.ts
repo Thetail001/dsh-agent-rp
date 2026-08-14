@@ -26,6 +26,8 @@ import {
   AGENT_RP_MEMORY_KINDS,
   prepareAgentRpMemory,
 } from './memory.ts'
+import { executeAgentRpMemoryCommand } from './memory-command.ts'
+import { installAgentRpMemoryHttp } from './memory-http.ts'
 import { parseCharacterCardJson, parseCharacterCardJsonBytes } from './import/character-card.ts'
 import { parseCharx } from './import/charx.ts'
 import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
@@ -501,6 +503,13 @@ export function installAgentRp(
     input: { hint: '<private Persona payload>' },
     recordInput: false,
     handler: executePersonaCommand,
+  })
+  commands.register({
+    name: 'rp-memory',
+    description: 'correct or forget one active roleplay memory',
+    input: { hint: '<private memory-manager payload>' },
+    recordInput: false,
+    handler: executeAgentRpMemoryCommand,
   })
   commands.register({
     name: 'rp-preset-configure',
@@ -1041,6 +1050,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
         installPresetLibraryHttp(webCtx, presetLibrary, server)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)
         installSillyTavernChatExportHttp(webCtx, ctx, server)
+        installAgentRpMemoryHttp(webCtx, ctx, server)
         installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, server)
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
