@@ -17,8 +17,11 @@ import type { AgentRpHttpServer } from './host-http.ts'
 import { readActiveSessionPreset } from './import/session-preset.ts'
 import {
   TAVERN_GENERATION_PATH,
+  TAVERN_PROMPT_PREVIEW_PATH,
   type TavernGenerationRequest,
   type TavernGenerationResponse,
+  type TavernPrompt,
+  type TavernPromptPreviewResponse,
 } from './tavern-generation-protocol.ts'
 
 const MAX_REQUEST_BYTES = 512 * 1024
@@ -30,8 +33,6 @@ const MAX_CUSTOM_OBJECT_KEYS = 128
 const MAX_CUSTOM_HEADERS = 64
 const PROTECTED_CUSTOM_BODY_KEYS = new Set(['messages', 'model', 'stream'])
 const FORBIDDEN_CUSTOM_HEADERS = new Set(['connection', 'content-length', 'host', 'transfer-encoding'])
-
-type TavernPrompt = { readonly role: 'system' | 'user' | 'assistant'; readonly content: string }
 
 interface ParsedCustomApiConfig {
   readonly apiurl: string
@@ -324,13 +325,11 @@ export function tavernChatCompletionsEndpoint(value: string): URL {
   return result
 }
 
-type OpenAiPrompt = { readonly role: 'system' | 'user' | 'assistant'; readonly content: string }
-
 function modelMessageText(message: Message): string {
   return message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
 }
 
-function openAiPrompts(input: { readonly system?: string; readonly messages: readonly Message[] }): readonly OpenAiPrompt[] {
+function openAiPrompts(input: { readonly system?: string; readonly messages: readonly Message[] }): readonly TavernPrompt[] {
   return [
     ...(input.system === undefined ? [] : [{ role: 'system' as const, content: input.system }]),
     ...input.messages.flatMap(message => message.role === 'user' || message.role === 'assistant'
@@ -527,7 +526,13 @@ function orderedInput(
   return { ...(renderedSystem === '' ? {} : { system: renderedSystem }), messages }
 }
 
-async function generate(ctx: Context, agent: Agent, mode: 'preset' | 'raw', config: ParsedGenerationConfig, signal: AbortSignal): Promise<string> {
+async function generationInput(
+  ctx: Context,
+  agent: Agent,
+  mode: 'preset' | 'raw',
+  config: ParsedGenerationConfig,
+  signal: AbortSignal,
+): Promise<{ readonly system?: string; readonly messages: readonly Message[] }> {
   const assembly = await ctx.systemPrompt.assemble({ scope: agent, agent, signal })
   const input = orderedInput(
     mode,
@@ -537,6 +542,11 @@ async function generate(ctx: Context, agent: Agent, mode: 'preset' | 'raw', conf
     dialogueHistory(agent, config),
   )
   if (input.messages.length === 0) throw new Error('酒馆脚本没有提供可生成的提示词')
+  return input
+}
+
+async function generate(ctx: Context, agent: Agent, mode: 'preset' | 'raw', config: ParsedGenerationConfig, signal: AbortSignal): Promise<string> {
+  const input = await generationInput(ctx, agent, mode, config, signal)
   if (config.customApi !== undefined) return customGeneration(input, config.customApi, agent.options.model, signal)
   const provider = agent.options.provider
   const model = agent.options.model
@@ -584,6 +594,28 @@ export async function runTavernGeneration(
   return { format: 0, text }
 }
 
+/** Assemble one script generation request without contacting a model or mutating the transcript. */
+export async function runTavernPromptPreview(
+  ctx: Context,
+  input: TavernGenerationRequest | unknown,
+  requestSignal?: AbortSignal,
+): Promise<TavernPromptPreviewResponse> {
+  const request = parseRequest(input)
+  const agents = ctx.get('agents') as Context['agents'] | undefined
+  if (agents === undefined) throw new Error('当前 Host 无法读取角色会话')
+  const agent = agents.get(request.sessionId)
+  if (agent === undefined) throw new Error('当前角色会话不可用')
+  const prompts = await agent.runMaintenance(async maintenanceSignal => {
+    const signal = AbortSignal.any([
+      maintenanceSignal,
+      AbortSignal.timeout(180_000),
+      ...(requestSignal === undefined ? [] : [requestSignal]),
+    ])
+    return openAiPrompts(await generationInput(ctx, agent, request.mode, request.config, signal))
+  })
+  return { format: 0, prompts }
+}
+
 /** Register the current-public-DSH bridge for Tavern Helper generation. */
 export function installTavernGenerationHttp(ctx: Context, server: AgentRpHttpServer): void {
   ctx.effect(() => server.register({
@@ -616,4 +648,34 @@ export function installTavernGenerationHttp(ctx: Context, server: AgentRpHttpSer
       }
     },
   }), 'agent-rp: Tavern Helper generation HTTP')
+  ctx.effect(() => server.register({
+    kind: 'exact',
+    path: TAVERN_PROMPT_PREVIEW_PATH,
+    async handler(request, response) {
+      if (!trustedBrowserRequest(request)) {
+        json(response, 403, { error: 'forbidden' })
+        return
+      }
+      if (request.method !== 'POST') {
+        response.setHeader('allow', 'POST')
+        json(response, 405, { error: 'method not allowed' })
+        return
+      }
+      const controller = new AbortController()
+      const abortRequest = (): void => { controller.abort() }
+      const abortResponse = (): void => { if (!response.writableEnded) controller.abort() }
+      request.once('aborted', abortRequest)
+      response.once('close', abortResponse)
+      try {
+        json(response, 200, await runTavernPromptPreview(ctx, await readJson(request), controller.signal))
+      } catch (error: unknown) {
+        if (response.destroyed) return
+        const message = error instanceof Error ? error.message : String(error)
+        json(response, /正在|idle|maintenance/iu.test(message) ? 409 : /过大|过长/iu.test(message) ? 413 : 400, { error: message })
+      } finally {
+        request.removeListener('aborted', abortRequest)
+        response.removeListener('close', abortResponse)
+      }
+    },
+  }), 'agent-rp: Tavern Helper prompt preview HTTP')
 }

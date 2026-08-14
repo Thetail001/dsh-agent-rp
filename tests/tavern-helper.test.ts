@@ -11,7 +11,11 @@ import {
   parseTavernHelperMutationRequest,
 } from '../src/tavern-helper.ts'
 import { activeTavernWorldbooks, withTavernWorldbooks } from '../src/world-info-configuration-core.ts'
-import { runTavernGeneration, tavernChatCompletionsEndpoint } from '../src/tavern-generation-http.ts'
+import {
+  runTavernGeneration,
+  runTavernPromptPreview,
+  tavernChatCompletionsEndpoint,
+} from '../src/tavern-generation-http.ts'
 import { tavernModelListEndpoint } from '../src/tavern-model-list-http.ts'
 
 test('resolves OpenAI-compatible custom generation endpoints without retaining query credentials', () => {
@@ -56,14 +60,16 @@ test('forwards one approved custom generation without retaining chat history at 
     })
   }
   try {
-    const result = await runTavernGeneration({
+    const ctx = {
       get: (name: string) => name === 'agents' ? { get: () => agent } : undefined,
       systemPrompt: {
         assemble: async () => ({
           sections: [{ name: 'base', text: 'DSH base' }], contexts: [], tools: [], variables: {},
         }),
       },
-    } as never, {
+      llm: { stream: () => { throw new Error('preview contacted the DSH model') } },
+    } as never
+    const request = {
       format: 0,
       sessionId: 'custom-generation',
       mode: 'raw',
@@ -85,7 +91,17 @@ test('forwards one approved custom generation without retaining chat history at 
           custom_include_headers: JSON.stringify({ Authorization: 'Bearer hook-key', 'X-V18-Trace': 18 }),
         },
       },
+    } as const
+    const preview = await runTavernPromptPreview(ctx, request)
+    assert.equal(requested, undefined)
+    assert.deepEqual(preview, {
+      format: 0,
+      prompts: [
+        { role: 'system', content: '辅助系统提示' },
+        { role: 'user', content: '只发送当前任务' },
+      ],
     })
+    const result = await runTavernGeneration(ctx, request)
     assert.equal(result.text, '辅助结果')
     assert.deepEqual(requested, {
       url: 'https://example.com/v1/chat/completions',

@@ -69,6 +69,13 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(source!, /window\.stopGenerationById=/u)
   assert.match(source!, /window\.stopAllGeneration=/u)
   assert.match(source!, /generation-cancel/u)
+  assert.match(source!, /CHAT_COMPLETION_PROMPT_READY:'chat_completion_prompt_ready'/u)
+  assert.match(source!, /GENERATE_AFTER_DATA:'generate_after_data'/u)
+  assert.match(source!, /GENERATE_AFTER_COMBINE_PROMPTS:'generate_after_combine_prompts'/u)
+  assert.match(source!, /generation-preview/u)
+  assert.match(source!, /generation-preview-result/u)
+  assert.ok(source!.indexOf('var prompts=await __dshPromptPreview')
+    < source!.indexOf("var response=await window.fetch('/api/backends/chat-completions/generate'"))
   assert.match(source!, /window\.getModelList=/u)
 })
 

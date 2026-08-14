@@ -19,10 +19,13 @@ import type { TavernHelperMutationRequest, TavernWorldbookEntry } from '../taver
 import {
   TAVERN_GENERATION_PATH,
   TAVERN_MODEL_LIST_PATH,
+  TAVERN_PROMPT_PREVIEW_PATH,
   type TavernGenerationRequest,
   type TavernGenerationResponse,
   type TavernModelListRequest,
   type TavernModelListResponse,
+  type TavernPrompt,
+  type TavernPromptPreviewResponse,
 } from '../tavern-generation-protocol.ts'
 import {
   BUILT_IN_TAVERN_SCRIPT_ORIGINS,
@@ -3926,6 +3929,11 @@ type RunTavernGeneration = (
   request: Pick<TavernGenerationRequest, 'mode' | 'config'>,
   signal?: AbortSignal,
 ) => Promise<string>
+type RunTavernPromptPreview = (
+  sessionId: SessionId,
+  request: Pick<TavernGenerationRequest, 'mode' | 'config'>,
+  signal?: AbortSignal,
+) => Promise<readonly TavernPrompt[]>
 type RunTavernModelList = (request: Omit<TavernModelListRequest, 'format'>) => Promise<readonly string[]>
 
 interface QueuedTavernGeneration {
@@ -4233,7 +4241,8 @@ function runtimeScriptButtons(value: unknown): readonly { readonly name: string;
 }
 
 function TavernScriptRuntime({
-  ctx, inputActions, onDisplayOverride, projection, runGeneration, runModelList, runMutation, runPresetConfiguration, sessionId,
+  ctx, inputActions, onDisplayOverride, projection, runGeneration, runModelList, runMutation, runPresetConfiguration,
+  runPromptPreview, sessionId,
 }: {
   readonly ctx: Context
   readonly inputActions: ComposerDockProps['inputActions']
@@ -4243,6 +4252,7 @@ function TavernScriptRuntime({
   readonly runModelList: RunTavernModelList
   readonly runMutation: RunTavernMutation
   readonly runPresetConfiguration: RunPresetConfiguration
+  readonly runPromptPreview: RunTavernPromptPreview
   readonly sessionId: SessionId
 }) {
   const scripts = [
@@ -4398,6 +4408,34 @@ function TavernScriptRuntime({
     }).catch((reason: unknown) => {
       target.postMessage({
         source: 'dsh-agent-rp-host', action: 'generation-result', requestId, ok: false,
+        error: reason instanceof Error ? reason.message : String(reason),
+      }, '*')
+    }).finally(() => {
+      activeGenerations.current.delete(key)
+    })
+  }
+  const executePromptPreview = (
+    scriptId: string,
+    target: Window,
+    requestId: string,
+    mode: 'preset' | 'raw',
+    config: Readonly<Record<string, unknown>>,
+  ): void => {
+    const key = `${scriptId}\u0000preview:${requestId}`
+    const controller = new AbortController()
+    const generationId = typeof config.generation_id === 'string' ? config.generation_id : undefined
+    activeGenerations.current.set(key, {
+      target,
+      ...(generationId === undefined ? {} : { generationId }),
+      controller,
+    })
+    void runPromptPreview(sessionId, { mode, config }, controller.signal).then(value => {
+      target.postMessage({
+        source: 'dsh-agent-rp-host', action: 'generation-preview-result', requestId, ok: true, value,
+      }, '*')
+    }).catch((reason: unknown) => {
+      target.postMessage({
+        source: 'dsh-agent-rp-host', action: 'generation-preview-result', requestId, ok: false,
         error: reason instanceof Error ? reason.message : String(reason),
       }, '*')
     }).finally(() => {
@@ -4579,6 +4617,18 @@ function TavernScriptRuntime({
         cancelGenerations(entry.script.id, event.source as Window)
         return
       }
+      if (message.action === 'generation-preview' && typeof message.requestId === 'string'
+        && (message.mode === 'preset' || message.mode === 'raw')
+        && typeof message.config === 'object' && message.config !== null && !Array.isArray(message.config)) {
+        executePromptPreview(
+          entry.script.id,
+          event.source as Window,
+          message.requestId,
+          message.mode,
+          message.config as Readonly<Record<string, unknown>>,
+        )
+        return
+      }
       if (message.action === 'generate' && typeof message.requestId === 'string'
         && (message.mode === 'preset' || message.mode === 'raw')
         && typeof message.config === 'object' && message.config !== null && !Array.isArray(message.config)) {
@@ -4745,7 +4795,7 @@ function TavernScriptRuntime({
     window.addEventListener('message', bridge)
     return () => { window.removeEventListener('message', bridge) }
   }, [approvedCustomGenerations, approvedGenerations, approvedModels, frames, inputActions, onDisplayOverride, runGeneration, runModelList,
-    runMutation, runPresetConfiguration, sessionId])
+    runMutation, runPresetConfiguration, runPromptPreview, sessionId])
   if (scripts.length === 0) return null
   const failures = frames.flatMap(entry => {
     const error = entry.error ?? runtimeErrors.get(entry.script.id)
@@ -4929,6 +4979,7 @@ function roleplayComposerDockComponent(
   runImageGeneration: RunImageGeneration,
   runTavernMutation: RunTavernMutation,
   runTavernGeneration: RunTavernGeneration,
+  runTavernPromptPreview: RunTavernPromptPreview,
   runTavernModelList: RunTavernModelList,
   runPresetConfiguration: RunPresetConfiguration,
 ): (props: ComposerDockProps) => JSX.Element | null {
@@ -5279,7 +5330,7 @@ function roleplayComposerDockComponent(
   return <div ref={rootRef} data-agent-rp-status style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
     <TavernScriptRuntime ctx={ctx} inputActions={inputActions} onDisplayOverride={onDisplayOverride} projection={projection}
       runGeneration={runTavernGeneration} runModelList={runTavernModelList} runMutation={runTavernMutation}
-      runPresetConfiguration={runPresetConfiguration} sessionId={sessionId} />
+      runPresetConfiguration={runPresetConfiguration} runPromptPreview={runTavernPromptPreview} sessionId={sessionId} />
     <button type="button" aria-label="生成聊天插图" title="生成聊天插图" onClick={() => { setDrawOpen(true) }} style={{
       alignItems: 'center', background: 'transparent', border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer',
       display: 'inline-flex', flex: '0 0 auto', font: 'inherit', fontSize: '11px', gap: '4px', opacity: .62, padding: '3px 7px',
@@ -5762,6 +5813,28 @@ export function apply(ctx: ClientContext): void {
     }
     return value.text
   }
+  const runTavernPromptPreview: RunTavernPromptPreview = async (sessionId, request, signal) => {
+    const response = await fetch(TAVERN_PROMPT_PREVIEW_PATH, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ format: 0, sessionId, ...request }),
+      ...(signal === undefined ? {} : { signal }),
+    })
+    const responseText = await response.text()
+    let value: Partial<TavernPromptPreviewResponse> & { readonly error?: string }
+    try {
+      value = JSON.parse(responseText) as typeof value
+    } catch {
+      throw new Error(response.ok ? 'Host 返回了无法识别的提示词预览' : `提示词预览失败（${response.status}）`)
+    }
+    if (!response.ok || value.format !== 0 || !Array.isArray(value.prompts)
+      || value.prompts.some(prompt => typeof prompt !== 'object' || prompt === null
+        || (prompt.role !== 'system' && prompt.role !== 'user' && prompt.role !== 'assistant')
+        || typeof prompt.content !== 'string')) {
+      throw new Error(value.error ?? `提示词预览失败（${response.status}）`)
+    }
+    return value.prompts as readonly TavernPrompt[]
+  }
   const runTavernModelList: RunTavernModelList = async request => {
     const response = await fetch(TAVERN_MODEL_LIST_PATH, {
       method: 'POST',
@@ -5834,7 +5907,7 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
   }, roleplayComposerDockComponent(
-    ctx, runImageGeneration, runTavernMutation, runTavernGeneration, runTavernModelList, configurePreset,
+    ctx, runImageGeneration, runTavernMutation, runTavernGeneration, runTavernPromptPreview, runTavernModelList, configurePreset,
   )))
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock', id: 'agent-rp-sillytavern-import-hint', order: -10,
