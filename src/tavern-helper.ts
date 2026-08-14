@@ -52,6 +52,39 @@ export interface TavernWorldbookBindings {
   readonly chat?: string | null
 }
 
+/** One Tavern Helper chat message accepted from the isolated browser runtime. */
+export interface TavernChatMessageInput {
+  readonly message_id?: number
+  readonly name?: string
+  readonly role?: 'system' | 'assistant' | 'user'
+  readonly is_hidden?: boolean
+  readonly message?: string
+  readonly data?: JsonRecord
+  readonly extra?: JsonRecord
+  readonly swipe_id?: number
+  readonly swipes?: readonly string[]
+  readonly swipes_data?: readonly JsonRecord[]
+  readonly swipes_info?: readonly JsonRecord[]
+}
+
+/** Browser request changing the model-visible roleplay transcript. */
+export type TavernChatMutationRequest =
+  | { readonly format: 0; readonly operation: 'set-chat-messages'; readonly messages: readonly TavernChatMessageInput[] }
+  | {
+    readonly format: 0
+    readonly operation: 'create-chat-messages'
+    readonly messages: readonly TavernChatMessageInput[]
+    readonly insertAt: number | 'end'
+  }
+  | { readonly format: 0; readonly operation: 'delete-chat-messages'; readonly messageIds: readonly number[] }
+  | {
+    readonly format: 0
+    readonly operation: 'rotate-chat-messages'
+    readonly begin: number
+    readonly middle: number
+    readonly end: number
+  }
+
 /** Complete durable state written by one Tavern Helper variable mutation. */
 export interface TavernHelperState {
   readonly format: 0
@@ -96,10 +129,12 @@ export type TavernWorldbookMutationRequest =
 
 /** One validated mutation sent by an isolated Tavern Helper script. */
 export type TavernHelperMutationRequest = TavernHelperVariableMutationRequest | TavernWorldbookMutationRequest
+  | TavernChatMutationRequest
 
 const STATE_PREFIX = 'agent-rp-tavern-helper-v0:'
 const MAX_MUTATION_BYTES = 2 * 1024 * 1024
 const MAX_WORLDBOOK_ENTRIES = 10_000
+const MAX_CHAT_MESSAGES = 10_000
 
 function record(value: unknown, name: string): JsonRecord {
   const snapshot = snapshotJsonValue(value) as JsonValue | undefined
@@ -140,6 +175,56 @@ function worldbookName(value: unknown): string {
 
 function nested(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function integer(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value)) throw new Error(`${label} must be an integer`)
+  return Number(value)
+}
+
+function chatMessage(value: unknown, index: number, creating: boolean): TavernChatMessageInput {
+  const message = nested(value)
+  const role = message.role
+  if (role !== undefined && role !== 'system' && role !== 'assistant' && role !== 'user') {
+    throw new Error(`chat message[${index}].role is invalid`)
+  }
+  if (creating && role === undefined) throw new Error(`chat message[${index}].role is required`)
+  const body = message.message === undefined ? undefined : text(message.message, `chat message[${index}].message`)
+  if (creating && body === undefined) throw new Error(`chat message[${index}].message is required`)
+  if (message.is_hidden !== undefined && typeof message.is_hidden !== 'boolean') {
+    throw new Error(`chat message[${index}].is_hidden must be a boolean`)
+  }
+  const strings = (candidate: unknown, label: string): readonly string[] | undefined => {
+    if (candidate === undefined) return undefined
+    if (!Array.isArray(candidate) || candidate.some(item => typeof item !== 'string')) throw new Error(`${label} must be a string array`)
+    return candidate
+  }
+  const records = (candidate: unknown, label: string): readonly JsonRecord[] | undefined => {
+    if (candidate === undefined) return undefined
+    if (!Array.isArray(candidate)) throw new Error(`${label} must be an object array`)
+    return candidate.map((item, itemIndex) => record(item, `${label}[${itemIndex}]`))
+  }
+  const swipes = strings(message.swipes, `chat message[${index}].swipes`)
+  const swipesData = records(message.swipes_data, `chat message[${index}].swipes_data`)
+  const swipesInfo = records(message.swipes_info, `chat message[${index}].swipes_info`)
+  return {
+    ...(message.message_id === undefined ? {} : { message_id: integer(message.message_id, `chat message[${index}].message_id`) }),
+    ...(message.name === undefined ? {} : { name: text(message.name, `chat message[${index}].name`) }),
+    ...(role === undefined ? {} : { role }),
+    ...(message.is_hidden === undefined ? {} : { is_hidden: message.is_hidden }),
+    ...(body === undefined ? {} : { message: body }),
+    ...(message.data === undefined ? {} : { data: record(message.data, `chat message[${index}].data`) }),
+    ...(message.extra === undefined ? {} : { extra: record(message.extra, `chat message[${index}].extra`) }),
+    ...(message.swipe_id === undefined ? {} : { swipe_id: integer(message.swipe_id, `chat message[${index}].swipe_id`) }),
+    ...(swipes === undefined ? {} : { swipes }),
+    ...(swipesData === undefined ? {} : { swipes_data: swipesData }),
+    ...(swipesInfo === undefined ? {} : { swipes_info: swipesInfo }),
+  }
+}
+
+function chatMessages(value: unknown, creating: boolean): readonly TavernChatMessageInput[] {
+  if (!Array.isArray(value) || value.length > MAX_CHAT_MESSAGES) throw new Error('Tavern Helper chat messages are invalid')
+  return value.map((message, index) => chatMessage(message, index, creating))
 }
 
 function worldbookEntry(value: unknown, index: number, used: Set<number>): TavernWorldbookEntry {
@@ -284,6 +369,31 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
     throw new Error('Tavern Helper variable update must be an object')
   }
   const value = parsed as Record<string, unknown>
+  if (value.format === 0 && value.operation === 'set-chat-messages') {
+    const messages = chatMessages(value.messages, false)
+    if (messages.some(message => message.message_id === undefined)) throw new Error('set-chat-messages requires message_id')
+    return { format: 0, operation: value.operation, messages }
+  }
+  if (value.format === 0 && value.operation === 'create-chat-messages') {
+    const rawInsertAt = value.insertAt ?? value.insert_at ?? 'end'
+    const insertAt = rawInsertAt === 'end' ? rawInsertAt : integer(rawInsertAt, 'create-chat-messages insertAt')
+    return { format: 0, operation: value.operation, messages: chatMessages(value.messages, true), insertAt }
+  }
+  if (value.format === 0 && value.operation === 'delete-chat-messages') {
+    if (!Array.isArray(value.messageIds) || value.messageIds.some(messageId => !Number.isSafeInteger(messageId))) {
+      throw new Error('delete-chat-messages requires integer messageIds')
+    }
+    return { format: 0, operation: value.operation, messageIds: value.messageIds as number[] }
+  }
+  if (value.format === 0 && value.operation === 'rotate-chat-messages') {
+    return {
+      format: 0,
+      operation: value.operation,
+      begin: integer(value.begin, 'rotate-chat-messages begin'),
+      middle: integer(value.middle, 'rotate-chat-messages middle'),
+      end: integer(value.end, 'rotate-chat-messages end'),
+    }
+  }
   if (value.format === 0 && value.operation === 'replace-worldbook') {
     return { format: 0, operation: value.operation, name: worldbookName(value.name), entries: worldbookEntries(value.entries) }
   }
@@ -327,6 +437,10 @@ export function applyTavernHelperMutation(
   request: TavernHelperMutationRequest,
 ): TavernHelperState {
   if ('operation' in request) {
+    if (request.operation === 'set-chat-messages' || request.operation === 'create-chat-messages'
+      || request.operation === 'delete-chat-messages' || request.operation === 'rotate-chat-messages') {
+      return { ...state, revision: state.revision + 1, lastMutation: { scope: 'chat' } }
+    }
     if (request.operation === 'replace-worldbook') {
       const deleted = new Set(state.deletedWorldbookNames ?? [])
       deleted.delete(request.name)

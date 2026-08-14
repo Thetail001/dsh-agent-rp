@@ -10,6 +10,25 @@ import {
 } from '../src/tavern-helper.ts'
 import { activeTavernWorldbooks, withTavernWorldbooks } from '../src/world-info-configuration-core.ts'
 
+test('parses Tavern Helper chat mutation operations', () => {
+  assert.deepEqual(parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0, operation: 'set-chat-messages', messages: [{ message_id: 2, message: '改写' }],
+  })), { format: 0, operation: 'set-chat-messages', messages: [{ message_id: 2, message: '改写' }] })
+  assert.deepEqual(parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0, operation: 'create-chat-messages', insert_at: -1,
+    messages: [{ role: 'assistant', message: '插入' }],
+  })), {
+    format: 0, operation: 'create-chat-messages', insertAt: -1,
+    messages: [{ role: 'assistant', message: '插入' }],
+  })
+  assert.deepEqual(parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0, operation: 'delete-chat-messages', messageIds: [1, 3],
+  })), { format: 0, operation: 'delete-chat-messages', messageIds: [1, 3] })
+  assert.deepEqual(parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0, operation: 'rotate-chat-messages', begin: 0, middle: 2, end: 4,
+  })), { format: 0, operation: 'rotate-chat-messages', begin: 0, middle: 2, end: 4 })
+})
+
 test('persists isolated Tavern Helper variable namespaces', () => {
   const state = initializeTavernHelperState({
     regexScripts: [],

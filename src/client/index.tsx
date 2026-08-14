@@ -4086,7 +4086,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
         }
         return
       }
-      if (message.action === 'worldbook-mutate' && typeof message.requestId === 'string'
+      if ((message.action === 'worldbook-mutate' || message.action === 'chat-mutate') && typeof message.requestId === 'string'
         && typeof message.request === 'object' && message.request !== null && !Array.isArray(message.request)) {
         const target = event.source as Window
         const request = message.request as TavernHelperMutationRequest

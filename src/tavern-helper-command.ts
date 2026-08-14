@@ -4,6 +4,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
 import { readActiveSessionPreset } from './import/session-preset.ts'
 import { presetTavernHelperScripts } from './import/sillytavern-preset.ts'
+import { executeTavernChatMutation } from './tavern-chat.ts'
 import {
   applyTavernHelperMutation,
   encodeTavernHelperState,
@@ -33,6 +34,15 @@ export function executeTavernHelperMutation(invocation: {
         preset.preset.tavernHelperVariables ?? {},
         preset.result.sourceAttachmentId,
       )
-  const next = applyTavernHelperMutation(initialized, parseTavernHelperMutationRequest(invocation.rawInput))
+  const request = parseTavernHelperMutationRequest(invocation.rawInput)
+  const chat = 'operation' in request && (request.operation === 'set-chat-messages'
+    || request.operation === 'create-chat-messages' || request.operation === 'delete-chat-messages'
+    || request.operation === 'rotate-chat-messages')
+    ? executeTavernChatMutation(invocation.agent, request)
+    : undefined
+  const mutated = applyTavernHelperMutation(initialized, request)
+  const next = chat?.messageVariables === undefined
+    ? mutated
+    : { ...mutated, scopes: { ...mutated.scopes, message: chat.messageVariables } }
   return { kind: 'success', text: encodeTavernHelperState(next) }
 }
