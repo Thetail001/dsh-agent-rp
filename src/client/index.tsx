@@ -310,6 +310,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
     greetingIndex: number,
     persona?: SessionPersonaSnapshot,
     presetId?: string,
+    memory?: 'copy-active',
   ) => Promise<void>
   readonly listPresets: () => Promise<readonly PresetLibrarySummary[]>
   readonly listPersonas: () => Promise<readonly PersonaLibraryEntry[]>
@@ -2341,13 +2342,14 @@ function RoleplayHeader({
     />}
     {libraryOpen && <CharacterLibraryDialog
       currentCharacterName={projection.characterName}
+      {...(projection.avatarLibraryId === undefined ? {} : { currentCharacterId: projection.avatarLibraryId })}
       listCharacters={listCharacters}
       readCharacter={readCharacter}
       setCharacterArchived={setCharacterArchived}
       importCharacterFile={importCharacterFile}
       onClose={() => { setLibraryOpen(false) }}
-      onStart={(character, greetingIndex, persona, presetId) => startCharacterSession(
-        sessionId, character, greetingIndex, persona, presetId,
+      onStart={(character, greetingIndex, persona, presetId, memory) => startCharacterSession(
+        sessionId, character, greetingIndex, persona, presetId, memory,
       )}
       listPresets={listPresets}
       listPersonas={listPersonas}
@@ -2467,7 +2469,9 @@ function MemoryManagerDialog({ load, onManage, onClose }: {
               background: `color-mix(in srgb, ${color} 13%, transparent)`, borderRadius: '999px',
               fontSize: '10px', opacity: .82, padding: '2px 7px',
             }}>{memoryKindLabels[memory.kind]}</span>
-            {memory.source === 'user' && <span style={{ fontSize: '10px', marginLeft: 'auto', opacity: .45 }}>由你修正</span>}
+            {memory.source !== 'character' && <span style={{ fontSize: '10px', marginLeft: 'auto', opacity: .45 }}>
+              {memory.source === 'user' ? '由你修正' : '从上一段带来'}
+            </span>}
           </div>
           {editing?.id === memory.id
             ? <div style={{ display: 'grid', gap: '9px', marginTop: '12px' }}>
@@ -2813,10 +2817,11 @@ function WorldInfoEntryEditor({ draft, saving, onCancel, onSave }: {
 }
 
 function CharacterLibraryDialog({
-  currentCharacterName, listCharacters, readCharacter, setCharacterArchived, importCharacterFile,
+  currentCharacterName, currentCharacterId, listCharacters, readCharacter, setCharacterArchived, importCharacterFile,
   listPresets, listPersonas, savePersona, deletePersona, onClose, onStart,
 }: {
   readonly currentCharacterName: string
+  readonly currentCharacterId?: string
   readonly listCharacters: HeaderProps['listCharacters']
   readonly readCharacter: HeaderProps['readCharacter']
   readonly setCharacterArchived: HeaderProps['setCharacterArchived']
@@ -2828,6 +2833,7 @@ function CharacterLibraryDialog({
   readonly onClose: () => void
   readonly onStart: (
     character: CharacterLibraryDetail, greetingIndex: number, persona?: SessionPersonaSnapshot, presetId?: string,
+    memory?: 'copy-active',
   ) => Promise<void>
 }) {
   const narrow = useNarrowCharacterLibrary()
@@ -2844,6 +2850,7 @@ function CharacterLibraryDialog({
   const [personaEditorId, setPersonaEditorId] = useState<string>()
   const [personaName, setPersonaName] = useState('')
   const [personaDescription, setPersonaDescription] = useState('')
+  const [copyActiveMemory, setCopyActiveMemory] = useState(false)
   const [savingPersona, setSavingPersona] = useState(false)
   const [confirmingPersonaId, setConfirmingPersonaId] = useState<string>()
   const [removingPersonaId, setRemovingPersonaId] = useState<string>()
@@ -2901,6 +2908,9 @@ function CharacterLibraryDialog({
     })
     return () => { current = false }
   }, [listPersonas])
+  useEffect(() => {
+    if (selected?.id !== currentCharacterId) setCopyActiveMemory(false)
+  }, [currentCharacterId, selected?.id])
   const choose = (entry: CharacterLibrarySummary): void => {
     const request = ++selectionRequestRef.current
     setLoadingId(entry.id)
@@ -3264,6 +3274,20 @@ function CharacterLibraryDialog({
                 {savingPersona ? '正在保存…' : personaEditorId === undefined ? '保存并选中' : '更新并选中'}
               </button>
             </div>}
+            {currentCharacterId !== undefined && selected.id === currentCharacterId && <label style={{
+              alignItems: 'flex-start', background: 'var(--dsw-alias-bg-layer-1, #202024)',
+              border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '10px', cursor: 'pointer',
+              display: 'flex', gap: '10px', marginTop: '18px', padding: '11px 12px',
+            }}>
+              <input type="checkbox" checked={copyActiveMemory} onChange={event => { setCopyActiveMemory(event.target.checked) }}
+                style={{ accentColor: color, margin: '2px 0 0' }} />
+              <span>
+                <span style={{ display: 'block', fontSize: '12px', fontWeight: 620 }}>带上当前会话的有效记忆（如果有）</span>
+                <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '4px', opacity: .5 }}>
+                  只复制角色仍记得的事，不复制聊天记录或修改过程
+                </span>
+              </span>
+            </label>}
           </>}
           {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.55, marginTop: '14px' }}>{error}</div>}
         </div>
@@ -3281,7 +3305,7 @@ function CharacterLibraryDialog({
             const persona = personas?.find(entry => entry.id === personaId)
             void onStart(selected, greetingIndex, persona === undefined ? undefined : {
               id: persona.id, name: persona.name, description: persona.description,
-            }, presetId === '' ? undefined : presetId).then(() => {
+            }, presetId === '' ? undefined : presetId, copyActiveMemory ? 'copy-active' : undefined).then(() => {
               setStarting(false)
               onClose()
             }, startError => {
@@ -6076,7 +6100,7 @@ export function apply(ctx: ClientContext): void {
       || value.memories.some(memory => typeof memory !== 'object' || memory === null
         || typeof memory.id !== 'string' || typeof memory.subject !== 'string' || typeof memory.text !== 'string'
         || !['fact', 'promise', 'relationship', 'preference', 'event'].includes(memory.kind)
-        || (memory.source !== 'character' && memory.source !== 'user'))) {
+        || (memory.source !== 'character' && memory.source !== 'user' && memory.source !== 'inherited'))) {
       throw new Error(value.error ?? `记忆读取失败（${response.status}）`)
     }
     return value.memories
@@ -6194,6 +6218,7 @@ export function apply(ctx: ClientContext): void {
     greetingIndex: number,
     persona?: SessionPersonaSnapshot,
     presetId?: string,
+    memory?: 'copy-active',
   ): Promise<void> => {
     await launchRoleplaySession({
       format: 0,
@@ -6203,6 +6228,7 @@ export function apply(ctx: ClientContext): void {
       greetingIndex,
       ...(persona === undefined ? {} : { persona }),
       ...(presetId === undefined ? {} : { presetId }),
+      ...(memory === undefined ? {} : { memory }),
     })
   }
   const archiveConsumedBlankSession = async (sessionId: SessionId): Promise<void> => {
@@ -6231,8 +6257,9 @@ export function apply(ctx: ClientContext): void {
     greetingIndex: number,
     persona?: SessionPersonaSnapshot,
     presetId?: string,
+    memory?: 'copy-active',
   ): Promise<void> => {
-    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId)
+    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId, memory)
   }
   const migrateChat = async (
     sourceSessionId: SessionId,

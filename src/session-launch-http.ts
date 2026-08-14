@@ -16,6 +16,8 @@ import {
 import { AGENT_RP_SESSION_PATH } from './session-launch-protocol.ts'
 import type { PresetLibrary } from './preset-library.ts'
 import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
+import { appendAgentRpMemorySeed, readAgentRpMemoryHistory } from './memory.ts'
+import { readActiveSessionCharacter } from './import/session-character.ts'
 
 const MAX_REQUEST_BYTES = 32 * 1024
 
@@ -134,9 +136,20 @@ export async function launchAgentRpSession(
     if (source.session.header.agentPreset !== 'agent-rp') throw new Error('只能改写 Agent RP 角色会话')
     if (source.status !== 'idle' || source.inbox.hasPending) throw new Error('请等待当前回复完成后再改写')
   }
-  const prepared = request.kind === 'rewrite'
+  let prepared = request.kind === 'rewrite'
     ? prepareAgentRpRewriteSession(source.session, request.turn, titles?.get(source.session)?.title)
     : prepareAgentRpSession(characters, chats, presetLibrary, request)
+  if (request.kind === 'character' && request.memory === 'copy-active') {
+    if (source.session.header.agentPreset !== 'agent-rp') throw new Error('只能从角色会话继承记忆')
+    if (source.status !== 'idle' || source.inbox.hasPending) throw new Error('请等待当前回复完成后再继承记忆')
+    const sourceCharacter = readActiveSessionCharacter(source.session.events)
+    if (sourceCharacter?.result.libraryId !== request.characterId) throw new Error('只能把记忆带给同一个角色')
+    const memory = readAgentRpMemoryHistory(source.session.events).active
+    prepared = {
+      ...prepared,
+      seed: appendAgentRpMemorySeed(prepared.seed, memory, String(source.id)),
+    }
+  }
   const sessionId = SessionId(`session-${randomUUID()}`)
   const agentOptions: AgentOptions = {
     provider: models.result.value.current.provider,

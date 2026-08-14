@@ -1,7 +1,7 @@
 /** Durable Agent RP memory reconstructed from native tool events. */
 
 import type { Branded } from '@deepseek-ai/dsh-brand'
-import type { JsonValue, Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, type JsonValue, type SessionEvent } from '@deepseek-ai/dsh-session'
 
 /** Stable identity of one memory record inside a Session. */
 export type AgentRpMemoryId = Branded<'AgentRpMemoryId'>
@@ -45,6 +45,27 @@ export interface AgentRpMemoryHistory {
   readonly active: readonly AgentRpMemoryRecord[]
 }
 
+/** Minimal active-memory entry copied into a newly started Session. */
+export interface AgentRpMemorySeedEntry {
+  readonly kind: AgentRpMemoryKind
+  readonly subject: string
+  readonly text: string
+}
+
+/** Opt-in memory snapshot carried from an earlier Session of the same character. */
+export interface AgentRpMemorySeedRecord {
+  readonly format: 0
+  readonly sourceSessionId: string
+  readonly memories: readonly AgentRpMemorySeedEntry[]
+}
+
+declare module '@deepseek-ai/dsh-session' {
+  interface SessionEventMap {
+    /** Skippable active-memory snapshot explicitly carried into a new Roleplay Session. */
+    'agent-rp/memory-seed': AgentRpMemorySeedRecord
+  }
+}
+
 /** Browser request for correcting or forgetting one currently active memory. */
 export type AgentRpMemoryCommandRequest = {
   readonly format: 0
@@ -66,7 +87,7 @@ export type AgentRpMemoryCommandRecord = AgentRpMemoryCommandRequest & {
 
 const SUBJECT_MAX_LENGTH = 120
 const TEXT_MAX_LENGTH = 1_000
-const MEMORY_ID_PATTERN = /^memory-(0|[1-9]\d*)$/u
+const MEMORY_ID_PATTERN = /^memory-(?:(?:0|[1-9]\d*)|seed-(?:0|[1-9]\d*)-(?:0|[1-9]\d*))$/u
 const COMMAND_RESULT_PREFIX = 'agent-rp-memory-v0:'
 
 /** Brand a validated memory id at the Session boundary. */
@@ -311,6 +332,37 @@ function applyCommandRecord(
   return replacement
 }
 
+function applySeedRecord(
+  event: SessionEvent<'agent-rp/memory-seed'>,
+  active: Map<AgentRpMemoryId, AgentRpMemoryRecord>,
+): readonly AgentRpMemoryRecord[] {
+  if (event.data.format !== 0 || event.data.sourceSessionId.trim() === '' || event.data.sourceSessionId.length > 512
+    || !Array.isArray(event.data.memories) || event.data.memories.length > 1_000) {
+    throw new Error('Agent RP 继承记忆事件无效')
+  }
+  return event.data.memories.map((entry, index) => {
+    if (typeof entry !== 'object' || entry === null
+      || !AGENT_RP_MEMORY_KINDS.includes(entry.kind)
+      || typeof entry.subject !== 'string' || typeof entry.text !== 'string') {
+      throw new Error('Agent RP 继承记忆内容无效')
+    }
+    const subject = normalizeText(entry.subject, 'subject', SUBJECT_MAX_LENGTH)
+    const text = normalizeText(entry.text, 'text', TEXT_MAX_LENGTH)
+    if (subject !== entry.subject || text !== entry.text) throw new Error('Agent RP 继承记忆内容未规范化')
+    const record: AgentRpMemoryRecord = {
+      version: 0,
+      id: AgentRpMemoryId(`memory-seed-${event.seq}-${index}`),
+      kind: entry.kind,
+      subject,
+      text,
+      sourceEventSeq: event.seq,
+    }
+    if (active.has(record.id)) throw new Error(`重复的 Agent RP 记忆编号 ${record.id}`)
+    active.set(record.id, record)
+    return record
+  })
+}
+
 /**
  * Replay and validate all Agent RP memory records in one Session log.
  * @param events - complete chronological Session history.
@@ -321,6 +373,10 @@ export function readAgentRpMemoryHistory(events: readonly SessionEvent[]): Agent
   const active = new Map<AgentRpMemoryId, AgentRpMemoryRecord>()
   const results = successfulRememberResults(events)
   for (const event of events) {
+    if (event.type === 'agent-rp/memory-seed') {
+      all.push(...applySeedRecord(event, active))
+      continue
+    }
     if (event.type === 'tool/call' && event.data.name === 'remember') {
       const result = results.get(String(event.data.callId))
       if (result !== undefined) all.push(validateRecord(events, event, result, active))
@@ -333,6 +389,29 @@ export function readAgentRpMemoryHistory(events: readonly SessionEvent[]): Agent
     if (replacement !== undefined) all.push(replacement)
   }
   return { all: Object.freeze(all), active: Object.freeze([...active.values()]) }
+}
+
+/** Append an opt-in active-memory snapshot to an otherwise complete new-Session seed. */
+export function appendAgentRpMemorySeed(
+  seed: readonly SessionEvent[],
+  memories: readonly AgentRpMemoryRecord[],
+  sourceSessionId: string,
+): readonly SessionEvent[] {
+  if (memories.length === 0) return seed
+  if (sourceSessionId.trim() === '' || sourceSessionId.length > 512) throw new Error('来源角色会话编号无效')
+  const time = Math.max(Date.now(), (seed.at(-1)?.time ?? 0) + 1)
+  const events: SessionEvent[] = [...seed, {
+    type: 'agent-rp/memory-seed',
+    seq: seed.length,
+    time,
+    data: {
+      format: 0,
+      sourceSessionId,
+      memories: memories.map(memory => ({ kind: memory.kind, subject: memory.subject, text: memory.text })),
+    },
+    ignorable: true,
+  }]
+  return Object.freeze(Session.create(SessionId('agent-rp-memory-seed-validation'), events).events.slice(0, events.length))
 }
 
 function findRememberCall(session: Session, callId: string): SessionEvent<'tool/call'> {

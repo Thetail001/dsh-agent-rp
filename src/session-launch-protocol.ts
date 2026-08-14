@@ -14,6 +14,8 @@ export interface CharacterSessionLaunchRequest {
   readonly greetingIndex: number
   readonly persona?: SessionPersonaSnapshot
   readonly presetId?: string
+  /** Explicitly copy the source Session's currently active memory for the same character. */
+  readonly memory?: 'copy-active'
 }
 
 /** Start a new Session from one retained SillyTavern JSONL import. */

@@ -37,7 +37,8 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       || record.greetingIndex < 0
       || (record.presetId !== undefined
         && (typeof record.presetId !== 'string' || !/^[a-z0-9-]{8,80}$/u.test(record.presetId)))
-      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'characterId', 'greetingIndex', 'persona', 'presetId'].includes(key))) {
+      || (record.memory !== undefined && record.memory !== 'copy-active')
+      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'characterId', 'greetingIndex', 'persona', 'presetId', 'memory'].includes(key))) {
       throw new Error('角色会话启动请求字段无效')
     }
     const persona = record.persona === undefined ? undefined : parseSessionPersona(record.persona)
@@ -49,6 +50,7 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       greetingIndex: record.greetingIndex,
       ...(persona === undefined ? {} : { persona }),
       ...(typeof record.presetId === 'string' ? { presetId: record.presetId } : {}),
+      ...(record.memory === 'copy-active' ? { memory: 'copy-active' as const } : {}),
     }
   }
   if (record.kind === 'chat') {

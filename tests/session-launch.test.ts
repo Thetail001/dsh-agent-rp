@@ -233,3 +233,37 @@ test('rejects paths and extra browser-owned launch fields', () => {
     text: '   ',
   }), /字段无效/u)
 })
+
+test('accepts opt-in memory only for character launches', () => {
+  const characterId = 'card-0123456789abcdef0123456789abcdef'
+  assert.deepEqual(parseAgentRpSessionLaunchRequest({
+    format: 0,
+    sourceSessionId: 'source',
+    kind: 'character',
+    characterId,
+    greetingIndex: 0,
+    memory: 'copy-active',
+  }), {
+    format: 0,
+    sourceSessionId: 'source',
+    kind: 'character',
+    characterId,
+    greetingIndex: 0,
+    memory: 'copy-active',
+  })
+  assert.throws(() => parseAgentRpSessionLaunchRequest({
+    format: 0,
+    sourceSessionId: 'source',
+    kind: 'character',
+    characterId,
+    greetingIndex: 0,
+    memory: 'everything',
+  }), /字段无效/u)
+  assert.throws(() => parseAgentRpSessionLaunchRequest({
+    format: 0,
+    sourceSessionId: 'source',
+    kind: 'chat',
+    importId: 'chat-0123456789abcdef0123456789abcdef',
+    memory: 'copy-active',
+  }), /字段无效/u)
+})

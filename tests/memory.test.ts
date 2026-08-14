@@ -7,6 +7,7 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { validateJsonSchemaValue, valueSchemaSpecToJsonSchema } from '@deepseek-ai/dsh-tools'
 import { MEMORY_VALUE_SCHEMA } from '../src/index.ts'
 import {
+  appendAgentRpMemorySeed,
   parseAgentRpMemoryCommandRequest,
   prepareAgentRpMemory,
   type AgentRpMemoryRecord,
@@ -142,6 +143,48 @@ test('lets the user correct and forget active memory without invoking the model'
   assert.equal(forgotten.all.length, 2)
   assert.deepEqual(forgotten.active, [])
   assert.equal(renderMemoryContext(agent.session.events), '当前没有已记录的持久记忆。')
+})
+
+test('copies only active memory into a new Session where it remains editable', () => {
+  const source = { session: Session.create(SessionId('agent-rp-memory-source')) } as Agent
+  const forgottenInput = { kind: 'fact', subject: '旧住处', text: '用户曾住在杭州' } as const
+  const forgottenCallSeq = appendRememberCall(source.session, 'remember-source-1', forgottenInput)
+  const forgotten = prepareAgentRpMemory(source.session, 'remember-source-1', forgottenInput)
+  appendRememberResult(source.session, 'remember-source-1', forgotten, forgottenCallSeq)
+  const retainedInput = { kind: 'preference', subject: '红茶', text: '用户喝红茶不加柠檬' } as const
+  const retainedCallSeq = appendRememberCall(source.session, 'remember-source-2', retainedInput)
+  const retained = prepareAgentRpMemory(source.session, 'remember-source-2', retainedInput)
+  appendRememberResult(source.session, 'remember-source-2', retained, retainedCallSeq)
+  runMemoryCommand(source, JSON.stringify({ format: 0, operation: 'forget', id: forgotten.id }), 1)
+
+  const activeSource = readAgentRpMemoryHistory(source.session.events).active
+  const target = { session: Session.create(
+    SessionId('agent-rp-memory-target'),
+    appendAgentRpMemorySeed([], activeSource, String(source.session.id)),
+  ) } as Agent
+  const inherited = readAgentRpMemoryHistory(target.session.events)
+  assert.equal(inherited.all.length, 1)
+  assert.deepEqual(inherited.active.map(record => ({ kind: record.kind, subject: record.subject, text: record.text })), [{
+    kind: 'preference', subject: '红茶', text: '用户喝红茶不加柠檬',
+  }])
+  assert.match(String(inherited.active[0]?.id), /^memory-seed-0-0$/u)
+
+  runMemoryCommand(target, JSON.stringify({
+    format: 0,
+    operation: 'correct',
+    id: inherited.active[0]?.id,
+    kind: 'preference',
+    subject: '红茶',
+    text: '用户只在冬天喝红茶',
+  }), 2)
+  const corrected = readAgentRpMemoryHistory(target.session.events)
+  assert.deepEqual(corrected.active.map(record => record.text), ['用户只在冬天喝红茶'])
+  runMemoryCommand(target, JSON.stringify({
+    format: 0,
+    operation: 'forget',
+    id: corrected.active[0]?.id,
+  }), 3)
+  assert.deepEqual(readAgentRpMemoryHistory(target.session.events).active, [])
 })
 
 test('rejects blank memory and invalid correction without appending state', () => {

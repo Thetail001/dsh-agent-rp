@@ -66,7 +66,9 @@ export function installAgentRpMemoryHttp(routeCtx: Context, hostCtx: Context, se
             kind: memory.kind,
             subject: memory.subject,
             text: memory.text,
-            source: agent.session.events[memory.sourceEventSeq]?.type === 'command/run' ? 'user' : 'character',
+            source: agent.session.events[memory.sourceEventSeq]?.type === 'command/run'
+              ? 'user'
+              : agent.session.events[memory.sourceEventSeq]?.type === 'agent-rp/memory-seed' ? 'inherited' : 'character',
           })),
         }
         json(response, 200, value)
