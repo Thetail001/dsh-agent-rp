@@ -242,6 +242,45 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
     '<p><strong>粗体</strong></p><pre><code class="language-yaml">key: value</code></pre>')
 })
 
+test('bridges Tavern confirmation popups to the Host and returns custom results', async () => {
+  const script = String.raw`
+window.__popupResult = SillyTavern.callGenericPopup(
+  builtin.renderMarkdown('**要保存吗？**'),
+  SillyTavern.POPUP_TYPE.CONFIRM,
+  '',
+  { okButton: '保存', cancelButton: '放弃', customButtons: ['稍后'] },
+);
+`
+  const html = tavernScriptFrameSource({
+    id: 'popup', name: '确认保存', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'popup', scriptName: '确认保存', scriptInfo: '', buttons: [],
+    characterName: '白露', characterId: 'bailu.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const popup = (context.posted as Record<string, unknown>[]).find(message => message.action === 'popup-request')
+  assert.deepEqual(JSON.parse(JSON.stringify(popup)), {
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'popup', action: 'popup-request', requestId: '1',
+    popupType: 2, content: '<p><strong>要保存吗？</strong></p>', inputValue: '',
+    options: {
+      okButton: '保存', cancelButton: '放弃',
+      customButtons: [{ text: '稍后', result: 2 }],
+    },
+  })
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'popup-result', requestId: '1', ok: true, value: 2,
+  })
+  assert.equal(await context.__popupResult, 2)
+})
+
 test('lets Tavern scripts replace the complete preset regex list', async () => {
   const script = String.raw`
 window.__regexMutation = replaceTavernRegexes([{

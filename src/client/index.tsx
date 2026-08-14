@@ -4940,6 +4940,156 @@ function runtimeScriptButtons(value: unknown): readonly { readonly name: string;
   return buttons
 }
 
+type TavernPopupType = 1 | 2 | 3 | 4
+
+interface TavernPopupOptions {
+  readonly okButton?: string | boolean
+  readonly cancelButton?: string | boolean
+  readonly rows?: number
+  readonly placeholder?: string
+  readonly tooltip?: string
+  readonly wide?: boolean
+  readonly wider?: boolean
+  readonly large?: boolean
+  readonly leftAlign?: boolean
+  readonly allowEscapeClose?: boolean
+  readonly customButtons?: readonly { readonly text: string; readonly result: number }[]
+}
+
+interface TavernPopupRequest {
+  readonly key: string
+  readonly target: Window
+  readonly requestId: string
+  readonly scriptName: string
+  readonly type: TavernPopupType
+  readonly content: string
+  readonly inputValue: string
+  readonly options: TavernPopupOptions
+}
+
+function runtimePopupOptions(value: unknown): TavernPopupOptions {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+  const source = value as Record<string, unknown>
+  const label = (key: 'okButton' | 'cancelButton'): string | boolean | undefined => {
+    const item = source[key]
+    return typeof item === 'string' || typeof item === 'boolean' ? item : undefined
+  }
+  const text = (key: 'placeholder' | 'tooltip'): string | undefined => {
+    const item = source[key]
+    return typeof item === 'string' && item.length <= 2_000 ? item : undefined
+  }
+  const flag = (key: 'wide' | 'wider' | 'large' | 'leftAlign' | 'allowEscapeClose'): boolean | undefined => (
+    typeof source[key] === 'boolean' ? source[key] : undefined
+  )
+  const customButtons = Array.isArray(source.customButtons) && source.customButtons.length <= 9
+    ? source.customButtons.flatMap((value): { readonly text: string; readonly result: number }[] => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) return []
+      const button = value as Record<string, unknown>
+      if (typeof button.text !== 'string' || button.text.trim() === '' || button.text.length > 200
+        || typeof button.result !== 'number' || !Number.isFinite(button.result)) return []
+      return [{ text: button.text, result: button.result }]
+    })
+    : undefined
+  const rows = Number.isSafeInteger(source.rows) && Number(source.rows) >= 1 && Number(source.rows) <= 20
+    ? Number(source.rows) : undefined
+  const okButton = label('okButton')
+  const cancelButton = label('cancelButton')
+  const placeholder = text('placeholder')
+  const tooltip = text('tooltip')
+  const wide = flag('wide')
+  const wider = flag('wider')
+  const large = flag('large')
+  const leftAlign = flag('leftAlign')
+  const allowEscapeClose = flag('allowEscapeClose')
+  return {
+    ...(okButton === undefined ? {} : { okButton }),
+    ...(cancelButton === undefined ? {} : { cancelButton }),
+    ...(rows === undefined ? {} : { rows }),
+    ...(placeholder === undefined ? {} : { placeholder }),
+    ...(tooltip === undefined ? {} : { tooltip }),
+    ...(wide === undefined ? {} : { wide }),
+    ...(wider === undefined ? {} : { wider }),
+    ...(large === undefined ? {} : { large }),
+    ...(leftAlign === undefined ? {} : { leftAlign }),
+    ...(allowEscapeClose === undefined ? {} : { allowEscapeClose }),
+    ...(customButtons === undefined ? {} : { customButtons }),
+  }
+}
+
+function TavernScriptPopup({ request, onResolve }: {
+  readonly request: TavernPopupRequest
+  readonly onResolve: (value: string | number | boolean | null) => void
+}) {
+  const [input, setInput] = useState(request.inputValue)
+  const options = request.options
+  const canDismiss = options.allowEscapeClose !== false
+  const inputRows = options.rows ?? 1
+  const sanitized = DOMPurify.sanitize(request.content, {
+    FORBID_ATTR: ['srcdoc', 'style'],
+    FORBID_TAGS: ['base', 'button', 'embed', 'form', 'iframe', 'input', 'link', 'meta', 'object', 'script', 'textarea'],
+    USE_PROFILES: { html: true },
+  })
+  const affirmative = (): void => { onResolve(request.type === 3 ? input : 1) }
+  const showOk = options.okButton !== false && request.type !== 4
+  const showCancel = (options.cancelButton !== false && (request.type === 2 || request.type === 3))
+    || typeof options.cancelButton === 'string'
+  const okLabel = typeof options.okButton === 'string'
+    ? options.okButton : request.type === 3 ? '保存' : request.type === 2 ? '确定' : '知道了'
+  const cancelLabel = typeof options.cancelButton === 'string' ? options.cancelButton : '取消'
+  const buttonStyle = {
+    background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #4a4c54)', borderRadius: '8px',
+    color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '7px 12px',
+  } as const
+  useEffect(() => {
+    if (!canDismiss) return
+    const close = (event: KeyboardEvent): void => { if (event.key === 'Escape') onResolve(null) }
+    window.addEventListener('keydown', close)
+    return () => { window.removeEventListener('keydown', close) }
+  }, [canDismiss, onResolve])
+  return <div role="dialog" aria-modal aria-label={`${request.scriptName} 的酒馆脚本弹窗`} style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.72)', display: 'flex', inset: 0, justifyContent: 'center',
+    padding: '18px', position: 'fixed', zIndex: 1250,
+  }} onMouseDown={event => { if (canDismiss && event.target === event.currentTarget) onResolve(null) }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #121318)', border: '1px solid var(--dsw-alias-border-l2, #3b3d45)',
+      borderRadius: '14px', boxShadow: '0 22px 72px rgba(0,0,0,.5)', display: 'grid', gap: '14px',
+      maxHeight: 'min(86vh, 840px)', maxWidth: options.wide || options.wider || options.large ? '960px' : '620px',
+      overflow: 'auto', padding: '16px', width: options.wide || options.wider || options.large ? 'min(94vw, 960px)' : 'min(92vw, 620px)',
+    }}>
+      <header style={{ alignItems: 'center', display: 'flex', gap: '10px' }}>
+        <strong style={{ flex: '1 1 auto', fontSize: '13px' }}>{request.scriptName || '酒馆脚本'}</strong>
+        {canDismiss && <button type="button" aria-label="关闭弹窗" onClick={() => { onResolve(null) }} style={{
+          ...buttonStyle, border: 0, fontSize: '20px', padding: '0 5px',
+        }}>×</button>}
+      </header>
+      <div title={options.tooltip} style={{
+        fontSize: '13px', lineHeight: 1.65, overflowWrap: 'anywhere', textAlign: options.leftAlign === false ? 'center' : 'left',
+      }} dangerouslySetInnerHTML={{ __html: sanitized }} />
+      {request.type === 3 && (inputRows > 1
+        ? <textarea autoFocus rows={inputRows} value={input} placeholder={options.placeholder} onChange={event => { setInput(event.target.value) }}
+            onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); affirmative() } }} style={{
+              background: 'var(--dsw-alias-bg-elevated, #202228)', border: '1px solid var(--dsw-alias-border-l2, #4a4c54)',
+              borderRadius: '8px', color: 'inherit', font: 'inherit', lineHeight: 1.5, maxHeight: '42vh', minHeight: '88px', padding: '9px', resize: 'vertical',
+            }} />
+        : <input autoFocus value={input} placeholder={options.placeholder} onChange={event => { setInput(event.target.value) }}
+            onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); affirmative() } }} style={{
+              background: 'var(--dsw-alias-bg-elevated, #202228)', border: '1px solid var(--dsw-alias-border-l2, #4a4c54)',
+              borderRadius: '8px', color: 'inherit', font: 'inherit', padding: '9px',
+            }} />)}
+      {(showOk || showCancel || (options.customButtons?.length ?? 0) > 0) && <footer style={{
+        display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'flex-end',
+      }}>
+        {options.customButtons?.map((button, index) => <button type="button" key={`${button.result}:${index}`}
+          onClick={() => { onResolve(button.result) }} style={buttonStyle}>{button.text}</button>)}
+        {showCancel && <button type="button" onClick={() => { onResolve(request.type === 3 ? false : 0) }} style={buttonStyle}>{cancelLabel}</button>}
+        {showOk && <button type="button" onClick={affirmative} style={{
+          ...buttonStyle, background: 'var(--dsw-alias-primary-bg, #3568d4)', borderColor: 'transparent', color: 'white',
+        }}>{okLabel}</button>}
+      </footer>}
+    </section>
+  </div>
+}
+
 function TavernScriptRuntime({
   ctx, inputActions, onDisplayOverride, projection, runGeneration, runModelList, runMutation, runPresetConfiguration,
   runPromptPreview, runTrigger, sessionId,
@@ -4994,6 +5144,7 @@ function TavernScriptRuntime({
   const [surfaceScriptIds, setSurfaceScriptIds] = useState<ReadonlySet<string>>(() => new Set())
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelScriptId, setPanelScriptId] = useState<string>()
+  const [popupRequests, setPopupRequests] = useState<readonly TavernPopupRequest[]>([])
   const frameRefs = useRef(new Map<string, HTMLIFrameElement>())
   const generationQueue = useRef(new Map<string, QueuedTavernGeneration[]>())
   const customGenerationQueue = useRef(new Map<string, QueuedTavernGeneration[]>())
@@ -5036,6 +5187,7 @@ function TavernScriptRuntime({
     modelListQueue.current.clear()
     setModelListRequests(new Map())
     setSurfaceScriptIds(new Set())
+    setPopupRequests([])
     void Promise.all(scripts.map(async script => {
       try {
         const source = await resolveTavernScriptSource(script.content, controller.signal)
@@ -5276,6 +5428,10 @@ function TavernScriptRuntime({
         readonly preset?: unknown
         readonly generationId?: unknown
         readonly prompts?: unknown
+        readonly popupType?: unknown
+        readonly content?: unknown
+        readonly inputValue?: unknown
+        readonly options?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
@@ -5334,6 +5490,40 @@ function TavernScriptRuntime({
         if (origin !== undefined && !approvedOrigins.has(origin)) {
           setExternalScriptRequests(current => new Map(current).set(entry.script.id, origin))
         }
+        return
+      }
+      if (message.action === 'popup-request' && typeof message.requestId === 'string'
+        && (message.popupType === 1 || message.popupType === 2 || message.popupType === 3 || message.popupType === 4)
+        && typeof message.content === 'string' && message.content.length <= 262_144
+        && typeof message.inputValue === 'string' && message.inputValue.length <= 65_536) {
+        const target = event.source as Window
+        const request: TavernPopupRequest = {
+          key: `${entry.script.id}:${message.requestId}`,
+          target,
+          requestId: message.requestId,
+          scriptName: entry.script.name,
+          type: message.popupType,
+          content: message.content,
+          inputValue: message.inputValue,
+          options: runtimePopupOptions(message.options),
+        }
+        setPopupRequests(current => {
+          if (current.some(candidate => candidate.key === request.key)) {
+            target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'popup-result', requestId: request.requestId,
+              ok: false, error: '弹窗请求标识重复',
+            }, '*')
+            return current
+          }
+          if (current.length >= 20) {
+            target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'popup-result', requestId: request.requestId,
+              ok: false, error: '等待处理的酒馆脚本弹窗过多',
+            }, '*')
+            return current
+          }
+          return [...current, request]
+        })
         return
       }
       if (message.action === 'generation-cancel' && typeof message.generationId === 'string') {
@@ -5588,7 +5778,14 @@ function TavernScriptRuntime({
   const activePanelScriptId = panelFrames.some(entry => entry.script.id === panelScriptId)
     ? panelScriptId
     : panelFrames[0]?.script.id
+  const activePopup = popupRequests[0]
   return <>
+    {activePopup !== undefined && <TavernScriptPopup key={activePopup.key} request={activePopup} onResolve={value => {
+      activePopup.target.postMessage({
+        source: 'dsh-agent-rp-host', action: 'popup-result', requestId: activePopup.requestId, ok: true, value,
+      }, '*')
+      setPopupRequests(current => current.filter(request => request.key !== activePopup.key))
+    }} />}
     <div className="agent-rp-tavern-script-overlay" data-agent-rp-dialog aria-hidden={!panelOpen} {...panelOpen ? { role: 'dialog', 'aria-modal': true, 'aria-label': '酒馆脚本面板' } : {}}
       style={panelOpen ? {
         alignItems: 'center', background: 'rgba(0,0,0,.68)', display: 'flex', inset: 0,
