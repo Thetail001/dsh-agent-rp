@@ -7,7 +7,11 @@ import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from './character-library.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
-import { prepareAgentRpSession, parseAgentRpSessionLaunchRequest } from './session-launch.ts'
+import {
+  prepareAgentRpRewriteSession,
+  prepareAgentRpSession,
+  parseAgentRpSessionLaunchRequest,
+} from './session-launch.ts'
 import { AGENT_RP_SESSION_PATH } from './session-launch-protocol.ts'
 import type { PresetLibrary } from './preset-library.ts'
 import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
@@ -28,6 +32,7 @@ interface WorkspaceRegistryGateway {
 }
 
 interface SessionTitleGateway {
+  get(session: Agent['session']): { readonly title: string } | undefined
   rename(session: Agent['session'], title: string): unknown
 }
 
@@ -123,7 +128,14 @@ export async function launchAgentRpSession(
   const agentPresets = ctx.get('agentPresets') as AgentPresetGateway | undefined
   if (agentPresets === undefined) throw new Error('当前 Host 无法挂载角色会话预设')
   const preset = await agentPresets.resolve('agent-rp')
-  const prepared = prepareAgentRpSession(characters, chats, presetLibrary, request)
+  const titles = ctx.get('sessionTitle') as SessionTitleGateway | undefined
+  if (request.kind === 'rewrite') {
+    if (source.session.header.agentPreset !== 'agent-rp') throw new Error('只能改写 Agent RP 角色会话')
+    if (source.status !== 'idle' || source.inbox.hasPending) throw new Error('请等待当前回复完成后再改写')
+  }
+  const prepared = request.kind === 'rewrite'
+    ? prepareAgentRpRewriteSession(source.session, request.turn, titles?.get(source.session)?.title)
+    : prepareAgentRpSession(characters, chats, presetLibrary, request)
   const sessionId = SessionId(`session-${randomUUID()}`)
   const agentOptions: AgentOptions = {
     provider: models.result.value.current.provider,
@@ -135,6 +147,7 @@ export async function launchAgentRpSession(
     agentOptions,
     meta: {
       ...(source.session.header.cwd === undefined ? {} : { cwd: source.session.header.cwd }),
+      ...(request.kind === 'rewrite' ? { parentSession: source.id, seedLength: prepared.seed.length } : {}),
       agentPreset: preset.id,
     },
     setup: async agentCtx => { await agentPresets.mount(agentCtx, preset.id) },
@@ -155,7 +168,6 @@ export async function launchAgentRpSession(
     throw new Error(selected.result.error.message)
   }
 
-  const titles = ctx.get('sessionTitle') as SessionTitleGateway | undefined
   if (titles !== undefined) {
     try {
       titles.rename(handle.agent.session, prepared.title)

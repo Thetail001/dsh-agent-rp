@@ -321,10 +321,14 @@ type GenerationTailProps = TurnTailOwnerProps & {
     request: { readonly operation: 'regenerate' | 'continue'; readonly replySeq: number }
       | { readonly operation: 'select'; readonly replySeq: number; readonly versionIndex: number },
   ) => Promise<void>
+  readonly rewriteTurn: (sessionId: SessionId, turn: number, draft: string) => Promise<void>
+  readonly continueFromTurn: (sessionId: SessionId, atSeq: number) => Promise<void>
   readonly runImageGeneration: RunImageGeneration
   readonly useProjection: PropsRuntime<'conversation.composer.dock'>['useProjection']
   readonly useSession: PropsRuntime<'conversation.composer.dock'>['useSession']
 }
+
+const pendingRewriteDrafts = new Map<SessionId, string>()
 
 const color = 'var(--dsw-alias-state-business-primary, #6f78e8)'
 const statusPlaceholder = '<StatusPlaceHolderImpl/>'
@@ -696,7 +700,51 @@ function replySceneNote(value: string): string {
     .slice(0, 4_000)
 }
 
-function GenerationTail({ matched, runGeneration, runImageGeneration, sessionId, useProjection, useSession }: GenerationTailProps) {
+function RewriteTurnDialog({ initialText, busy, error, onClose, onRewrite }: {
+  readonly initialText: string
+  readonly busy: boolean
+  readonly error?: string
+  readonly onClose: () => void
+  readonly onRewrite: (text: string) => void
+}) {
+  const [text, setText] = useState(initialText)
+  const submit = (): void => {
+    if (!busy && text.trim() !== '') onRewrite(text)
+  }
+  return <div role="dialog" aria-modal="true" aria-label="改写这轮" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.56)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '16px', position: 'fixed', zIndex: 1100,
+  }} onMouseDown={event => { if (!busy && event.target === event.currentTarget) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+      borderRadius: '14px', boxShadow: '0 18px 70px rgba(0,0,0,.38)', maxWidth: '620px', padding: '18px', width: '100%',
+    }}>
+      <h2 style={{ fontSize: '15px', margin: 0 }}>改写这轮</h2>
+      <p style={{ fontSize: '12px', lineHeight: 1.6, margin: '7px 0 12px', opacity: .62 }}>
+        将从这句话之前创建一条新对话。原对话不会被修改。
+      </p>
+      <textarea autoFocus aria-label="改写后的消息" disabled={busy} value={text} onChange={event => { setText(event.target.value) }}
+        onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) submit() }} style={{
+          background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+          borderRadius: '10px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', fontSize: '13px',
+          lineHeight: 1.65, minHeight: '132px', padding: '10px 12px', resize: 'vertical', width: '100%',
+        }} />
+      {error !== undefined && <p role="alert" style={{ color: '#dc7777', fontSize: '12px', margin: '9px 0 0' }}>{error}</p>}
+      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '14px' }}>
+        <button type="button" disabled={busy} onClick={onClose} style={{ ...generationButtonStyle, fontSize: '12px', minHeight: '30px' }}>取消</button>
+        <button type="button" disabled={busy || text.trim() === ''} onClick={submit} style={{
+          ...generationButtonStyle, background: `color-mix(in srgb, ${color} 18%, transparent)`,
+          borderColor: `color-mix(in srgb, ${color} 48%, transparent)`, fontSize: '12px', minHeight: '30px', opacity: 1,
+        }}>{busy ? '正在创建…' : '在新对话中改写'}</button>
+      </div>
+    </section>
+  </div>
+}
+
+function GenerationTail({
+  matched, runGeneration, rewriteTurn, continueFromTurn, runImageGeneration,
+  sessionId, turn, useProjection, useSession,
+}: GenerationTailProps) {
   const projection = useProjection('agentRp') as AgentRpProjection | undefined
   const running = useSession(snapshot => snapshot.running)
   const replyText = useSession(snapshot => {
@@ -706,11 +754,20 @@ function GenerationTail({ matched, runGeneration, runImageGeneration, sessionId,
       .map(block => block.text)
       .join('\n') : ''
   })
-  const [busy, setBusy] = useState<'regenerate' | 'continue' | 'select'>()
+  const editableUserText = useSession(snapshot => {
+    if (turn.start === undefined || turn.end === undefined) return undefined
+    const node = snapshot.chat.legacy.nodes.find(candidate => candidate.kind === 'user'
+      && candidate.seq > turn.start!.seq && candidate.seq < turn.end!.seq)
+    if (node?.kind !== 'user' || node.content.length === 0 || node.content.some(block => block.type !== 'text')) return undefined
+    return node.content.map(block => block.type === 'text' ? block.text : '').join('\n')
+  })
+  const [busy, setBusy] = useState<'regenerate' | 'continue' | 'select' | 'rewrite' | 'fork'>()
   const [error, setError] = useState<string>()
   const [drawOpen, setDrawOpen] = useState(false)
+  const [rewriteOpen, setRewriteOpen] = useState(false)
   const group = projection?.generations.find(candidate => candidate.anchorSeq === matched.replySeq)
-  if (projection === undefined || projection.currentReplySeq !== matched.replySeq) return null
+  if (projection === undefined) return null
+  const currentReply = projection.currentReplySeq === matched.replySeq
   const sceneNote = replySceneNote(replyText)
   const selectedIndex = group?.versions.findIndex(version => version.seq === group.selectedVersionSeq) ?? 0
   const invoke = (request: Parameters<GenerationTailProps['runGeneration']>[1]): void => {
@@ -726,7 +783,7 @@ function GenerationTail({ matched, runGeneration, runImageGeneration, sessionId,
   }
   const disabled = running || busy !== undefined
   return <div data-agent-rp-generation-tail style={{ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: '5px', marginRight: 'auto' }}>
-    {group !== undefined && group.versions.length > 1 && <>
+    {currentReply && group !== undefined && group.versions.length > 1 && <>
       <button type="button" aria-label="上一版回复" disabled={disabled || selectedIndex <= 0} onClick={() => {
         invoke({ operation: 'select', replySeq: matched.replySeq, versionIndex: selectedIndex - 1 })
       }} style={generationButtonStyle}>‹</button>
@@ -735,18 +792,47 @@ function GenerationTail({ matched, runGeneration, runImageGeneration, sessionId,
         invoke({ operation: 'select', replySeq: matched.replySeq, versionIndex: selectedIndex + 1 })
       }} style={generationButtonStyle}>›</button>
     </>}
-    <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'regenerate', replySeq: matched.replySeq }) }} style={generationButtonStyle}>
+    {currentReply && <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'regenerate', replySeq: matched.replySeq }) }} style={generationButtonStyle}>
       {busy === 'regenerate' ? '重写中…' : '重写'}
-    </button>
-    <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'continue', replySeq: matched.replySeq }) }} style={generationButtonStyle}>
+    </button>}
+    {currentReply && <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'continue', replySeq: matched.replySeq }) }} style={generationButtonStyle}>
       {busy === 'continue' ? '续写中…' : '续写'}
-    </button>
-    <button type="button" disabled={disabled || sceneNote === ''} onClick={() => { setDrawOpen(true) }} style={generationButtonStyle}>
+    </button>}
+    {currentReply && <button type="button" disabled={disabled || sceneNote === ''} onClick={() => { setDrawOpen(true) }} style={generationButtonStyle}>
       画这段
+    </button>}
+    <button type="button" title={editableUserText === undefined ? '这一轮含附件或没有用户消息，暂时不能改写' : '保留原对话，在新对话中修改这轮输入'}
+      disabled={disabled || editableUserText === undefined} onClick={() => { setError(undefined); setRewriteOpen(true) }} style={generationButtonStyle}>
+      改写这轮
     </button>
+    <button type="button" title="保留截至这里的对话，并从新分支继续" disabled={disabled || turn.end === undefined} onClick={() => {
+      if (turn.end === undefined) return
+      setBusy('fork')
+      setError(undefined)
+      void continueFromTurn(sessionId, turn.end.seq).then(
+        () => { setBusy(undefined) },
+        (reason: unknown) => {
+          setBusy(undefined)
+          setError(reason instanceof Error ? reason.message : '无法从这里继续')
+        },
+      )
+    }} style={generationButtonStyle}>{busy === 'fork' ? '正在创建…' : '从这里继续'}</button>
     {error !== undefined && <span role="alert" title={error} style={{ color: '#dc7777', fontSize: '10px', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{error}</span>}
-    {drawOpen && <ImageGenerationDialog projection={projection} initialMode="scene" initialNote={sceneNote}
+    {currentReply && drawOpen && <ImageGenerationDialog projection={projection} initialMode="scene" initialNote={sceneNote}
       onClose={() => { setDrawOpen(false) }} onGenerate={request => { runImageGeneration(sessionId, request) }} />}
+    {rewriteOpen && editableUserText !== undefined && <RewriteTurnDialog initialText={editableUserText}
+      busy={busy === 'rewrite'} {...error === undefined ? {} : { error }}
+      onClose={() => { if (busy !== 'rewrite') setRewriteOpen(false) }} onRewrite={text => {
+        setBusy('rewrite')
+        setError(undefined)
+        void rewriteTurn(sessionId, turn.turn, text).then(
+          () => { setBusy(undefined); setRewriteOpen(false) },
+          (reason: unknown) => {
+            setBusy(undefined)
+            setError(reason instanceof Error ? reason.message : '无法创建改写对话')
+          },
+        )
+      }} />}
   </div>
 }
 
@@ -5288,11 +5374,12 @@ function roleplayComposerDockComponent(
   runPresetConfiguration: RunPresetConfiguration,
 ): (props: ComposerDockProps) => JSX.Element | null {
   return function RoleplayComposerDock({
-    inputActions, sessionId, useProjection, useSessions, useSession,
+    inputActions, sessionId, useInput, useProjection, useSessions, useSession,
   }: ComposerDockProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projection = roleplaySummary(summary, useProjection('agentRp'))
   const chat = useSession(state => state.chat)
+  const draft = useInput(state => state.draft)
   const viewMode = useRoleplayViewMode(sessionId)
   const [drawOpen, setDrawOpen] = useState(false)
   const [displayOverrides, setDisplayOverrides] = useState<ReadonlyMap<number, string>>(() => new Map())
@@ -5307,6 +5394,12 @@ function roleplayComposerDockComponent(
     setDisplayOverrides(current => new Map(current).set(messageId, value))
   }, [])
   useEffect(() => { setDisplayOverrides(new Map()) }, [sessionId, transcriptSignature])
+  useEffect(() => {
+    const pending = pendingRewriteDrafts.get(sessionId)
+    if (pending === undefined || draft !== '') return
+    inputActions.setDraft(pending)
+    pendingRewriteDrafts.delete(sessionId)
+  }, [draft, inputActions, sessionId])
   useLayoutEffect(() => {
     const scroll = rootRef.current?.closest<HTMLElement>('[data-conversation-scroll]')
     if (scroll == null || background === undefined || projection?.avatarLibraryId === undefined || viewMode !== 'immersive') return
@@ -5844,7 +5937,10 @@ export function apply(ctx: ClientContext): void {
     }
     return { entry: value.entry, outcome: value.outcome }
   }
-  const launchRoleplaySession = async (request: AgentRpSessionLaunchRequest): Promise<SessionId> => {
+  const launchRoleplaySession = async (
+    request: AgentRpSessionLaunchRequest,
+    beforeOpen?: (sessionId: SessionId) => void,
+  ): Promise<SessionId> => {
     const response = await fetch(AGENT_RP_SESSION_PATH, {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -5865,8 +5961,21 @@ export function apply(ctx: ClientContext): void {
     if (ctx.sessions.list.getSnapshot().byId[sessionId] === undefined) {
       throw new Error('角色会话已创建，但客户端尚未收到它；请刷新页面后重试')
     }
+    beforeOpen?.(sessionId)
     ctx.sessions.open(sessionId)
     return sessionId
+  }
+  const rewriteTurn = async (sourceSessionId: SessionId, turn: number, draft: string): Promise<void> => {
+    await launchRoleplaySession({
+      format: 0,
+      sourceSessionId,
+      kind: 'rewrite',
+      turn,
+    }, sessionId => { pendingRewriteDrafts.set(sessionId, draft) })
+  }
+  const continueFromTurn = async (sourceSessionId: SessionId, atSeq: number): Promise<void> => {
+    const sessionId = await ctx.sessions.fork({ sessionId: sourceSessionId, atSeq, increaseTitle: true })
+    ctx.sessions.open(sessionId)
   }
   const retainRpDistributionChat = async (
     target: string,
@@ -6334,7 +6443,8 @@ export function apply(ctx: ClientContext): void {
       const closing = owner.turn.data.get('turn-tail')?.closing
       return closing === null || closing === undefined ? null : { replySeq: closing.finalNode.seq }
     },
-  }, props => <GenerationTail {...props} runGeneration={runGeneration} runImageGeneration={runImageGeneration} />))
+  }, props => <GenerationTail {...props} runGeneration={runGeneration} rewriteTurn={rewriteTurn}
+    continueFromTurn={continueFromTurn} runImageGeneration={runImageGeneration} />))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
   }, roleplayComposerDockComponent(

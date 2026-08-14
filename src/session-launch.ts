@@ -1,17 +1,17 @@
 /** Build complete Session seeds from Host-owned roleplay libraries. */
 
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from './character-library.ts'
 import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
 import { createPresetSessionSeed } from './import/session-preset.ts'
 import { createSillyTavernChatSeed, resolveSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import { createSillyTavernMigrationSeed } from './import/sillytavern-migration-seed.ts'
-import type { FileAttachmentRef } from './import/session-character.ts'
+import { readActiveSessionCharacter, type FileAttachmentRef } from './import/session-character.ts'
 import type { PresetLibrary, PresetLibraryEntry } from './preset-library.ts'
 import { substituteCardMacros } from './prompt.ts'
 import { parseSessionPersona } from './session-persona.ts'
-import type { AgentRpSessionLaunchRequest } from './session-launch-protocol.ts'
+import type { AgentRpSessionLaunchRequest, LibrarySessionLaunchRequest } from './session-launch-protocol.ts'
 import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
 
 /** Complete seed and display metadata used to create one Agent. */
@@ -69,6 +69,18 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       ...(typeof record.presetId === 'string' ? { presetId: record.presetId } : {}),
     }
   }
+  if (record.kind === 'rewrite') {
+    if (typeof record.turn !== 'number' || !Number.isSafeInteger(record.turn) || record.turn < 1
+      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'turn'].includes(key))) {
+      throw new Error('改写会话请求字段无效')
+    }
+    return {
+      format: 0,
+      sourceSessionId: record.sourceSessionId as string,
+      kind: 'rewrite',
+      turn: record.turn,
+    }
+  }
   throw new Error('角色会话启动类型无效')
 }
 
@@ -117,7 +129,7 @@ export function prepareAgentRpSession(
   characters: CharacterLibrary,
   chats: SillyTavernChatLibrary,
   presets: PresetLibrary,
-  request: AgentRpSessionLaunchRequest,
+  request: LibrarySessionLaunchRequest,
 ): PreparedAgentRpSession {
   if (request.kind === 'character') {
     const resolved = characters.resolve(request.characterId)
@@ -179,4 +191,23 @@ export function prepareAgentRpSession(
     seed: seedWithPreset(migrationSeed, presets, request.presetId),
     title: character.detail.displayName,
   }
+}
+
+/** Cut one completed user turn from an Agent RP transcript without changing its source. */
+export function prepareAgentRpRewriteSession(
+  session: Pick<Session, 'events'>,
+  turn: number,
+  sourceTitle?: string,
+): PreparedAgentRpSession {
+  if (!Number.isSafeInteger(turn) || turn < 1) throw new Error('改写轮次无效')
+  const start = session.events.find(event => event.type === 'turn/start' && event.data.turn === turn)
+  if (start === undefined) throw new Error(`第 ${turn} 轮不存在`)
+  const end = session.events.find(event => event.seq > start.seq && event.type === 'turn/end' && event.data.turn === turn)
+  if (end === undefined) throw new Error(`第 ${turn} 轮尚未完成，请等待回复结束`)
+  const userMessage = session.events.find(event => event.seq > start.seq && event.seq < end.seq && event.type === 'user/message')
+  if (userMessage === undefined) throw new Error('这一轮没有可改写的用户消息')
+  const seed = session.events.slice(0, start.seq)
+  const characterName = readActiveSessionCharacter(seed)?.result.name
+  const title = sourceTitle?.trim() || characterName?.trim() || '角色对话'
+  return { seed, title: `${title} · 改写` }
 }

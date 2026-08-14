@@ -26,8 +26,22 @@ export interface ChatSessionLaunchRequest {
   readonly presetId?: string
 }
 
+/** Start a child Session immediately before one completed user turn. */
+export interface RewriteSessionLaunchRequest {
+  readonly format: 0
+  readonly sourceSessionId: string
+  readonly kind: 'rewrite'
+  readonly turn: number
+}
+
 /** Complete model-free Session launch accepted by the Agent RP Host. */
-export type AgentRpSessionLaunchRequest = CharacterSessionLaunchRequest | ChatSessionLaunchRequest
+export type AgentRpSessionLaunchRequest =
+  | CharacterSessionLaunchRequest
+  | ChatSessionLaunchRequest
+  | RewriteSessionLaunchRequest
+
+/** Library-backed launch request that does not depend on an existing RP transcript. */
+export type LibrarySessionLaunchRequest = CharacterSessionLaunchRequest | ChatSessionLaunchRequest
 
 /** Successful launch result returned after the Agent is published. */
 export interface AgentRpSessionLaunchResponse {
