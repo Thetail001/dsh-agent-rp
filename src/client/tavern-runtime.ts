@@ -103,6 +103,8 @@ const remoteCache = new Map<string, Promise<string>>()
 /** Script origins trusted by the built-in jsDelivr bundle resolver. */
 export const BUILT_IN_TAVERN_SCRIPT_ORIGINS = ['https://cdn.jsdelivr.net', 'https://testingcf.jsdelivr.net'] as const
 const allowedScriptOrigins = new Set<string>(BUILT_IN_TAVERN_SCRIPT_ORIGINS)
+const DOMPURIFY_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/dompurify@3.3.0/dist/purify.min.js'
+const DOMPURIFY_SCRIPT_INTEGRITY = 'sha384-+qi1h9Ene5uYXijovnRnDpm2TZiNyVFgYjKIqjw6id8zLdWYt+tCPG9/1u6yLaNj'
 const importLine = /^\s*import\s+(['"])(https:\/\/[^'"\s]+)\1\s*;?\s*$/gmu
 
 async function remoteSource(url: string, signal: AbortSignal): Promise<string> {
@@ -474,6 +476,7 @@ function __dshDebounce(func,wait,option){if(typeof func!=='function')throw new T
 Object.assign(lodash,{get:__dshGet,set:__dshSet,has:function(object,path){return __dshGet(object,path,Symbol.for('missing'))!==Symbol.for('missing')},unset:__dshUnset,merge:__dshMerge,assign:Object.assign,cloneDeep:__dshClone,debounce:__dshDebounce,isArray:Array.isArray,isPlainObject:__dshPlain,isEqual:function(a,b){return JSON.stringify(a)===JSON.stringify(b)},clamp:function(value,min,max){return Math.min(max,Math.max(min,Number(value)))},inRange:function(value,start,end){return value>=start&&value<end},range:function(start,end){if(end===undefined){end=start;start=0}return Array.from({length:Math.max(0,end-start)},function(_,i){return start+i})},times:function(count,iteratee){return Array.from({length:count},function(_,i){return iteratee(i)})},constant:function(value){return function(){return value}},keys:Object.keys,values:Object.values,size:function(value){return Array.isArray(value)||typeof value==='string'?value.length:Object.keys(value??{}).length},forEach:function(value,iteratee){Object.entries(value??{}).forEach(function(pair){iteratee(pair[1],pair[0])});return value},pickBy:function(value,predicate){return Object.fromEntries(Object.entries(value??{}).filter(function(pair){return predicate(pair[1],pair[0])}))},pick:function(value,keys){return Object.fromEntries(keys.filter(function(key){return key in value}).map(function(key){return [key,value[key]]}))},omit:function(value,keys){return Object.fromEntries(Object.entries(value??{}).filter(function(pair){return !keys.includes(pair[0])}))},difference:function(left,right){return left.filter(function(value){return !right.includes(value)})},pull:function(array){var values=Array.prototype.slice.call(arguments,1);for(var i=array.length-1;i>=0;i--)if(values.includes(array[i]))array.splice(i,1);return array},toInteger:function(value){var number=Number(value);return Number.isFinite(number)?Math.trunc(number):0}});
 window._=lodash;
 window.SillyTavern.libs.lodash=lodash;
+window.SillyTavern.libs.DOMPurify=window.DOMPurify;
 window.SillyTavern.libs.localforage=__dshLocalForageRoot;
 function Mini(value){if(value instanceof Mini)this.items=value.items;else if(typeof value==='string'&&value.trim().startsWith('<')){var template=document.createElement('template');template.innerHTML=value.trim();this.items=Array.from(template.content.childNodes)}else if(typeof value==='string')this.items=Array.from(document.querySelectorAll(value));else if(value===window||value===document||value instanceof Node)this.items=[value];else this.items=value&&typeof value.length==='number'?Array.from(value):[]}
 Mini.prototype.each=function(callback){this.items.forEach(function(item,index){callback.call(item,index,item)});return this};
@@ -517,6 +520,10 @@ export function tavernScriptFrameSource(
   snapshot: TavernScriptSnapshot,
 ): string {
   const encoded = safeJson(`${source}\n//# sourceURL=dsh-agent-rp:${script.id}`)
-  const origins = snapshot.approvedScriptOrigins.map(origin => new URL(origin).origin).join(' ')
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' ${origins}; connect-src 'none'; img-src 'none'; style-src 'unsafe-inline'; font-src 'none'; frame-src 'none'"><style>html,body{background:transparent;color-scheme:dark}</style></head><body><script>${runtimeSource(snapshot)}\ntry{Function('localStorage','sessionStorage',${encoded})(__dshLocalStorage,__dshSessionStorage)}catch(error){console.error(error);parent.postMessage({source:'dsh-agent-rp-tavern-script',scriptId:${safeJson(script.id)},action:'runtime-error',value:String(error)},'*')}</script></body></html>`
+  const origins = [...new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...snapshot.approvedScriptOrigins])]
+    .map(origin => new URL(origin).origin).join(' ')
+  const libraries = /\bDOMPurify\b/u.test(source)
+    ? `<script src="${DOMPURIFY_SCRIPT_URL}" integrity="${DOMPURIFY_SCRIPT_INTEGRITY}" crossorigin="anonymous"></script>`
+    : ''
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' ${origins}; connect-src 'none'; img-src 'none'; style-src 'unsafe-inline'; font-src 'none'; frame-src 'none'">${libraries}<style>html,body{background:transparent;color-scheme:dark}</style></head><body><script>${runtimeSource(snapshot)}\ntry{Function('localStorage','sessionStorage',${encoded})(__dshLocalStorage,__dshSessionStorage)}catch(error){console.error(error);parent.postMessage({source:'dsh-agent-rp-tavern-script',scriptId:${safeJson(script.id)},action:'runtime-error',value:String(error)},'*')}</script></body></html>`
 }

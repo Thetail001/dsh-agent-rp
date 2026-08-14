@@ -220,7 +220,7 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   const html = tavernScriptFrameSource({
     id: 'travel', name: '地点选择', content: '', info: '测试', enabled: true,
     buttonEnabled: true, buttons: [{ name: '开始', visible: true }], data: {},
-  }, 'window.__personaSnapshot={name:getCurrentPersonaName(),id:getCurrentPersonaId()}; window.__renderedMarkdown=builtin.renderMarkdown("**粗体**\\n\\n```yaml\\nkey: value\\n```"); replaceScriptButtons([{name:"学校",visible:true}])', {
+  }, 'window.__personaSnapshot={name:getCurrentPersonaName(),id:getCurrentPersonaId()}; window.__renderedMarkdown=builtin.renderMarkdown("**粗体**\\n\\n```yaml\\nkey: value\\n```"); window.__hasDOMPurifyAlias="DOMPurify" in SillyTavern.libs; replaceScriptButtons([{name:"学校",visible:true}])', {
     scriptId: 'travel', scriptName: '地点选择', scriptInfo: '测试',
     buttons: [{ name: '开始', visible: true }], characterName: '白露', characterId: 'bailu.png',
     chatId: 'session-test', approvedScriptOrigins: [], persona: {
@@ -249,6 +249,9 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(source!, /window\.getCurrentPersonaName=/u)
   assert.match(source!, /window\.getCurrentPersonaId=/u)
   assert.match(source!, /window\.builtin=/u)
+  assert.match(source!, /window\.SillyTavern\.libs\.DOMPurify=window\.DOMPurify/u)
+  assert.match(html, /src="https:\/\/cdn\.jsdelivr\.net\/npm\/dompurify@3\.3\.0\/dist\/purify\.min\.js"/u)
+  assert.match(html, /integrity="sha384-\+qi1h9Ene5uYXijovnRnDpm2TZiNyVFgYjKIqjw6id8zLdWYt\+tCPG9\/1u6yLaNj"/u)
   assert.match(source!, /window\.getPreset=/u)
   assert.match(source!, /window\.updatePresetWith=/u)
   assert.match(source!, /window\.setPreset=/u)
@@ -282,6 +285,7 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.deepEqual(JSON.parse(JSON.stringify(context.__personaSnapshot)), {
     name: '小满', id: 'persona-12345678-1234-4123-8123-123456789abc',
   })
+  assert.equal(context.__hasDOMPurifyAlias, true)
   assert.equal(context.__renderedMarkdown,
     '<p><strong>粗体</strong></p><pre><code class="language-yaml">key: value</code></pre>')
 })
