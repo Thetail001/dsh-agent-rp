@@ -1,5 +1,7 @@
 /** Workspace preferences for new Agent RP entry points. */
 
+import type { ImageGenerationProvider } from './image-generation-protocol.ts'
+
 /** Same-origin Host route for Agent RP workspace preferences. */
 export const AGENT_RP_WORKSPACE_SETTINGS_PATH = '/api/agent-rp/settings'
 
@@ -13,15 +15,30 @@ export const AGENT_RP_WORKSPACE_IDS_FIELD = 'workspaceIds'
 export const AGENT_RP_WORKSPACE_MODES = ['all', 'selected'] as const
 
 /** Image providers available for explicit roleplay illustrations. */
-export const AGENT_RP_IMAGE_PROVIDERS = ['openai', 'a1111', 'comfyui'] as const
+export const AGENT_RP_IMAGE_PROVIDERS = ['openai', 'novelai', 'a1111', 'comfyui'] as const satisfies readonly ImageGenerationProvider[]
 
 /** Durable image provider settings; credentials are stored separately. */
 export interface ImageGenerationSettings {
-  readonly provider: typeof AGENT_RP_IMAGE_PROVIDERS[number]
+  readonly provider: ImageGenerationProvider
   readonly openai: {
     readonly endpoint: string
     readonly model: string
     readonly size: '1024x1024' | '1024x1536' | '1536x1024'
+  }
+  readonly novelai: {
+    readonly endpoint: string
+    readonly model: 'nai-diffusion-4-5-full' | 'nai-diffusion-4-5-curated'
+    readonly width: number
+    readonly height: number
+    readonly steps: number
+    readonly scale: number
+    readonly sampler: string
+    readonly noiseSchedule: string
+    readonly cfgRescale: number
+    readonly negativePrompt: string
+    readonly quality: boolean
+    readonly smea: boolean
+    readonly smeaDyn: boolean
   }
   readonly a1111: {
     readonly endpoint: string
@@ -73,6 +90,21 @@ const DEFAULT_IMAGE_GENERATION_SETTINGS: ImageGenerationSettings = {
     endpoint: 'https://api.openai.com/v1/images/generations',
     model: 'gpt-image-1',
     size: '1024x1024',
+  },
+  novelai: {
+    endpoint: 'https://image.novelai.net/ai/generate-image',
+    model: 'nai-diffusion-4-5-full',
+    width: 832,
+    height: 1216,
+    steps: 28,
+    scale: 5,
+    sampler: 'k_euler',
+    noiseSchedule: 'karras',
+    cfgRescale: 0.18,
+    negativePrompt: '',
+    quality: true,
+    smea: true,
+    smeaDyn: true,
   },
   a1111: {
     endpoint: 'http://127.0.0.1:7860',
@@ -139,28 +171,61 @@ function finite(value: unknown, fallback: number, min: number, max: number, labe
   return candidate
 }
 
+function bool(value: unknown, fallback: boolean, label: string): boolean {
+  if (value === undefined) return fallback
+  if (typeof value !== 'boolean') throw new Error(`${label}无效`)
+  return value
+}
+
+function novelAiDimension(value: unknown, fallback: number, label: string): number {
+  const candidate = integer(value, fallback, 64, 2_048, label)
+  if (candidate % 64 !== 0) throw new Error(`${label}必须是 64 的倍数`)
+  return candidate
+}
+
 /** Normalize image settings while accepting pre-image-generation settings files. */
 export function normalizeImageGenerationSettings(value: unknown): ImageGenerationSettings {
   if (value === undefined) return structuredClone(DEFAULT_AGENT_RP_SETTINGS.imageGeneration)
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Agent RP 图片设置不是对象')
   const record = value as Record<string, unknown>
-  if (record.provider !== 'openai' && record.provider !== 'a1111' && record.provider !== 'comfyui') {
+  if (!AGENT_RP_IMAGE_PROVIDERS.includes(record.provider as ImageGenerationProvider)) {
     throw new Error('Agent RP 图片提供方无效')
   }
   const openai = typeof record.openai === 'object' && record.openai !== null && !Array.isArray(record.openai)
     ? record.openai as Record<string, unknown> : {}
+  const novelai = typeof record.novelai === 'object' && record.novelai !== null && !Array.isArray(record.novelai)
+    ? record.novelai as Record<string, unknown> : {}
   const a1111 = typeof record.a1111 === 'object' && record.a1111 !== null && !Array.isArray(record.a1111)
     ? record.a1111 as Record<string, unknown> : {}
   const comfyui = typeof record.comfyui === 'object' && record.comfyui !== null && !Array.isArray(record.comfyui)
     ? record.comfyui as Record<string, unknown> : {}
   const size = openai.size ?? DEFAULT_AGENT_RP_SETTINGS.imageGeneration.openai.size
   if (size !== '1024x1024' && size !== '1024x1536' && size !== '1536x1024') throw new Error('OpenAI 图片尺寸无效')
+  const novelAiModel = novelai.model ?? DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.model
+  if (novelAiModel !== 'nai-diffusion-4-5-full' && novelAiModel !== 'nai-diffusion-4-5-curated') {
+    throw new Error('NovelAI 图片模型无效')
+  }
   return {
-    provider: record.provider,
+    provider: record.provider as ImageGenerationProvider,
     openai: {
       endpoint: endpoint(openai.endpoint, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.openai.endpoint, 'OpenAI 图片服务地址'),
       model: text(openai.model, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.openai.model, 200, 'OpenAI 图片模型'),
       size,
+    },
+    novelai: {
+      endpoint: endpoint(novelai.endpoint, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.endpoint, 'NovelAI 图片服务地址'),
+      model: novelAiModel,
+      width: novelAiDimension(novelai.width, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.width, 'NovelAI 宽度'),
+      height: novelAiDimension(novelai.height, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.height, 'NovelAI 高度'),
+      steps: integer(novelai.steps, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.steps, 1, 50, 'NovelAI 步数'),
+      scale: finite(novelai.scale, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.scale, 0, 20, 'NovelAI 引导强度'),
+      sampler: text(novelai.sampler, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.sampler, 100, 'NovelAI 采样器'),
+      noiseSchedule: text(novelai.noiseSchedule, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.noiseSchedule, 100, 'NovelAI 噪声调度'),
+      cfgRescale: finite(novelai.cfgRescale, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.cfgRescale, 0, 1, 'NovelAI CFG Rescale'),
+      negativePrompt: text(novelai.negativePrompt, '', 8_000, 'NovelAI 负面提示词'),
+      quality: bool(novelai.quality, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.quality, 'NovelAI 质量增强'),
+      smea: bool(novelai.smea, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.smea, 'NovelAI SMEA'),
+      smeaDyn: bool(novelai.smeaDyn, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.smeaDyn, 'NovelAI SMEA DYN'),
     },
     a1111: {
       endpoint: endpoint(a1111.endpoint, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.a1111.endpoint, 'A1111 图片服务地址'),

@@ -35,7 +35,8 @@ function parseJob(value: unknown): GeneratedImageJob {
     && Number.isSafeInteger((record.image as Record<string, unknown>).bytes)
     && Number((record.image as Record<string, unknown>).bytes) > 0)
   if (record.format !== 0 || typeof record.id !== 'string' || !isImageJobId(record.id) || record.id !== request.jobId
-    || (record.provider !== 'openai' && record.provider !== 'a1111' && record.provider !== 'comfyui')
+    || (record.provider !== 'openai' && record.provider !== 'novelai'
+      && record.provider !== 'a1111' && record.provider !== 'comfyui')
     || typeof record.status !== 'string' || !statuses.includes(record.status)
     || typeof record.progress !== 'number' || !Number.isFinite(record.progress) || record.progress < 0 || record.progress > 1
     || typeof record.phase !== 'string' || record.phase.length > 200

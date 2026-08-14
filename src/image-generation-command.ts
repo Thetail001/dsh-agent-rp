@@ -6,14 +6,13 @@ import { credentialRef, type CredentialProvider } from '@deepseek-ai/dsh-credent
 import { GeneratedImageLibrary } from './generated-image-library.ts'
 import { generateImage } from './image-generation-providers.ts'
 import {
-  AGENT_RP_IMAGE_API_KEY_REF,
   encodeImageGenerationRecord,
+  imageCredentialRefName,
   parseImageGenerationRequest,
 } from './image-generation-protocol.ts'
 import { WorkspaceSettingsStore } from './workspace-settings-store.ts'
 
 const activeJobs = new Map<string, AbortController>()
-const imageApiKeyRef = credentialRef(AGENT_RP_IMAGE_API_KEY_REF)
 
 function abortError(error: unknown, signal: AbortSignal): boolean {
   return signal.aborted || (error instanceof DOMException && error.name === 'AbortError')
@@ -53,7 +52,7 @@ export async function executeImageGenerationCommand(
   invocation.signal.addEventListener('abort', relayAbort, { once: true })
   activeJobs.set(request.jobId, controller)
   try {
-    const credential = await credentials.resolve(imageApiKeyRef)
+    const credential = await credentials.resolve(credentialRef(imageCredentialRefName(settings.provider)))
     const asset = await generateImage(
       settings,
       credential?.value,

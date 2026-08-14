@@ -8,16 +8,22 @@ import { GeneratedImageLibrary } from './generated-image-library.ts'
 import { cancelGeneratedImageJob } from './image-generation-command.ts'
 import { testImageProvider } from './image-generation-providers.ts'
 import {
-  AGENT_RP_IMAGE_API_KEY_REF,
   AGENT_RP_IMAGE_PATH,
+  imageCredentialRefName,
   isImageJobId,
+  type ImageGenerationProvider,
 } from './image-generation-protocol.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
-import { normalizeImageGenerationSettings } from './workspace-settings.ts'
+import { AGENT_RP_IMAGE_PROVIDERS, normalizeImageGenerationSettings } from './workspace-settings.ts'
 
 const MAX_CREDENTIAL_REQUEST_BYTES = 16 * 1024
 const MAX_TEST_REQUEST_BYTES = 512 * 1024
-const imageApiKeyRef = credentialRef(AGENT_RP_IMAGE_API_KEY_REF)
+
+function requestProvider(request: IncomingMessage): ImageGenerationProvider {
+  const value = new URL(request.url ?? '/', 'http://agent-rp.local').searchParams.get('provider') ?? 'openai'
+  if (!AGENT_RP_IMAGE_PROVIDERS.includes(value as ImageGenerationProvider)) throw new Error('图片提供方无效')
+  return value as ImageGenerationProvider
+}
 
 function trustedBrowserRequest(request: IncomingMessage, sandboxedImage: boolean): boolean {
   const host = request.headers.host
@@ -95,19 +101,21 @@ export function installImageGenerationHttp(
       }
       try {
         if (request.method === 'GET' && path.length === 1 && path[0] === 'credential') {
-          json(response, 200, { format: 0, credential: await credentials.describe(imageApiKeyRef) })
+          const ref = credentialRef(imageCredentialRefName(requestProvider(request)))
+          json(response, 200, { format: 0, credential: await credentials.describe(ref) })
           return
         }
         if (request.method === 'PUT' && path.length === 1 && path[0] === 'credential') {
+          const ref = credentialRef(imageCredentialRefName(requestProvider(request)))
           const change = await readCredentialRequest(request)
-          if (change.clear === true) await credentials.unset(imageApiKeyRef)
-          else await credentials.set(imageApiKeyRef, change.value!)
-          json(response, 200, { format: 0, credential: await credentials.describe(imageApiKeyRef) })
+          if (change.clear === true) await credentials.unset(ref)
+          else await credentials.set(ref, change.value!)
+          json(response, 200, { format: 0, credential: await credentials.describe(ref) })
           return
         }
         if (request.method === 'POST' && path.length === 1 && path[0] === 'test') {
           const settings = normalizeImageGenerationSettings(await readJsonRequest(request, MAX_TEST_REQUEST_BYTES))
-          const credential = await credentials.resolve(imageApiKeyRef)
+          const credential = await credentials.resolve(credentialRef(imageCredentialRefName(settings.provider)))
           const timeout = AbortSignal.timeout(12_000)
           json(response, 200, { format: 0, test: await testImageProvider(settings, credential?.value, timeout) })
           return

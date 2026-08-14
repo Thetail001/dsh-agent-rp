@@ -148,8 +148,10 @@ function createWorkspaceSettingsSource(): WorkspaceSettingsSource {
   }
 }
 
-async function imageCredentialInfo(): Promise<ImageCredentialInfo> {
-  const response = await fetch(`${AGENT_RP_IMAGE_PATH}/credential`, { headers: { accept: 'application/json' } })
+async function imageCredentialInfo(provider: ImageGenerationSettings['provider']): Promise<ImageCredentialInfo> {
+  const response = await fetch(`${AGENT_RP_IMAGE_PATH}/credential?provider=${encodeURIComponent(provider)}`, {
+    headers: { accept: 'application/json' },
+  })
   const value = await response.json() as { readonly error?: string; readonly credential?: ImageCredentialInfo }
   if (!response.ok || value.credential === undefined) {
     throw new Error(value.error ?? `图片密钥状态读取失败（${response.status}）`)
@@ -157,8 +159,11 @@ async function imageCredentialInfo(): Promise<ImageCredentialInfo> {
   return value.credential
 }
 
-async function updateImageCredential(change: { readonly value: string } | { readonly clear: true }): Promise<ImageCredentialInfo> {
-  const response = await fetch(`${AGENT_RP_IMAGE_PATH}/credential`, {
+async function updateImageCredential(
+  provider: ImageGenerationSettings['provider'],
+  change: { readonly value: string } | { readonly clear: true },
+): Promise<ImageCredentialInfo> {
+  const response = await fetch(`${AGENT_RP_IMAGE_PATH}/credential?provider=${encodeURIComponent(provider)}`, {
     method: 'PUT',
     headers: { accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify(change),
@@ -1238,7 +1243,8 @@ const settingsFieldStyle = {
 } as const
 
 function nextImageProfileName(profiles: readonly ImageGenerationProfile[], provider: ImageGenerationSettings['provider']): string {
-  const base = provider === 'openai' ? 'OpenAI 配置' : provider === 'a1111' ? 'A1111 配置' : 'ComfyUI 配置'
+  const base = provider === 'openai' ? 'OpenAI 配置' : provider === 'novelai' ? 'NovelAI 配置'
+    : provider === 'a1111' ? 'A1111 配置' : 'ComfyUI 配置'
   const names = new Set(profiles.map(profile => profile.name.toLowerCase()))
   if (!names.has(base.toLowerCase())) return base
   let suffix = 2
@@ -1271,15 +1277,17 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
   }, [settings.imageGeneration, activeProfile.id, activeProfile.name])
   useEffect(() => {
     let active = true
-    void imageCredentialInfo().then(value => { if (active) setCredential(value) }, reason => {
+    setCredential(undefined)
+    setCredentialValue('')
+    void imageCredentialInfo(draft.provider).then(value => { if (active) setCredential(value) }, reason => {
       if (active) setError(reason instanceof Error ? reason.message : String(reason))
     })
     return () => { active = false }
-  }, [])
+  }, [draft.provider])
   const saveCredential = (change: { readonly value: string } | { readonly clear: true }): void => {
     setCredentialBusy(true)
     setError(undefined)
-    void updateImageCredential(change).then(value => {
+    void updateImageCredential(draft.provider, change).then(value => {
       setCredential(value)
       setCredentialValue('')
       setTestResult(undefined)
@@ -1391,10 +1399,11 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
       </div>
     </div>
     <label style={labelStyle}>图片服务
-      <select value={draft.provider} disabled={!writable} onChange={event => {
+      <select value={draft.provider} disabled={!writable || credentialBusy} onChange={event => {
         editDraft(current => ({ ...current, provider: event.target.value as ImageGenerationSettings['provider'] }))
       }} style={settingsFieldStyle}>
         <option value="openai">OpenAI Images / 兼容接口</option>
+        <option value="novelai">NovelAI V4.5</option>
         <option value="a1111">A1111 / Forge</option>
         <option value="comfyui">ComfyUI</option>
       </select>
@@ -1421,6 +1430,67 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
           <option value="1536x1024">1536 × 1024（横图）</option>
         </select>
       </label>
+    </div> : draft.provider === 'novelai' ? <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', marginTop: '12px' }}>
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>NovelAI 图片接口
+        <input value={draft.novelai.endpoint} disabled={!writable} onChange={event => {
+          editDraft(current => ({ ...current, novelai: { ...current.novelai, endpoint: event.target.value } }))
+        }} style={settingsFieldStyle} />
+      </label>
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>V4.5 模型
+        <select value={draft.novelai.model} disabled={!writable} onChange={event => {
+          editDraft(current => ({ ...current, novelai: {
+            ...current.novelai,
+            model: event.target.value as ImageGenerationSettings['novelai']['model'],
+          } }))
+        }} style={settingsFieldStyle}>
+          <option value="nai-diffusion-4-5-full">V4.5 Full</option>
+          <option value="nai-diffusion-4-5-curated">V4.5 Curated</option>
+        </select>
+      </label>
+      {([['宽度', 'width'], ['高度', 'height'], ['步数', 'steps'], ['引导强度', 'scale'], ['CFG Rescale', 'cfgRescale']] as const)
+        .map(([label, field]) => <label key={field} style={labelStyle}>{label}
+          <input type="number" value={draft.novelai[field]} disabled={!writable}
+            step={field === 'scale' || field === 'cfgRescale' ? .01 : 1} onChange={event => {
+              editDraft(current => ({ ...current, novelai: { ...current.novelai, [field]: Number(event.target.value) } }))
+            }} style={settingsFieldStyle} />
+        </label>)}
+      <label style={labelStyle}>采样器
+        <select value={draft.novelai.sampler} disabled={!writable} onChange={event => {
+          editDraft(current => ({ ...current, novelai: { ...current.novelai, sampler: event.target.value } }))
+        }} style={settingsFieldStyle}>
+          <option value="k_euler">Euler</option>
+          <option value="k_euler_ancestral">Euler Ancestral</option>
+          <option value="k_dpmpp_2m">DPM++ 2M</option>
+          <option value="k_dpmpp_sde">DPM++ SDE</option>
+        </select>
+      </label>
+      <label style={labelStyle}>噪声调度
+        <select value={draft.novelai.noiseSchedule} disabled={!writable} onChange={event => {
+          editDraft(current => ({ ...current, novelai: { ...current.novelai, noiseSchedule: event.target.value } }))
+        }} style={settingsFieldStyle}>
+          <option value="karras">Karras</option>
+          <option value="native">Native</option>
+          <option value="exponential">Exponential</option>
+          <option value="polyexponential">Polyexponential</option>
+        </select>
+      </label>
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>默认负面提示词
+        <textarea value={draft.novelai.negativePrompt} disabled={!writable} rows={3} onChange={event => {
+          editDraft(current => ({ ...current, novelai: { ...current.novelai, negativePrompt: event.target.value } }))
+        }} style={{ ...settingsFieldStyle, resize: 'vertical' }} />
+      </label>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px 18px', gridColumn: '1 / -1' }}>
+        {([['质量增强', 'quality'], ['SMEA', 'smea'], ['SMEA DYN', 'smeaDyn']] as const).map(([label, field]) => <label
+          key={field} style={{ alignItems: 'center', display: 'flex', fontSize: '12px', gap: '7px' }}>
+          <input type="checkbox" checked={draft.novelai[field]} disabled={!writable || (field === 'smeaDyn' && !draft.novelai.smea)}
+            onChange={event => {
+              editDraft(current => ({ ...current, novelai: { ...current.novelai, [field]: event.target.checked } }))
+            }} />{label}
+        </label>)}
+      </div>
+      <p style={{ fontSize: '11px', gridColumn: '1 / -1', lineHeight: 1.6, margin: '-2px 0 0', opacity: .58 }}>
+        当前接入 V4.5 文生图；每次绘图会按 NovelAI 规则消耗 Anlas，暂不包含 Vibe Transfer、角色参考与局部重绘。
+      </p>
     </div> : draft.provider === 'a1111' ? <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', marginTop: '12px' }}>
       <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>接口地址
         <input value={draft.a1111.endpoint} disabled={!writable} onChange={event => {
@@ -1477,9 +1547,11 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
       </p>
     </div>}
     <div style={{ alignItems: 'end', display: 'grid', gap: '9px', gridTemplateColumns: 'minmax(0, 1fr) auto', marginTop: '15px' }}>
-      <label style={labelStyle}>服务密钥（所有配置共用）
+      <label style={labelStyle}>{draft.provider === 'novelai' ? 'NovelAI Access Token' : '服务密钥'}（按图片服务独立保存）
         <input type="password" autoComplete="new-password" value={credentialValue}
-          placeholder={credential?.configured === true ? `已配置${credential.source === undefined ? '' : ` · ${credential.source}`}` : 'OpenAI 必填；A1111 / ComfyUI 可留空'}
+          placeholder={credential?.configured === true ? `已配置${credential.source === undefined ? '' : ` · ${credential.source}`}`
+            : draft.provider === 'openai' ? 'OpenAI / 兼容接口密钥'
+              : draft.provider === 'novelai' ? 'NovelAI Access Token（必填）' : '无鉴权可留空'}
           disabled={credentialBusy || credential?.writable === false} onChange={event => { setCredentialValue(event.target.value) }}
           style={settingsFieldStyle} />
       </label>
@@ -1493,7 +1565,8 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
       </div>
     </div>
     <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '14px' }}>
-      <button type="button" disabled={!writable || testBusy || (draft.provider === 'openai' && credential?.configured !== true)}
+      <button type="button" disabled={!writable || testBusy
+        || ((draft.provider === 'openai' || draft.provider === 'novelai') && credential?.configured !== true)}
         onClick={testConnection} style={secondaryButtonStyle}>{testBusy ? '正在测试…' : '测试连接'}</button>
       {dirty && <button type="button" disabled={!writable} onClick={restoreProfile} style={secondaryButtonStyle}>还原</button>}
       <button type="button" disabled={!writable || !dirty} onClick={saveProfile} style={primaryButtonStyle}>保存当前档案</button>

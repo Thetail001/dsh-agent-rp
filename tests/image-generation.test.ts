@@ -3,9 +3,10 @@ import test from 'node:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { zipSync } from 'fflate'
 import { GeneratedImageLibrary } from '../src/generated-image-library.ts'
 import { generateImage, testImageProvider } from '../src/image-generation-providers.ts'
-import { parseImageGenerationRequest } from '../src/image-generation-protocol.ts'
+import { imageCredentialRefName, parseImageGenerationRequest } from '../src/image-generation-protocol.ts'
 import { DEFAULT_AGENT_RP_SETTINGS } from '../src/workspace-settings.ts'
 
 const request = {
@@ -28,6 +29,13 @@ test('validates image command requests and persists a completed asset', (t) => {
   const completed = library.complete(request.jobId, { data: png, mediaType: 'image/png' })
   assert.equal(completed.status, 'completed')
   assert.deepEqual(library.asset(request.jobId).data, png)
+})
+
+test('keeps image provider credentials in independent Host slots', () => {
+  assert.equal(imageCredentialRefName('openai'), 'DSH_AGENT_RP_IMAGE_API_KEY')
+  assert.equal(imageCredentialRefName('novelai'), 'DSH_AGENT_RP_NOVELAI_API_KEY')
+  assert.equal(imageCredentialRefName('a1111'), 'DSH_AGENT_RP_A1111_API_KEY')
+  assert.equal(imageCredentialRefName('comfyui'), 'DSH_AGENT_RP_COMFYUI_API_KEY')
 })
 
 test('reads a base64 image from an OpenAI-compatible response', async () => {
@@ -83,6 +91,52 @@ test('submits configured dimensions to A1111 or Forge', async () => {
   }
 })
 
+test('submits a NovelAI V4.5 request and extracts its zipped image', async () => {
+  const original = globalThis.fetch
+  let requested: { readonly authorization: string | null; readonly body: Record<string, unknown> } | undefined
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    requested = {
+      authorization: new Headers(init?.headers).get('authorization'),
+      body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+    }
+    return new Response(zipSync({ 'image_0.png': png }), {
+      status: 200, headers: { 'content-type': 'application/zip' },
+    })
+  }) as typeof fetch
+  try {
+    const settings = {
+      ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,
+      provider: 'novelai' as const,
+      novelai: {
+        ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai,
+        width: 1024,
+        height: 1024,
+        negativePrompt: '低清晰度',
+      },
+    }
+    const stages: string[] = []
+    const result = await generateImage(
+      settings, 'novel-token', request.prompt, new AbortController().signal,
+      (_progress, phase) => { stages.push(phase) },
+    )
+    assert.deepEqual(result.data, png)
+    assert.equal(requested?.authorization, 'Bearer novel-token')
+    assert.equal(requested?.body.model, 'nai-diffusion-4-5-full')
+    assert.equal(requested?.body.input, request.prompt)
+    assert.equal(requested?.body.action, 'generate')
+    const parameters = requested?.body.parameters as Record<string, unknown>
+    assert.equal(parameters.width, 1024)
+    assert.equal(parameters.height, 1024)
+    assert.equal(parameters.negative_prompt, '低清晰度')
+    assert.deepEqual((parameters.v4_prompt as { readonly caption: unknown }).caption, {
+      base_caption: request.prompt, char_captions: [],
+    })
+    assert.deepEqual(stages, ['正在提交 NovelAI V4.5 任务', '正在解压 NovelAI 图片'])
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 test('checks OpenAI-compatible credentials without generating an image', async () => {
   const original = globalThis.fetch
   let requested: { readonly url: string; readonly method: string; readonly authorization?: string } | undefined
@@ -101,6 +155,46 @@ test('checks OpenAI-compatible credentials without generating an image', async (
     assert.deepEqual(requested, {
       url: 'https://api.openai.com/v1/models', method: 'GET', authorization: 'Bearer test-key',
     })
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('verifies a NovelAI token through subscription without spending Anlas', async () => {
+  const original = globalThis.fetch
+  let requested: { readonly url: string; readonly authorization: string | null } | undefined
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    requested = { url: String(input), authorization: new Headers(init?.headers).get('authorization') }
+    return new Response(JSON.stringify({ tier: 2 }), { status: 200 })
+  }) as typeof fetch
+  try {
+    const settings = { ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration, provider: 'novelai' as const }
+    const result = await testImageProvider(settings, 'novel-token', new AbortController().signal)
+    assert.deepEqual(result, {
+      status: 'verified', detail: 'NovelAI Access Token 和订阅均可用；测试没有消耗 Anlas',
+    })
+    assert.deepEqual(requested, {
+      url: 'https://api.novelai.net/user/subscription', authorization: 'Bearer novel-token',
+    })
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('reports actionable NovelAI authentication and quota failures', async () => {
+  const original = globalThis.fetch
+  try {
+    const settings = { ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration, provider: 'novelai' as const }
+    globalThis.fetch = (async () => new Response('{"message":"Unauthorized"}', { status: 401 })) as typeof fetch
+    await assert.rejects(
+      testImageProvider(settings, 'expired-token', new AbortController().signal),
+      /NovelAI Access Token 无效或已失效/u,
+    )
+    globalThis.fetch = (async () => new Response('{"message":"Payment Required"}', { status: 402 })) as typeof fetch
+    await assert.rejects(
+      generateImage(settings, 'valid-token', request.prompt, new AbortController().signal, () => {}),
+      /NovelAI 订阅或 Anlas 额度不足/u,
+    )
   } finally {
     globalThis.fetch = original
   }

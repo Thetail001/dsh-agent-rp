@@ -69,6 +69,34 @@ test('normalizes a reusable ComfyUI API workflow', () => {
   assert.equal(settings.imageGeneration.comfyui.width, 640)
 })
 
+test('normalizes NovelAI V4.5 image settings', () => {
+  const settings = normalizeAgentRpSettings({
+    workspaceMode: 'all',
+    workspaceIds: [],
+    imageGeneration: {
+      ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,
+      provider: 'novelai',
+      novelai: {
+        ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai,
+        model: 'nai-diffusion-4-5-curated',
+        width: 1024,
+        height: 1024,
+      },
+    },
+  })
+  assert.equal(settings.imageGeneration.provider, 'novelai')
+  assert.equal(settings.imageGeneration.novelai.model, 'nai-diffusion-4-5-curated')
+  assert.equal(settings.imageGeneration.novelai.width, 1024)
+  assert.throws(() => normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [],
+    imageGeneration: {
+      ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,
+      provider: 'novelai',
+      novelai: { ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai, width: 1000 },
+    },
+  }), /64 的倍数/u)
+})
+
 test('uses the selected image profile and rejects ambiguous profile lists', () => {
   const local = {
     ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,

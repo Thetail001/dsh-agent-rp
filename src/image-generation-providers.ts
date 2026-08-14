@@ -1,10 +1,12 @@
 /** Provider adapters for user-triggered roleplay image generation. */
 
+import { unzipSync } from 'fflate'
 import type { ImageGenerationSettings } from './workspace-settings.ts'
 import type { GeneratedImageAsset } from './generated-image-library.ts'
 import type { ImageProviderTestResult } from './image-generation-protocol.ts'
 
 const MAX_PROVIDER_IMAGE_BYTES = 32 * 1024 * 1024
+const MAX_NOVELAI_ARCHIVE_BYTES = 40 * 1024 * 1024
 
 /** Provider progress callback normalized to zero through one. */
 export type ImageGenerationProgress = (progress: number, phase: string) => void
@@ -30,15 +32,27 @@ function serviceEndpoint(value: string, suffix: string): URL {
 function providerError(provider: string, status: number, body: string): Error {
   let detail = body.trim().slice(0, 800)
   try {
-    const parsed = JSON.parse(body) as { readonly error?: { readonly message?: unknown } | string; readonly detail?: unknown }
+    const parsed = JSON.parse(body) as {
+      readonly error?: { readonly message?: unknown } | string
+      readonly detail?: unknown
+      readonly message?: unknown
+    }
     const message = typeof parsed.error === 'string' ? parsed.error
       : typeof parsed.error?.message === 'string' ? parsed.error.message
-        : typeof parsed.detail === 'string' ? parsed.detail : undefined
+        : typeof parsed.detail === 'string' ? parsed.detail
+          : typeof parsed.message === 'string' ? parsed.message : undefined
     if (message !== undefined) detail = message.slice(0, 800)
   } catch {
     // The provider returned plain text; the bounded body is already safe to report.
   }
   return new Error(`${provider} 请求失败（${status}）${detail === '' ? '' : `：${detail}`}`)
+}
+
+function novelAiError(status: number, body: string): Error {
+  if (status === 401) return new Error('NovelAI Access Token 无效或已失效')
+  if (status === 402) return new Error('NovelAI 订阅或 Anlas 额度不足')
+  if (status === 429) return new Error('NovelAI 请求过于频繁，请稍后再试')
+  return providerError('NovelAI', status, body)
 }
 
 async function discard(response: Response): Promise<void> {
@@ -88,6 +102,22 @@ export async function testImageProvider(
     await discard(response)
     return { status: 'verified', detail: '图片服务和密钥均可用；测试没有生成图片' }
   }
+  if (settings.provider === 'novelai') {
+    if (apiKey === undefined) throw new Error('请先保存 NovelAI Access Token')
+    const generateUrl = endpoint(settings.novelai.endpoint, '/ai/generate-image')
+    const headers = { authorization: `Bearer ${apiKey}`, accept: 'application/json' }
+    if (generateUrl.hostname.toLowerCase() === 'image.novelai.net') {
+      const response = await fetchConnection('NovelAI', new URL('https://api.novelai.net/user/subscription'), {
+        headers, signal,
+      })
+      if (!response.ok) throw novelAiError(response.status, await response.text())
+      await discard(response)
+      return { status: 'verified', detail: 'NovelAI Access Token 和订阅均可用；测试没有消耗 Anlas' }
+    }
+    const response = await fetchConnection('NovelAI', new URL('/', generateUrl), { headers, signal })
+    await discard(response)
+    return { status: 'reachable', detail: '自定义 NovelAI 服务可以连接；订阅与 Token 权限尚未验证' }
+  }
   const headers: Record<string, string> = { accept: 'application/json' }
   if (apiKey !== undefined) headers.authorization = `Bearer ${apiKey}`
   if (settings.provider === 'comfyui') {
@@ -110,9 +140,7 @@ export async function testImageProvider(
   return { status: 'verified', detail: 'A1111 / Forge 已连接；测试没有生成图片' }
 }
 
-function decodeBase64Image(value: string): GeneratedImageAsset {
-  const payload = value.replace(/^data:image\/(?:png|jpeg|webp);base64,/iu, '')
-  const data = new Uint8Array(Buffer.from(payload, 'base64'))
+function decodeImageBytes(data: Uint8Array): GeneratedImageAsset {
   if (data.byteLength < 8 || data.byteLength > MAX_PROVIDER_IMAGE_BYTES) throw new Error('图片服务返回了无效大小的图片')
   let mediaType: GeneratedImageAsset['mediaType']
   if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) mediaType = 'image/png'
@@ -121,6 +149,34 @@ function decodeBase64Image(value: string): GeneratedImageAsset {
     && String.fromCharCode(...data.slice(8, 12)) === 'WEBP') mediaType = 'image/webp'
   else throw new Error('图片服务返回了不支持的图片格式')
   return { data, mediaType }
+}
+
+function decodeBase64Image(value: string): GeneratedImageAsset {
+  const payload = value.replace(/^data:image\/(?:png|jpeg|webp);base64,/iu, '')
+  return decodeImageBytes(new Uint8Array(Buffer.from(payload, 'base64')))
+}
+
+function extractNovelAiImage(archive: Uint8Array): GeneratedImageAsset {
+  let selected = false
+  let files: Record<string, Uint8Array>
+  try {
+    files = unzipSync(archive, {
+      filter: file => {
+        if (selected || !/\.(?:png|jpe?g|webp)$/iu.test(file.name)) return false
+        if (file.originalSize < 8 || file.originalSize > MAX_PROVIDER_IMAGE_BYTES) {
+          throw new Error('NovelAI 返回的图片大小无效')
+        }
+        selected = true
+        return true
+      },
+    })
+  } catch (error) {
+    if (error instanceof Error && /NovelAI/u.test(error.message)) throw error
+    throw new Error('NovelAI 返回的 ZIP 无法解压', { cause: error })
+  }
+  const image = Object.values(files)[0]
+  if (image === undefined) throw new Error('NovelAI 返回的 ZIP 中没有可用图片')
+  return decodeImageBytes(image)
 }
 
 async function readRemoteImage(url: string, signal: AbortSignal): Promise<GeneratedImageAsset> {
@@ -160,6 +216,77 @@ async function generateOpenAi(
   if (typeof image?.b64_json === 'string') return decodeBase64Image(image.b64_json)
   if (typeof image?.url === 'string') return readRemoteImage(image.url, signal)
   throw new Error('OpenAI Images 没有返回图片')
+}
+
+async function generateNovelAi(
+  settings: ImageGenerationSettings,
+  apiKey: string | undefined,
+  prompt: string,
+  signal: AbortSignal,
+  progress: ImageGenerationProgress,
+): Promise<GeneratedImageAsset> {
+  if (apiKey === undefined) throw new Error('请先在 Agent RP 设置中填写 NovelAI Access Token')
+  const value = settings.novelai
+  const seed = Math.floor(Math.random() * 4_294_967_296)
+  const parameters = {
+    params_version: 3,
+    width: value.width,
+    height: value.height,
+    scale: value.scale,
+    sampler: value.sampler,
+    steps: value.steps,
+    n_samples: 1,
+    ucPreset: 3,
+    qualityToggle: value.quality,
+    sm: value.smea,
+    sm_dyn: value.smea && value.smeaDyn,
+    dynamic_thresholding: false,
+    controlnet_strength: 1,
+    legacy: false,
+    legacy_uc: false,
+    add_original_image: false,
+    cfg_rescale: value.cfgRescale,
+    noise_schedule: value.noiseSchedule,
+    legacy_v3_extend: false,
+    prefer_brownian: true,
+    deliberate_euler_ancestral_bug: false,
+    negative_prompt: value.negativePrompt,
+    seed,
+    characterPrompts: [],
+    reference_image_multiple: [],
+    reference_information_extracted_multiple: [],
+    reference_strength_multiple: [],
+    v4_prompt: {
+      caption: { base_caption: prompt, char_captions: [] },
+      use_coords: false,
+      use_order: true,
+    },
+    v4_negative_prompt: {
+      caption: { base_caption: value.negativePrompt, char_captions: [] },
+      legacy_uc: false,
+    },
+  }
+  progress(0.08, '正在提交 NovelAI V4.5 任务')
+  const response = await fetchConnection('NovelAI', endpoint(value.endpoint, '/ai/generate-image'), {
+    method: 'POST', signal,
+    headers: { authorization: `Bearer ${apiKey}`, accept: 'application/zip', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      input: prompt,
+      model: value.model,
+      action: 'generate',
+      parameters,
+      use_new_shared_trial: true,
+    }),
+  })
+  if (!response.ok) throw novelAiError(response.status, await response.text())
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > MAX_NOVELAI_ARCHIVE_BYTES) throw new Error('NovelAI 返回的 ZIP 过大')
+  progress(0.9, '正在解压 NovelAI 图片')
+  const archive = new Uint8Array(await response.arrayBuffer())
+  if (archive.byteLength < 22 || archive.byteLength > MAX_NOVELAI_ARCHIVE_BYTES) {
+    throw new Error('NovelAI 返回了无效大小的 ZIP')
+  }
+  return extractNovelAiImage(archive)
 }
 
 async function pollA1111Progress(
@@ -436,6 +563,7 @@ export function generateImage(
   progress: ImageGenerationProgress,
 ): Promise<GeneratedImageAsset> {
   if (settings.provider === 'openai') return generateOpenAi(settings, apiKey, prompt, signal, progress)
+  if (settings.provider === 'novelai') return generateNovelAi(settings, apiKey, prompt, signal, progress)
   if (settings.provider === 'comfyui') return generateComfyUi(settings, apiKey, prompt, signal, progress)
   return generateA1111(settings, apiKey, prompt, signal, progress)
 }

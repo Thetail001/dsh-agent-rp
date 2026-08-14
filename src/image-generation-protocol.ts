@@ -6,6 +6,22 @@ export const AGENT_RP_IMAGE_PATH = '/api/agent-rp/images'
 /** Credential reference used by image providers that accept a bearer key. */
 export const AGENT_RP_IMAGE_API_KEY_REF = 'DSH_AGENT_RP_IMAGE_API_KEY'
 
+/** Provider-specific credential references keep unrelated image services isolated. */
+export const AGENT_RP_IMAGE_CREDENTIAL_REFS = {
+  openai: AGENT_RP_IMAGE_API_KEY_REF,
+  novelai: 'DSH_AGENT_RP_NOVELAI_API_KEY',
+  a1111: 'DSH_AGENT_RP_A1111_API_KEY',
+  comfyui: 'DSH_AGENT_RP_COMFYUI_API_KEY',
+} as const
+
+/** Image provider names shared by settings, jobs, and credential routes. */
+export type ImageGenerationProvider = keyof typeof AGENT_RP_IMAGE_CREDENTIAL_REFS
+
+/** Resolve the credential slot owned by one image provider. */
+export function imageCredentialRefName(provider: ImageGenerationProvider): string {
+  return AGENT_RP_IMAGE_CREDENTIAL_REFS[provider]
+}
+
 /** Supported image generation intents. */
 export const IMAGE_GENERATION_MODES = ['scene', 'portrait', 'avatar', 'custom'] as const
 
@@ -28,7 +44,7 @@ export interface GeneratedImageJob {
   readonly format: 0
   readonly id: string
   readonly request: ImageGenerationRequest
-  readonly provider: 'openai' | 'a1111' | 'comfyui'
+  readonly provider: ImageGenerationProvider
   readonly status: GeneratedImageJobStatus
   readonly progress: number
   readonly phase: string
