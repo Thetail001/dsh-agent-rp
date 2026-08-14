@@ -76,7 +76,9 @@ import {
 } from '../session-launch-protocol.ts'
 import {
   WORLD_INFO_LIBRARY_PATH,
+  type WorldInfoLibraryListResponse,
   type WorldInfoLibraryLaunchRequest,
+  type WorldInfoLibraryUpload,
   type WorldInfoLibraryUploadResponse,
 } from '../world-info-library-protocol.ts'
 import {
@@ -98,6 +100,12 @@ import {
   type ImageGenerationMode,
   type ImageGenerationRequest,
 } from '../image-generation-protocol.ts'
+import {
+  RP_DISTRIBUTION_BRIDGE_PATH,
+  type RpDistributionAssetKind,
+  type RpDistributionProbeResponse,
+  type RpDistributionTransferResponse,
+} from '../rp-distribution-bridge-protocol.ts'
 
 interface WorkspaceListSource {
   readonly getSnapshot: () => { readonly items: readonly WorkspaceView[] }
@@ -1284,6 +1292,19 @@ interface WorkspaceSettingsSectionProps extends PropsRuntime<'settings.section'>
   readonly workspaceList: WorkspaceListSource
 }
 
+interface RpDistributionBridgeSectionProps extends PropsRuntime<'settings.section'> {
+  readonly listCharacters: (collection?: CharacterLibraryCollection) => Promise<readonly CharacterLibrarySummary[]>
+  readonly listPresets: () => Promise<readonly PresetLibrarySummary[]>
+  readonly listPersonas: () => Promise<readonly PersonaLibraryEntry[]>
+  readonly listWorldInfos: () => Promise<readonly WorldInfoLibraryUpload[]>
+  readonly probe: (target: string) => Promise<RpDistributionProbeResponse>
+  readonly transfer: (
+    target: string,
+    kind: RpDistributionAssetKind,
+    id: string,
+  ) => Promise<RpDistributionTransferResponse>
+}
+
 const settingsFieldStyle = {
   background: 'var(--dsw-alias-bg-layer-1, #202024)',
   border: '1px solid var(--dsw-alias-border-l2, #3d3d43)',
@@ -1729,6 +1750,126 @@ function WorkspaceSettingsSection({
     {snapshot.status === 'loading' && <p role="status" style={{ fontSize: '12px', marginTop: '14px', opacity: .55 }}>正在读取设置…</p>}
     {snapshot.status === 'error' && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '14px' }}>{snapshot.error}</p>}
     {error !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '14px' }}>{error}</p>}
+  </section>
+}
+
+const RP_DISTRIBUTION_TARGET_KEY = 'dsh-agent-rp.distribution-target'
+
+function initialRpDistributionTarget(): string {
+  try {
+    return window.localStorage.getItem(RP_DISTRIBUTION_TARGET_KEY) ?? 'http://127.0.0.1:3092'
+  } catch {
+    return 'http://127.0.0.1:3092'
+  }
+}
+
+function RpDistributionBridgeSection({
+  listCharacters,
+  listPresets,
+  listPersonas,
+  listWorldInfos,
+  probe,
+  transfer,
+}: RpDistributionBridgeSectionProps) {
+  const [target, setTarget] = useState(initialRpDistributionTarget)
+  const [connected, setConnected] = useState<RpDistributionProbeResponse>()
+  const [characters, setCharacters] = useState<readonly CharacterLibrarySummary[]>([])
+  const [presets, setPresets] = useState<readonly PresetLibrarySummary[]>([])
+  const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>([])
+  const [worldInfos, setWorldInfos] = useState<readonly WorldInfoLibraryUpload[]>([])
+  const [busy, setBusy] = useState<string>()
+  const [notice, setNotice] = useState<string>()
+  const [error, setError] = useState<string>()
+  const connect = (): void => {
+    setBusy('probe')
+    setError(undefined)
+    setNotice(undefined)
+    void Promise.all([
+      probe(target),
+      Promise.all([listCharacters('active'), listCharacters('archived')]).then(([active, archived]) => [...active, ...archived]),
+      listPresets(),
+      listPersonas(),
+      listWorldInfos(),
+    ]).then(([result, nextCharacters, nextPresets, nextPersonas, nextWorldInfos]) => {
+      setConnected(result)
+      setCharacters(nextCharacters)
+      setPresets(nextPresets)
+      setPersonas(nextPersonas)
+      setWorldInfos(nextWorldInfos)
+      setTarget(result.target)
+      try { window.localStorage.setItem(RP_DISTRIBUTION_TARGET_KEY, result.target) } catch {}
+      setNotice(`已连接：${result.experienceCount} 个体验，${result.capabilityCount} 项能力`)
+    }).catch((reason: unknown) => {
+      setConnected(undefined)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => { setBusy(undefined) })
+  }
+  const copy = (kind: RpDistributionAssetKind, id: string, label: string): void => {
+    if (connected === undefined) return
+    const key = `${kind}:${id}`
+    setBusy(key)
+    setError(undefined)
+    setNotice(undefined)
+    void transfer(connected.target, kind, id).then((result) => {
+      setNotice(result.compatibilityDifferenceCount === 0
+        ? `已复制「${label}」，对方未报告兼容差异`
+        : `已复制「${label}」，对方记录了 ${result.compatibilityDifferenceCount} 项兼容差异`)
+    }).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => { setBusy(undefined) })
+  }
+  const group = (
+    title: string,
+    kind: RpDistributionAssetKind,
+    entries: readonly { readonly id: string; readonly name: string }[],
+  ): JSX.Element => <div style={{ marginTop: '20px' }}>
+    <h3 style={{ fontSize: '13px', margin: '0 0 8px' }}>{title}<span style={{ fontWeight: 400, marginLeft: '6px', opacity: .45 }}>{entries.length}</span></h3>
+    {entries.length === 0
+      ? <p style={{ fontSize: '12px', margin: 0, opacity: .5 }}>Agent RP 中还没有可复制的内容</p>
+      : <div style={{ border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '10px', overflow: 'hidden' }}>
+        {entries.map((entry, index) => {
+          const key = `${kind}:${entry.id}`
+          return <div key={key} style={{
+            alignItems: 'center', borderTop: index === 0 ? 'none' : '1px solid var(--dsw-alias-border-l2, #3d3d43)',
+            display: 'flex', gap: '12px', padding: '9px 11px',
+          }}>
+            <span style={{ flex: '1 1 auto', fontSize: '13px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</span>
+            <button type="button" disabled={busy !== undefined} onClick={() => { copy(kind, entry.id, entry.name) }} style={{
+              background: `color-mix(in srgb, ${color} 11%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${color} 28%, transparent)`, borderRadius: '7px',
+              color: 'inherit', cursor: busy === undefined ? 'pointer' : 'default', font: 'inherit', fontSize: '12px', padding: '5px 9px',
+            }}>{busy === key ? '正在复制…' : '复制过去'}</button>
+          </div>
+        })}
+      </div>}
+  </div>
+  return <section style={{ margin: '0 auto', maxWidth: '720px', padding: '8px 4px 32px' }}>
+    <h2 style={{ fontSize: '18px', margin: '0 0 8px' }}>RP 互通</h2>
+    <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '0 0 18px', opacity: .62 }}>
+      把 Agent RP 保存的原始角色卡、预设、Persona 和世界书复制到本机运行的 dsh-rp-distribution。源库和现有会话不会改变
+    </p>
+    <div style={{ alignItems: 'end', display: 'grid', gap: '8px', gridTemplateColumns: 'minmax(0, 1fr) auto' }}>
+      <label style={{ display: 'grid', fontSize: '12px', gap: '6px' }}>
+        模块化 RP 地址
+        <input value={target} onChange={event => { setTarget(event.target.value); setConnected(undefined) }}
+          placeholder="http://127.0.0.1:3092" style={settingsFieldStyle} />
+      </label>
+      <button type="button" disabled={busy !== undefined || target.trim() === ''} onClick={connect} style={{
+        background: `color-mix(in srgb, ${color} 13%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
+        borderRadius: '8px', color: 'inherit', cursor: busy === undefined ? 'pointer' : 'default', font: 'inherit', fontSize: '12px', padding: '8px 12px',
+      }}>{busy === 'probe' ? '正在连接…' : connected === undefined ? '连接' : '刷新'}</button>
+    </div>
+    <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '8px 0 0', opacity: .48 }}>
+      为避免意外发送角色资料，只接受 localhost、127.0.0.1 或 ::1 地址
+    </p>
+    {notice !== undefined && <p role="status" style={{ color: 'var(--dsw-alias-state-success, #4fba83)', fontSize: '12px', margin: '13px 0 0' }}>{notice}</p>}
+    {error !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', margin: '13px 0 0' }}>{error}</p>}
+    {connected !== undefined && <>
+      {group('角色卡', 'character', characters.map(entry => ({ id: entry.id, name: entry.displayName })))}
+      {group('预设', 'preset', presets)}
+      {group('Persona', 'persona', personas)}
+      {group('世界书', 'world-info', worldInfos)}
+    </>}
   </section>
 }
 
@@ -5751,6 +5892,12 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok || value.entries === undefined) throw new Error(value.error ?? `预设库请求失败（${response.status}）`)
     return value.entries
   }
+  const listWorldInfos = async (): Promise<readonly WorldInfoLibraryUpload[]> => {
+    const response = await fetch(WORLD_INFO_LIBRARY_PATH, { headers: { accept: 'application/json' } })
+    const value = await response.json() as Partial<WorldInfoLibraryListResponse> & { readonly error?: string }
+    if (!response.ok || value.entries === undefined) throw new Error(value.error ?? `世界书来源读取失败（${response.status}）`)
+    return value.entries
+  }
   const savePersona = async (request: PersonaLibrarySaveRequest): Promise<PersonaLibraryEntry> => {
     const value = await personaLibraryJson<{ readonly format: 0; readonly entry: PersonaLibraryEntry }>({ method: 'POST', body: request })
     return value.entry
@@ -5928,6 +6075,37 @@ export function apply(ctx: ClientContext): void {
     }
     return value.models as readonly string[]
   }
+  const probeRpDistribution = async (target: string): Promise<RpDistributionProbeResponse> => {
+    const response = await fetch(`${RP_DISTRIBUTION_BRIDGE_PATH}?target=${encodeURIComponent(target)}`, {
+      headers: { accept: 'application/json' },
+    })
+    const value = await response.json() as Partial<RpDistributionProbeResponse> & { readonly error?: string }
+    if (!response.ok || value.format !== 0 || typeof value.target !== 'string'
+      || typeof value.generatedAt !== 'number' || typeof value.experienceCount !== 'number'
+      || typeof value.componentCount !== 'number' || typeof value.capabilityCount !== 'number') {
+      throw new Error(value.error ?? `模块化 RP 连接失败（${response.status}）`)
+    }
+    return value as RpDistributionProbeResponse
+  }
+  const transferRpDistribution = async (
+    target: string,
+    kind: RpDistributionAssetKind,
+    id: string,
+  ): Promise<RpDistributionTransferResponse> => {
+    const response = await fetch(RP_DISTRIBUTION_BRIDGE_PATH, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ format: 0, target, kind, id }),
+    })
+    const value = await response.json() as Partial<RpDistributionTransferResponse> & { readonly error?: string }
+    if (!response.ok || value.format !== 0 || typeof value.target !== 'string' || value.kind !== kind
+      || value.sourceId !== id || !Array.isArray(value.savedIds)
+      || value.savedIds.some(savedId => typeof savedId !== 'string')
+      || typeof value.compatibilityDifferenceCount !== 'number') {
+      throw new Error(value.error ?? `RP 资产复制失败（${response.status}）`)
+    }
+    return value as RpDistributionTransferResponse
+  }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
   }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
@@ -5937,6 +6115,14 @@ export function apply(ctx: ClientContext): void {
     order: 25,
     label: 'Agent RP',
   }, props => <WorkspaceSettingsSection {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} />))
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'agent-rp-interoperability',
+    order: 26,
+    label: 'RP 互通',
+  }, props => <RpDistributionBridgeSection {...props} listCharacters={listCharacters} listPresets={listPresets}
+    listPersonas={listPersonas} listWorldInfos={listWorldInfos}
+    probe={probeRpDistribution} transfer={transferRpDistribution} />))
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left', id: 'agent-rp-blank-launcher', order: -100,
   }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))

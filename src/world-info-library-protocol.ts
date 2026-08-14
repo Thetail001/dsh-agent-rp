@@ -19,6 +19,12 @@ export interface WorldInfoLibraryUploadResponse {
   readonly upload: WorldInfoLibraryUpload
 }
 
+/** Retained World Info sources available for reuse or local RP interoperability. */
+export interface WorldInfoLibraryListResponse {
+  readonly format: 0
+  readonly entries: readonly WorldInfoLibraryUpload[]
+}
+
 /** Private command input selecting one Host-owned World Info source. */
 export interface WorldInfoLibraryLaunchRequest {
   readonly format: 0

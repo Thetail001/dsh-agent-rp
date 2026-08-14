@@ -117,6 +117,7 @@ import { executeTavernHelperMutation } from './tavern-helper-command.ts'
 import { executeTavernTrigger } from './tavern-trigger.ts'
 import { installTavernGenerationHttp } from './tavern-generation-http.ts'
 import { installTavernModelListHttp } from './tavern-model-list-http.ts'
+import { installRpDistributionBridgeHttp } from './rp-distribution-bridge-http.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -1044,6 +1045,14 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
         installImageGenerationHttp(webCtx, generatedImageLibrary, webCtx.credentials, server)
         installTavernGenerationHttp(webCtx, server)
         installTavernModelListHttp(webCtx, server)
+        installRpDistributionBridgeHttp(
+          webCtx,
+          characterLibrary,
+          presetLibrary,
+          personaLibrary,
+          worldInfoLibrary,
+          server,
+        )
       })
     }
     mountHost('httpServer')

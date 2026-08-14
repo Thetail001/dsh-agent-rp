@@ -65,5 +65,8 @@ test('deduplicates the same World Info bytes and rejects non-World-Info JSON', c
   const first = library.importFile({ data: source, filename: '海城.json' })
   const second = library.importFile({ data: source, filename: '副本.json' })
   assert.equal(second.id, first.id)
+  assert.deepEqual(library.list(), [first])
+  assert.equal(Buffer.from(library.asset(first.id).data).equals(source), true)
+  assert.equal(library.asset(first.id).filename, '海城.json')
   assert.throws(() => library.importFile({ data: Buffer.from('{"name":"not a book"}'), filename: 'wrong.json' }), /entries/u)
 })

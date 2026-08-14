@@ -59,8 +59,12 @@ export function installWorldInfoLibraryHttp(
         json(response, 403, { error: 'forbidden' })
         return
       }
+      if (request.method === 'GET') {
+        json(response, 200, { format: 0, entries: library.list() })
+        return
+      }
       if (request.method !== 'POST') {
-        response.setHeader('allow', 'POST')
+        response.setHeader('allow', 'GET, POST')
         json(response, 405, { error: 'method not allowed' })
         return
       }
