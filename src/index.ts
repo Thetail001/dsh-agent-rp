@@ -479,7 +479,6 @@ export function installAgentRp(
   commands.register({
     name: 'rp-tavern-trigger',
     description: 'generate a roleplay reply after a Tavern script appends a user message',
-    input: { hint: '' },
     recordInput: false,
     handler: executeTavernTrigger,
   })
