@@ -23,6 +23,7 @@ export interface ChatSessionLaunchRequest {
   readonly kind: 'chat'
   readonly importId: string
   readonly characterId?: string
+  readonly presetId?: string
 }
 
 /** Complete model-free Session launch accepted by the Agent RP Host. */

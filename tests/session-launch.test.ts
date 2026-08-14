@@ -81,6 +81,29 @@ test('prepares imported JSONL with consecutive turns before the Agent is constru
   assert.equal(session.events.filter(event => event.type === 'turn/end').length, turns.length)
 })
 
+test('seeds a selected library preset after imported JSONL history', (context) => {
+  const { characters, chats, presets } = libraries(context)
+  const upload = chats.importFile({
+    data: new Uint8Array(readFileSync('tests/fixtures/manual-sillytavern-chat.jsonl')),
+    filename: 'chat.jsonl',
+  })
+  const preset = presets.import(parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [{ identifier: 'main', name: '主提示', role: 'system', content: '继续原有语气' }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: 'main', enabled: true }] }],
+  }), '迁移预设.json'))
+  const prepared = prepareAgentRpSession(characters, chats, presets, {
+    format: 0,
+    sourceSessionId: 'source',
+    kind: 'chat',
+    importId: upload.id,
+    presetId: preset.id,
+  })
+  const session = Session.create(SessionId('migrated-with-preset'), prepared.seed)
+  const active = readActiveSessionPreset(session.events)
+  assert.equal(active?.result.name, '迁移预设')
+  assert.equal(active?.libraryId, preset.id)
+})
+
 test('prepares Character Card and JSONL history as one replayable seed', (context) => {
   const { characters, chats, presets } = libraries(context)
   const character = characters.importFile({

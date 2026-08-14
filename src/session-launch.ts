@@ -55,7 +55,9 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
     if (typeof record.importId !== 'string' || !/^chat-[a-f0-9]{32}$/u.test(record.importId)
       || (record.characterId !== undefined
         && (typeof record.characterId !== 'string' || !/^card-[a-f0-9]{32}$/u.test(record.characterId)))
-      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'importId', 'characterId'].includes(key))) {
+      || (record.presetId !== undefined
+        && (typeof record.presetId !== 'string' || !/^[a-z0-9-]{8,80}$/u.test(record.presetId)))
+      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'importId', 'characterId', 'presetId'].includes(key))) {
       throw new Error('聊天迁移启动请求字段无效')
     }
     return {
@@ -64,6 +66,7 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       kind: 'chat',
       importId: record.importId,
       ...(typeof record.characterId === 'string' ? { characterId: record.characterId } : {}),
+      ...(typeof record.presetId === 'string' ? { presetId: record.presetId } : {}),
     }
   }
   throw new Error('角色会话启动类型无效')
@@ -77,6 +80,16 @@ function presetAttachment(entry: PresetLibraryEntry): FileAttachmentRef {
     name: 'preset.json',
     mediaType: 'application/json',
   }
+}
+
+function seedWithPreset(
+  seed: readonly SessionEvent[],
+  presets: PresetLibrary,
+  presetId: string | undefined,
+): readonly SessionEvent[] {
+  if (presetId === undefined) return seed
+  const entry = presets.get(presetId)
+  return createPresetSessionSeed(seed, entry.preset, presetAttachment(entry), entry.id)
 }
 
 function libraryAttachment(
@@ -130,14 +143,8 @@ export function prepareAgentRpSession(
         request.persona,
         request.characterId,
       )
-    const seed = request.presetId === undefined
-      ? characterSeed
-      : (() => {
-          const entry = presets.get(request.presetId)
-          return createPresetSessionSeed(characterSeed, entry.preset, presetAttachment(entry), entry.id)
-        })()
     return {
-      seed,
+      seed: seedWithPreset(characterSeed, presets, request.presetId),
       title: resolved.detail.displayName,
     }
   }
@@ -146,7 +153,7 @@ export function prepareAgentRpSession(
   if (request.characterId === undefined) {
     const identity = resolveSillyTavernChatIdentity(chat.chat)
     return {
-      seed: createSillyTavernChatSeed(chat.chat, chat.attachment),
+      seed: seedWithPreset(createSillyTavernChatSeed(chat.chat, chat.attachment), presets, request.presetId),
       title: identity.characterName?.trim() || chat.upload.name.replace(/\.jsonl$/iu, ''),
     }
   }
@@ -160,15 +167,16 @@ export function prepareAgentRpSession(
     asset.originalFilename,
     asset.mediaType,
   )
-  return {
-    seed: createSillyTavernMigrationSeed(
+  const migrationSeed = createSillyTavernMigrationSeed(
       character.card,
       source,
       character.transport,
       chat.chat,
       chat.attachment,
       request.characterId,
-    ),
+    )
+  return {
+    seed: seedWithPreset(migrationSeed, presets, request.presetId),
     title: character.detail.displayName,
   }
 }
