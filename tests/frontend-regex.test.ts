@@ -388,6 +388,7 @@ const st = SillyTavern.getContext();
 window.__sillyTavernMacros = {
   sameContext: st === SillyTavern,
   direct: substituteParams('{{lastMessage}}|{{lastUserMessage}}|{{lastCharMessage}}|{{get_message_variable::status}}|{{get_chat_variable::route.name}}|{{get_character_variable::profile.title}}|{{get_preset_variable::tone}}|{{get_global_variable::theme}}|{{get_global_variable::missing}}'),
+  formatted: substituteParams('状态:\n  {{format_message_variable::status}}\n路线: {{format_chat_variable::route}} / {{format_character_variable::profile}}\n配置:\n  {{format_global_variable::yaml}}'),
   throughContext: st.substituteParams('{{char}}/{{user}}/{{lastMessageId}}'),
   latestChatText: st.chat.at(-1).mes,
 };
@@ -400,7 +401,7 @@ window.__sillyTavernMacros = {
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', userName: '旅人',
     approvedScriptOrigins: [],
     scopes: {
-      global: { theme: '夜色' }, preset: { tone: '温柔' },
+      global: { theme: '夜色', yaml: { lines: '第一行\n第二行', flags: [true, 'false'] } }, preset: { tone: '温柔' },
       character: { profile: { title: '导游' } }, chat: { route: { name: '北岸' } },
       message: {}, script: {},
     },
@@ -423,6 +424,7 @@ window.__sillyTavernMacros = {
   assert.deepEqual(result, {
     sameContext: true,
     direct: '去灯塔。|去哪里？|去灯塔。|{"value":3}|北岸|导游|温柔|夜色|null',
+    formatted: '状态:\n  value: 3\n路线: name: 北岸 / title: 导游\n配置:\n  lines: |-\n    第一行\n    第二行\n  flags:\n    - true\n    - "false"',
     throughContext: '角色/旅人/1',
     latestChatText: '去灯塔。',
   })
