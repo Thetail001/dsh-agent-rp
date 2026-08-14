@@ -190,6 +190,8 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(source!, /window\.replaceTavernRegexes=/u)
   assert.match(source!, /window\.updateTavernRegexesWith=/u)
   assert.match(source!, /window\.formatAsTavernRegexedString=/u)
+  assert.match(source!, /window\.registerMacroLike=/u)
+  assert.match(source!, /window\.unregisterMacroLike=/u)
   assert.match(source!, /window\.generateRaw=/u)
   assert.match(source!, /\/api\/backends\/chat-completions\/generate/u)
   assert.match(source!, /window\.stopGenerationById=/u)
@@ -292,6 +294,35 @@ window.__regexReads = {
   assert.deepEqual(result.legacyAll, [{ ...characterRegex, scope: 'character' }])
   assert.deepEqual(result.legacyCharacter, [{ ...characterRegex, scope: 'character' }])
   assert.deepEqual(result.legacyGlobal, [])
+})
+
+test('applies and unregisters Tavern Helper macro-like replacements', () => {
+  const script = String.raw`
+const registration = registerMacroLike(/\{\{mood::(.*?)\}\}/gu, (context, _match, mood) =>
+  context.message_id + ':' + context.role + ':' + mood);
+registerMacroLike(/\{\{mood::(.*?)\}\}/iu, () => 'duplicate must not win');
+window.__macroBefore = formatAsTavernRegexedString('{{mood::平静}}', 'ai_output', 'display', { depth: 0 });
+registration.unregister();
+window.__macroAfter = formatAsTavernRegexedString('{{mood::平静}}', 'ai_output', 'display', { depth: 0 });
+`
+  const html = tavernScriptFrameSource({
+    id: 'macro-runtime', name: '宏替换', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'macro-runtime', scriptName: '宏替换', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [],
+    messages: [{ messageId: 0, seq: 1, role: 'assistant', text: '', isHidden: false, data: {}, extra: {} }],
+    characterRegexScripts: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  assert.equal(context.__macroBefore, '0:assistant:平静')
+  assert.equal(context.__macroAfter, '{{mood::平静}}')
 })
 
 test('lets V18-style dry-run listeners capture prompts without Host generation', async () => {
