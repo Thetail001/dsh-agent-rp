@@ -161,6 +161,33 @@ test('lets the user correct and forget active memory without invoking the model'
   assert.equal(renderMemoryContext(agent.session.events), '当前没有已记录的持久记忆。')
 })
 
+test('lets the user add normalized memory without invoking the model', () => {
+  const agent = { session: Session.create(SessionId('agent-rp-user-added-memory')) } as Agent
+  const request = {
+    format: 0,
+    operation: 'add',
+    kind: 'relationship',
+    subject: '  称呼  ',
+    text: '  角色称呼用户为小满  ',
+  } as const
+  assert.deepEqual(parseAgentRpMemoryCommandRequest(JSON.stringify(request)), {
+    ...request,
+    subject: '称呼',
+    text: '角色称呼用户为小满',
+  })
+  runMemoryCommand(agent, JSON.stringify(request), 1)
+
+  const history = readAgentRpMemoryHistory(agent.session.events)
+  assert.equal(history.all.length, 1)
+  assert.deepEqual(history.active.map(record => ({ kind: record.kind, subject: record.subject, text: record.text })), [{
+    kind: 'relationship', subject: '称呼', text: '角色称呼用户为小满',
+  }])
+  assert.match(renderMemoryContext(agent.session.events), /角色称呼用户为小满/u)
+  assert.throws(() => {
+    runMemoryCommand(agent, JSON.stringify({ ...request, subject: '称呼', text: '重复内容' }), 2)
+  }, /已经有一条有效记忆/u)
+})
+
 test('rejects a user correction that would collide with another active topic', () => {
   const agent = { session: Session.create(SessionId('agent-rp-user-memory-conflict')) } as Agent
   const teaInput = { kind: 'preference', subject: '红茶', text: '用户喝红茶不加柠檬' } as const

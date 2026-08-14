@@ -2402,6 +2402,7 @@ function MemoryManagerDialog({ load, onManage, onClose }: {
   const [subject, setSubject] = useState('')
   const [text, setText] = useState('')
   const [forgetting, setForgetting] = useState<string>()
+  const [creating, setCreating] = useState(false)
   const [query, setQuery] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
@@ -2414,10 +2415,20 @@ function MemoryManagerDialog({ load, onManage, onClose }: {
     return () => { current = false }
   }, [])
   const beginCorrection = (memory: AgentRpMemoryView): void => {
+    setCreating(false)
     setEditing(memory)
     setKind(memory.kind)
     setSubject(memory.subject)
     setText(memory.text)
+    setForgetting(undefined)
+    setError(undefined)
+  }
+  const beginCreation = (): void => {
+    setCreating(true)
+    setEditing(undefined)
+    setKind('fact')
+    setSubject('')
+    setText('')
     setForgetting(undefined)
     setError(undefined)
   }
@@ -2426,6 +2437,7 @@ function MemoryManagerDialog({ load, onManage, onClose }: {
     setError(undefined)
     void onManage(request).then(refresh).then(() => {
       setEditing(undefined)
+      setCreating(false)
       setForgetting(undefined)
     }).catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -2453,13 +2465,39 @@ function MemoryManagerDialog({ load, onManage, onClose }: {
             这些内容会在之后的回复中继续生效。纠正和忘记都会保留在本机会话历史中
           </p>
         </div>
-        <button type="button" disabled={busy} onClick={onClose} style={{
-          background: 'transparent', border: 0, color: 'inherit', cursor: busy ? 'default' : 'pointer',
-          font: 'inherit', fontSize: '18px', opacity: .6, padding: '0 3px',
-        }} aria-label="关闭记忆管理">×</button>
+        <div style={{ alignItems: 'center', display: 'flex', gap: '8px' }}>
+          <button type="button" disabled={busy} onClick={() => {
+            if (creating) setCreating(false)
+            else beginCreation()
+          }} style={{ ...headerMenuItemStyle, color }}>{creating ? '取消新增' : '新增记忆'}</button>
+          <button type="button" disabled={busy} onClick={onClose} style={{
+            background: 'transparent', border: 0, color: 'inherit', cursor: busy ? 'default' : 'pointer',
+            font: 'inherit', fontSize: '18px', opacity: .6, padding: '0 3px',
+          }} aria-label="关闭记忆管理">×</button>
+        </div>
       </header>
       {memories === undefined && error === undefined && <p role="status" style={{ fontSize: '13px', margin: '24px 0 4px', opacity: .58 }}>正在读取记忆…</p>}
-      {memories?.length === 0 && <div style={{
+      {creating && <div style={{
+        background: 'var(--dsw-alias-bg-layer-1, #222226)', border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
+        borderRadius: '11px', display: 'grid', gap: '9px', marginTop: '18px', padding: '13px',
+      }}>
+        <strong style={{ fontSize: '13px' }}>新增一条有效记忆</strong>
+        <div style={{ display: 'grid', gap: '9px', gridTemplateColumns: '120px minmax(0, 1fr)' }}>
+          <select value={kind} onChange={event => { setKind(event.target.value as AgentRpMemoryView['kind']) }} style={settingsFieldStyle}>
+            {Object.entries(memoryKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+          <input value={subject} maxLength={120} placeholder="主题，例如：称呼" onChange={event => { setSubject(event.target.value) }} aria-label="新增记忆主题" style={settingsFieldStyle} />
+        </div>
+        <textarea value={text} maxLength={1000} rows={4} placeholder="写下希望角色长期记住的内容" onChange={event => { setText(event.target.value) }} aria-label="新增记忆内容" style={{ ...settingsFieldStyle, lineHeight: 1.55, resize: 'vertical' }} />
+        <button type="button" disabled={busy || subject.trim() === '' || text.trim() === ''} onClick={() => { run({
+          format: 0, operation: 'add', kind, subject: subject.trim(), text: text.trim(),
+        }) }} style={{
+          background: color, border: 0, borderRadius: '8px', color: '#fff', cursor: busy ? 'default' : 'pointer',
+          font: 'inherit', fontSize: '12px', justifySelf: 'end', padding: '7px 12px',
+          opacity: subject.trim() === '' || text.trim() === '' ? .45 : 1,
+        }}>{busy ? '正在保存…' : '保存记忆'}</button>
+      </div>}
+      {memories?.length === 0 && !creating && <div style={{
         background: 'var(--dsw-alias-bg-layer-1, #222226)', borderRadius: '10px', marginTop: '18px', padding: '20px', textAlign: 'center',
       }}>
         <strong style={{ display: 'block', fontSize: '13px' }}>还没有持久记忆</strong>
@@ -2484,7 +2522,7 @@ function MemoryManagerDialog({ load, onManage, onClose }: {
               fontSize: '10px', opacity: .82, padding: '2px 7px',
             }}>{memoryKindLabels[memory.kind]}</span>
             {memory.source !== 'character' && <span style={{ fontSize: '10px', marginLeft: 'auto', opacity: .45 }}>
-              {memory.source === 'user' ? '由你修正' : '从上一段带来'}
+              {memory.source === 'user' ? '由你保存' : '从上一段带来'}
             </span>}
           </div>
           {editing?.id === memory.id
