@@ -5090,6 +5090,36 @@ function TavernScriptPopup({ request, onResolve }: {
   </div>
 }
 
+interface TavernToastMessage {
+  readonly id: number
+  readonly scriptName: string
+  readonly level: 'info' | 'success' | 'warning' | 'error'
+  readonly value: string
+}
+
+function TavernScriptToast({ toast, onClose }: {
+  readonly toast: TavernToastMessage
+  readonly onClose: () => void
+}) {
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+  useEffect(() => {
+    const timer = window.setTimeout(() => { closeRef.current() }, 6_000)
+    return () => { window.clearTimeout(timer) }
+  }, [toast.id])
+  const accent = toast.level === 'error' ? '#d76868'
+    : toast.level === 'warning' ? '#d5a64c' : toast.level === 'success' ? '#58ad7b' : '#6d94dc'
+  return <button type="button" onClick={onClose} title="点击关闭" style={{
+    background: 'var(--dsw-alias-bg-elevated, #202228)', border: `1px solid color-mix(in srgb, ${accent} 58%, transparent)`,
+    borderLeft: `4px solid ${accent}`, borderRadius: '10px', boxShadow: '0 12px 34px rgba(0,0,0,.3)', color: 'inherit',
+    cursor: 'pointer', display: 'grid', font: 'inherit', gap: '3px', maxWidth: 'min(92vw, 420px)', padding: '10px 12px',
+    textAlign: 'left', width: '100%',
+  }}>
+    <span style={{ fontSize: '10px', opacity: .58 }}>{toast.scriptName || '酒馆脚本'}</span>
+    <span style={{ fontSize: '12px', lineHeight: 1.45, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>{toast.value}</span>
+  </button>
+}
+
 function TavernScriptRuntime({
   ctx, inputActions, onDisplayOverride, projection, runGeneration, runModelList, runMutation, runPresetConfiguration,
   runPromptPreview, runTrigger, sessionId,
@@ -5145,6 +5175,8 @@ function TavernScriptRuntime({
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelScriptId, setPanelScriptId] = useState<string>()
   const [popupRequests, setPopupRequests] = useState<readonly TavernPopupRequest[]>([])
+  const [runtimeToasts, setRuntimeToasts] = useState<readonly TavernToastMessage[]>([])
+  const toastSequence = useRef(0)
   const frameRefs = useRef(new Map<string, HTMLIFrameElement>())
   const generationQueue = useRef(new Map<string, QueuedTavernGeneration[]>())
   const customGenerationQueue = useRef(new Map<string, QueuedTavernGeneration[]>())
@@ -5188,6 +5220,7 @@ function TavernScriptRuntime({
     setModelListRequests(new Map())
     setSurfaceScriptIds(new Set())
     setPopupRequests([])
+    setRuntimeToasts([])
     void Promise.all(scripts.map(async script => {
       try {
         const source = await resolveTavernScriptSource(script.content, controller.signal)
@@ -5432,6 +5465,7 @@ function TavernScriptRuntime({
         readonly content?: unknown
         readonly inputValue?: unknown
         readonly options?: unknown
+        readonly level?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
@@ -5460,6 +5494,18 @@ function TavernScriptRuntime({
         const detail = String(message.value)
         setRuntimeErrors(current => new Map(current).set(entry.script.id, detail))
         ctx.logger.warn(`agent-rp: Tavern Helper script ${JSON.stringify(entry.script.name)} failed: ${detail}`)
+        return
+      }
+      if (message.action === 'toast'
+        && (message.level === 'info' || message.level === 'success' || message.level === 'warning' || message.level === 'error')
+        && typeof message.value === 'string' && message.value.trim() !== '' && message.value.length <= 8_000) {
+        const toast: TavernToastMessage = {
+          id: ++toastSequence.current,
+          scriptName: entry.script.name,
+          level: message.level,
+          value: message.value,
+        }
+        setRuntimeToasts(current => [...current, toast].slice(-4))
         return
       }
       if (message.action === 'script-buttons') {
@@ -5780,6 +5826,13 @@ function TavernScriptRuntime({
     : panelFrames[0]?.script.id
   const activePopup = popupRequests[0]
   return <>
+    {runtimeToasts.length > 0 && <div aria-live="polite" style={{
+      display: 'grid', gap: '8px', position: 'fixed', right: '14px', top: '14px', width: 'min(92vw, 420px)', zIndex: 1230,
+    }}>
+      {runtimeToasts.map(toast => <TavernScriptToast key={toast.id} toast={toast} onClose={() => {
+        setRuntimeToasts(current => current.filter(message => message.id !== toast.id))
+      }} />)}
+    </div>}
     {activePopup !== undefined && <TavernScriptPopup key={activePopup.key} request={activePopup} onResolve={value => {
       activePopup.target.postMessage({
         source: 'dsh-agent-rp-host', action: 'popup-result', requestId: activePopup.requestId, ok: true, value,

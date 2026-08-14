@@ -250,6 +250,7 @@ window.__popupResult = SillyTavern.callGenericPopup(
   '',
   { okButton: '保存', cancelButton: '放弃', customButtons: ['稍后'] },
 );
+toastr.success('已打开确认框');
 `
   const html = tavernScriptFrameSource({
     id: 'popup', name: '确认保存', content: '', info: '', enabled: true,
@@ -274,6 +275,11 @@ window.__popupResult = SillyTavern.callGenericPopup(
       okButton: '保存', cancelButton: '放弃',
       customButtons: [{ text: '稍后', result: 2 }],
     },
+  })
+  const toast = (context.posted as Record<string, unknown>[]).find(message => message.action === 'toast')
+  assert.deepEqual(JSON.parse(JSON.stringify(toast)), {
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'popup', action: 'toast',
+    level: 'success', value: '已打开确认框',
   })
   ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
     action: 'popup-result', requestId: '1', ok: true, value: 2,
