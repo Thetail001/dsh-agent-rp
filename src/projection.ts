@@ -928,6 +928,10 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
   },
   view: state => {
     const worldInfo = worldInfoProjection(state)
+    const visibleTavernMessages = state.surface.flatMap(({ seq, text, role }) => text === undefined || role === undefined
+      ? []
+      : [{ seq, role, text, isHidden: false as const }])
+    const hiddenTavernMessages = state.tavern?.hiddenPrefix ?? []
     return {
       ...state.character,
       worldInfoCount: worldInfo.books.reduce((total, book) => total + book.entries.filter(entry => !entry.deleted).length, 0),
@@ -947,9 +951,10 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
       ...(state.tavern === undefined ? {} : {
         tavern: {
           ...state.tavern,
-          messages: state.surface.flatMap(({ seq, text, role }) => text === undefined || role === undefined
-            ? []
-            : [{ messageId: 0, seq, role, text }]).map((message, messageId) => ({ ...message, messageId })),
+          messages: [
+            ...hiddenTavernMessages.map(message => ({ ...message, isHidden: true as const })),
+            ...visibleTavernMessages,
+          ].map((message, messageId) => ({ ...message, messageId })),
         },
       }),
     }

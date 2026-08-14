@@ -37,12 +37,16 @@ export function executeTavernHelperMutation(invocation: {
   const request = parseTavernHelperMutationRequest(invocation.rawInput)
   const chat = 'operation' in request && (request.operation === 'set-chat-messages'
     || request.operation === 'create-chat-messages' || request.operation === 'delete-chat-messages'
-    || request.operation === 'rotate-chat-messages')
-    ? executeTavernChatMutation(invocation.agent, request)
+    || request.operation === 'rotate-chat-messages' || request.operation === 'set-chat-hidden')
+    ? executeTavernChatMutation(invocation.agent, request, initialized.hiddenPrefix)
     : undefined
   const mutated = applyTavernHelperMutation(initialized, request)
-  const next = chat?.messageVariables === undefined
-    ? mutated
-    : { ...mutated, scopes: { ...mutated.scopes, message: chat.messageVariables } }
+  const next = chat === undefined ? mutated : {
+    ...mutated,
+    hiddenPrefix: chat.hiddenPrefix,
+    ...(chat.messageVariables === undefined
+      ? {}
+      : { scopes: { ...mutated.scopes, message: chat.messageVariables } }),
+  }
   return { kind: 'success', text: encodeTavernHelperState(next) }
 }

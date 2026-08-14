@@ -3,7 +3,7 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { isSurfaceEvent, type JsonValue, type SessionEvent, type SurfaceEvent, type SurfaceIntent } from '@deepseek-ai/dsh-session'
-import type { TavernChatMessageInput, TavernChatMutationRequest } from './tavern-helper.ts'
+import type { TavernChatMessageInput, TavernChatMutationRequest, TavernHiddenMessage } from './tavern-helper.ts'
 
 type JsonRecord = Readonly<Record<string, JsonValue>>
 
@@ -22,6 +22,7 @@ interface VisibleMessage {
 /** State changes that accompany one transcript mutation. */
 export interface TavernChatMutationResult {
   readonly messageVariables?: JsonRecord
+  readonly hiddenPrefix: readonly TavernHiddenMessage[]
 }
 
 function textContent(event: SurfaceEvent): string | undefined {
@@ -155,7 +156,11 @@ function mergeUpdates(messages: readonly TavernChatMessageInput[]): readonly Tav
   return [...updates.values()]
 }
 
-function setMessages(agent: Agent, request: Extract<TavernChatMutationRequest, { operation: 'set-chat-messages' }>): TavernChatMutationResult {
+function setMessages(
+  agent: Agent,
+  request: Extract<TavernChatMutationRequest, { operation: 'set-chat-messages' }>,
+  hiddenPrefix: readonly TavernHiddenMessage[],
+): TavernChatMutationResult {
   const entries = surfaceEntries(agent)
   const visible = visibleMessages(entries)
   let messageVariables: JsonRecord | undefined
@@ -166,7 +171,10 @@ function setMessages(agent: Agent, request: Extract<TavernChatMutationRequest, {
   }[] = []
   for (const update of mergeUpdates(request.messages)) {
     validateRepresentable(update)
-    const target = visible[update.message_id!]
+    if (update.message_id! < hiddenPrefix.length) {
+      throw new Error('隐藏楼层恢复后才能修改正文或变量')
+    }
+    const target = visible[update.message_id! - hiddenPrefix.length]
     if (target === undefined) continue
     const data = selectedData(update)
     if (data !== undefined) {
@@ -184,7 +192,7 @@ function setMessages(agent: Agent, request: Extract<TavernChatMutationRequest, {
       sourceEventSeqs: [update.target.event.seq],
     })
   }
-  return { ...(messageVariables === undefined ? {} : { messageVariables }) }
+  return { hiddenPrefix, ...(messageVariables === undefined ? {} : { messageVariables }) }
 }
 
 function messageEntry(message: TavernChatMessageInput): SurfaceEntry {
@@ -210,11 +218,18 @@ function boundary(value: number | 'end', length: number): number {
   return Math.min(length, Math.max(0, normalized))
 }
 
-function createMessages(agent: Agent, request: Extract<TavernChatMutationRequest, { operation: 'create-chat-messages' }>): TavernChatMutationResult {
-  if (request.messages.length === 0) return {}
+function createMessages(
+  agent: Agent,
+  request: Extract<TavernChatMutationRequest, { operation: 'create-chat-messages' }>,
+  hiddenPrefix: readonly TavernHiddenMessage[],
+): TavernChatMutationResult {
+  if (request.messages.length === 0) return { hiddenPrefix }
   const entries = surfaceEntries(agent)
   const current = blocks(entries)
-  const insertAt = boundary(request.insertAt, current.messages.length)
+  const canonicalLength = hiddenPrefix.length + current.messages.length
+  const canonicalInsertAt = boundary(request.insertAt, canonicalLength)
+  if (canonicalInsertAt < hiddenPrefix.length) throw new Error('不能在隐藏的聊天前缀中间插入楼层')
+  const insertAt = canonicalInsertAt - hiddenPrefix.length
   const created = request.messages.map(message => [messageEntry(message)])
   const messageData = request.messages.map(selectedData)
   if (insertAt !== current.messages.length && messageData.some(data => data !== undefined)) {
@@ -231,27 +246,40 @@ function createMessages(agent: Agent, request: Extract<TavernChatMutationRequest
     rewriteSurface(agent, entries, next)
   }
   const data = insertAt === current.messages.length ? messageData.at(-1) ?? {} : undefined
-  return { ...(data === undefined ? {} : { messageVariables: data }) }
+  return { hiddenPrefix, ...(data === undefined ? {} : { messageVariables: data }) }
 }
 
-function deleteMessages(agent: Agent, request: Extract<TavernChatMutationRequest, { operation: 'delete-chat-messages' }>): TavernChatMutationResult {
+function deleteMessages(
+  agent: Agent,
+  request: Extract<TavernChatMutationRequest, { operation: 'delete-chat-messages' }>,
+  hiddenPrefix: readonly TavernHiddenMessage[],
+): TavernChatMutationResult {
   const entries = surfaceEntries(agent)
   const current = blocks(entries)
-  const deleted = new Set(request.messageIds.filter(id => id >= 0 && id < current.messages.length))
-  if (deleted.size === 0) return {}
+  if (request.messageIds.some(id => id >= 0 && id < hiddenPrefix.length)) {
+    throw new Error('隐藏楼层恢复后才能删除')
+  }
+  const deleted = new Set(request.messageIds
+    .map(id => id - hiddenPrefix.length).filter(id => id >= 0 && id < current.messages.length))
+  if (deleted.size === 0) return { hiddenPrefix }
   const remaining = current.messages.filter((_message, index) => !deleted.has(index))
   if (remaining.length === 0) throw new Error('脚本暂时不能删除角色会话的全部聊天楼层')
   rewriteSurface(agent, entries, [...current.prefix, ...remaining.flat()])
-  return deleted.has(current.messages.length - 1) ? { messageVariables: {} } : {}
+  return deleted.has(current.messages.length - 1) ? { hiddenPrefix, messageVariables: {} } : { hiddenPrefix }
 }
 
-function rotateMessages(agent: Agent, request: Extract<TavernChatMutationRequest, { operation: 'rotate-chat-messages' }>): TavernChatMutationResult {
+function rotateMessages(
+  agent: Agent,
+  request: Extract<TavernChatMutationRequest, { operation: 'rotate-chat-messages' }>,
+  hiddenPrefix: readonly TavernHiddenMessage[],
+): TavernChatMutationResult {
+  if (hiddenPrefix.length > 0) throw new Error('隐藏楼层恢复后才能调整楼层顺序')
   const entries = surfaceEntries(agent)
   const current = blocks(entries)
   const begin = boundary(request.begin, current.messages.length)
   const end = boundary(request.end, current.messages.length)
   const middle = Math.min(end, Math.max(begin, boundary(request.middle, current.messages.length)))
-  if (begin === middle || middle === end) return {}
+  if (begin === middle || middle === end) return { hiddenPrefix }
   const rotated = [
     ...current.messages.slice(0, begin),
     ...current.messages.slice(middle, end),
@@ -259,13 +287,49 @@ function rotateMessages(agent: Agent, request: Extract<TavernChatMutationRequest
     ...current.messages.slice(end),
   ]
   rewriteSurface(agent, entries, [...current.prefix, ...rotated.flat()])
-  return { messageVariables: {} }
+  return { hiddenPrefix, messageVariables: {} }
+}
+
+function setHidden(
+  agent: Agent,
+  request: Extract<TavernChatMutationRequest, { operation: 'set-chat-hidden' }>,
+  hiddenPrefix: readonly TavernHiddenMessage[],
+): TavernChatMutationResult {
+  const entries = surfaceEntries(agent)
+  const current = blocks(entries)
+  const visible = visibleMessages(entries)
+  const total = hiddenPrefix.length + visible.length
+  if (request.start !== 0 || request.end >= total) throw new Error('当前仅支持从第 0 楼开始隐藏或恢复')
+  if (request.hidden) {
+    const targetLength = request.end + 1
+    if (targetLength <= hiddenPrefix.length) return { hiddenPrefix }
+    const added = targetLength - hiddenPrefix.length
+    if (added >= current.messages.length) throw new Error('至少需要保留一条未隐藏楼层供角色继续对话')
+    const nextHidden = [
+      ...hiddenPrefix,
+      ...visible.slice(0, added).map(message => ({ seq: message.event.seq, role: message.role, text: message.text })),
+    ]
+    rewriteSurface(agent, entries, [...current.prefix, ...current.messages.slice(added).flat()])
+    return { hiddenPrefix: nextHidden }
+  }
+  if (hiddenPrefix.length === 0) return { hiddenPrefix }
+  if (request.end < hiddenPrefix.length - 1) throw new Error('当前需要一次恢复全部隐藏前缀')
+  const restored: SurfaceEntry[] = hiddenPrefix.map(message => ({
+    kind: 'synthetic', role: message.role, text: message.text,
+  }))
+  rewriteSurface(agent, entries, [...current.prefix, ...restored, ...current.messages.flat()])
+  return { hiddenPrefix: [] }
 }
 
 /** Apply one validated Tavern Helper transcript operation to the current Session surface. */
-export function executeTavernChatMutation(agent: Agent, request: TavernChatMutationRequest): TavernChatMutationResult {
-  if (request.operation === 'set-chat-messages') return setMessages(agent, request)
-  if (request.operation === 'create-chat-messages') return createMessages(agent, request)
-  if (request.operation === 'delete-chat-messages') return deleteMessages(agent, request)
-  return rotateMessages(agent, request)
+export function executeTavernChatMutation(
+  agent: Agent,
+  request: TavernChatMutationRequest,
+  hiddenPrefix: readonly TavernHiddenMessage[] = [],
+): TavernChatMutationResult {
+  if (request.operation === 'set-chat-messages') return setMessages(agent, request, hiddenPrefix)
+  if (request.operation === 'create-chat-messages') return createMessages(agent, request, hiddenPrefix)
+  if (request.operation === 'delete-chat-messages') return deleteMessages(agent, request, hiddenPrefix)
+  if (request.operation === 'rotate-chat-messages') return rotateMessages(agent, request, hiddenPrefix)
+  return setHidden(agent, request, hiddenPrefix)
 }

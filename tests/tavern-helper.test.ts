@@ -25,7 +25,7 @@ function runtimeMessage(
   role: 'user' | 'assistant',
   text: string,
 ): TavernScriptSnapshot['messages'][number] {
-  return { messageId, seq, role, text, data: {}, extra: {} }
+  return { messageId, seq, role, text, isHidden: false, data: {}, extra: {} }
 }
 
 test('emits only transcript messages appended after the established runtime baseline', () => {
@@ -266,6 +266,29 @@ test('parses Tavern Helper chat mutation operations', () => {
   assert.deepEqual(parseTavernHelperMutationRequest(JSON.stringify({
     format: 0, operation: 'rotate-chat-messages', begin: 0, middle: 2, end: 4,
   })), { format: 0, operation: 'rotate-chat-messages', begin: 0, middle: 2, end: 4 })
+  assert.deepEqual(parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0, operation: 'set-chat-hidden', start: 0, end: 8, hidden: true,
+  })), { format: 0, operation: 'set-chat-hidden', start: 0, end: 8, hidden: true })
+  assert.throws(() => parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0, operation: 'set-chat-hidden', start: 2, end: 1, hidden: true,
+  })), /valid non-negative range/u)
+})
+
+test('round-trips the hidden Tavern prefix in durable script state', () => {
+  const state = initializeTavernHelperState({
+    regexScripts: [], tavernHelperScriptNames: [], tavernHelperVariables: {}, tavernHelperScripts: [],
+  }, 'card-hidden')
+  const decoded = decodeTavernHelperState(encodeTavernHelperState({
+    ...state,
+    hiddenPrefix: [
+      { seq: 3, role: 'user', text: '旧问题' },
+      { seq: 4, role: 'assistant', text: '旧回复' },
+    ],
+  }))
+  assert.deepEqual(decoded?.hiddenPrefix, [
+    { seq: 3, role: 'user', text: '旧问题' },
+    { seq: 4, role: 'assistant', text: '旧回复' },
+  ])
 })
 
 test('persists isolated Tavern Helper variable namespaces', () => {

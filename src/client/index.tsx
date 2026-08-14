@@ -4741,18 +4741,47 @@ function TavernScriptRuntime({
         broadcast({ action: 'event', eventType: message.eventType, args: message.args }, event.source as Window)
         return
       }
-      if (message.action === 'trigger-slash' && typeof message.value === 'string' && message.value.length <= 65_536) {
+      if (message.action === 'trigger-slash' && typeof message.requestId === 'string'
+        && typeof message.value === 'string' && message.value.length <= 65_536) {
+        const target = event.source as Window
+        const resolve = (): void => {
+          target.postMessage({ source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: true }, '*')
+        }
+        const reject = (reason: unknown): void => {
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: false,
+            error: reason instanceof Error ? reason.message : String(reason),
+          }, '*')
+        }
         const draft = message.value.match(/^\/setinput\s+([\s\S]*)$/u)
         if (draft?.[1] !== undefined) {
           inputActions.setDraft(draft[1])
+          resolve()
           return
         }
         const send = message.value.match(/^\/send\s+([\s\S]*?)(?:\|\/trigger)?$/u)
         if (send?.[1] !== undefined) {
           const scoped = ctx.sessions.scope(sessionId)
           const conversation = scoped?.get('conversation') as IConversation | undefined
-          void conversation?.send(send[1])
+          if (conversation === undefined) reject(new Error('当前角色会话尚未准备好发送消息'))
+          else void Promise.resolve(conversation.send(send[1])).then(resolve, reject)
+          return
         }
+        const visibility = message.value.match(/^\/(hide|unhide)\s+(\d+)(?:-(\d+))?\s*$/iu)
+        if (visibility?.[1] !== undefined && visibility[2] !== undefined) {
+          const start = Number(visibility[2])
+          const end = Number(visibility[3] ?? visibility[2])
+          const request: TavernHelperMutationRequest = {
+            format: 0,
+            operation: 'set-chat-hidden',
+            start: Math.min(start, end),
+            end: Math.max(start, end),
+            hidden: visibility[1].toLowerCase() === 'hide',
+          }
+          mutationQueue.current = mutationQueue.current.then(() => runMutation(sessionId, request)).then(resolve, reject)
+          return
+        }
+        reject(new Error(`当前不支持酒馆命令：${message.value.split(/\s/u, 1)[0] ?? message.value}`))
         return
       }
       if (message.action === 'preset-replace' && typeof message.requestId === 'string') {

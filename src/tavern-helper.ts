@@ -67,6 +67,13 @@ export interface TavernChatMessageInput {
   readonly swipes_info?: readonly JsonRecord[]
 }
 
+/** One hidden prefix message retained for Tavern scripts but removed from model history. */
+export interface TavernHiddenMessage {
+  readonly seq: number
+  readonly role: 'assistant' | 'user'
+  readonly text: string
+}
+
 /** Browser request changing the model-visible roleplay transcript. */
 export type TavernChatMutationRequest =
   | { readonly format: 0; readonly operation: 'set-chat-messages'; readonly messages: readonly TavernChatMessageInput[] }
@@ -84,6 +91,13 @@ export type TavernChatMutationRequest =
     readonly middle: number
     readonly end: number
   }
+  | {
+    readonly format: 0
+    readonly operation: 'set-chat-hidden'
+    readonly start: number
+    readonly end: number
+    readonly hidden: boolean
+  }
 
 /** Complete durable state written by one Tavern Helper variable mutation. */
 export interface TavernHelperState {
@@ -100,6 +114,8 @@ export interface TavernHelperState {
     readonly message: JsonRecord
   }
   readonly scripts: Readonly<Record<string, JsonRecord>>
+  /** Contiguous transcript prefix excluded from the Session surface but retained for Tavern APIs. */
+  readonly hiddenPrefix?: readonly TavernHiddenMessage[]
   /** Script-authored books and full replacements of imported books, keyed by visible name. */
   readonly worldbooks?: Readonly<Record<string, readonly TavernWorldbookEntry[]>>
   /** Names deleted by scripts, including immutable imported books hidden by a tombstone. */
@@ -327,6 +343,7 @@ export function initializeTavernHelperState(
     ...(previous?.worldbooks === undefined ? {} : { worldbooks: previous.worldbooks }),
     ...(previous?.deletedWorldbookNames === undefined ? {} : { deletedWorldbookNames: previous.deletedWorldbookNames }),
     ...(previous?.worldbookBindings === undefined ? {} : { worldbookBindings: previous.worldbookBindings }),
+    ...(previous?.hiddenPrefix === undefined ? {} : { hiddenPrefix: previous.hiddenPrefix }),
   }
 }
 
@@ -394,6 +411,14 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
       end: integer(value.end, 'rotate-chat-messages end'),
     }
   }
+  if (value.format === 0 && value.operation === 'set-chat-hidden') {
+    const start = integer(value.start, 'set-chat-hidden start')
+    const end = integer(value.end, 'set-chat-hidden end')
+    if (start < 0 || end < start || typeof value.hidden !== 'boolean') {
+      throw new Error('set-chat-hidden requires a valid non-negative range and hidden flag')
+    }
+    return { format: 0, operation: value.operation, start, end, hidden: value.hidden }
+  }
   if (value.format === 0 && value.operation === 'replace-worldbook') {
     return { format: 0, operation: value.operation, name: worldbookName(value.name), entries: worldbookEntries(value.entries) }
   }
@@ -438,7 +463,8 @@ export function applyTavernHelperMutation(
 ): TavernHelperState {
   if ('operation' in request) {
     if (request.operation === 'set-chat-messages' || request.operation === 'create-chat-messages'
-      || request.operation === 'delete-chat-messages' || request.operation === 'rotate-chat-messages') {
+      || request.operation === 'delete-chat-messages' || request.operation === 'rotate-chat-messages'
+      || request.operation === 'set-chat-hidden') {
       return { ...state, revision: state.revision + 1, lastMutation: { scope: 'chat' } }
     }
     if (request.operation === 'replace-worldbook') {
@@ -520,6 +546,21 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
       .map(([name, entries]) => [worldbookName(name), worldbookEntries(entries)]))
   const deletedWorldbookNames = parsed.deletedWorldbookNames === undefined
     ? undefined : stringArray(parsed.deletedWorldbookNames, 'Tavern Helper deleted worldbook names').map(worldbookName)
+  let hiddenPrefix: readonly TavernHiddenMessage[] | undefined
+  if (parsed.hiddenPrefix !== undefined) {
+    if (!Array.isArray(parsed.hiddenPrefix) || parsed.hiddenPrefix.length > MAX_CHAT_MESSAGES) {
+      throw new Error('Tavern Helper hidden chat prefix is invalid')
+    }
+    hiddenPrefix = parsed.hiddenPrefix.map((item, index) => {
+      const message = nested(item)
+      const seq = integer(message.seq, `hidden chat message[${index}].seq`)
+      if (seq < 0 || (message.role !== 'assistant' && message.role !== 'user')) {
+        throw new Error(`hidden chat message[${index}] is invalid`)
+      }
+      if (typeof message.text !== 'string') throw new Error(`hidden chat message[${index}].text must be a string`)
+      return { seq, role: message.role, text: message.text }
+    })
+  }
   let worldbookBindings: TavernWorldbookBindings | undefined
   if (parsed.worldbookBindings !== undefined) {
     const bindings = record(parsed.worldbookBindings, 'Tavern Helper worldbook bindings') as Record<string, JsonValue>
@@ -567,6 +608,7 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     revision: parsed.revision,
     scopes: parsedScopes,
     scripts: parsedScripts,
+    ...(hiddenPrefix === undefined ? {} : { hiddenPrefix }),
     ...(parsedWorldbooks === undefined ? {} : { worldbooks: parsedWorldbooks }),
     ...(deletedWorldbookNames === undefined ? {} : { deletedWorldbookNames }),
     ...(worldbookBindings === undefined ? {} : { worldbookBindings }),

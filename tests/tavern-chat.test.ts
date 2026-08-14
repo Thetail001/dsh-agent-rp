@@ -127,3 +127,34 @@ test('rejects unrepresentable transcript changes before appending Session events
   assert.equal(session.seq, originalSeq)
   assert.deepEqual(transcript(session), ['一', '二'])
 })
+
+test('hides a retained transcript prefix from model history and restores it for Tavern scripts', () => {
+  const { agent, session } = createTranscript(
+    { role: 'user', text: '旧问题' },
+    { role: 'assistant', text: '旧回复' },
+    { role: 'user', text: '总结请求' },
+    { role: 'assistant', text: '压缩后的总结' },
+  )
+
+  const hidden = executeTavernChatMutation(agent, {
+    format: 0, operation: 'set-chat-hidden', start: 0, end: 1, hidden: true,
+  })
+  assert.deepEqual(hidden.hiddenPrefix.map(message => ({ role: message.role, text: message.text })), [
+    { role: 'user', text: '旧问题' },
+    { role: 'assistant', text: '旧回复' },
+  ])
+  assert.deepEqual(transcript(session), ['总结请求', '压缩后的总结'])
+
+  executeTavernChatMutation(agent, {
+    format: 0,
+    operation: 'set-chat-messages',
+    messages: [{ message_id: 3, message: '压缩后的总结（修订）' }],
+  }, hidden.hiddenPrefix)
+  assert.deepEqual(transcript(session), ['总结请求', '压缩后的总结（修订）'])
+
+  const restored = executeTavernChatMutation(agent, {
+    format: 0, operation: 'set-chat-hidden', start: 0, end: 3, hidden: false,
+  }, hidden.hiddenPrefix)
+  assert.deepEqual(restored.hiddenPrefix, [])
+  assert.deepEqual(transcript(session), ['旧问题', '旧回复', '总结请求', '压缩后的总结（修订）'])
+})

@@ -78,6 +78,7 @@ export interface AgentRpProjection {
       readonly seq: number
       readonly role: 'user' | 'assistant'
       readonly text: string
+      readonly isHidden: boolean
     }[]
   }
   /** Persistent alternatives for Roleplay replies that have been regenerated or continued. */
