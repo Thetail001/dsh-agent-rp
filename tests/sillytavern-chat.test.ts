@@ -1,11 +1,24 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { CommandId } from '@deepseek-ai/dsh-commands'
+import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { encodeGenerationState } from '../src/generation.ts'
 import {
   MAX_SILLYTAVERN_CHAT_BYTES,
   parseSillyTavernChat,
   parseSillyTavernChatBytes,
 } from '../src/import/sillytavern-chat.ts'
+import { exportSillyTavernSessionChat } from '../src/sillytavern-chat-export.ts'
+
+function appendAssistant(session: Session, text: string, surfaceOp: 'append' | { op: 'replace'; start: number; end: number } = 'append') {
+  return session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({ content: [{ type: 'text', text }], source: { provider: 'fixture', model: 'fixture' } }),
+  }, { surfaceOp, ...(surfaceOp === 'append' ? {} : { sourceEventSeqs: [surfaceOp.start] }) })
+}
 
 test('imports a SillyTavern JSONL chat losslessly with swipes and inert system rows', () => {
   const chat = parseSillyTavernChatBytes(readFileSync('tests/fixtures/manual-sillytavern-chat.jsonl'))
@@ -51,4 +64,39 @@ test('rejects malformed structure instead of silently rewriting it', () => {
 
 test('rejects an oversized chat before parsing', () => {
   assert.throws(() => parseSillyTavernChat('x'.repeat(MAX_SILLYTAVERN_CHAT_BYTES + 1)), /exceeds/u)
+})
+
+test('exports the active transcript with the current reply and its alternatives', () => {
+  const session = Session.create(SessionId('export-chat'))
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '今晚去哪里？' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  const original = appendAssistant(session, '去钟楼。')
+  const alternative = appendAssistant(session, '去港口。', { op: 'replace', start: original.seq, end: original.seq })
+  const state = {
+    format: 0,
+    groupId: '00000000-0000-4000-8000-000000000001',
+    operation: 'regenerate',
+    originSeq: original.seq,
+    anchorSeq: original.seq,
+    assistantSeqs: [original.seq, alternative.seq],
+    versions: [{ seq: original.seq, text: '去钟楼。' }, { seq: alternative.seq, text: '去港口。' }],
+    selectedVersionSeq: alternative.seq,
+    surfaceSeq: alternative.seq,
+  } as const
+  session.append('command/done', {
+    commandId: CommandId('export-chat-generation'), kind: 'success', text: encodeGenerationState(state),
+  })
+
+  const exported = exportSillyTavernSessionChat(session, {
+    sessionId: 'export-chat', characterName: '白露', userName: '旅人',
+  })
+  const parsed = parseSillyTavernChat(exported.source)
+  assert.equal(exported.messageCount, 2)
+  assert.match(exported.filename, /^白露-export-chat\.jsonl$/u)
+  assert.equal(parsed.header.characterName, '白露')
+  assert.equal(parsed.header.userName, '旅人')
+  assert.deepEqual(parsed.messages.map(message => message.text), ['今晚去哪里？', '去港口。'])
+  assert.deepEqual(parsed.messages[1]?.swipes, ['去钟楼。', '去港口。'])
+  assert.equal(parsed.messages[1]?.swipeId, 1)
 })

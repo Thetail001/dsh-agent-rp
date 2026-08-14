@@ -69,6 +69,7 @@ import {
   SILLYTAVERN_CHAT_PATH,
   type SillyTavernChatUploadResponse,
 } from '../sillytavern-chat-protocol.ts'
+import { SILLYTAVERN_CHAT_EXPORT_PATH } from '../sillytavern-chat-export-protocol.ts'
 import {
   AGENT_RP_SESSION_PATH,
   type AgentRpSessionLaunchRequest,
@@ -294,6 +295,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
     remoteSessionId: string,
     presetId?: string,
   ) => Promise<void>
+  readonly exportChat: (sessionId: SessionId) => Promise<void>
   readonly startCharacterSession: (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -2057,7 +2059,7 @@ function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
   configureWorldInfo, importWorldInfo,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, migrateRpDistributionChat,
-  startCharacterSession,
+  startCharacterSession, exportChat,
   listPresets, listPersonas, savePersona, deletePersona, applyPersona, loadModelCapabilities,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
@@ -2071,6 +2073,8 @@ function RoleplayHeader({
   const [migrationOpen, setMigrationOpen] = useState(false)
   const [personaOpen, setPersonaOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState<string>()
   const [aliasDraft, setAliasDraft] = useState('')
   const [aliasError, setAliasError] = useState<string>()
   const [renaming, setRenaming] = useState(false)
@@ -2174,6 +2178,13 @@ function RoleplayHeader({
           minWidth: '168px', padding: '6px', position: 'absolute', right: 0, top: 'calc(100% + 7px)', zIndex: 80,
         }}>
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setMigrationOpen(true) }} style={headerMenuItemStyle}>迁移聊天</button>
+          <button type="button" role="menuitem" disabled={exporting} onClick={() => {
+            setExporting(true)
+            setExportError(undefined)
+            void exportChat(sessionId).then(() => { setSettingsOpen(false) }, reason => {
+              setExportError(reason instanceof Error ? reason.message : String(reason))
+            }).finally(() => { setExporting(false) })
+          }} style={headerMenuItemStyle}>{exporting ? '正在导出…' : '导出聊天'}</button>
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setPresetOpen(true) }} style={headerMenuItemStyle}>预设</button>
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setWorldInfoOpen(true) }} style={headerMenuItemStyle}>
             世界书{projection.worldInfo.activeCount === 0 ? '' : ` · ${projection.worldInfo.activeCount}`}
@@ -2182,6 +2193,7 @@ function RoleplayHeader({
             setSettingsOpen(false)
             setRoleplayViewMode(sessionId, viewMode === 'immersive' ? 'debug' : 'immersive')
           }} style={headerMenuItemStyle}>{viewMode === 'debug' ? '返回沉浸视图' : '打开调试视图'}</button>
+          {exportError !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '11px', lineHeight: 1.45, margin: '4px 8px 3px', maxWidth: '240px' }}>{exportError}</p>}
         </div>
       </details>
       {statusSource !== undefined && <button type="button" onClick={() => { setStatusOpen(true) }} style={{
@@ -5885,6 +5897,34 @@ export function apply(ctx: ClientContext): void {
     const result = await session.rename(title)
     if (!result.ok) throw new Error(result.error.message)
   }
+  const exportChat = async (sessionId: SessionId): Promise<void> => {
+    const response = await fetch(`${SILLYTAVERN_CHAT_EXPORT_PATH}?sessionId=${encodeURIComponent(sessionId)}`, {
+      headers: { accept: 'application/x-ndjson, application/json' },
+    })
+    if (!response.ok) {
+      const source = await response.text()
+      let message: string | undefined
+      try {
+        message = (JSON.parse(source) as { readonly error?: string }).error
+      } catch (_invalidJson) {
+        message = undefined
+      }
+      throw new Error(message ?? `聊天导出失败（${response.status}）`)
+    }
+    const encodedFilename = response.headers.get('x-agent-rp-filename')
+    const filename = encodedFilename === null ? 'Agent-RP-对话.jsonl' : decodeURIComponent(encodedFilename)
+    const objectUrl = URL.createObjectURL(await response.blob())
+    const link = document.createElement('a')
+    try {
+      link.href = objectUrl
+      link.download = filename
+      document.body.append(link)
+      link.click()
+    } finally {
+      link.remove()
+      window.setTimeout(() => { URL.revokeObjectURL(objectUrl) }, 0)
+    }
+  }
   const characterLibraryJson = async <T,>(path = ''): Promise<T> => {
     const response = await fetch(`${CHARACTER_LIBRARY_PATH}${path}`, {
       headers: { accept: 'application/json' },
@@ -6373,7 +6413,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} migrateRpDistributionChat={migrateRpDistributionChat} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} migrateRpDistributionChat={migrateRpDistributionChat} exportChat={exportChat} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',

@@ -99,6 +99,7 @@ import { executePersonaCommand } from './persona-command.ts'
 import { executeSillyTavernChatCommand } from './sillytavern-chat-command.ts'
 import { installSillyTavernChatHttp } from './sillytavern-chat-http.ts'
 import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
+import { installSillyTavernChatExportHttp } from './sillytavern-chat-export-http.ts'
 import { installSessionLaunchHttp } from './session-launch-http.ts'
 import { executeGenerationCommand } from './generation.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
@@ -1039,6 +1040,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
         installPresetLibraryHttp(webCtx, presetLibrary, server)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)
+        installSillyTavernChatExportHttp(webCtx, ctx, server)
         installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, server)
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
