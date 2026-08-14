@@ -219,12 +219,14 @@ test('mounts commands when public DSH omits prompt extension gateways', async (c
   await root.plugin(AgentRegistry)
   const preset = createScope(root, {})
   const commands: string[] = []
+  const commandInputs = new Map<string, { readonly hint: string } | undefined>()
   root.provide('systemPrompt' as never, { section: () => () => {}, context: () => () => {} } as never)
   root.provide('tools' as never, { register: () => () => {} } as never)
   root.provide('commands' as never, {
-    register(definition: { readonly name: string; readonly input: { readonly hint: string } }) {
-      assert.notEqual(definition.input.hint.trim(), '')
+    register(definition: { readonly name: string; readonly input?: { readonly hint: string } }) {
+      if (definition.input !== undefined) assert.notEqual(definition.input.hint.trim(), '')
       commands.push(definition.name)
+      commandInputs.set(definition.name, definition.input)
       return () => {}
     },
   } as never)
@@ -247,6 +249,7 @@ test('mounts commands when public DSH omits prompt extension gateways', async (c
     'rp-world-info',
     'rp-world-info-import',
   ])
+  assert.equal(commandInputs.get('rp-tavern-trigger'), undefined)
 
   context.after(async () => {
     await preset.dispose()
