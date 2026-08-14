@@ -4688,12 +4688,13 @@ function tavernRegex(
   }
 }
 
-function tavernPresetHelperScript(script: ImportedTavernHelperScript): Record<string, JsonValue> {
+function tavernHelperScript(script: ImportedTavernHelperScript, publicTree = false): Record<string, JsonValue> {
   return {
     type: 'script', id: script.id, name: script.name, content: script.content, info: script.info,
     enabled: script.enabled,
     button: { enabled: script.buttonEnabled, buttons: script.buttons.map(button => ({ ...button })) },
     data: structuredClone(script.data),
+    ...(publicTree ? { export_with: { data: true, button: true } } : {}),
   }
 }
 
@@ -4732,7 +4733,7 @@ function currentTavernPreset(projection: AgentRpProjection): TavernScriptSnapsho
     extensions: {
       regex_scripts: preset.regexScripts.map((script, index) => tavernRegex(script, index, 'preset')),
       tavern_helper: {
-        scripts: preset.tavernHelperScripts.map(tavernPresetHelperScript),
+        scripts: preset.tavernHelperScripts.map(script => tavernHelperScript(script)),
         variables: structuredClone(preset.tavernHelperVariables),
       },
     },
@@ -4872,6 +4873,8 @@ function tavernScriptSnapshot(
     })),
     characterRegexScripts: (projection.frontend?.regexScripts ?? [])
       .map((entry, index) => tavernRegex(entry, index, 'character')),
+    presetScriptTrees: (projection.preset?.tavernHelperScripts ?? []).map(script => tavernHelperScript(script, true)),
+    characterScriptTrees: (projection.frontend?.tavernHelperScripts ?? []).map(script => tavernHelperScript(script, true)),
     displayRegexScripts: [
       ...(projection.preset?.regexScripts ?? []),
       ...(projection.frontend?.regexScripts ?? []),
@@ -5017,6 +5020,8 @@ function TavernScriptRuntime({
       source: 'dsh-agent-rp-host', action: 'variables-sync',
       scopes: snapshot.scopes, messages: snapshot.messages,
       characterRegexScripts: snapshot.characterRegexScripts,
+      presetScriptTrees: snapshot.presetScriptTrees,
+      characterScriptTrees: snapshot.characterScriptTrees,
       displayRegexScripts: snapshot.displayRegexScripts,
       worldbooks: snapshot.worldbooks, worldbookBindings: snapshot.worldbookBindings,
       activeWorldbookEntries: snapshot.activeWorldbookEntries,

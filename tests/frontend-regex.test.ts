@@ -170,7 +170,7 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
     worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
     activeWorldbookEntries: [],
-    messages: [], characterRegexScripts: [],
+    messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
     displayRegexScripts: [base],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
@@ -192,6 +192,9 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(source!, /window\.formatAsTavernRegexedString=/u)
   assert.match(source!, /window\.registerMacroLike=/u)
   assert.match(source!, /window\.unregisterMacroLike=/u)
+  assert.match(source!, /window\.substitudeMacros=/u)
+  assert.match(source!, /window\.getScriptTrees=/u)
+  assert.match(source!, /window\.getAllEnabledScriptButtons=/u)
   assert.match(source!, /window\.generateRaw=/u)
   assert.match(source!, /\/api\/backends\/chat-completions\/generate/u)
   assert.match(source!, /window\.stopGenerationById=/u)
@@ -229,7 +232,7 @@ window.__regexMutation = replaceTavernRegexes([{
     },
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
     worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
-    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], displayRegexScripts: [],
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [], displayRegexScripts: [],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
   assert.notEqual(source, undefined)
@@ -280,7 +283,8 @@ window.__regexReads = {
     },
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
     worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
-    activeWorldbookEntries: [], messages: [], characterRegexScripts: [characterRegex], displayRegexScripts: [],
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [characterRegex],
+    presetScriptTrees: [], characterScriptTrees: [], displayRegexScripts: [],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
   assert.notEqual(source, undefined)
@@ -296,12 +300,55 @@ window.__regexReads = {
   assert.deepEqual(result.legacyGlobal, [])
 })
 
+test('lets Tavern scripts inspect preset and character script trees without sharing mutations', () => {
+  const characterScript = {
+    type: 'script', enabled: true, name: '角色状态', id: 'character-status', content: 'void 0', info: '',
+    button: { enabled: true, buttons: [{ name: '查看', visible: true }] }, data: { mode: 'compact' },
+    export_with: { data: true, button: true },
+  }
+  const presetScript = { ...characterScript, name: '预设工具', id: 'preset-tool' }
+  const script = String.raw`
+const mutable = getScriptTrees({ type: 'character' });
+mutable[0].name = '不应污染快照';
+window.__scriptTrees = {
+  character: getScriptTrees({ type: 'character' }),
+  preset: getScriptTrees({ type: 'preset' }),
+  global: getScriptTrees({ type: 'global' }),
+  buttons: getAllEnabledScriptButtons(),
+};
+`
+  const html = tavernScriptFrameSource({
+    id: 'tree-reader', name: '脚本读取', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'tree-reader', scriptName: '脚本读取', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [],
+    presetScriptTrees: [presetScript], characterScriptTrees: [characterScript], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const result = JSON.parse(JSON.stringify(context.__scriptTrees)) as Record<string, unknown>
+  assert.deepEqual(result.character, [characterScript])
+  assert.deepEqual(result.preset, [presetScript])
+  assert.deepEqual(result.global, [])
+  assert.deepEqual(result.buttons, {
+    'character-status': [{ button_id: 'character-status_查看', button_name: '查看' }],
+    'preset-tool': [{ button_id: 'preset-tool_查看', button_name: '查看' }],
+  })
+})
+
 test('applies and unregisters Tavern Helper macro-like replacements', () => {
   const script = String.raw`
 const registration = registerMacroLike(/\{\{mood::(.*?)\}\}/gu, (context, _match, mood) =>
   context.message_id + ':' + context.role + ':' + mood);
 registerMacroLike(/\{\{mood::(.*?)\}\}/iu, () => 'duplicate must not win');
 window.__macroBefore = formatAsTavernRegexedString('{{mood::平静}}', 'ai_output', 'display', { depth: 0 });
+window.__macroDirect = substitudeMacros('{{char}}/{{user}}/{{lastMessageId}}/{{messageId}}/{{mood::安心}}');
 registration.unregister();
 window.__macroAfter = formatAsTavernRegexedString('{{mood::平静}}', 'ai_output', 'display', { depth: 0 });
 `
@@ -315,13 +362,14 @@ window.__macroAfter = formatAsTavernRegexedString('{{mood::平静}}', 'ai_output
     worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
     activeWorldbookEntries: [],
     messages: [{ messageId: 0, seq: 1, role: 'assistant', text: '', isHidden: false, data: {}, extra: {} }],
-    characterRegexScripts: [], displayRegexScripts: [],
+    characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [], displayRegexScripts: [],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
   assert.notEqual(source, undefined)
   const context = runtimeAcceptanceContext([])
   runInNewContext(source!, context)
   assert.equal(context.__macroBefore, '0:assistant:平静')
+  assert.equal(context.__macroDirect, '角色/用户/0/0/0:assistant:安心')
   assert.equal(context.__macroAfter, '{{mood::平静}}')
 })
 
@@ -377,7 +425,7 @@ window.__acceptance = generate({
     worldbooks: {},
     worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
     activeWorldbookEntries: [],
-    messages: [], characterRegexScripts: [], displayRegexScripts: [],
+    messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [], displayRegexScripts: [],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
   assert.notEqual(source, undefined)
@@ -440,7 +488,8 @@ window.__acceptance = Promise.all([
       }],
     },
     worldbookBindings: { global: ['规则书'], character: { primary: null, additional: [] }, chat: null },
-    activeWorldbookEntries: ['规则书.7'], messages: [], characterRegexScripts: [], displayRegexScripts: [],
+    activeWorldbookEntries: ['规则书.7'], messages: [], characterRegexScripts: [],
+    presetScriptTrees: [], characterScriptTrees: [], displayRegexScripts: [],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
   assert.notEqual(source, undefined)
@@ -528,7 +577,7 @@ test('runs the same two regex phases inside the isolated Tavern runtime', () => 
     worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
     activeWorldbookEntries: [],
     messages: [{ messageId: 0, seq: 1, role: 'assistant', text: '', isHidden: false, data: {}, extra: {} }],
-    characterRegexScripts: [],
+    characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
     displayRegexScripts: [ordinary, display],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
