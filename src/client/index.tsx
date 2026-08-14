@@ -2278,6 +2278,7 @@ function PresetManagerDialog({
   const modelLabel = modelCapabilities.value === undefined
     ? undefined
     : modelCapabilities.value.modelName ?? modelCapabilities.value.current.model
+  const preservedSampling = preset.preservedGeneration.filter(value => !value.startsWith('reasoning_effort'))
   const togglePromptSection = (key: string): void => {
     setCollapsedPromptSections((current) => {
       const next = new Set(current)
@@ -2611,6 +2612,9 @@ function PresetManagerDialog({
           </div>}
           {!unsupportedReasoning && modelCapabilities.status === 'ready' && reasoning !== undefined && <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '-3px 1px 12px', opacity: 0.52 }}>
             {modelLabel} 可用：{reasoning.efforts.length === 0 ? '没有可选推理等级' : reasoning.efforts.map(effort => effort.name).join('、')}
+          </p>}
+          {preservedSampling.length > 0 && <p role="note" style={{ fontSize: '10px', lineHeight: 1.5, margin: '10px 1px 0', opacity: 0.5 }}>
+            暂未映射：{preservedSampling.join('、')}；导出副本时仍会保留
           </p>}
           <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '16px 1px 0', opacity: 0.46 }}>
             修改只影响当前角色会话。未填写的参数跟随会话与模型设置
