@@ -17,6 +17,47 @@ import {
   tavernChatCompletionsEndpoint,
 } from '../src/tavern-generation-http.ts'
 import { tavernModelListEndpoint } from '../src/tavern-model-list-http.ts'
+import { advanceTavernTranscript, type TavernScriptSnapshot } from '../src/client/tavern-runtime.ts'
+
+function runtimeMessage(
+  messageId: number,
+  seq: number,
+  role: 'user' | 'assistant',
+  text: string,
+): TavernScriptSnapshot['messages'][number] {
+  return { messageId, seq, role, text, data: {}, extra: {} }
+}
+
+test('emits only transcript messages appended after the established runtime baseline', () => {
+  const history = [
+    runtimeMessage(0, 4, 'user', '旧提问'),
+    runtimeMessage(1, 7, 'assistant', '旧回复'),
+  ]
+  const initial = advanceTavernTranscript(undefined, history)
+  assert.deepEqual(initial.appended, [])
+
+  const user = runtimeMessage(2, 9, 'user', '新提问')
+  const afterUser = advanceTavernTranscript(initial.cursor, [...history, user])
+  assert.deepEqual(afterUser.appended, [user])
+
+  const assistant = runtimeMessage(3, 14, 'assistant', '新回复')
+  const afterAssistant = advanceTavernTranscript(afterUser.cursor, [...history, user, assistant])
+  assert.deepEqual(afterAssistant.appended, [assistant])
+})
+
+test('rebases transcript delivery after a rewrite instead of replaying visible history', () => {
+  const history = [
+    runtimeMessage(0, 2, 'user', '提问'),
+    runtimeMessage(1, 5, 'assistant', '旧回复'),
+  ]
+  const initial = advanceTavernTranscript(undefined, history)
+  const replacement = runtimeMessage(1, 8, 'assistant', '改写后的回复')
+  const rewritten = advanceTavernTranscript(initial.cursor, [history[0]!, replacement])
+  assert.deepEqual(rewritten.appended, [])
+
+  const next = runtimeMessage(2, 11, 'user', '继续')
+  assert.deepEqual(advanceTavernTranscript(rewritten.cursor, [history[0]!, replacement, next]).appended, [next])
+})
 
 test('resolves OpenAI-compatible custom generation endpoints without retaining query credentials', () => {
   assert.equal(tavernChatCompletionsEndpoint('https://example.com/v1').href,

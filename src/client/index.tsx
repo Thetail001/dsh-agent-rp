@@ -28,9 +28,11 @@ import {
   type TavernPromptPreviewResponse,
 } from '../tavern-generation-protocol.ts'
 import {
+  advanceTavernTranscript,
   BUILT_IN_TAVERN_SCRIPT_ORIGINS,
   resolveTavernScriptSource,
   tavernScriptFrameSource,
+  type TavernTranscriptCursor,
   type TavernScriptSnapshot,
 } from './tavern-runtime.ts'
 import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
@@ -4517,18 +4519,36 @@ function TavernScriptRuntime({
       if (frame !== undefined) syncFrame(frame, entry.script)
     }
   }, [projection.frontend, projection.mvu, projection.preset, projection.tavern])
-  const previousMvu = useRef<string>()
+  const previousMvu = useRef<{ readonly sessionId: SessionId; readonly value?: string }>()
   useEffect(() => {
     const current = projection.mvu === undefined ? undefined : JSON.stringify({ stat_data: projection.mvu.statData })
-    const before = previousMvu.current
-    previousMvu.current = current
+    const previous = previousMvu.current
+    previousMvu.current = { sessionId, ...(current === undefined ? {} : { value: current }) }
+    if (previous === undefined || previous.sessionId !== sessionId) return
+    const before = previous.value
     if (current === undefined || before === undefined || current === before) return
     const currentValue = JSON.parse(current) as object
     const beforeValue = JSON.parse(before) as object
     broadcast({ action: 'event', eventType: 'mag_variable_update_ended', args: [currentValue, beforeValue] })
-    broadcast({ action: 'event', eventType: 'message_received', args: [projection.tavern?.messages.at(-1)?.messageId ?? 0, 'normal'] })
-    broadcast({ action: 'event', eventType: 'generation_ended', args: [projection.tavern?.messages.at(-1)?.messageId ?? 0] })
-  }, [projection.mvu])
+  }, [projection.mvu, sessionId])
+  const transcript = useRef<{
+    readonly sessionId: SessionId
+    readonly cursor: TavernTranscriptCursor | undefined
+  }>({ sessionId, cursor: undefined })
+  useEffect(() => {
+    const messages = projection.tavern?.messages ?? []
+    const previous = transcript.current.sessionId === sessionId ? transcript.current.cursor : undefined
+    const advanced = advanceTavernTranscript(previous, messages)
+    transcript.current = { sessionId, cursor: advanced.cursor }
+    for (const message of advanced.appended) {
+      if (message.role === 'user') {
+        broadcast({ action: 'event', eventType: 'message_sent', args: [message.messageId] })
+        continue
+      }
+      broadcast({ action: 'event', eventType: 'message_received', args: [message.messageId, 'normal'] })
+      broadcast({ action: 'event', eventType: 'generation_ended', args: [message.messageId] })
+    }
+  }, [projection.tavern?.messages, sessionId])
   useEffect(() => {
     const bridge = (event: MessageEvent<unknown>): void => {
       const entry = frames.find(candidate => frameRefs.current.get(candidate.script.id)?.contentWindow === event.source)
