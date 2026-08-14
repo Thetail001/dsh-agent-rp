@@ -176,10 +176,12 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   const html = tavernScriptFrameSource({
     id: 'travel', name: '地点选择', content: '', info: '测试', enabled: true,
     buttonEnabled: true, buttons: [{ name: '开始', visible: true }], data: {},
-  }, 'replaceScriptButtons([{name:"学校",visible:true}])', {
+  }, 'window.__personaSnapshot={name:getCurrentPersonaName(),id:getCurrentPersonaId()}; replaceScriptButtons([{name:"学校",visible:true}])', {
     scriptId: 'travel', scriptName: '地点选择', scriptInfo: '测试',
     buttons: [{ name: '开始', visible: true }], characterName: '白露', characterId: 'bailu.png',
-    chatId: 'session-test', approvedScriptOrigins: [],
+    chatId: 'session-test', approvedScriptOrigins: [], persona: {
+      id: 'persona-12345678-1234-4123-8123-123456789abc', name: '小满', description: '怕冷，喜欢旧书。',
+    },
     preset: {
       name: 'V18', revision: 3,
       value: { settings: {}, prompts: [], prompts_unused: [], extensions: {} },
@@ -200,6 +202,8 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(source!, /window\.refreshOneMessage=/u)
   assert.match(source!, /window\.getCurrentCharId=/u)
   assert.match(source!, /window\.getCurrentChatId=/u)
+  assert.match(source!, /window\.getCurrentPersonaName=/u)
+  assert.match(source!, /window\.getCurrentPersonaId=/u)
   assert.match(source!, /window\.getPreset=/u)
   assert.match(source!, /window\.updatePresetWith=/u)
   assert.match(source!, /window\.setPreset=/u)
@@ -228,6 +232,11 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.ok(source!.indexOf('var prompts=await __dshPromptPreview')
     < source!.indexOf("var response=await window.fetch('/api/backends/chat-completions/generate'"))
   assert.match(source!, /window\.getModelList=/u)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  assert.deepEqual(JSON.parse(JSON.stringify(context.__personaSnapshot)), {
+    name: '小满', id: 'persona-12345678-1234-4123-8123-123456789abc',
+  })
 })
 
 test('lets Tavern scripts replace the complete preset regex list', async () => {

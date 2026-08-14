@@ -2,6 +2,7 @@
 
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/types.ts'
+import type { SessionPersonaSnapshot } from '../persona-library-protocol.ts'
 import type {
   TavernInjectedPrompt, TavernScriptTree, TavernWorldbookBindings, TavernWorldbookEntry,
 } from '../tavern-helper.ts'
@@ -25,6 +26,7 @@ export interface TavernScriptSnapshot {
   readonly characterId: string
   readonly chatId: string
   readonly userName?: string
+  readonly persona?: SessionPersonaSnapshot
   readonly preset?: TavernScriptPresetSnapshot
   readonly approvedScriptOrigins: readonly string[]
   readonly scopes: {
@@ -255,6 +257,8 @@ window.getCurrentCharId=function(){return __dshSnapshot.characterId};
 window.getCurrentCharacterId=window.getCurrentCharId;
 window.getCurrentCharacterName=function(){return __dshSnapshot.characterName};
 window.getCurrentChatId=function(){return __dshSnapshot.chatId};
+window.getCurrentPersonaName=function(){return __dshSnapshot.persona?.name??null};
+window.getCurrentPersonaId=function(){return __dshSnapshot.persona?.id??null};
 function __dshPresetName(name){if(name!=='in_use')throw new Error("当前仅支持正在使用的预设 'in_use'");if(!__dshPreset)throw new Error('当前会话没有预设');return name}
 window.getPresetNames=function(){return __dshPreset?['in_use']:[]};
 window.getLoadedPresetName=function(){return __dshPreset?.name??''};
