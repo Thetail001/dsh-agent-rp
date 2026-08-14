@@ -54,6 +54,7 @@ function nullableFiniteNumber(value: JsonValue | undefined, path: string): numbe
 export function parseRegexScript(value: JsonValue, path: string): ImportedRegexScript {
   const script = object(value, path)
   return {
+    ...(typeof script.id === 'string' && script.id.trim() !== '' ? { id: script.id } : {}),
     scriptName: requiredString(script.scriptName, `${path}.scriptName`),
     findRegex: requiredString(script.findRegex, `${path}.findRegex`),
     replaceString: requiredString(script.replaceString, `${path}.replaceString`),

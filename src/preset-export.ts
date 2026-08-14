@@ -26,6 +26,7 @@ function prompt(prompt: SillyTavernPresetPrompt): Record<string, unknown> {
 
 function regex(script: ImportedRegexScript): Record<string, unknown> {
   return {
+    ...(script.id === undefined ? {} : { id: script.id }),
     scriptName: script.scriptName,
     findRegex: script.findRegex,
     replaceString: script.replaceString,

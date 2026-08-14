@@ -21,6 +21,7 @@ export type CharacterImportDegradation = typeof CHARACTER_IMPORT_DEGRADATIONS[nu
 
 /** One SillyTavern character-scoped regex retained for display and prompt views. */
 export interface ImportedRegexScript {
+  readonly id?: string
   readonly scriptName: string
   readonly findRegex: string
   readonly replaceString: string

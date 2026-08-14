@@ -3877,6 +3877,7 @@ function RoleplayStatusDialog({ characterName, source, onClose }: {
 }
 
 type RunTavernMutation = (sessionId: SessionId, request: TavernHelperMutationRequest) => Promise<void>
+type RunPresetConfiguration = (sessionId: SessionId, request: PresetConfigurationRequest) => Promise<void>
 type RunTavernGeneration = (
   sessionId: SessionId,
   request: Pick<TavernGenerationRequest, 'mode' | 'config'>,
@@ -3914,10 +3915,199 @@ function tavernWorldbookEntry(
   }
 }
 
+const tavernPresetSystemPromptIds = new Set(['main', 'nsfw', 'jailbreak', 'enhanceDefinitions'])
+const tavernPresetPlaceholderPromptIds = new Set([
+  'worldInfoBefore', 'personaDescription', 'charDescription', 'charPersonality', 'scenario',
+  'worldInfoAfter', 'dialogueExamples', 'chatHistory',
+])
+
+function tavernPresetPrompt(
+  prompt: NonNullable<AgentRpProjection['preset']>['prompts'][number],
+): Record<string, JsonValue> {
+  const system = tavernPresetSystemPromptIds.has(prompt.identifier)
+  const placeholder = tavernPresetPlaceholderPromptIds.has(prompt.identifier)
+  const position = prompt.injectionPosition === 1
+    ? { type: 'in_chat', depth: prompt.injectionDepth ?? 4, order: prompt.injectionOrder ?? 100 }
+    : { type: 'relative' }
+  return {
+    id: prompt.identifier,
+    identifier: prompt.identifier,
+    name: prompt.name,
+    enabled: prompt.enabled,
+    role: prompt.role,
+    ...system ? {} : { position },
+    ...placeholder ? {} : { content: prompt.content },
+    system_prompt: prompt.systemPrompt,
+    marker: prompt.marker,
+    forbid_overrides: prompt.forbidOverrides,
+  }
+}
+
+function tavernPresetRegex(
+  script: NonNullable<AgentRpProjection['preset']>['regexScripts'][number],
+): Record<string, JsonValue> {
+  return {
+    id: script.id ?? `preset-regex-${script.index}`,
+    script_name: script.scriptName,
+    enabled: !script.disabled,
+    find_regex: script.findRegex,
+    trim_strings: [...script.trimStrings],
+    replace_string: script.replaceString,
+    source: {
+      user_input: script.placement.includes(1),
+      ai_output: script.placement.includes(2),
+      slash_command: script.placement.includes(3),
+      world_info: script.placement.includes(5),
+      reasoning: script.placement.includes(6),
+    },
+    destination: { display: script.markdownOnly, prompt: script.promptOnly },
+    run_on_edit: script.runOnEdit,
+    min_depth: script.minDepth,
+    max_depth: script.maxDepth,
+    disabled: script.disabled,
+  }
+}
+
+function tavernPresetHelperScript(script: ImportedTavernHelperScript): Record<string, JsonValue> {
+  return {
+    type: 'script', id: script.id, name: script.name, content: script.content, info: script.info,
+    enabled: script.enabled,
+    button: { enabled: script.buttonEnabled, buttons: script.buttons.map(button => ({ ...button })) },
+    data: structuredClone(script.data),
+  }
+}
+
+function currentTavernPreset(projection: AgentRpProjection): TavernScriptSnapshot['preset'] {
+  const preset = projection.preset
+  if (preset === undefined) return undefined
+  const generation = preset.generation
+  const value: Record<string, JsonValue> = {
+    settings: {
+      max_context: 2_000_000,
+      max_completion_tokens: generation.maxTokens ?? 300,
+      reply_count: 1,
+      should_stream: true,
+      temperature: generation.temperature ?? 1,
+      frequency_penalty: generation.frequencyPenalty ?? 0,
+      presence_penalty: generation.presencePenalty ?? 0,
+      repetition_penalty: generation.repetitionPenalty ?? 1,
+      top_p: generation.topP ?? 1,
+      min_p: generation.minP ?? 0,
+      top_k: generation.topK ?? 0,
+      top_a: generation.topA ?? 0,
+      seed: -1,
+      squash_system_messages: false,
+      reasoning_effort: generation.reasoningEffort ?? 'auto',
+      request_thoughts: false,
+      request_images: false,
+      enable_function_calling: false,
+      enable_web_search: false,
+      allow_sending_images: 'auto',
+      allow_sending_videos: false,
+      character_name_prefix: 'none',
+      wrap_user_messages_in_quotes: false,
+    },
+    prompts: preset.prompts.filter(prompt => prompt.attached).map(tavernPresetPrompt),
+    prompts_unused: preset.prompts.filter(prompt => !prompt.attached).map(tavernPresetPrompt),
+    extensions: {
+      regex_scripts: preset.regexScripts.map(tavernPresetRegex),
+      tavern_helper: {
+        scripts: preset.tavernHelperScripts.map(tavernPresetHelperScript),
+        variables: structuredClone(preset.tavernHelperVariables),
+      },
+    },
+  }
+  return { name: preset.name, revision: preset.revision, value }
+}
+
+function tavernObject(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${label} 必须是对象`)
+  return value as Record<string, unknown>
+}
+
+function tavernPresetConfiguration(
+  projection: AgentRpProjection,
+  value: unknown,
+  revision: number,
+): PresetConfigurationRequest {
+  const active = projection.preset
+  if (active === undefined) throw new Error('当前会话没有预设')
+  const preset = tavernObject(value, '预设')
+  const used = Array.isArray(preset.prompts) ? preset.prompts : []
+  const unused = Array.isArray(preset.prompts_unused) ? preset.prompts_unused : []
+  const currentById = new Map(active.prompts.map(prompt => [prompt.identifier, prompt]))
+  const seen = new Set<string>()
+  const definitions: NonNullable<Extract<PresetConfigurationRequest, { operation: 'replace' }>['prompts']> = [
+    ...used, ...unused,
+  ].map((candidate, index) => {
+    const item = tavernObject(candidate, `预设提示词 ${index + 1}`)
+    const identifier = typeof item.id === 'string' && item.id.trim() !== ''
+      ? item.id : typeof item.identifier === 'string' ? item.identifier : ''
+    if (identifier.trim() === '' || seen.has(identifier)) throw new Error('预设提示词标识无效或重复')
+    seen.add(identifier)
+    const current = currentById.get(identifier)
+    const role = item.role === 'user' || item.role === 'assistant' || item.role === 'system'
+      ? item.role : current?.role ?? 'system'
+    const position = typeof item.position === 'object' && item.position !== null && !Array.isArray(item.position)
+      ? item.position as Record<string, unknown> : undefined
+    const inChat = position?.type === 'in_chat'
+    const withPosition = inChat || current?.injectionPosition !== undefined || current === undefined
+      ? {
+          injectionPosition: inChat ? 1 : 0,
+          ...(inChat && Number.isSafeInteger(position?.depth) ? { injectionDepth: Number(position!.depth) } : {}),
+          ...(inChat && Number.isSafeInteger(position?.order) ? { injectionOrder: Number(position!.order) } : {}),
+        }
+      : {}
+    return {
+      identifier,
+      name: typeof item.name === 'string' && item.name.trim() !== '' ? item.name : current?.name ?? identifier,
+      role,
+      content: typeof item.content === 'string' ? item.content : current?.content ?? '',
+      ...withPosition,
+    }
+  })
+  const order = used.map((candidate, index) => {
+    const item = tavernObject(candidate, `预设顺序 ${index + 1}`)
+    const identifier = typeof item.id === 'string' && item.id.trim() !== ''
+      ? item.id : typeof item.identifier === 'string' ? item.identifier : ''
+    return { identifier, enabled: item.enabled === true }
+  })
+  const settings = typeof preset.settings === 'object' && preset.settings !== null && !Array.isArray(preset.settings)
+    ? preset.settings as Record<string, unknown> : {}
+  const generation: Extract<PresetConfigurationRequest, { operation: 'replace' }>['generation'] = {
+    ...(typeof settings.temperature === 'number' && Number.isFinite(settings.temperature)
+      && (active.generation.temperature !== undefined || settings.temperature !== 1)
+      ? { temperature: settings.temperature } : {}),
+    ...(Number.isSafeInteger(settings.max_completion_tokens) && Number(settings.max_completion_tokens) > 0
+      && (active.generation.maxTokens !== undefined || settings.max_completion_tokens !== 300)
+      ? { maxTokens: Number(settings.max_completion_tokens) } : {}),
+    ...(typeof settings.reasoning_effort === 'string' && settings.reasoning_effort.trim() !== ''
+      && (active.generation.reasoningEffort !== undefined || settings.reasoning_effort !== 'auto')
+      ? { reasoningEffort: settings.reasoning_effort } : {}),
+  }
+  const extensions = typeof preset.extensions === 'object' && preset.extensions !== null && !Array.isArray(preset.extensions)
+    ? preset.extensions as Record<string, unknown> : {}
+  const candidates = Array.isArray(extensions.regex_scripts) ? extensions.regex_scripts : []
+  const regex = active.regexScripts.map((script, index) => {
+    const byId = script.id === undefined ? undefined : candidates.find(candidate => {
+      if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return false
+      return (candidate as Record<string, unknown>).id === script.id
+    })
+    const candidate = byId ?? candidates[index]
+    const item = typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate)
+      ? candidate as Record<string, unknown> : {}
+    const disabled = typeof item.enabled === 'boolean' ? !item.enabled
+      : typeof item.disabled === 'boolean' ? item.disabled : script.disabled
+    return { index, disabled }
+  })
+  return { operation: 'replace', revision, order, prompts: definitions, content: [], generation, regex }
+}
+
 function tavernScriptSnapshot(
   projection: AgentRpProjection,
   script: ImportedTavernHelperScript,
   approvedScriptOrigins: readonly string[],
+  sessionId: SessionId,
 ): TavernScriptSnapshot {
   const state = projection.tavern
   const message = {
@@ -3939,7 +4129,10 @@ function tavernScriptSnapshot(
     scriptInfo: script.info,
     buttons: script.buttons,
     characterName: projection.characterName,
+    characterId: projection.tavern?.characterSourceId ?? projection.avatarLibraryId ?? projection.characterName,
+    chatId: String(sessionId),
     ...(projection.userName === undefined ? {} : { userName: projection.userName }),
+    ...(currentTavernPreset(projection) === undefined ? {} : { preset: currentTavernPreset(projection)! }),
     approvedScriptOrigins,
     scopes: {
       global: state?.scopes.global ?? {},
@@ -3982,13 +4175,16 @@ function runtimeScriptButtons(value: unknown): readonly { readonly name: string;
   return buttons
 }
 
-function TavernScriptRuntime({ ctx, inputActions, onDisplayOverride, projection, runGeneration, runMutation, sessionId }: {
+function TavernScriptRuntime({
+  ctx, inputActions, onDisplayOverride, projection, runGeneration, runMutation, runPresetConfiguration, sessionId,
+}: {
   readonly ctx: Context
   readonly inputActions: ComposerDockProps['inputActions']
   readonly onDisplayOverride: (scriptId: string, messageId: number, value: string) => void
   readonly projection: AgentRpProjection
   readonly runGeneration: RunTavernGeneration
   readonly runMutation: RunTavernMutation
+  readonly runPresetConfiguration: RunPresetConfiguration
   readonly sessionId: SessionId
 }) {
   const scripts = [
@@ -4025,7 +4221,16 @@ function TavernScriptRuntime({ ctx, inputActions, onDisplayOverride, projection,
   }[]>())
   const projectionRef = useRef(projection)
   const mutationQueue = useRef(Promise.resolve())
+  const presetRevisionRef = useRef(projection.preset?.revision ?? 0)
+  const presetSessionRef = useRef(sessionId)
   projectionRef.current = projection
+  if (presetSessionRef.current !== sessionId) {
+    presetSessionRef.current = sessionId
+    presetRevisionRef.current = projection.preset?.revision ?? 0
+  }
+  if ((projection.preset?.revision ?? 0) > presetRevisionRef.current) {
+    presetRevisionRef.current = projection.preset?.revision ?? 0
+  }
   useEffect(() => {
     const controller = new AbortController()
     setFrames([])
@@ -4045,7 +4250,7 @@ function TavernScriptRuntime({ ctx, inputActions, onDisplayOverride, projection,
           srcDoc: tavernScriptFrameSource(
             script,
             source,
-            tavernScriptSnapshot(projectionRef.current, script, scriptOrigins),
+            tavernScriptSnapshot(projectionRef.current, script, scriptOrigins, sessionId),
           ),
         }
       } catch (reason: unknown) {
@@ -4053,14 +4258,15 @@ function TavernScriptRuntime({ ctx, inputActions, onDisplayOverride, projection,
       }
     })).then(result => { if (!controller.signal.aborted) setFrames(result) })
     return () => { controller.abort() }
-  }, [signature])
+  }, [sessionId, signature])
   const syncFrame = (frame: HTMLIFrameElement, script: ImportedTavernHelperScript): void => {
-    const snapshot = tavernScriptSnapshot(projectionRef.current, script, scriptOrigins)
+    const snapshot = tavernScriptSnapshot(projectionRef.current, script, scriptOrigins, sessionId)
     frame.contentWindow?.postMessage({
       source: 'dsh-agent-rp-host', action: 'variables-sync',
       scopes: snapshot.scopes, messages: snapshot.messages,
       displayRegexScripts: snapshot.displayRegexScripts,
       worldbooks: snapshot.worldbooks, worldbookBindings: snapshot.worldbookBindings,
+      preset: snapshot.preset,
     }, '*')
   }
   const broadcast = (message: object, except?: Window | null): void => {
@@ -4093,7 +4299,7 @@ function TavernScriptRuntime({ ctx, inputActions, onDisplayOverride, projection,
       const frame = frameRefs.current.get(entry.script.id)
       if (frame !== undefined) syncFrame(frame, entry.script)
     }
-  }, [projection.mvu, projection.tavern])
+  }, [projection.frontend, projection.mvu, projection.preset, projection.tavern])
   const previousMvu = useRef<string>()
   useEffect(() => {
     const current = projection.mvu === undefined ? undefined : JSON.stringify({ stat_data: projection.mvu.statData })
@@ -4126,6 +4332,7 @@ function TavernScriptRuntime({ ctx, inputActions, onDisplayOverride, projection,
         readonly request?: unknown
         readonly buttons?: unknown
         readonly messageId?: unknown
+        readonly preset?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
@@ -4141,7 +4348,7 @@ function TavernScriptRuntime({ ctx, inputActions, onDisplayOverride, projection,
         syncFrame(frame, entry.script)
         frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'script-buttons-request' }, '*')
         frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'app_ready', args: [] }, '*')
-        frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'chat_id_changed', args: ['dsh-agent-rp'] }, '*')
+        frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'chat_id_changed', args: [String(sessionId)] }, '*')
         if (projectionRef.current.mvu !== undefined) {
           frame.contentWindow?.postMessage({
             source: 'dsh-agent-rp-host', action: 'event', eventType: 'mag_variable_initiailized',
@@ -4229,6 +4436,33 @@ function TavernScriptRuntime({ ctx, inputActions, onDisplayOverride, projection,
         }
         return
       }
+      if (message.action === 'preset-replace' && typeof message.requestId === 'string') {
+        const target = event.source as Window
+        mutationQueue.current = mutationQueue.current.then(async () => {
+          const revision = presetRevisionRef.current
+          const request = tavernPresetConfiguration(projectionRef.current, message.preset, revision)
+          await runPresetConfiguration(sessionId, request)
+          presetRevisionRef.current = revision + 1
+          const current = currentTavernPreset(projectionRef.current)
+          broadcast({
+            action: 'preset-sync',
+            preset: current === undefined ? undefined : {
+              ...current,
+              revision: presetRevisionRef.current,
+              value: message.preset,
+            },
+          }, target)
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'preset-result', requestId: message.requestId, ok: true,
+          }, '*')
+        }).catch((reason: unknown) => {
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'preset-result', requestId: message.requestId, ok: false,
+            error: reason instanceof Error ? reason.message : String(reason),
+          }, '*')
+        })
+        return
+      }
       if ((message.action === 'worldbook-mutate' || message.action === 'chat-mutate') && typeof message.requestId === 'string'
         && typeof message.request === 'object' && message.request !== null && !Array.isArray(message.request)) {
         const target = event.source as Window
@@ -4265,7 +4499,7 @@ function TavernScriptRuntime({ ctx, inputActions, onDisplayOverride, projection,
     }
     window.addEventListener('message', bridge)
     return () => { window.removeEventListener('message', bridge) }
-  }, [approvedGenerations, frames, inputActions, onDisplayOverride, runGeneration, runMutation, sessionId])
+  }, [approvedGenerations, frames, inputActions, onDisplayOverride, runGeneration, runMutation, runPresetConfiguration, sessionId])
   if (scripts.length === 0) return null
   const failures = frames.flatMap(entry => {
     const error = entry.error ?? runtimeErrors.get(entry.script.id)
@@ -4407,6 +4641,7 @@ function roleplayComposerDockComponent(
   runImageGeneration: RunImageGeneration,
   runTavernMutation: RunTavernMutation,
   runTavernGeneration: RunTavernGeneration,
+  runPresetConfiguration: RunPresetConfiguration,
 ): (props: ComposerDockProps) => JSX.Element | null {
   return function RoleplayComposerDock({
     inputActions, sessionId, useProjection, useSessions, useSession,
@@ -4754,7 +4989,8 @@ function roleplayComposerDockComponent(
   if (projection === undefined) return null
   return <div ref={rootRef} data-agent-rp-status style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
     <TavernScriptRuntime ctx={ctx} inputActions={inputActions} onDisplayOverride={onDisplayOverride} projection={projection}
-      runGeneration={runTavernGeneration} runMutation={runTavernMutation} sessionId={sessionId} />
+      runGeneration={runTavernGeneration} runMutation={runTavernMutation}
+      runPresetConfiguration={runPresetConfiguration} sessionId={sessionId} />
     <button type="button" aria-label="生成聊天插图" title="生成聊天插图" onClick={() => { setDrawOpen(true) }} style={{
       alignItems: 'center', background: 'transparent', border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer',
       display: 'inline-flex', flex: '0 0 auto', font: 'inherit', fontSize: '11px', gap: '4px', opacity: .62, padding: '3px 7px',
@@ -5288,7 +5524,7 @@ export function apply(ctx: ClientContext): void {
   }, props => <GenerationTail {...props} runGeneration={runGeneration} runImageGeneration={runImageGeneration} />))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
-  }, roleplayComposerDockComponent(ctx, runImageGeneration, runTavernMutation, runTavernGeneration)))
+  }, roleplayComposerDockComponent(ctx, runImageGeneration, runTavernMutation, runTavernGeneration, configurePreset)))
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock', id: 'agent-rp-sillytavern-import-hint', order: -10,
   }, importHintComponent(ctx, migrateSillyTavernDraft, listPresets)))

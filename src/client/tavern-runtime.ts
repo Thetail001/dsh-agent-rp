@@ -6,6 +6,13 @@ import type { TavernWorldbookBindings, TavernWorldbookEntry } from '../tavern-he
 
 type JsonRecord = Readonly<Record<string, JsonValue>>
 
+/** Current session preset exposed to one isolated Tavern Helper script. */
+export interface TavernScriptPresetSnapshot {
+  readonly name: string
+  readonly revision: number
+  readonly value: JsonRecord
+}
+
 /** Initial state copied into one script sandbox. */
 export interface TavernScriptSnapshot {
   readonly scriptId: string
@@ -13,7 +20,10 @@ export interface TavernScriptSnapshot {
   readonly scriptInfo: string
   readonly buttons: readonly { readonly name: string; readonly visible: boolean }[]
   readonly characterName: string
+  readonly characterId: string
+  readonly chatId: string
   readonly userName?: string
+  readonly preset?: TavernScriptPresetSnapshot
   readonly approvedScriptOrigins: readonly string[]
   readonly scopes: {
     readonly global: JsonRecord
@@ -96,6 +106,7 @@ var __dshMessages=__dshSnapshot.messages;
 var __dshDisplayRegexScripts=__dshSnapshot.displayRegexScripts;
 var __dshWorldbooks=__dshSnapshot.worldbooks;
 var __dshWorldbookBindings=__dshSnapshot.worldbookBindings;
+var __dshPreset=__dshSnapshot.preset;
 function __dshScriptButtons(value){var result=[],seen=new Set();for(var button of Array.isArray(value)?value:[]){if(!button||typeof button!=='object')continue;var name=String(button.name??'').trim();if(!name||name.length>200||seen.has(name))continue;seen.add(name);result.push({name:name,visible:button.visible!==false});if(result.length>=50)break}return result}
 var __dshCurrentScriptButtons=__dshScriptButtons(__dshScopes.script?.__dsh_script_buttons??__dshSnapshot.buttons);
 var __dshCurrentScriptInfo=typeof __dshScopes.script?.__dsh_script_info==='string'?__dshScopes.script.__dsh_script_info:__dshSnapshot.scriptInfo;
@@ -114,6 +125,7 @@ function __dshPost(action,data){parent.postMessage(Object.assign({source:'dsh-ag
 function __dshReplace(variables,option){var scope=__dshScope(option);var cloned=__dshClone(variables??{});__dshScopes[scope]=cloned;var requestId=String(++__dshRequest);return new Promise(function(resolve,reject){__dshPending.set(requestId,{resolve:resolve,reject:reject});__dshPost('variables-replace',{requestId:requestId,scope:scope,variables:cloned})})}
 function __dshWorldbookMutation(request){var requestId=String(++__dshRequest);return new Promise(function(resolve,reject){__dshPending.set(requestId,{resolve:resolve,reject:reject});__dshPost('worldbook-mutate',{requestId:requestId,request:__dshClone(request)})})}
 function __dshChatMutation(request){var requestId=String(++__dshRequest);return new Promise(function(resolve,reject){__dshPending.set(requestId,{resolve:resolve,reject:reject});__dshPost('chat-mutate',{requestId:requestId,request:__dshClone(request)})})}
+function __dshPresetMutation(value){var requestId=String(++__dshRequest);return new Promise(function(resolve,reject){__dshPending.set(requestId,{resolve:resolve,reject:reject,preset:value});__dshPost('preset-replace',{requestId:requestId,preset:__dshClone(value)})})}
 var __dshScriptMetadataScheduled=false;
 function __dshPersistScriptMetadata(){if(__dshScriptMetadataScheduled)return;__dshScriptMetadataScheduled=true;queueMicrotask(function(){__dshScriptMetadataScheduled=false;var variables=__dshClone(__dshScopes.script??{});variables.__dsh_script_buttons=__dshClone(__dshCurrentScriptButtons);variables.__dsh_script_info=__dshCurrentScriptInfo;void __dshReplace(variables,{type:'script'}).catch(function(error){__dshPost('runtime-error',{value:String(error)})})})}
 function __dshReportScriptButtons(){__dshPost('script-buttons',{buttons:__dshClone(__dshCurrentScriptButtons)})}
@@ -163,6 +175,20 @@ window.replaceScriptInfo=function(info){__dshCurrentScriptInfo=String(info??'').
 window.getScriptButtons=function(){return __dshClone(__dshCurrentScriptButtons)};
 window.replaceScriptButtons=function(buttons){__dshCurrentScriptButtons=__dshScriptButtons(buttons);__dshReportScriptButtons();__dshPersistScriptMetadata()};
 window.updateScriptButtonsWith=function(updater){var next=updater(window.getScriptButtons());if(next&&typeof next.then==='function')return next.then(function(value){window.replaceScriptButtons(value);return window.getScriptButtons()});window.replaceScriptButtons(next);return window.getScriptButtons()};
+window.getCurrentCharId=function(){return __dshSnapshot.characterId};
+window.getCurrentCharacterId=window.getCurrentCharId;
+window.getCurrentCharacterName=function(){return __dshSnapshot.characterName};
+window.getCurrentChatId=function(){return __dshSnapshot.chatId};
+function __dshPresetName(name){if(name!=='in_use')throw new Error("当前仅支持正在使用的预设 'in_use'");if(!__dshPreset)throw new Error('当前会话没有预设');return name}
+window.getPresetNames=function(){return __dshPreset?['in_use']:[]};
+window.getLoadedPresetName=function(){return __dshPreset?.name??''};
+window.getPreset=function(name){__dshPresetName(name);return __dshClone(__dshPreset.value)};
+window.replacePreset=function(name,value){__dshPresetName(name);if(!__dshPlain(value))return Promise.reject(new Error('预设必须是对象'));var next=__dshClone(value);return __dshPresetMutation(next).then(function(){__dshPreset={name:__dshPreset.name,revision:__dshPreset.revision+1,value:next}})};
+window.updatePresetWith=function(name,updater,option){var current=window.getPreset(name);return Promise.resolve(updater(current)).then(function(next){return window.replacePreset(name,next,option).then(function(){return window.getPreset(name)})})};
+window.setPreset=function(name,value,option){if(value!==undefined&&!__dshPlain(value))return Promise.reject(new Error('预设修改必须是对象'));return window.updatePresetWith(name,function(current){return __dshMerge({},current,value??{})},option)};
+window.isPresetSystemPrompt=function(prompt){return ['main','nsfw','jailbreak','enhanceDefinitions'].includes(String(prompt?.id??''))};
+window.isPresetPlaceholderPrompt=function(prompt){return ['worldInfoBefore','personaDescription','charDescription','charPersonality','scenario','worldInfoAfter','dialogueExamples','chatHistory'].includes(String(prompt?.id??''))};
+window.isPresetNormalPrompt=function(prompt){return !window.isPresetSystemPrompt(prompt)&&!window.isPresetPlaceholderPrompt(prompt)};
 window.appendInexistentScriptButtons=function(buttons){var current=window.getScriptButtons();var names=new Set(current.map(function(button){return button.name}));window.replaceScriptButtons(current.concat(__dshScriptButtons(buttons).filter(function(button){return !names.has(button.name)})))};
 window.getButtonEvent=function(name){return __dshSnapshot.scriptId+'_'+String(name)};
 window.getLastMessageId=function(){return Math.max(-1,__dshMessages.length-1)};
@@ -206,7 +232,8 @@ window.eventOnButton=window.eventOn;
 window.iframe_events={MESSAGE_IFRAME_RENDER_STARTED:'message_iframe_render_started',MESSAGE_IFRAME_RENDER_ENDED:'message_iframe_render_ended',GENERATION_STARTED:'js_generation_started',STREAM_TOKEN_RECEIVED_FULLY:'js_stream_token_received_fully',STREAM_TOKEN_RECEIVED_INCREMENTALLY:'js_stream_token_received_incrementally',GENERATION_ENDED:'js_generation_ended'};
 window.tavern_events={APP_READY:'app_ready',MESSAGE_SENT:'message_sent',MESSAGE_RECEIVED:'message_received',MESSAGE_EDITED:'message_edited',MESSAGE_DELETED:'message_deleted',MESSAGE_UPDATED:'message_updated',CHAT_CHANGED:'chat_id_changed',GENERATION_STARTED:'generation_started',GENERATION_STOPPED:'generation_stopped',GENERATION_ENDED:'generation_ended',USER_MESSAGE_RENDERED:'user_message_rendered',CHARACTER_MESSAGE_RENDERED:'character_message_rendered'};
 window.Mvu={events:{VARIABLE_INITIALIZED:'mag_variable_initiailized',VARIABLE_UPDATE_STARTED:'mag_variable_update_started',COMMAND_PARSED:'mag_command_parsed',VARIABLE_UPDATE_ENDED:'mag_variable_update_ended',BEFORE_MESSAGE_UPDATE:'mag_before_message_update'},getMvuData:function(option){return window.getVariables(option??{type:'message'})},replaceMvuData:function(value,option){return __dshReplace(value,option??{type:'message'})},isDuringExtraAnalysis:function(){return false}};
-window.SillyTavern={chat:[],name1:__dshSnapshot.userName??'用户',name2:__dshSnapshot.characterName,chatId:'dsh-agent-rp',chatMetadata:__dshScopes.chat,extensionSettings:{},getCurrentChatId:function(){return 'dsh-agent-rp'},eventSource:{on:window.eventOn,once:window.eventOnce,emit:window.eventEmit,emitAndWait:window.eventEmitAndWait,removeListener:window.eventRemoveListener},eventTypes:window.tavern_events,getContext:function(){return this}};
+window.SillyTavern={chat:[],name1:__dshSnapshot.userName??'用户',name2:__dshSnapshot.characterName,characterId:__dshSnapshot.characterId,chatId:__dshSnapshot.chatId,chatMetadata:__dshScopes.chat,extensionSettings:{},getCurrentCharacterId:window.getCurrentCharId,getCurrentChatId:window.getCurrentChatId,eventSource:{on:window.eventOn,once:window.eventOnce,emit:window.eventEmit,emitAndWait:window.eventEmitAndWait,removeListener:window.eventRemoveListener},eventTypes:window.tavern_events,getContext:function(){return this}};
+window.getContext=function(){return window.SillyTavern.getContext()};
 __dshSyncSillyTavernChat();
 window.TavernHelper=window;
 var __dshFrameHost=document.createElement('div');
@@ -259,7 +286,7 @@ window.formatAsDisplayedMessage=function(text,option){var messageId=__dshDisplay
 window.retrieveDisplayedMessage=function(messageId){messageId=__dshDisplayedMessageId(messageId);var result=new Mini(__dshDisplayedRoot(messageId));result.__dshMessageId=messageId;return result};
 window.refreshOneMessage=function(messageId,target){var sourceId=__dshDisplayedMessageId(messageId);var targetId=Number.isInteger(target?.__dshMessageId)?target.__dshMessageId:sourceId;var root=__dshDisplayedRoot(targetId);root.innerHTML=__dshDisplayedHtml(__dshMessages[sourceId]?.text??'',sourceId);__dshReportDisplayed(targetId,root);var eventType=__dshMessages[sourceId]?.role==='user'?window.tavern_events.USER_MESSAGE_RENDERED:window.tavern_events.CHARACTER_MESSAGE_RENDERED;return window.eventEmit(eventType,sourceId).then(function(){})};
 window.toastr={info:console.info,success:console.info,warning:console.warn,error:console.error};
-  addEventListener('message',function(event){if(event.source!==parent||!event.data||event.data.source!=='dsh-agent-rp-host')return;var message=event.data;if(message.action==='script-buttons-request'){__dshReportScriptButtons();return}if(message.action==='variables-result'){var pending=__dshPending.get(message.requestId);if(!pending)return;__dshPending.delete(message.requestId);message.ok?pending.resolve():pending.reject(new Error(String(message.error??'保存失败')));return}if(message.action==='generation-result'){var pending=__dshPending.get(message.requestId);if(!pending)return;__dshPending.delete(message.requestId);if(message.ok){var text=String(message.value??'');if(pending.generation){void __dshEmitLocal(window.iframe_events.STREAM_TOKEN_RECEIVED_FULLY,[text]);void __dshEmitLocal(window.iframe_events.STREAM_TOKEN_RECEIVED_INCREMENTALLY,[text])}void __dshEmitLocal(window.iframe_events.GENERATION_ENDED,[text]);pending.resolve(text)}else pending.reject(new Error(String(message.error??'生成失败')));return}if(message.action==='variables-sync'){var transcriptChanged=__dshMessageSignature(__dshMessages)!==__dshMessageSignature(message.messages);__dshScopes=message.scopes;__dshMessages=message.messages;__dshDisplayRegexScripts=message.displayRegexScripts??__dshDisplayRegexScripts;__dshWorldbooks=message.worldbooks;__dshWorldbookBindings=message.worldbookBindings;if(transcriptChanged){for(var root of __dshDisplayedRoots.values())root.remove();__dshDisplayedRoots.clear()}__dshSyncSillyTavernChat();return}if(message.action==='event'){var args=message.args??[];var before=message.eventType==='mag_variable_update_ended'?JSON.stringify(args[0]??{}):undefined;void __dshEmitLocal(message.eventType,args).then(function(){if(before!==undefined&&JSON.stringify(args[0]??{})!==before)return __dshReplace(args[0]??{},{type:'message'})}).catch(function(error){console.error(error);__dshPost('runtime-error',{value:String(error)})})}});
+  addEventListener('message',function(event){if(event.source!==parent||!event.data||event.data.source!=='dsh-agent-rp-host')return;var message=event.data;if(message.action==='script-buttons-request'){__dshReportScriptButtons();return}if(message.action==='variables-result'||message.action==='preset-result'){var pending=__dshPending.get(message.requestId);if(!pending)return;__dshPending.delete(message.requestId);message.ok?pending.resolve():pending.reject(new Error(String(message.error??'保存失败')));return}if(message.action==='generation-result'){var pending=__dshPending.get(message.requestId);if(!pending)return;__dshPending.delete(message.requestId);if(message.ok){var text=String(message.value??'');if(pending.generation){void __dshEmitLocal(window.iframe_events.STREAM_TOKEN_RECEIVED_FULLY,[text]);void __dshEmitLocal(window.iframe_events.STREAM_TOKEN_RECEIVED_INCREMENTALLY,[text])}void __dshEmitLocal(window.iframe_events.GENERATION_ENDED,[text]);pending.resolve(text)}else pending.reject(new Error(String(message.error??'生成失败')));return}if(message.action==='preset-sync'){__dshPreset=message.preset;return}if(message.action==='variables-sync'){var transcriptChanged=__dshMessageSignature(__dshMessages)!==__dshMessageSignature(message.messages);__dshScopes=message.scopes;__dshMessages=message.messages;__dshDisplayRegexScripts=message.displayRegexScripts??__dshDisplayRegexScripts;__dshWorldbooks=message.worldbooks;__dshWorldbookBindings=message.worldbookBindings;if(message.preset!==undefined)__dshPreset=message.preset;if(transcriptChanged){for(var root of __dshDisplayedRoots.values())root.remove();__dshDisplayedRoots.clear()}__dshSyncSillyTavernChat();return}if(message.action==='event'){var args=message.args??[];var before=message.eventType==='mag_variable_update_ended'?JSON.stringify(args[0]??{}):undefined;void __dshEmitLocal(message.eventType,args).then(function(){if(before!==undefined&&JSON.stringify(args[0]??{})!==before)return __dshReplace(args[0]??{},{type:'message'})}).catch(function(error){console.error(error);__dshPost('runtime-error',{value:String(error)})})}});
 addEventListener('error',function(event){__dshPost('runtime-error',{value:event.message})});
 addEventListener('unhandledrejection',function(event){__dshPost('runtime-error',{value:String(event.reason)})});
 __dshReportScriptButtons();

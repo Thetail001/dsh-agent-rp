@@ -36,7 +36,12 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
     buttonEnabled: true, buttons: [{ name: '开始', visible: true }], data: {},
   }, 'replaceScriptButtons([{name:"学校",visible:true}])', {
     scriptId: 'travel', scriptName: '地点选择', scriptInfo: '测试',
-    buttons: [{ name: '开始', visible: true }], characterName: '白露', approvedScriptOrigins: [],
+    buttons: [{ name: '开始', visible: true }], characterName: '白露', characterId: 'bailu.png',
+    chatId: 'session-test', approvedScriptOrigins: [],
+    preset: {
+      name: 'V18', revision: 3,
+      value: { settings: {}, prompts: [], prompts_unused: [], extensions: {} },
+    },
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
     worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
     messages: [],
@@ -50,6 +55,11 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(source!, /window\.formatAsDisplayedMessage=/u)
   assert.match(source!, /window\.retrieveDisplayedMessage=/u)
   assert.match(source!, /window\.refreshOneMessage=/u)
+  assert.match(source!, /window\.getCurrentCharId=/u)
+  assert.match(source!, /window\.getCurrentChatId=/u)
+  assert.match(source!, /window\.getPreset=/u)
+  assert.match(source!, /window\.updatePresetWith=/u)
+  assert.match(source!, /window\.setPreset=/u)
 })
 
 test('runs preset scripts before character scripts for the selected view', () => {
