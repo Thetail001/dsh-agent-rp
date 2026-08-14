@@ -193,6 +193,7 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(source!, /window\.registerMacroLike=/u)
   assert.match(source!, /window\.unregisterMacroLike=/u)
   assert.match(source!, /window\.substitudeMacros=/u)
+  assert.match(source!, /window\.substituteParams=/u)
   assert.match(source!, /window\.getScriptTrees=/u)
   assert.match(source!, /window\.getAllEnabledScriptButtons=/u)
   assert.match(source!, /window\.generateRaw=/u)
@@ -371,6 +372,52 @@ window.__macroAfter = formatAsTavernRegexedString('{{mood::平静}}', 'ai_output
   assert.equal(context.__macroBefore, '0:assistant:平静')
   assert.equal(context.__macroDirect, '角色/用户/0/0/0:assistant:安心')
   assert.equal(context.__macroAfter, '{{mood::平静}}')
+})
+
+test('exposes synchronous SillyTavern context macros from current transcript and variable scopes', () => {
+  const script = String.raw`
+const st = SillyTavern.getContext();
+window.__sillyTavernMacros = {
+  sameContext: st === SillyTavern,
+  direct: substituteParams('{{lastMessage}}|{{lastUserMessage}}|{{lastCharMessage}}|{{get_message_variable::status}}|{{get_chat_variable::route.name}}|{{get_character_variable::profile.title}}|{{get_preset_variable::tone}}|{{get_global_variable::theme}}|{{get_global_variable::missing}}'),
+  throughContext: st.substituteParams('{{char}}/{{user}}/{{lastMessageId}}'),
+  latestChatText: st.chat.at(-1).mes,
+};
+`
+  const html = tavernScriptFrameSource({
+    id: 'context-macros', name: '上下文宏', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'context-macros', scriptName: '上下文宏', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', userName: '旅人',
+    approvedScriptOrigins: [],
+    scopes: {
+      global: { theme: '夜色' }, preset: { tone: '温柔' },
+      character: { profile: { title: '导游' } }, chat: { route: { name: '北岸' } },
+      message: {}, script: {},
+    },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [],
+    messages: [
+      { messageId: 0, seq: 1, role: 'user', text: '去哪里？', isHidden: false, data: {}, extra: {} },
+      {
+        messageId: 1, seq: 2, role: 'assistant', text: '去灯塔。', isHidden: false,
+        data: { status: { value: 3, $internal: '不应暴露' } }, extra: {},
+      },
+    ],
+    characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const result = JSON.parse(JSON.stringify(context.__sillyTavernMacros)) as Record<string, unknown>
+  assert.deepEqual(result, {
+    sameContext: true,
+    direct: '去灯塔。|去哪里？|去灯塔。|{"value":3}|北岸|导游|温柔|夜色|null',
+    throughContext: '角色/旅人/1',
+    latestChatText: '去灯塔。',
+  })
 })
 
 test('lets V18-style dry-run listeners capture prompts without Host generation', async () => {
