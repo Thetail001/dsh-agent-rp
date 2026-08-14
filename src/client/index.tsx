@@ -265,6 +265,7 @@ type GenerationTailProps = TurnTailOwnerProps & {
     request: { readonly operation: 'regenerate' | 'continue'; readonly replySeq: number }
       | { readonly operation: 'select'; readonly replySeq: number; readonly versionIndex: number },
   ) => Promise<void>
+  readonly runImageGeneration: RunImageGeneration
   readonly useProjection: PropsRuntime<'conversation.composer.dock'>['useProjection']
   readonly useSession: PropsRuntime<'conversation.composer.dock'>['useSession']
 }
@@ -547,13 +548,31 @@ function CharacterDisplay({ segments, statData, characterName, character }: {
   </div>
 }
 
-function GenerationTail({ matched, runGeneration, sessionId, useProjection, useSession }: GenerationTailProps) {
+function replySceneNote(value: string): string {
+  return splitCharacterDisplay(value.replaceAll(statusPlaceholder, ''))
+    .filter((segment): segment is Extract<CharacterDisplaySegment, { readonly kind: 'markdown' }> => segment.kind === 'markdown')
+    .map(segment => segment.text.trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .slice(0, 4_000)
+}
+
+function GenerationTail({ matched, runGeneration, runImageGeneration, sessionId, useProjection, useSession }: GenerationTailProps) {
   const projection = useProjection('agentRp') as AgentRpProjection | undefined
   const running = useSession(snapshot => snapshot.running)
+  const replyText = useSession(snapshot => {
+    const node = snapshot.chat.legacy.nodes.find(candidate => candidate.kind === 'assistant' && candidate.seq === matched.replySeq)
+    return node?.kind === 'assistant' ? node.blocks
+      .filter((block): block is Extract<typeof block, { readonly kind: 'text' }> => block.kind === 'text')
+      .map(block => block.text)
+      .join('\n') : ''
+  })
   const [busy, setBusy] = useState<'regenerate' | 'continue' | 'select'>()
   const [error, setError] = useState<string>()
+  const [drawOpen, setDrawOpen] = useState(false)
   const group = projection?.generations.find(candidate => candidate.anchorSeq === matched.replySeq)
   if (projection === undefined || projection.currentReplySeq !== matched.replySeq) return null
+  const sceneNote = replySceneNote(replyText)
   const selectedIndex = group?.versions.findIndex(version => version.seq === group.selectedVersionSeq) ?? 0
   const invoke = (request: Parameters<GenerationTailProps['runGeneration']>[1]): void => {
     setBusy(request.operation)
@@ -583,7 +602,12 @@ function GenerationTail({ matched, runGeneration, sessionId, useProjection, useS
     <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'continue', replySeq: matched.replySeq }) }} style={generationButtonStyle}>
       {busy === 'continue' ? '续写中…' : '续写'}
     </button>
+    <button type="button" disabled={disabled || sceneNote === ''} onClick={() => { setDrawOpen(true) }} style={generationButtonStyle}>
+      画这段
+    </button>
     {error !== undefined && <span role="alert" title={error} style={{ color: '#dc7777', fontSize: '10px', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{error}</span>}
+    {drawOpen && <ImageGenerationDialog projection={projection} initialMode="scene" initialNote={sceneNote}
+      onClose={() => { setDrawOpen(false) }} onGenerate={request => { runImageGeneration(sessionId, request) }} />}
   </div>
 }
 
@@ -3374,13 +3398,15 @@ function imagePrompt(mode: ImageGenerationMode, projection: AgentRpProjection, n
   return `角色头像，头肩构图，表情自然，面部清晰\n${subject}${extra === '' ? '' : `\n补充：${extra}`}`.slice(0, 8_000)
 }
 
-function ImageGenerationDialog({ projection, onClose, onGenerate }: {
+function ImageGenerationDialog({ projection, initialMode = 'scene', initialNote = '', onClose, onGenerate }: {
   readonly projection: AgentRpProjection
+  readonly initialMode?: ImageGenerationMode
+  readonly initialNote?: string
   readonly onClose: () => void
   readonly onGenerate: (request: Pick<ImageGenerationRequest, 'mode' | 'prompt'>) => void
 }) {
-  const [mode, setMode] = useState<ImageGenerationMode>('scene')
-  const [note, setNote] = useState('')
+  const [mode, setMode] = useState<ImageGenerationMode>(initialMode)
+  const [note, setNote] = useState(initialNote)
   const prompt = imagePrompt(mode, projection, note)
   return <div role="dialog" aria-modal="true" aria-label="生成聊天插图" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
@@ -4379,7 +4405,7 @@ export function apply(ctx: ClientContext): void {
       const closing = owner.turn.data.get('turn-tail')?.closing
       return closing === null || closing === undefined ? null : { replySeq: closing.finalNode.seq }
     },
-  }, props => <GenerationTail {...props} runGeneration={runGeneration} />))
+  }, props => <GenerationTail {...props} runGeneration={runGeneration} runImageGeneration={runImageGeneration} />))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
   }, roleplayComposerDockComponent(ctx, runImageGeneration)))
