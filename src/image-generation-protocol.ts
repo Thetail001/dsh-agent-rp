@@ -48,6 +48,12 @@ export interface ImageCredentialInfo {
   readonly writable: boolean
 }
 
+/** Non-billing connection check returned by the configured image service. */
+export interface ImageProviderTestResult {
+  readonly status: 'verified' | 'reachable'
+  readonly detail: string
+}
+
 const JOB_ID_PATTERN = /^image-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 const COMMAND_RECORD_PREFIX = 'dsh-agent-rp:image:v0:'
 

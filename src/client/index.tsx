@@ -71,6 +71,7 @@ import {
   parseImageGenerationRequest,
   type GeneratedImageJob,
   type ImageCredentialInfo,
+  type ImageProviderTestResult,
   type ImageGenerationMode,
   type ImageGenerationRequest,
 } from '../image-generation-protocol.ts'
@@ -153,6 +154,17 @@ async function updateImageCredential(change: { readonly value: string } | { read
     throw new Error(value.error ?? `图片密钥保存失败（${response.status}）`)
   }
   return value.credential
+}
+
+async function testConfiguredImageProvider(settings: ImageGenerationSettings): Promise<ImageProviderTestResult> {
+  const response = await fetch(`${AGENT_RP_IMAGE_PATH}/test`, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(settings),
+  })
+  const value = await response.json() as { readonly error?: string; readonly test?: ImageProviderTestResult }
+  if (!response.ok || value.test === undefined) throw new Error(value.error ?? `图片服务连接测试失败（${response.status}）`)
+  return value.test
 }
 
 interface ImportHintProps {
@@ -1176,8 +1188,10 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
   const [credential, setCredential] = useState<ImageCredentialInfo>()
   const [credentialValue, setCredentialValue] = useState('')
   const [credentialBusy, setCredentialBusy] = useState(false)
+  const [testBusy, setTestBusy] = useState(false)
+  const [testResult, setTestResult] = useState<ImageProviderTestResult>()
   const [error, setError] = useState<string>()
-  useEffect(() => { setDraft(settings) }, [settings])
+  useEffect(() => { setDraft(settings); setTestResult(undefined) }, [settings])
   useEffect(() => {
     let active = true
     void imageCredentialInfo().then(value => { if (active) setCredential(value) }, reason => {
@@ -1191,8 +1205,17 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
     void updateImageCredential(change).then(value => {
       setCredential(value)
       setCredentialValue('')
+      setTestResult(undefined)
     }, reason => { setError(reason instanceof Error ? reason.message : String(reason)) })
       .finally(() => { setCredentialBusy(false) })
+  }
+  const testConnection = (): void => {
+    setTestBusy(true)
+    setError(undefined)
+    setTestResult(undefined)
+    void testConfiguredImageProvider(draft).then(setTestResult, reason => {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => { setTestBusy(false) })
   }
   const labelStyle = { display: 'grid', fontSize: '12px', gap: '6px', opacity: writable ? 1 : .62 } as const
   return <section style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)', marginTop: '28px', paddingTop: '24px' }}>
@@ -1274,9 +1297,15 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
         </button>
       </div>
     </div>
-    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '14px' }}>
+    <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '14px' }}>
+      <button type="button" disabled={!writable || testBusy || (draft.provider === 'openai' && credential?.configured !== true)}
+        onClick={testConnection} style={secondaryButtonStyle}>{testBusy ? '正在测试…' : '测试连接'}</button>
       <button type="button" disabled={!writable} onClick={() => { onSave(draft) }} style={primaryButtonStyle}>保存绘图设置</button>
     </div>
+    {testResult !== undefined && <p role="status" style={{
+      color: testResult.status === 'verified' ? 'var(--dsw-alias-state-success, #5dbb84)' : 'var(--dsw-alias-state-warning, #d6a955)',
+      fontSize: '12px', margin: '10px 0 0',
+    }}>{testResult.detail}</p>}
     {error !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', margin: '10px 0 0' }}>{error}</p>}
   </section>
 }

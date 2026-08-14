@@ -2,6 +2,7 @@
 
 import type { ImageGenerationSettings } from './workspace-settings.ts'
 import type { GeneratedImageAsset } from './generated-image-library.ts'
+import type { ImageProviderTestResult } from './image-generation-protocol.ts'
 
 const MAX_PROVIDER_IMAGE_BYTES = 32 * 1024 * 1024
 
@@ -29,6 +30,63 @@ function providerError(provider: string, status: number, body: string): Error {
     // The provider returned plain text; the bounded body is already safe to report.
   }
   return new Error(`${provider} 请求失败（${status}）${detail === '' ? '' : `：${detail}`}`)
+}
+
+async function discard(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel()
+  } catch {
+    // The connection check has already received the response; closing an absent body adds no result.
+  }
+}
+
+function openAiModelsEndpoint(value: string): URL {
+  const url = endpoint(value, '/v1/images/generations')
+  if (/\/images\/generations\/?$/u.test(url.pathname)) {
+    url.pathname = url.pathname.replace(/\/images\/generations\/?$/u, '/models')
+  } else {
+    url.pathname = `${url.pathname.replace(/\/$/u, '')}/models`
+  }
+  url.search = ''
+  return url
+}
+
+async function fetchConnection(provider: string, url: URL, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init)
+  } catch (reason) {
+    if (init.signal?.aborted === true) throw new Error(`${provider} 连接超时（12 秒）`, { cause: reason })
+    throw new Error(`${provider} 无法连接；请检查接口地址、网络或服务状态`, { cause: reason })
+  }
+}
+
+/** Check one configured provider without submitting an image generation job. */
+export async function testImageProvider(
+  settings: ImageGenerationSettings,
+  apiKey: string | undefined,
+  signal: AbortSignal,
+): Promise<ImageProviderTestResult> {
+  if (settings.provider === 'openai') {
+    if (apiKey === undefined) throw new Error('请先保存图片服务密钥')
+    const response = await fetchConnection('图片服务', openAiModelsEndpoint(settings.openai.endpoint), {
+      headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' }, signal,
+    })
+    if (response.status === 404 || response.status === 405) {
+      await discard(response)
+      return { status: 'reachable', detail: '图片服务可以连接，但没有提供模型列表；密钥权限尚未验证' }
+    }
+    if (!response.ok) throw providerError('图片服务连接测试', response.status, await response.text())
+    await discard(response)
+    return { status: 'verified', detail: '图片服务和密钥均可用；测试没有生成图片' }
+  }
+  const headers: Record<string, string> = { accept: 'application/json' }
+  if (apiKey !== undefined) headers.authorization = `Bearer ${apiKey}`
+  const url = endpoint(settings.a1111.endpoint, '/sdapi/v1/samplers')
+  url.pathname = url.pathname.replace(/\/sdapi\/v1\/txt2img$/u, '/sdapi/v1/samplers')
+  const response = await fetchConnection('A1111 / Forge', url, { headers, signal })
+  if (!response.ok) throw providerError('A1111 / Forge 连接测试', response.status, await response.text())
+  await discard(response)
+  return { status: 'verified', detail: 'A1111 / Forge 已连接；测试没有生成图片' }
 }
 
 function decodeBase64Image(value: string): GeneratedImageAsset {

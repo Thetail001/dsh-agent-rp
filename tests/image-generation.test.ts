@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { GeneratedImageLibrary } from '../src/generated-image-library.ts'
-import { generateImage } from '../src/image-generation-providers.ts'
+import { generateImage, testImageProvider } from '../src/image-generation-providers.ts'
 import { parseImageGenerationRequest } from '../src/image-generation-protocol.ts'
 import { DEFAULT_AGENT_RP_SETTINGS } from '../src/workspace-settings.ts'
 
@@ -78,6 +78,60 @@ test('submits configured dimensions to A1111 or Forge', async () => {
     assert.equal(submitted?.width, 640)
     assert.equal(submitted?.height, 896)
     assert.equal(submitted?.prompt, request.prompt)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('checks OpenAI-compatible credentials without generating an image', async () => {
+  const original = globalThis.fetch
+  let requested: { readonly url: string; readonly method: string; readonly authorization?: string } | undefined
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const headers = new Headers(init?.headers)
+    const authorization = headers.get('authorization')
+    requested = {
+      url: String(input), method: init?.method ?? 'GET',
+      ...(authorization === null ? {} : { authorization }),
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    const result = await testImageProvider(DEFAULT_AGENT_RP_SETTINGS.imageGeneration, 'test-key', new AbortController().signal)
+    assert.deepEqual(result, { status: 'verified', detail: '图片服务和密钥均可用；测试没有生成图片' })
+    assert.deepEqual(requested, {
+      url: 'https://api.openai.com/v1/models', method: 'GET', authorization: 'Bearer test-key',
+    })
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('checks A1111 through its sampler catalog', async () => {
+  const original = globalThis.fetch
+  let requested: string | undefined
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    requested = String(input)
+    return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    const settings = { ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration, provider: 'a1111' as const }
+    const result = await testImageProvider(settings, undefined, new AbortController().signal)
+    assert.equal(result.status, 'verified')
+    assert.equal(requested, 'http://127.0.0.1:7860/sdapi/v1/samplers')
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('describes an unreachable image service without exposing fetch internals', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = (async () => { throw new TypeError('fetch failed') }) as typeof fetch
+  try {
+    const settings = { ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration, provider: 'a1111' as const }
+    await assert.rejects(
+      testImageProvider(settings, undefined, new AbortController().signal),
+      /A1111 \/ Forge 无法连接；请检查接口地址、网络或服务状态/u,
+    )
   } finally {
     globalThis.fetch = original
   }

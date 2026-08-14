@@ -6,14 +6,17 @@ import { credentialRef, type CredentialProvider } from '@deepseek-ai/dsh-credent
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { GeneratedImageLibrary } from './generated-image-library.ts'
 import { cancelGeneratedImageJob } from './image-generation-command.ts'
+import { testImageProvider } from './image-generation-providers.ts'
 import {
   AGENT_RP_IMAGE_API_KEY_REF,
   AGENT_RP_IMAGE_PATH,
   isImageJobId,
 } from './image-generation-protocol.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
+import { normalizeImageGenerationSettings } from './workspace-settings.ts'
 
 const MAX_CREDENTIAL_REQUEST_BYTES = 16 * 1024
+const MAX_TEST_REQUEST_BYTES = 32 * 1024
 const imageApiKeyRef = credentialRef(AGENT_RP_IMAGE_API_KEY_REF)
 
 function trustedBrowserRequest(request: IncomingMessage, sandboxedImage: boolean): boolean {
@@ -43,16 +46,20 @@ function json(response: ServerResponse, status: number, value: unknown): void {
   response.end(body)
 }
 
-async function readCredentialRequest(request: IncomingMessage): Promise<{ readonly value?: string; readonly clear?: true }> {
+async function readJsonRequest(request: IncomingMessage, limit: number): Promise<unknown> {
   const chunks: Buffer[] = []
   let bytes = 0
   for await (const chunk of request) {
     const data = Buffer.from(chunk as Uint8Array)
     bytes += data.byteLength
-    if (bytes > MAX_CREDENTIAL_REQUEST_BYTES) throw new Error('图片密钥请求过大')
+    if (bytes > limit) throw new Error('图片服务请求过大')
     chunks.push(data)
   }
-  const value = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+}
+
+async function readCredentialRequest(request: IncomingMessage): Promise<{ readonly value?: string; readonly clear?: true }> {
+  const value = await readJsonRequest(request, MAX_CREDENTIAL_REQUEST_BYTES)
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('图片密钥请求无效')
   const record = value as Record<string, unknown>
   if (record.clear === true && record.value === undefined) return { clear: true }
@@ -96,6 +103,13 @@ export function installImageGenerationHttp(
           if (change.clear === true) await credentials.unset(imageApiKeyRef)
           else await credentials.set(imageApiKeyRef, change.value!)
           json(response, 200, { format: 0, credential: await credentials.describe(imageApiKeyRef) })
+          return
+        }
+        if (request.method === 'POST' && path.length === 1 && path[0] === 'test') {
+          const settings = normalizeImageGenerationSettings(await readJsonRequest(request, MAX_TEST_REQUEST_BYTES))
+          const credential = await credentials.resolve(imageApiKeyRef)
+          const timeout = AbortSignal.timeout(12_000)
+          json(response, 200, { format: 0, test: await testImageProvider(settings, credential?.value, timeout) })
           return
         }
         if (path.length >= 2 && path[0] === 'jobs' && path[1] !== undefined && !isImageJobId(path[1])) {
