@@ -35,6 +35,44 @@ test('normalizes duplicate workspace ids and rejects malformed settings', () => 
   assert.throws(() => normalizeAgentRpSettings({ workspaceMode: 'selected', workspaceIds: [1] }))
 })
 
+test('adopts existing single image settings as the default profile', () => {
+  const imageGeneration = {
+    ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,
+    provider: 'a1111' as const,
+    a1111: { ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration.a1111, endpoint: 'http://127.0.0.1:7861' },
+  }
+  const settings = normalizeAgentRpSettings({ workspaceMode: 'all', workspaceIds: [], imageGeneration })
+  assert.equal(settings.activeImageProfileId, 'default')
+  assert.deepEqual(settings.imageGeneration, imageGeneration)
+  assert.deepEqual(settings.imageProfiles, [{ id: 'default', name: '默认配置', settings: imageGeneration }])
+})
+
+test('uses the selected image profile and rejects ambiguous profile lists', () => {
+  const local = {
+    ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,
+    provider: 'a1111' as const,
+    a1111: { ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration.a1111, endpoint: 'http://127.0.0.1:7862' },
+  }
+  const imageProfiles = [
+    { id: 'cloud', name: '云端', settings: DEFAULT_AGENT_RP_SETTINGS.imageGeneration },
+    { id: 'local', name: '本地', settings: local },
+  ]
+  const settings = normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [], activeImageProfileId: 'local', imageProfiles,
+  })
+  assert.equal(settings.imageGeneration.a1111.endpoint, 'http://127.0.0.1:7862')
+  assert.throws(() => normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [], activeImageProfileId: 'missing', imageProfiles,
+  }))
+  assert.throws(() => normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [], activeImageProfileId: 'cloud', imageProfiles: [imageProfiles[0], imageProfiles[0]],
+  }))
+  assert.throws(() => normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [], activeImageProfileId: 'cloud',
+    imageProfiles: [imageProfiles[0], { ...imageProfiles[1], name: '云端' }],
+  }))
+})
+
 test('persists workspace settings outside the DSH settings allowlist', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'agent-rp-workspace-settings-'))
   t.after(() => { rmSync(root, { recursive: true, force: true }) })

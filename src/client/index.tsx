@@ -61,7 +61,7 @@ import {
   DEFAULT_AGENT_RP_SETTINGS,
   allowsAgentRpEntry,
   normalizeAgentRpSettings,
-  type AgentRpSettings, type ImageGenerationSettings,
+  type AgentRpSettings, type ImageGenerationProfile, type ImageGenerationSettings,
 } from '../workspace-settings.ts'
 import {
   AGENT_RP_IMAGE_PATH,
@@ -1175,23 +1175,42 @@ interface WorkspaceSettingsSectionProps extends PropsRuntime<'settings.section'>
 const settingsFieldStyle = {
   background: 'var(--dsw-alias-bg-layer-1, #202024)',
   border: '1px solid var(--dsw-alias-border-l2, #3d3d43)',
-  borderRadius: '8px', color: 'inherit', font: 'inherit', fontSize: '12px',
+  borderRadius: '8px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', fontSize: '12px',
   minWidth: 0, padding: '8px 9px', width: '100%',
 } as const
 
+function nextImageProfileName(profiles: readonly ImageGenerationProfile[], provider: ImageGenerationSettings['provider']): string {
+  const base = provider === 'openai' ? 'OpenAI 配置' : 'A1111 配置'
+  const names = new Set(profiles.map(profile => profile.name.toLowerCase()))
+  if (!names.has(base.toLowerCase())) return base
+  let suffix = 2
+  while (names.has(`${base} ${suffix}`.toLowerCase())) suffix += 1
+  return `${base} ${suffix}`
+}
+
 function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
-  readonly settings: ImageGenerationSettings
+  readonly settings: AgentRpSettings
   readonly writable: boolean
-  readonly onSave: (settings: ImageGenerationSettings) => void
+  readonly onSave: (settings: AgentRpSettings) => void
 }) {
-  const [draft, setDraft] = useState(settings)
+  const activeProfile = settings.imageProfiles.find(profile => profile.id === settings.activeImageProfileId)
+    ?? settings.imageProfiles[0]!
+  const [draft, setDraft] = useState(settings.imageGeneration)
+  const [profileName, setProfileName] = useState(activeProfile.name)
   const [credential, setCredential] = useState<ImageCredentialInfo>()
   const [credentialValue, setCredentialValue] = useState('')
   const [credentialBusy, setCredentialBusy] = useState(false)
   const [testBusy, setTestBusy] = useState(false)
+  const [deleteArmed, setDeleteArmed] = useState(false)
   const [testResult, setTestResult] = useState<ImageProviderTestResult>()
   const [error, setError] = useState<string>()
-  useEffect(() => { setDraft(settings); setTestResult(undefined) }, [settings])
+  useEffect(() => {
+    setDraft(settings.imageGeneration)
+    setProfileName(activeProfile.name)
+    setTestResult(undefined)
+    setError(undefined)
+    setDeleteArmed(false)
+  }, [settings.imageGeneration, activeProfile.id, activeProfile.name])
   useEffect(() => {
     let active = true
     void imageCredentialInfo().then(value => { if (active) setCredential(value) }, reason => {
@@ -1217,34 +1236,124 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
       setError(reason instanceof Error ? reason.message : String(reason))
     }).finally(() => { setTestBusy(false) })
   }
+  const editDraft = (update: (current: ImageGenerationSettings) => ImageGenerationSettings): void => {
+    setDraft(update)
+    setTestResult(undefined)
+    setError(undefined)
+    setDeleteArmed(false)
+  }
+  const dirty = profileName.trim() !== activeProfile.name || JSON.stringify(draft) !== JSON.stringify(settings.imageGeneration)
+  const selectProfile = (id: string): void => {
+    if (dirty) {
+      setError('请先保存或还原当前档案，再切换配置')
+      return
+    }
+    const selected = settings.imageProfiles.find(profile => profile.id === id)
+    if (selected === undefined) return
+    onSave({ ...settings, activeImageProfileId: selected.id, imageGeneration: selected.settings })
+  }
+  const createProfile = (): void => {
+    const profile: ImageGenerationProfile = {
+      id: crypto.randomUUID(),
+      name: nextImageProfileName(settings.imageProfiles, draft.provider),
+      settings: draft,
+    }
+    onSave({
+      ...settings,
+      activeImageProfileId: profile.id,
+      imageGeneration: profile.settings,
+      imageProfiles: [...settings.imageProfiles, profile],
+    })
+  }
+  const saveProfile = (): void => {
+    const name = profileName.trim()
+    if (name === '') {
+      setError('配置名称不能为空')
+      return
+    }
+    if (settings.imageProfiles.some(profile => profile.id !== activeProfile.id
+      && profile.name.toLowerCase() === name.toLowerCase())) {
+      setError('已有同名的图片配置')
+      return
+    }
+    onSave({
+      ...settings,
+      imageGeneration: draft,
+      imageProfiles: settings.imageProfiles.map(profile => profile.id === activeProfile.id
+        ? { ...profile, name, settings: draft } : profile),
+    })
+  }
+  const deleteProfile = (): void => {
+    if (settings.imageProfiles.length <= 1) return
+    if (!deleteArmed) {
+      setDeleteArmed(true)
+      return
+    }
+    const remaining = settings.imageProfiles.filter(profile => profile.id !== activeProfile.id)
+    const selected = remaining[0]!
+    onSave({
+      ...settings,
+      activeImageProfileId: selected.id,
+      imageGeneration: selected.settings,
+      imageProfiles: remaining,
+    })
+  }
+  const restoreProfile = (): void => {
+    setDraft(settings.imageGeneration)
+    setProfileName(activeProfile.name)
+    setTestResult(undefined)
+    setError(undefined)
+    setDeleteArmed(false)
+  }
   const labelStyle = { display: 'grid', fontSize: '12px', gap: '6px', opacity: writable ? 1 : .62 } as const
   return <section style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)', marginTop: '28px', paddingTop: '24px' }}>
     <h3 style={{ fontSize: '15px', margin: 0 }}>聊天插图</h3>
     <p style={{ fontSize: '12px', lineHeight: 1.6, margin: '7px 0 16px', opacity: .58 }}>
       只在你点“绘图”后调用；图片保存在本机，不会作为图片输入送进角色模型
     </p>
+    <div style={{ alignItems: 'end', display: 'flex', flexWrap: 'wrap', gap: '9px', marginBottom: '15px' }}>
+      <label style={{ ...labelStyle, flex: '1 1 190px' }}>配置档案
+        <select aria-label="配置档案" value={activeProfile.id} disabled={!writable} onChange={event => {
+          selectProfile(event.target.value)
+        }} style={settingsFieldStyle}>
+          {settings.imageProfiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+        </select>
+      </label>
+      <label style={{ ...labelStyle, flex: '1 1 190px' }}>配置名称
+        <input aria-label="配置名称" value={profileName} disabled={!writable} maxLength={80} onChange={event => {
+          setProfileName(event.target.value)
+          setError(undefined)
+          setDeleteArmed(false)
+        }} style={settingsFieldStyle} />
+      </label>
+      <div style={{ display: 'flex', gap: '7px' }}>
+        <button type="button" disabled={!writable} onClick={createProfile} style={secondaryButtonStyle}>新建副本</button>
+        <button type="button" disabled={!writable || settings.imageProfiles.length <= 1}
+          onClick={deleteProfile} style={secondaryButtonStyle}>{deleteArmed ? '确认删除' : '删除'}</button>
+      </div>
+    </div>
     <label style={labelStyle}>图片服务
       <select value={draft.provider} disabled={!writable} onChange={event => {
-        setDraft(current => ({ ...current, provider: event.target.value as ImageGenerationSettings['provider'] }))
+        editDraft(current => ({ ...current, provider: event.target.value as ImageGenerationSettings['provider'] }))
       }} style={settingsFieldStyle}>
         <option value="openai">OpenAI Images / 兼容接口</option>
         <option value="a1111">A1111 / Forge</option>
       </select>
     </label>
-    {draft.provider === 'openai' ? <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'minmax(0, 2fr) minmax(120px, 1fr)', marginTop: '12px' }}>
+    {draft.provider === 'openai' ? <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', marginTop: '12px' }}>
       <label style={labelStyle}>接口地址
         <input value={draft.openai.endpoint} disabled={!writable} onChange={event => {
-          setDraft(current => ({ ...current, openai: { ...current.openai, endpoint: event.target.value } }))
+          editDraft(current => ({ ...current, openai: { ...current.openai, endpoint: event.target.value } }))
         }} style={settingsFieldStyle} />
       </label>
       <label style={labelStyle}>模型
         <input value={draft.openai.model} disabled={!writable} onChange={event => {
-          setDraft(current => ({ ...current, openai: { ...current.openai, model: event.target.value } }))
+          editDraft(current => ({ ...current, openai: { ...current.openai, model: event.target.value } }))
         }} style={settingsFieldStyle} />
       </label>
       <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>尺寸
         <select value={draft.openai.size} disabled={!writable} onChange={event => {
-          setDraft(current => ({ ...current, openai: {
+          editDraft(current => ({ ...current, openai: {
             ...current.openai, size: event.target.value as ImageGenerationSettings['openai']['size'],
           } }))
         }} style={settingsFieldStyle}>
@@ -1253,36 +1362,36 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
           <option value="1536x1024">1536 × 1024（横图）</option>
         </select>
       </label>
-    </div> : <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', marginTop: '12px' }}>
+    </div> : <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', marginTop: '12px' }}>
       <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>接口地址
         <input value={draft.a1111.endpoint} disabled={!writable} onChange={event => {
-          setDraft(current => ({ ...current, a1111: { ...current.a1111, endpoint: event.target.value } }))
+          editDraft(current => ({ ...current, a1111: { ...current.a1111, endpoint: event.target.value } }))
         }} style={settingsFieldStyle} />
       </label>
       <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>模型（留空使用 WebUI 当前模型）
         <input value={draft.a1111.model} disabled={!writable} onChange={event => {
-          setDraft(current => ({ ...current, a1111: { ...current.a1111, model: event.target.value } }))
+          editDraft(current => ({ ...current, a1111: { ...current.a1111, model: event.target.value } }))
         }} style={settingsFieldStyle} />
       </label>
       {([['宽度', 'width'], ['高度', 'height'], ['步数', 'steps'], ['CFG', 'cfgScale']] as const).map(([label, field]) => <label key={field} style={labelStyle}>{label}
         <input type="number" value={draft.a1111[field]} disabled={!writable} onChange={event => {
           const value = Number(event.target.value)
-          setDraft(current => ({ ...current, a1111: { ...current.a1111, [field]: value } }))
+          editDraft(current => ({ ...current, a1111: { ...current.a1111, [field]: value } }))
         }} style={settingsFieldStyle} />
       </label>)}
       <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>采样器
         <input value={draft.a1111.sampler} disabled={!writable} onChange={event => {
-          setDraft(current => ({ ...current, a1111: { ...current.a1111, sampler: event.target.value } }))
+          editDraft(current => ({ ...current, a1111: { ...current.a1111, sampler: event.target.value } }))
         }} style={settingsFieldStyle} />
       </label>
       <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>默认负面提示词
         <textarea value={draft.a1111.negativePrompt} disabled={!writable} rows={3} onChange={event => {
-          setDraft(current => ({ ...current, a1111: { ...current.a1111, negativePrompt: event.target.value } }))
+          editDraft(current => ({ ...current, a1111: { ...current.a1111, negativePrompt: event.target.value } }))
         }} style={{ ...settingsFieldStyle, resize: 'vertical' }} />
       </label>
     </div>}
     <div style={{ alignItems: 'end', display: 'grid', gap: '9px', gridTemplateColumns: 'minmax(0, 1fr) auto', marginTop: '15px' }}>
-      <label style={labelStyle}>服务密钥
+      <label style={labelStyle}>服务密钥（所有配置共用）
         <input type="password" autoComplete="new-password" value={credentialValue}
           placeholder={credential?.configured === true ? `已配置${credential.source === undefined ? '' : ` · ${credential.source}`}` : 'OpenAI 必填；A1111 可留空'}
           disabled={credentialBusy || credential?.writable === false} onChange={event => { setCredentialValue(event.target.value) }}
@@ -1300,7 +1409,8 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
     <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '14px' }}>
       <button type="button" disabled={!writable || testBusy || (draft.provider === 'openai' && credential?.configured !== true)}
         onClick={testConnection} style={secondaryButtonStyle}>{testBusy ? '正在测试…' : '测试连接'}</button>
-      <button type="button" disabled={!writable} onClick={() => { onSave(draft) }} style={primaryButtonStyle}>保存绘图设置</button>
+      {dirty && <button type="button" disabled={!writable} onClick={restoreProfile} style={secondaryButtonStyle}>还原</button>}
+      <button type="button" disabled={!writable || !dirty} onClick={saveProfile} style={primaryButtonStyle}>保存当前档案</button>
     </div>
     {testResult !== undefined && <p role="status" style={{
       color: testResult.status === 'verified' ? 'var(--dsw-alias-state-success, #5dbb84)' : 'var(--dsw-alias-state-warning, #d6a955)',
@@ -1407,8 +1517,7 @@ function WorkspaceSettingsSection({
         尚未选择工作区，新的角色入口会暂时隐藏
       </p>}
     </div>}
-    <ImageGenerationSettingsPanel settings={settings.imageGeneration} writable={writable}
-      onSave={imageGeneration => { write({ ...settings, imageGeneration }) }} />
+    <ImageGenerationSettingsPanel settings={settings} writable={writable} onSave={write} />
     {snapshot.status === 'loading' && <p role="status" style={{ fontSize: '12px', marginTop: '14px', opacity: .55 }}>正在读取设置…</p>}
     {snapshot.status === 'error' && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '14px' }}>{snapshot.error}</p>}
     {error !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '14px' }}>{error}</p>}

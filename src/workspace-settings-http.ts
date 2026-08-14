@@ -7,7 +7,7 @@ import type { AgentRpHttpServer } from './host-http.ts'
 import { AGENT_RP_WORKSPACE_SETTINGS_PATH } from './workspace-settings.ts'
 import { WorkspaceSettingsStore } from './workspace-settings-store.ts'
 
-const MAX_SETTINGS_BYTES = 64 * 1024
+const MAX_SETTINGS_BYTES = 512 * 1024
 
 function trustedBrowserRequest(request: IncomingMessage): boolean {
   const host = request.headers.host

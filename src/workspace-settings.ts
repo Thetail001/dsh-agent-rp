@@ -35,6 +35,13 @@ export interface ImageGenerationSettings {
   }
 }
 
+/** One reusable, non-secret image provider configuration. */
+export interface ImageGenerationProfile {
+  readonly id: string
+  readonly name: string
+  readonly settings: ImageGenerationSettings
+}
+
 /** Workspace visibility mode for new Agent RP entry points. */
 export type AgentRpWorkspaceMode = typeof AGENT_RP_WORKSPACE_MODES[number]
 
@@ -46,30 +53,43 @@ export interface AgentRpSettings {
   readonly workspaceIds: string[]
   /** Provider and generation defaults for explicit roleplay image requests. */
   readonly imageGeneration: ImageGenerationSettings
+  /** Selected reusable image provider configuration. */
+  readonly activeImageProfileId: string
+  /** Reusable image provider configurations; credentials remain in the Host credential store. */
+  readonly imageProfiles: ImageGenerationProfile[]
+}
+
+const DEFAULT_IMAGE_PROFILE_ID = 'default'
+const DEFAULT_IMAGE_GENERATION_SETTINGS: ImageGenerationSettings = {
+  provider: 'openai',
+  openai: {
+    endpoint: 'https://api.openai.com/v1/images/generations',
+    model: 'gpt-image-1',
+    size: '1024x1024',
+  },
+  a1111: {
+    endpoint: 'http://127.0.0.1:7860',
+    model: '',
+    width: 768,
+    height: 1024,
+    steps: 28,
+    cfgScale: 7,
+    sampler: 'DPM++ 2M Karras',
+    negativePrompt: '',
+  },
 }
 
 /** Default settings preserve the existing all-workspace behavior. */
 export const DEFAULT_AGENT_RP_SETTINGS: AgentRpSettings = {
   workspaceMode: 'all',
   workspaceIds: [],
-  imageGeneration: {
-    provider: 'openai',
-    openai: {
-      endpoint: 'https://api.openai.com/v1/images/generations',
-      model: 'gpt-image-1',
-      size: '1024x1024',
-    },
-    a1111: {
-      endpoint: 'http://127.0.0.1:7860',
-      model: '',
-      width: 768,
-      height: 1024,
-      steps: 28,
-      cfgScale: 7,
-      sampler: 'DPM++ 2M Karras',
-      negativePrompt: '',
-    },
-  },
+  imageGeneration: DEFAULT_IMAGE_GENERATION_SETTINGS,
+  activeImageProfileId: DEFAULT_IMAGE_PROFILE_ID,
+  imageProfiles: [{
+    id: DEFAULT_IMAGE_PROFILE_ID,
+    name: '默认配置',
+    settings: DEFAULT_IMAGE_GENERATION_SETTINGS,
+  }],
 }
 
 function text(value: unknown, fallback: string, max: number, label: string): string {
@@ -154,10 +174,46 @@ export function normalizeAgentRpSettings(value: unknown): AgentRpSettings {
       || id.trim() !== id || id === '' || id.length > 256)) {
     throw new Error('Agent RP 工作区设置字段无效')
   }
+  const imageGeneration = normalizeImageGenerationSettings(record.imageGeneration)
+  let imageProfiles: ImageGenerationProfile[]
+  let activeImageProfileId: string
+  if (record.imageProfiles === undefined) {
+    activeImageProfileId = DEFAULT_IMAGE_PROFILE_ID
+    imageProfiles = [{ id: activeImageProfileId, name: '默认配置', settings: imageGeneration }]
+  } else {
+    if (!Array.isArray(record.imageProfiles) || record.imageProfiles.length === 0 || record.imageProfiles.length > 50) {
+      throw new Error('图片服务配置档案无效')
+    }
+    imageProfiles = record.imageProfiles.map(value => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('图片服务配置档案无效')
+      const profile = value as Record<string, unknown>
+      if (typeof profile.id !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/iu.test(profile.id)) {
+        throw new Error('图片服务配置档案 id 无效')
+      }
+      if (typeof profile.name !== 'string' || profile.name.trim() === '' || profile.name.trim().length > 80) {
+        throw new Error('图片服务配置档案名称无效')
+      }
+      return { id: profile.id, name: profile.name.trim(), settings: normalizeImageGenerationSettings(profile.settings) }
+    })
+    if (new Set(imageProfiles.map(profile => profile.id)).size !== imageProfiles.length) {
+      throw new Error('图片服务配置档案 id 重复')
+    }
+    if (new Set(imageProfiles.map(profile => profile.name.toLowerCase())).size !== imageProfiles.length) {
+      throw new Error('图片服务配置档案名称重复')
+    }
+    activeImageProfileId = typeof record.activeImageProfileId === 'string'
+      ? record.activeImageProfileId : imageProfiles[0]!.id
+    if (!imageProfiles.some(profile => profile.id === activeImageProfileId)) {
+      throw new Error('当前图片服务配置档案不存在')
+    }
+  }
+  const activeImageGeneration = imageProfiles.find(profile => profile.id === activeImageProfileId)!.settings
   return {
     workspaceMode,
     workspaceIds: [...new Set(workspaceIds as string[])],
-    imageGeneration: normalizeImageGenerationSettings(record.imageGeneration),
+    imageGeneration: activeImageGeneration,
+    activeImageProfileId,
+    imageProfiles,
   }
 }
 
