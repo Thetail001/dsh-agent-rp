@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
 import type { ImportedRegexScript } from '../src/import/types.ts'
 import { tavernScriptFrameSource } from '../src/client/tavern-runtime.ts'
 import {
@@ -28,6 +29,99 @@ const base: ImportedRegexScript = {
 const character = {
   name: '白露',
   frontend: { regexScripts: [base], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {} },
+}
+
+class RuntimeElement {
+  readonly children: RuntimeElement[] = []
+  readonly classList = { add() {}, remove() {}, toggle() {} }
+  readonly dataset: Record<string, string> = {}
+  readonly style = { setProperty() {} }
+  readonly tagName: string
+  hidden = false
+  innerHTML = ''
+
+  constructor(tagName = 'div') {
+    this.tagName = tagName.toUpperCase()
+  }
+
+  appendChild(child: RuntimeElement): RuntimeElement {
+    this.children.push(child)
+    return child
+  }
+
+  append(...children: RuntimeElement[]): void { this.children.push(...children) }
+  prepend(...children: RuntimeElement[]): void { this.children.unshift(...children) }
+  insertBefore(child: RuntimeElement): RuntimeElement { return this.appendChild(child) }
+  addEventListener(): void {}
+  removeAttribute(): void {}
+  setAttribute(): void {}
+  getAttribute(): null { return null }
+  querySelectorAll(): RuntimeElement[] { return [] }
+  closest(): undefined { return undefined }
+  contains(): boolean { return false }
+  remove(): void {}
+  replaceChildren(): void { this.children.length = 0 }
+  cloneNode(): RuntimeElement { return new RuntimeElement(this.tagName) }
+  get outerHTML(): string { return `<${this.tagName.toLowerCase()}>${this.innerHTML}</${this.tagName.toLowerCase()}>` }
+}
+
+function runtimeAcceptanceContext(preview: readonly unknown[]) {
+  const listeners = new Map<string, ((event: unknown) => void)[]>()
+  const posted: Record<string, unknown>[] = []
+  const parent = {
+    postMessage(message: Record<string, unknown>) {
+      posted.push(message)
+      if (message.action !== 'generation-preview') return
+      queueMicrotask(() => {
+        for (const listener of listeners.get('message') ?? []) listener({
+          source: parent,
+          data: {
+            source: 'dsh-agent-rp-host',
+            action: 'generation-preview-result',
+            requestId: message.requestId,
+            ok: true,
+            value: preview,
+          },
+        })
+      })
+    },
+  }
+  const body = new RuntimeElement('body')
+  const context: Record<string, unknown> = {
+    AbortController,
+    AbortSignal,
+    Element: RuntimeElement,
+    Node: RuntimeElement,
+    MutationObserver: class { observe() {} },
+    Response,
+    URL,
+    console,
+    document: {
+      body,
+      readyState: 'complete',
+      createElement(tagName: string) {
+        const element = new RuntimeElement(tagName) as RuntimeElement & { content?: { childNodes: RuntimeElement[] } }
+        if (tagName === 'template') element.content = { childNodes: [] }
+        return element
+      },
+      querySelectorAll() { return [] },
+      addEventListener() {},
+    },
+    fetch() { throw new Error('unexpected native fetch') },
+    getComputedStyle() { return { display: 'block', visibility: 'visible', getPropertyValue() { return '' } } },
+    parent,
+    posted,
+    queueMicrotask,
+    setTimeout,
+    clearTimeout,
+    addEventListener(type: string, listener: (event: unknown) => void) {
+      const current = listeners.get(type) ?? []
+      current.push(listener)
+      listeners.set(type, current)
+    },
+  }
+  context.window = context
+  return context
 }
 
 test('builds a parseable Tavern runtime with dynamic script button APIs', () => {
@@ -77,6 +171,87 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.ok(source!.indexOf('var prompts=await __dshPromptPreview')
     < source!.indexOf("var response=await window.fetch('/api/backends/chat-completions/generate'"))
   assert.match(source!, /window\.getModelList=/u)
+})
+
+test('lets V18-style dry-run listeners capture prompts without Host generation', async () => {
+  const prompts = [
+    { role: 'system', content: '角色与世界状态' },
+    { role: 'user', content: '最近十层对话' },
+  ]
+  const script = String.raw`
+const marker = '__ssDryRunCapture_acceptance__';
+const captured = { order: [] };
+eventOn(tavern_events.CHAT_COMPLETION_PROMPT_READY, data => {
+  captured.order.push('ready');
+  captured.ready = data.chat;
+});
+eventOn(tavern_events.GENERATE_AFTER_DATA, (data, dryRun) => {
+  captured.order.push('data');
+  captured.data = data.prompt;
+  captured.dryRun = dryRun;
+});
+eventOn(tavern_events.GENERATE_AFTER_COMBINE_PROMPTS, data => {
+  captured.order.push('combined');
+  captured.combined = data.prompt;
+});
+const previousFetch = window.fetch;
+window.fetch = async (input, init) => {
+  const body = typeof init?.body === 'string' ? init.body : '';
+  if (!body.includes(marker)) return previousFetch(input, init);
+  captured.body = JSON.parse(body);
+  return new Response(JSON.stringify({
+    choices: [{ message: { role: 'assistant', content: 'captured locally' } }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+window.__acceptance = generate({
+  preset_name: 'in_use',
+  user_input: '【玄狐上下文抓取】' + marker,
+  should_silence: true,
+  should_stream: false,
+  automatic_trigger: true,
+  _qrf_processed_by_hook: true,
+  max_chat_history: 10,
+}).then(result => ({ result, captured }));
+`
+  const html = tavernScriptFrameSource({
+    id: 'v18-capture', name: '1', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'v18-capture', scriptName: '1', scriptInfo: '', buttons: [],
+    characterName: '白露', characterId: 'bailu.png', chatId: 'session-test',
+    approvedScriptOrigins: [],
+    preset: { name: 'V18', revision: 1, value: {} },
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {},
+    worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    messages: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext(prompts)
+  runInNewContext(source!, context)
+  const result = JSON.parse(JSON.stringify(await context.__acceptance)) as {
+    result: string
+    captured: {
+      order: string[]
+      ready: unknown
+      data: unknown
+      combined: unknown
+      dryRun: boolean
+      body: Record<string, unknown>
+    }
+  }
+  assert.equal(result.result, 'captured locally')
+  assert.deepEqual(result.captured.order, ['ready', 'data', 'combined'])
+  assert.deepEqual(result.captured.ready, prompts)
+  assert.deepEqual(result.captured.data, prompts)
+  assert.deepEqual(result.captured.combined, prompts)
+  assert.equal(result.captured.dryRun, false)
+  assert.equal(result.captured.body.user_input, '【玄狐上下文抓取】__ssDryRunCapture_acceptance__')
+  assert.deepEqual(result.captured.body.messages, [])
+  const actions = (context.posted as Record<string, unknown>[]).map(message => message.action)
+  assert.ok(actions.includes('generation-preview'))
+  assert.ok(!actions.includes('generate'))
 })
 
 test('runs preset scripts before character scripts for the selected view', () => {
