@@ -105,6 +105,8 @@ export const BUILT_IN_TAVERN_SCRIPT_ORIGINS = ['https://cdn.jsdelivr.net', 'http
 const allowedScriptOrigins = new Set<string>(BUILT_IN_TAVERN_SCRIPT_ORIGINS)
 const DOMPURIFY_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/dompurify@3.3.0/dist/purify.min.js'
 const DOMPURIFY_SCRIPT_INTEGRITY = 'sha384-+qi1h9Ene5uYXijovnRnDpm2TZiNyVFgYjKIqjw6id8zLdWYt+tCPG9/1u6yLaNj'
+const FUSE_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.min.js'
+const FUSE_SCRIPT_INTEGRITY = 'sha384-P/y/5cwqUn6MDvJ9lCHJSaAi2EoH3JSeEdyaORsQMPgbpvA+NvvUqik7XH2YGBjb'
 const importLine = /^\s*import\s+(['"])(https:\/\/[^'"\s]+)\1\s*;?\s*$/gmu
 
 async function remoteSource(url: string, signal: AbortSignal): Promise<string> {
@@ -442,7 +444,8 @@ window.this_chid=__dshCharacter===undefined?undefined:0;
 window.getCharData=function(name){name=name||'current';if(__dshCharacter===undefined)return null;if(name!=='current'&&name!==__dshCharacter.name&&name!==__dshCharacter.avatar&&name!==__dshSnapshot.characterName)return null;return __dshClone(__dshCharacter)};
 window.getCharacterNames=function(){return __dshCharacters.map(function(character){return character.name})};
 window.getCharacterIds=function(){return __dshCharacters.map(function(character){return character.avatar})};
-window.SillyTavern={chat:[],name1:__dshSnapshot.userName??'用户',name2:__dshSnapshot.characterName,characters:__dshCharacters,this_chid:window.this_chid,characterId:window.this_chid,groups:[],groupId:null,chatId:__dshSnapshot.chatId,chatMetadata:__dshCurrentChatMetadata,chat_metadata:__dshCurrentChatMetadata,extensionSettings:__dshExtensionSettings,libs:{},saveSettingsDebounced:__dshSaveSettingsDebounced,Popup:__DshPopup,POPUP_TYPE:__dshPopupType,POPUP_RESULT:__dshPopupResult,callGenericPopup:__dshCallGenericPopup,getCurrentCharacterId:window.getCurrentCharId,getCurrentChatId:window.getCurrentChatId,substituteParams:window.substituteParams,eventSource:{on:window.eventOn,once:window.eventOnce,emit:window.eventEmit,emitAndWait:window.eventEmitAndWait,removeListener:window.eventRemoveListener},eventTypes:window.tavern_events,getContext:function(){return this}};
+window.uuidv4=function(){if(typeof crypto.randomUUID==='function')return crypto.randomUUID();var bytes=new Uint8Array(16);crypto.getRandomValues(bytes);bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;return Array.from(bytes,function(value,index){var hex=value.toString(16).padStart(2,'0');return [4,6,8,10].includes(index)?'-'+hex:hex}).join('')};
+window.SillyTavern={chat:[],name1:__dshSnapshot.userName??'用户',name2:__dshSnapshot.characterName,characters:__dshCharacters,this_chid:window.this_chid,characterId:window.this_chid,groups:[],groupId:null,chatId:__dshSnapshot.chatId,chatMetadata:__dshCurrentChatMetadata,chat_metadata:__dshCurrentChatMetadata,extensionSettings:__dshExtensionSettings,libs:{},saveSettingsDebounced:__dshSaveSettingsDebounced,Popup:__DshPopup,POPUP_TYPE:__dshPopupType,POPUP_RESULT:__dshPopupResult,callGenericPopup:__dshCallGenericPopup,getCurrentCharacterId:window.getCurrentCharId,getCurrentChatId:window.getCurrentChatId,uuidv4:window.uuidv4,substituteParams:window.substituteParams,eventSource:{on:window.eventOn,once:window.eventOnce,emit:window.eventEmit,emitAndWait:window.eventEmitAndWait,removeListener:window.eventRemoveListener},eventTypes:window.tavern_events,getContext:function(){return this}};
 window.getContext=function(){return window.SillyTavern.getContext()};
 window.saveSettingsDebounced=__dshSaveSettingsDebounced;
 window.extension_settings=__dshExtensionSettings;
@@ -477,6 +480,7 @@ Object.assign(lodash,{get:__dshGet,set:__dshSet,has:function(object,path){return
 window._=lodash;
 window.SillyTavern.libs.lodash=lodash;
 window.SillyTavern.libs.DOMPurify=window.DOMPurify;
+window.SillyTavern.libs.Fuse=window.Fuse;
 window.SillyTavern.libs.localforage=__dshLocalForageRoot;
 function Mini(value){if(value instanceof Mini)this.items=value.items;else if(typeof value==='string'&&value.trim().startsWith('<')){var template=document.createElement('template');template.innerHTML=value.trim();this.items=Array.from(template.content.childNodes)}else if(typeof value==='string')this.items=Array.from(document.querySelectorAll(value));else if(value===window||value===document||value instanceof Node)this.items=[value];else this.items=value&&typeof value.length==='number'?Array.from(value):[]}
 Mini.prototype.each=function(callback){this.items.forEach(function(item,index){callback.call(item,index,item)});return this};
@@ -522,8 +526,13 @@ export function tavernScriptFrameSource(
   const encoded = safeJson(`${source}\n//# sourceURL=dsh-agent-rp:${script.id}`)
   const origins = [...new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...snapshot.approvedScriptOrigins])]
     .map(origin => new URL(origin).origin).join(' ')
-  const libraries = /\bDOMPurify\b/u.test(source)
-    ? `<script src="${DOMPURIFY_SCRIPT_URL}" integrity="${DOMPURIFY_SCRIPT_INTEGRITY}" crossorigin="anonymous"></script>`
-    : ''
+  const libraries = [
+    /\bDOMPurify\b/u.test(source)
+      ? `<script src="${DOMPURIFY_SCRIPT_URL}" integrity="${DOMPURIFY_SCRIPT_INTEGRITY}" crossorigin="anonymous"></script>`
+      : '',
+    /\bFuse\b/u.test(source)
+      ? `<script src="${FUSE_SCRIPT_URL}" integrity="${FUSE_SCRIPT_INTEGRITY}" crossorigin="anonymous"></script>`
+      : '',
+  ].join('')
   return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' ${origins}; connect-src 'none'; img-src 'none'; style-src 'unsafe-inline'; font-src 'none'; frame-src 'none'">${libraries}<style>html,body{background:transparent;color-scheme:dark}</style></head><body><script>${runtimeSource(snapshot)}\ntry{Function('localStorage','sessionStorage',${encoded})(__dshLocalStorage,__dshSessionStorage)}catch(error){console.error(error);parent.postMessage({source:'dsh-agent-rp-tavern-script',scriptId:${safeJson(script.id)},action:'runtime-error',value:String(error)},'*')}</script></body></html>`
 }
