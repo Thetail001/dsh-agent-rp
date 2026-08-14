@@ -720,7 +720,7 @@ function RewriteTurnDialog({ initialText, busy, error, onClose, onRewrite }: {
   const submit = (): void => {
     if (!busy && text.trim() !== '') onRewrite(text)
   }
-  return <div role="dialog" aria-modal="true" aria-label="改写这轮" style={{
+  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="改写这轮" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.56)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '16px', position: 'fixed', zIndex: 1100,
   }} onMouseDown={event => { if (!busy && event.target === event.currentTarget) onClose() }}>
@@ -1067,6 +1067,55 @@ function CharacterLibraryAvatar({ entry, size = 38 }: {
 
 const characterLibraryNarrowQuery = '(max-width: 720px)'
 
+const agentRpResponsiveStyle = `
+.agent-rp-mobile-only { display: none !important; }
+@media (max-width: 720px) {
+  .agent-rp-header {
+    flex: 1 1 auto !important;
+    gap: 6px !important;
+    margin-right: 0 !important;
+    width: 100%;
+  }
+  .agent-rp-header-meta { flex: 1 1 auto; }
+  .agent-rp-header-kind,
+  .agent-rp-header-capabilities,
+  .agent-rp-header-primary-action { display: none !important; }
+  .agent-rp-header-settings { flex: 0 0 auto; margin-left: auto; }
+  .agent-rp-mobile-only { display: block !important; }
+  [data-agent-rp-dialog] {
+    align-items: flex-end !important;
+    padding: max(8px, env(safe-area-inset-top)) 0 0 !important;
+  }
+  [data-agent-rp-dialog] > section {
+    border-bottom: 0 !important;
+    border-radius: 16px 16px 0 0 !important;
+    box-sizing: border-box !important;
+    max-height: calc(100dvh - max(8px, env(safe-area-inset-top))) !important;
+    max-width: 100vw !important;
+    padding-bottom: max(16px, env(safe-area-inset-bottom)) !important;
+    width: 100vw !important;
+  }
+  .agent-rp-character-library-dialog {
+    border-radius: 0 !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+  }
+  .agent-rp-character-info {
+    border-left: 0 !important;
+    box-sizing: border-box !important;
+    height: 100dvh;
+    max-width: 100vw !important;
+    padding: max(18px, env(safe-area-inset-top)) 18px max(18px, env(safe-area-inset-bottom)) !important;
+    width: 100vw !important;
+  }
+  .agent-rp-tavern-script-dialog {
+    border-radius: 0 !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+  }
+}
+`
+
 function subscribeCharacterLibraryWidth(listener: () => void): () => void {
   const media = window.matchMedia(characterLibraryNarrowQuery)
   media.addEventListener('change', listener)
@@ -1097,7 +1146,7 @@ function SillyTavernImportDialog({ listPresets, onClose, onImport, onImportRpDis
   const { entries: presets, error: presetError, presetId, selectPreset } = usePresetPreference(listPresets)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
-  return <div role="dialog" aria-modal="true" aria-label="迁移 SillyTavern 聊天" style={{
+  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="迁移 SillyTavern 聊天" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.66)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1250,
   }} onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose() }}>
@@ -1238,7 +1287,7 @@ function PersonaManagerDialog({ current, listPersonas, savePersona, deletePerson
       setError(reason instanceof Error ? reason.message : String(reason))
     })
   }
-  return <div role="dialog" aria-modal="true" aria-label="管理你的身份" style={{
+  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="管理你的身份" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.58)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1220,
   }} onMouseDown={event => { if (event.target === event.currentTarget && busy === undefined) onClose() }}>
@@ -2151,33 +2200,33 @@ function RoleplayHeader({
     ? undefined
     : cardFrameSource(statusHtml, projection.mvu.statData, characterDetail)
   return <>
-    <div ref={rootRef} data-agent-rp-header style={{ alignItems: 'center', display: 'flex', gap: '10px', marginRight: 'auto', minWidth: 0 }}>
+    <div ref={rootRef} className="agent-rp-header" data-agent-rp-header style={{ alignItems: 'center', display: 'flex', gap: '10px', marginRight: 'auto', minWidth: 0 }}>
       <Avatar projection={displayProjection} loadAvatar={loadAvatar} {...(expressionUrl === undefined ? {} : { imageUrl: expressionUrl })} />
-      <div style={{ minWidth: 0 }}>
+      <div className="agent-rp-header-meta" style={{ minWidth: 0 }}>
         <div style={{ alignItems: 'baseline', display: 'flex', gap: '8px', minWidth: 0 }}>
           <strong style={{ fontSize: '15px', fontWeight: 620, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {displayName}
           </strong>
-          <span style={{ fontSize: '11px', opacity: 0.48, whiteSpace: 'nowrap' }}>{imported ? '已迁移对话' : '角色对话'}</span>
+          <span className="agent-rp-header-kind" style={{ fontSize: '11px', opacity: 0.48, whiteSpace: 'nowrap' }}>{imported ? '已迁移对话' : '角色对话'}</span>
         </div>
-        <div style={{ fontSize: '12px', marginTop: '2px', opacity: 0.55, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div className="agent-rp-header-capabilities" style={{ fontSize: '12px', marginTop: '2px', opacity: 0.55, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {characterCapabilitySummary(projection)}
         </div>
       </div>
-      <button type="button" onClick={() => { setSettingsOpen(false); setOpen(true) }} style={{
+      <button className="agent-rp-header-primary-action" type="button" onClick={() => { setSettingsOpen(false); setOpen(true) }} style={{
         background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
         color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', marginLeft: '8px', padding: '6px 10px',
       }}>角色信息</button>
-      <button type="button" onClick={() => { setSettingsOpen(false); setLibraryOpen(true) }} style={{
+      <button className="agent-rp-header-primary-action" type="button" onClick={() => { setSettingsOpen(false); setLibraryOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 10%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>角色库</button>
-      <button type="button" onClick={() => { setSettingsOpen(false); setPersonaOpen(true) }} style={{
+      <button className="agent-rp-header-primary-action" type="button" onClick={() => { setSettingsOpen(false); setPersonaOpen(true) }} style={{
         background: projection.persona === undefined ? 'transparent' : `color-mix(in srgb, ${color} 12%, transparent)`,
         border: `1px solid ${projection.persona === undefined ? 'var(--dsw-alias-border-l2, #444)' : `color-mix(in srgb, ${color} 34%, transparent)`}`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>身份{projection.persona === undefined ? '' : ` · ${projection.persona.name}`}</button>
-      <details ref={settingsRef} open={settingsOpen} onToggle={event => { setSettingsOpen(event.currentTarget.open) }} style={{ position: 'relative' }}>
+      <details className="agent-rp-header-settings" ref={settingsRef} open={settingsOpen} onToggle={event => { setSettingsOpen(event.currentTarget.open) }} style={{ position: 'relative' }}>
         <summary ref={settingsSummaryRef} role="button" aria-expanded={settingsOpen} aria-haspopup="menu" style={{
           background: projection.worldInfo.activeCount > 0 ? `color-mix(in srgb, ${color} 10%, transparent)` : 'transparent',
           border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px', color: 'inherit', cursor: 'pointer',
@@ -2188,6 +2237,10 @@ function RoleplayHeader({
           borderRadius: '10px', boxShadow: '0 14px 38px rgba(0,0,0,.36)', display: 'grid', gap: '3px',
           minWidth: '168px', padding: '6px', position: 'absolute', right: 0, top: 'calc(100% + 7px)', zIndex: 80,
         }}>
+          <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setOpen(true) }} style={headerMenuItemStyle}>角色信息</button>
+          <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setLibraryOpen(true) }} style={headerMenuItemStyle}>角色库</button>
+          <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setPersonaOpen(true) }} style={headerMenuItemStyle}>你的身份</button>
+          {statusSource !== undefined && <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setStatusOpen(true) }} style={headerMenuItemStyle}>当前状态</button>}
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setMigrationOpen(true) }} style={headerMenuItemStyle}>迁移聊天</button>
           <button type="button" role="menuitem" disabled={exporting} onClick={() => {
             setExporting(true)
@@ -2208,7 +2261,7 @@ function RoleplayHeader({
           {exportError !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '11px', lineHeight: 1.45, margin: '4px 8px 3px', maxWidth: '240px' }}>{exportError}</p>}
         </div>
       </details>
-      {statusSource !== undefined && <button type="button" onClick={() => { setStatusOpen(true) }} style={{
+      {statusSource !== undefined && <button className="agent-rp-header-primary-action" type="button" onClick={() => { setStatusOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>当前状态</button>}
@@ -2234,11 +2287,11 @@ function RoleplayHeader({
       load={() => listMemory(sessionId)}
       onManage={request => manageMemory(sessionId, request)}
     />}
-    {open && <div role="dialog" aria-modal="true" aria-label={`${displayName}的角色信息`} style={{
+    {open && <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label={`${displayName}的角色信息`} style={{
       alignItems: 'stretch', background: 'rgba(0,0,0,.48)', display: 'flex', inset: 0,
       justifyContent: 'flex-end', position: 'fixed', zIndex: 1000,
     }} onMouseDown={event => { if (event.target === event.currentTarget) setOpen(false) }}>
-      <aside style={{
+      <aside className="agent-rp-character-info" style={{
         background: 'var(--dsw-alias-bg-base, #171719)', borderLeft: '1px solid var(--dsw-alias-border-l2, #39393c)',
         boxShadow: '-18px 0 44px rgba(0,0,0,.2)', maxWidth: '92vw', overflowY: 'auto', padding: '24px', width: '380px',
       }}>
@@ -2446,7 +2499,7 @@ function MemoryManagerDialog({ load, onManage, onClose }: {
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const visibleMemories = (memories ?? []).filter(memory => normalizedQuery === ''
     || `${memory.subject}\n${memory.text}\n${memoryKindLabels[memory.kind]}`.toLocaleLowerCase().includes(normalizedQuery))
-  return <div role="dialog" aria-modal="true" aria-label="角色记忆" style={{
+  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="角色记忆" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1200,
   }} onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose() }}>
@@ -2660,7 +2713,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
       setError(importError instanceof Error ? importError.message : String(importError))
     })
   }
-  return <div role="dialog" aria-modal="true" aria-label="世界书" style={{
+  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="世界书" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.55)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '20px', position: 'fixed', zIndex: 1002,
   }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
@@ -3039,11 +3092,11 @@ function CharacterLibraryDialog({
   const duplicateNames = new Set((entries ?? [])
     .filter((entry, index, all) => all.findIndex(candidate => candidate.displayName === entry.displayName) !== index)
     .map(entry => entry.displayName))
-  return <div role="dialog" aria-modal="true" aria-label="角色库" style={{
+  return <div className="agent-rp-character-library-overlay" data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="角色库" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.52)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: 'clamp(8px, 3vw, 24px)', position: 'fixed', zIndex: 1001,
   }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
-    <section style={{
+    <section className="agent-rp-character-library-dialog" style={{
       background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
       borderRadius: '16px', boxShadow: '0 22px 80px rgba(0,0,0,.36)', display: 'grid',
       gridTemplateColumns: narrow ? 'minmax(0, 1fr)' : 'minmax(min(210px, 42%), .78fr) minmax(0, 1.35fr)',
@@ -3924,7 +3977,7 @@ function PresetRuntimeInspector({ preset, lastRequest, onClose }: {
   const reasoningDifference = lastRequest === undefined
     ? undefined
     : requestedReasoningDifference(preset, lastRequest, requestMatches)
-  return <div role="dialog" aria-modal="true" aria-label="预设运行检查" style={{
+  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="预设运行检查" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.7)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1250,
   }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
@@ -4033,7 +4086,7 @@ function PresetPromptEditorDialog({ prompt, onClose, onApply, onDelete }: {
     Number.isSafeInteger(resolvedDepth) && resolvedDepth >= 0 && resolvedDepth <= 9999
     && Number.isSafeInteger(resolvedOrder) && resolvedOrder >= 0 && resolvedOrder <= 9999
   )
-  return <div role="dialog" aria-modal="true" aria-label={`编辑${prompt.name || prompt.identifier}`} style={{
+  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label={`编辑${prompt.name || prompt.identifier}`} style={{
     alignItems: 'center', background: 'rgba(0,0,0,.7)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1150,
   }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
@@ -4096,7 +4149,7 @@ function PresetImportDialog({ entries, onClose, onImport, onLibrary }: {
   const [importing, setImporting] = useState(false)
   const [error, setError] = useState<string>()
   useEffect(() => { void onLibrary({ operation: 'list' }).catch(() => undefined) }, [])
-  return <div role="dialog" aria-modal="true" aria-label="导入预设" style={{
+  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="导入预设" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1100,
   }} onMouseDown={event => { if (event.target === event.currentTarget && !importing) onClose() }}>
@@ -4171,7 +4224,7 @@ function PresetLibraryDialog({ entries, activeId, onClose, onAction }: {
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
-  return <div role="dialog" aria-modal="true" aria-label="预设库" style={{
+  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="预设库" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.66)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1200,
   }} onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose() }}>
@@ -4313,7 +4366,7 @@ function ImageGenerationDialog({ projection, initialMode = 'scene', initialNote 
   const [mode, setMode] = useState<ImageGenerationMode>(initialMode)
   const [note, setNote] = useState(initialNote)
   const prompt = imagePrompt(mode, projection, note)
-  return <div role="dialog" aria-modal="true" aria-label="生成聊天插图" style={{
+  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="生成聊天插图" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '20px', position: 'fixed', zIndex: 1000,
   }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
@@ -4462,7 +4515,7 @@ function RoleplayStatusDialog({ characterName, source, onClose }: {
   readonly source: string
   readonly onClose: () => void
 }) {
-  return <div role="dialog" aria-modal="true" aria-label="当前状态" style={{
+  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="当前状态" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '24px', position: 'fixed', zIndex: 1000,
   }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
@@ -5426,7 +5479,7 @@ function TavernScriptRuntime({
     ? panelScriptId
     : panelFrames[0]?.script.id
   return <>
-    <div aria-hidden={!panelOpen} {...panelOpen ? { role: 'dialog', 'aria-modal': true, 'aria-label': '酒馆脚本面板' } : {}}
+    <div className="agent-rp-tavern-script-overlay" data-agent-rp-dialog aria-hidden={!panelOpen} {...panelOpen ? { role: 'dialog', 'aria-modal': true, 'aria-label': '酒馆脚本面板' } : {}}
       style={panelOpen ? {
         alignItems: 'center', background: 'rgba(0,0,0,.68)', display: 'flex', inset: 0,
         justifyContent: 'center', padding: '20px', position: 'fixed', zIndex: 1100,
@@ -5434,7 +5487,7 @@ function TavernScriptRuntime({
         height: '1px', left: '-10000px', opacity: 0, overflow: 'hidden', pointerEvents: 'none',
         position: 'fixed', top: 0, width: '1px',
       }} onMouseDown={event => { if (panelOpen && event.target === event.currentTarget) setPanelOpen(false) }}>
-      <section style={panelOpen ? {
+      <section className="agent-rp-tavern-script-dialog" style={panelOpen ? {
         background: 'var(--dsw-alias-bg-base, #111216)', border: '1px solid var(--dsw-alias-border-l2, #35373d)',
         borderRadius: '14px', boxShadow: '0 20px 64px rgba(0,0,0,.45)', display: 'flex', flexDirection: 'column',
         height: 'min(82vh, 760px)', maxWidth: '1120px', overflow: 'hidden', width: 'min(94vw, 1120px)',
@@ -6086,6 +6139,13 @@ export const inject = ['connection', 'slots', 'sessions', 'workspaces']
 
 /** Register the Agent RP header, composer presentation, and import affordance. */
 export function apply(ctx: ClientContext): void {
+  ctx.effect(() => {
+    const style = document.createElement('style')
+    style.dataset.agentRpResponsive = ''
+    style.textContent = agentRpResponsiveStyle
+    document.head.append(style)
+    return () => { style.remove() }
+  })
   const workspaceSettings = createWorkspaceSettingsSource()
   const workspaceList: WorkspaceListSource = {
     getSnapshot: () => ctx.workspaces.list.getSnapshot(),
