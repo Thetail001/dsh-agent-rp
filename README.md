@@ -42,6 +42,8 @@ npx -p @deepseek-ai/dsh@latest dsh plugin --profile web update @dsh-external/dsh
 
 ARM64、Android 11 及以上设备可以在 Termux 本机运行，不需要让电脑保持开机。安装器会准备 DSH 的安卓原生依赖、图片解码后备模块、Agent RP 插件与启动命令；首次安装需要编译原生模块，会比普通插件更新慢。
 
+手机安装器默认使用已经验证的 DSH `0.1.0-rc.6`，不会在上游发布新版本时未经验证地自动换底座。
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hewzhew/dsh-agent-rp/main/scripts/install-termux.sh | bash
 dsh-agent-rp --port 3080

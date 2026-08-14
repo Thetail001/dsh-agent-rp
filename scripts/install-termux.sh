@@ -2,7 +2,7 @@
 
 set -Eeuo pipefail
 
-DSH_VERSION="${DSH_VERSION:-latest}"
+DSH_VERSION="${DSH_VERSION:-0.1.0-rc.6}"
 AGENT_RP_SOURCE="${AGENT_RP_SOURCE:-github:hewzhew/dsh-agent-rp#main}"
 AGENT_RP_RAW_BASE="${AGENT_RP_RAW_BASE:-https://raw.githubusercontent.com/hewzhew/dsh-agent-rp/main}"
 
