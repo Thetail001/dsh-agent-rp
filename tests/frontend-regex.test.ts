@@ -304,6 +304,50 @@ toastr.success('已打开确认框');
   assert.equal(await context.__popupResult, 2)
 })
 
+test('supports modern Popup instances and Popup.show convenience methods', async () => {
+  const script = String.raw`
+window.__modernPopup = {
+  confirm: SillyTavern.Popup.show.confirm('删除记录', '**确定吗？**'),
+  input: new SillyTavern.Popup('<p>新的名字</p>', SillyTavern.POPUP_TYPE.INPUT, '旧名字', {
+    placeholder: '输入名字',
+  }).show(),
+};
+`
+  const html = tavernScriptFrameSource({
+    id: 'modern-popup', name: '现代弹窗', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'modern-popup', scriptName: '现代弹窗', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const popups = (context.posted as Record<string, unknown>[]).filter(message => message.action === 'popup-request')
+  assert.equal(popups.length, 2)
+  assert.deepEqual(JSON.parse(JSON.stringify(popups)), [{
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'modern-popup', action: 'popup-request', requestId: '1',
+    popupType: 2, content: '<h3>删除记录</h3><p><strong>确定吗？</strong></p>', inputValue: '', options: {},
+  }, {
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'modern-popup', action: 'popup-request', requestId: '2',
+    popupType: 3, content: '<p>新的名字</p>', inputValue: '旧名字', options: { placeholder: '输入名字' },
+  }])
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'popup-result', requestId: '1', ok: true, value: 1,
+  })
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'popup-result', requestId: '2', ok: true, value: '新名字',
+  })
+  const result = context.__modernPopup as { confirm: Promise<boolean>; input: Promise<string> }
+  assert.equal(await result.confirm, true)
+  assert.equal(await result.input, '新名字')
+})
+
 test('persists extension settings and exposes the lodash debounce used by public Tavern scripts', async () => {
   const script = String.raw`
 const st = SillyTavern.getContext();
