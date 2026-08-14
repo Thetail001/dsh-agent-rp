@@ -484,12 +484,14 @@ function presetProjection(
       ...(generation.repetitionPenalty === undefined ? {} : { repetitionPenalty: generation.repetitionPenalty }),
     },
     formats: { ...preset.formats },
-    degradedRoleCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier) && prompt.role !== 'system').length,
+    degradedRoleCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier)
+      && prompt.role !== 'system' && prompt.injectionPosition !== 1).length,
     preservedInChatCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier) && prompt.injectionPosition === 1).length,
     regexScriptCount: preset.extensionSummary.regexScriptCount,
     enabledRegexScriptCount: regexScripts.filter(script => !script.disabled).length,
     activeDisplayRegexCount: regexScripts.filter(script => !script.disabled && script.markdownOnly).length,
-    preservedPromptRegexCount: regexScripts.filter(script => !script.disabled && script.promptOnly).length,
+    preservedPromptRegexCount: regexScripts.filter(script => !script.disabled
+      && (!script.markdownOnly || script.promptOnly)).length,
     regexScripts: regexScripts.map((script, index) => ({ ...script, index })),
     tavernHelperScripts: helperScripts,
     tavernHelperVariables: preset.tavernHelperVariables ?? {},

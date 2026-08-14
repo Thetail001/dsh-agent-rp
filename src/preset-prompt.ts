@@ -1,5 +1,6 @@
 /** Prompt Manager assembly for imported SillyTavern Chat Completion presets. */
 
+import { createMessage, type Message } from '@deepseek-ai/dsh-llm'
 import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
 import type { ImportedCharacterCard } from './import/types.ts'
 import type {
@@ -25,9 +26,18 @@ export interface PresetPromptInputs {
 export interface AssembledSillyTavernPreset {
   readonly system: string
   readonly afterHistory: string
+  readonly inChat: readonly SillyTavernInChatPrompt[]
   readonly enabledPromptCount: number
   readonly degradedRoleCount: number
   readonly unsupportedMacroCount: number
+}
+
+/** One expanded Prompt Manager module placed relative to recent chat messages. */
+export interface SillyTavernInChatPrompt {
+  readonly role: SillyTavernPresetRole
+  readonly content: string
+  readonly depth: number
+  readonly order: number
 }
 
 interface MacroState {
@@ -185,6 +195,39 @@ function roleBoundary(role: SillyTavernPresetRole, name: string, text: string): 
   return `[SillyTavern ${role} prompt · ${name}]\n${text}`
 }
 
+/** Insert expanded in-chat modules using SillyTavern's depth, priority, and role ordering. */
+export function injectSillyTavernInChatPrompts(
+  messages: readonly Message[],
+  prompts: readonly SillyTavernInChatPrompt[],
+): Message[] {
+  if (prompts.length === 0) return [...messages]
+  const result = [...messages]
+  const baseLength = messages.length
+  const depths = [...new Set(prompts.map(prompt => prompt.depth))].sort((left, right) => left - right)
+  for (const depth of depths) {
+    const atDepth = prompts.filter(prompt => prompt.depth === depth)
+    const orders = [...new Set(atDepth.map(prompt => prompt.order))].sort((left, right) => right - left)
+    const injected: Message[] = []
+    for (const order of orders) {
+      for (const role of ['system', 'user', 'assistant'] as const) {
+        const content = atDepth
+          .filter(prompt => prompt.order === order && prompt.role === role)
+          .map(prompt => prompt.content.trim())
+          .filter(Boolean)
+          .join('\n')
+        if (content === '') continue
+        injected.push(createMessage({
+          role,
+          source: { kind: 'plugin', plugin: 'dsh-agent-rp-preset-in-chat' },
+          content: [{ type: 'text', text: content }],
+        }))
+      }
+    }
+    result.splice(Math.max(0, baseLength - depth), 0, ...injected)
+  }
+  return result
+}
+
 /** Assemble every ordered module, splitting post-history instructions into a runtime context. */
 export function assembleSillyTavernPreset(
   preset: ImportedSillyTavernPreset,
@@ -199,6 +242,7 @@ export function assembleSillyTavernPreset(
   }
   const before: string[] = []
   const after: string[] = []
+  const inChat: SillyTavernInChatPrompt[] = []
   let pastHistory = false
   let enabledPromptCount = 0
   let degradedRoleCount = 0
@@ -207,15 +251,23 @@ export function assembleSillyTavernPreset(
     const prompt = byId.get(entry.identifier)
     if (prompt === undefined) continue
     enabledPromptCount += 1
-    // The Host currently requires request messages to equal the durable Session
-    // derivation, so it cannot represent SillyTavern's transient depth insertion.
-    if (prompt.injectionPosition === 1) continue
     if (prompt.identifier === 'chatHistory' && prompt.marker) {
       pastHistory = true
       continue
     }
     const value = promptText(prompt, preset, inputs, state)
     if (value === undefined || value.trim() === '') continue
+    if (prompt.injectionPosition === 1) {
+      inChat.push({
+        role: prompt.role,
+        content: value,
+        depth: Number.isSafeInteger(prompt.injectionDepth) && (prompt.injectionDepth ?? -1) >= 0
+          ? prompt.injectionDepth! : 4,
+        order: typeof prompt.injectionOrder === 'number' && Number.isFinite(prompt.injectionOrder)
+          ? prompt.injectionOrder : 100,
+      })
+      continue
+    }
     if (prompt.role !== 'system') degradedRoleCount += 1
     ;(pastHistory ? after : before).push(roleBoundary(prompt.role, prompt.name, value))
   }
@@ -225,6 +277,7 @@ export function assembleSillyTavernPreset(
   return {
     system: before.join('\n\n'),
     afterHistory: after.join('\n\n'),
+    inChat,
     enabledPromptCount,
     degradedRoleCount,
     unsupportedMacroCount: state.unsupported,

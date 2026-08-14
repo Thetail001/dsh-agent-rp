@@ -30,6 +30,10 @@ import {
 } from './import/session-character.ts'
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import type { ImportedCharacterCard, ImportedRegexScript } from './import/types.ts'
+import {
+  injectSillyTavernInChatPrompts,
+  type SillyTavernInChatPrompt,
+} from './preset-prompt.ts'
 import { resolveSessionPersonaIdentity } from './session-persona.ts'
 
 interface DialogueNode {
@@ -233,6 +237,7 @@ export function applyPromptRegexSurface(
 export function installPromptRegexStream(
   ctx: Context,
   agentForSession: (sessionId: string) => Agent | undefined,
+  inChatForAgent: (agent: Agent) => readonly SillyTavernInChatPrompt[] = () => [],
 ): void {
   ctx.on('llm/stream', (options, next) => {
     if (!isAgentLoopDispatch(options) || options.sessionId === undefined) return next()
@@ -243,20 +248,24 @@ export function installPromptRegexStream(
     const card = cardFromImportMeta(active.meta)
     const preset = readActiveSessionPreset(agent.session.events)?.preset
     const scripts = preset === undefined ? [] : presetRegexScripts(preset)
+    const inChat = inChatForAgent(agent)
     const hasManagedSurface = dialogueNodes(agent.session).some(node => sourceMarker(messageOf(node.current).source) !== undefined)
     const hasPromptScripts = [...scripts, ...card.frontend.regexScripts]
       .some(script => !script.markdownOnly || script.promptOnly)
-    if (!hasPromptScripts && !hasManagedSurface) return next()
-    const identity = resolveSessionPersonaIdentity(
-      agent.session.events,
-      active.result.userName,
-      readSillyTavernChatIdentity(agent.session.events)?.userName,
-    )
-    const trace = applyPromptRegexSurface(agent.session, card, identity.userName, scripts)
-    if (trace === undefined || trace.replacementCount === 0) return next()
+    if (!hasPromptScripts && !hasManagedSurface && inChat.length === 0) return next()
+    let messages = options.messages
+    if (hasPromptScripts || hasManagedSurface) {
+      const identity = resolveSessionPersonaIdentity(
+        agent.session.events,
+        active.result.userName,
+        readSillyTavernChatIdentity(agent.session.events)?.userName,
+      )
+      const trace = applyPromptRegexSurface(agent.session, card, identity.userName, scripts)
+      if (trace !== undefined && trace.replacementCount > 0) messages = [...agent.session.deriveMessages()]
+    }
     return ctx.llm.stream({
       ...options,
-      messages: [...agent.session.deriveMessages()],
+      messages: injectSillyTavernInChatPrompts(messages, inChat),
     })
   }, { global: true, prepend: true })
 }

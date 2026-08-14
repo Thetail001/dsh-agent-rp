@@ -83,7 +83,7 @@ import { agentRpProjectionDefinition } from './projection.ts'
 import { readCurrentMvuState } from './mvu.ts'
 import { installMvuStreamCompletion } from './mvu-stream.ts'
 import { installPromptRegexStream } from './prompt-regex-stream.ts'
-import { assembleSillyTavernPreset } from './preset-prompt.ts'
+import { assembleSillyTavernPreset, type SillyTavernInChatPrompt } from './preset-prompt.ts'
 import { configurePresetFromCommand } from './preset-configuration.ts'
 import { PresetLibrary } from './preset-library.ts'
 import { installPresetLibraryHttp } from './preset-library-http.ts'
@@ -459,6 +459,7 @@ export function installAgentRp(
   const agentsBySession = new Map<string, Agent>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
   const presetAfterHistoryByAgent = new WeakMap<Agent, string>()
+  const presetInChatByAgent = new WeakMap<Agent, readonly SillyTavernInChatPrompt[]>()
   const gateway = ctx.get('apiProxy') as PromptAttachmentGateway | undefined
   const commands = (ctx as Context & { commands: HumanCommandGateway }).commands
   const presetLibrary = new PresetLibrary()
@@ -727,9 +728,11 @@ export function installAgentRp(
           mvuEnabled: mvu !== undefined,
         })
         presetAfterHistoryByAgent.set(agent, assembled.afterHistory)
+        presetInChatByAgent.set(agent, assembled.inChat)
         return assembled.system
       }
       presetAfterHistoryByAgent.delete(agent)
+      presetInChatByAgent.delete(agent)
       return renderImportedCharacterPrompt(
         card,
         [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
@@ -749,8 +752,14 @@ export function installAgentRp(
     agentsByScope.delete(agent)
     agentsBySession.delete(String(agent.session.id))
     pendingMessagesByAgent.delete(agent)
+    presetAfterHistoryByAgent.delete(agent)
+    presetInChatByAgent.delete(agent)
   })
-  installPromptRegexStream(ctx, sessionId => agentsBySession.get(sessionId))
+  installPromptRegexStream(
+    ctx,
+    sessionId => agentsBySession.get(sessionId),
+    agent => presetInChatByAgent.get(agent) ?? [],
+  )
   installMvuStreamCompletion(ctx, sessionId => agentsBySession.get(sessionId))
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {
     if (agentsByScope.get(agent) !== agent) return

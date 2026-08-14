@@ -32,7 +32,7 @@ V3 regex keys, recursive scanning, and decorated content are retained but never 
 
 ## Security and degradation
 
-The importer never executes card scripts, regex replacement scripts, lorebook regular expressions, decorators, or extension code. Remote and data-URL assets are neither fetched nor decoded. CHARX reads declared embedded PNG, JPEG, WebP, GIF, and AVIF images as inert local media; code, audio, video, models, fonts, and unknown asset types remain inside the preserved archive and are not executed. Asset records, group-only greetings, and unknown extensions remain in preserved raw JSON. Standalone JSON must be a `.json` file containing valid UTF-8; the Host stores it as an opaque attachment, so neither its bytes nor its path are sent to the model.
+The importer never executes card scripts, lorebook regular expressions, decorators, or extension code. Imported replacement rules run only in Agent RP's isolated text pipeline: display rules transform rendered message text, while prompt rules transform the model-facing copy without changing the stored transcript. Their scripts and extension code are never evaluated. Remote and data-URL assets are neither fetched nor decoded. CHARX reads declared embedded PNG, JPEG, WebP, GIF, and AVIF images as inert local media; code, audio, video, models, fonts, and unknown asset types remain inside the preserved archive and are not executed. Asset records, group-only greetings, and unknown extensions remain in preserved raw JSON. Standalone JSON must be a `.json` file containing valid UTF-8; the Host stores it as an opaque attachment, so neither its bytes nor its path are sent to the model.
 
 ## Public format sources
 

@@ -2396,10 +2396,10 @@ function RoleplayHeader({
             : `${projection.preset.degradedRoleCount} 项非 system 角色按 Host 兼容模式注入`,
           projection.preset.preservedInChatCount === 0
             ? ''
-            : `${projection.preset.preservedInChatCount} 项聊天内注入已保留；当前 Host 暂不执行`,
+            : `${projection.preset.preservedInChatCount} 项聊天内注入正在按深度和优先级运行`,
           projection.preset.regexScriptCount === 0 ? '' : `${projection.preset.enabledRegexScriptCount}/${projection.preset.regexScriptCount} 条正则启用`,
           projection.preset.activeDisplayRegexCount === 0 ? '' : `${projection.preset.activeDisplayRegexCount} 条显示规则正在运行`,
-          projection.preset.preservedPromptRegexCount === 0 ? '' : `${projection.preset.preservedPromptRegexCount} 条生成规则已保留；等待 Host 提供独立模型消息视图`,
+          projection.preset.preservedPromptRegexCount === 0 ? '' : `${projection.preset.preservedPromptRegexCount} 条生成规则正在模型消息副本中运行`,
           ...projection.preset.extensionStatus.map(item => `${item.name}：${item.detail}`),
         ].filter(Boolean).join('\n')} />}
         {projection.source === 'sillytavern-chat' && projection.cardVersion === undefined && <p style={{ fontSize: '13px', lineHeight: 1.7, marginTop: '22px', opacity: 0.62 }}>
@@ -4158,7 +4158,7 @@ function PresetPromptEditorDialog({ prompt, onClose, onApply, onDelete }: {
           <label style={{ ...fieldLabelStyle, margin: 0 }}>同深度优先级
             <input aria-label="同深度优先级" type="number" min={0} max={9999} value={injectionOrder} onChange={event => { setInjectionOrder(event.target.value) }} style={fieldInputStyle} />
           </label>
-          <div style={{ alignSelf: 'end', color: '#d6aa67', fontSize: '10px', lineHeight: 1.45 }}>配置会完整保留；当前 Host 暂不执行聊天内深度注入</div>
+          <div style={{ alignSelf: 'end', color: '#8ebf9c', fontSize: '10px', lineHeight: 1.45 }}>生成时按历史深度插入；同深度优先级较高的内容在前</div>
         </>}
       </header>
       <textarea aria-label="提示内容" autoFocus spellCheck={false} value={content} onChange={event => { setContent(event.target.value) }} style={{
