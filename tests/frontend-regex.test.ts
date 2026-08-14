@@ -102,6 +102,17 @@ function runtimeAcceptanceContext(preview: readonly unknown[]) {
         })
         return
       }
+      if (message.action === 'worldbook-mutate') {
+        queueMicrotask(() => {
+          for (const listener of listeners.get('message') ?? []) listener({
+            source: parent,
+            data: {
+              source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: true,
+            },
+          })
+        })
+        return
+      }
       if (message.action !== 'generation-preview') return
       queueMicrotask(() => {
         for (const listener of listeners.get('message') ?? []) listener({
@@ -681,13 +692,86 @@ window.__acceptance = Promise.all([
   assert.deepEqual(result.entries[0], {
     uid: 7, display_index: 0, comment: '常驻规则', enabled: true, type: 'constant',
     position: 'before_character_definition', depth: null, order: 23, probability: 100,
-    keys: ['规则'], key: ['规则'], logic: 'and_any', filters: ['附加'], scan_depth: 2,
+    keys: ['规则'], key: ['规则'], logic: 'and_any', filters: ['附加'], filter: ['附加'], scan_depth: 2,
     case_sensitive: 'same_as_global', match_whole_words: 'same_as_global',
     use_group_scoring: 'same_as_global', automation_id: null,
     exclude_recursion: false, prevent_recursion: true, delay_until_recursion: false,
     content: '不得遗忘。', group: '', group_prioritized: false, group_weight: 100,
     sticky: 2, cooldown: null, delay: null, constant: true, disable: false,
   })
+})
+
+test('round-trips legacy lorebook mutations through the modern Host format', async () => {
+  const script = String.raw`
+window.__acceptance = (async () => {
+  await replaceLorebookEntries('规则书', [{
+    uid: 7, comment: '旧式条目', enabled: false, type: 'selective',
+    position: 'at_depth_as_assistant', depth: 6, order: 31, probability: 70,
+    keys: ['门'], logic: 'and_all', filters: ['夜'], scan_depth: 4,
+    case_sensitive: true, match_whole_words: false, use_group_scoring: true,
+    automation_id: 'legacy-event', exclude_recursion: true, prevent_recursion: false,
+    delay_until_recursion: 2, content: '门只在夜里打开。', group: '夜间',
+    group_prioritized: true, group_weight: 88, sticky: 3, cooldown: 2, delay: 1,
+  }]);
+  const replaced = await getLorebookEntries('规则书');
+  const set = await setLorebookEntries('规则书', [{ uid: 7, enabled: true, content: '门在月升后打开。' }]);
+  const created = await createLorebookEntries('规则书', [{ comment: '新增条目', position: 'before_author_note' }]);
+  const deleted = await deleteLorebookEntries('规则书', [7]);
+  return { replaced, set, created, deleted };
+})();
+`
+  const html = tavernScriptFrameSource({
+    id: 'legacy-worldbook-writer', name: '旧世界书写入', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'legacy-worldbook-writer', scriptName: '旧世界书写入', scriptInfo: '', buttons: [],
+    characterName: '白露', characterId: 'bailu.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {
+      规则书: [{
+        uid: 99, name: '将被替换', enabled: true,
+        strategy: { type: 'constant', keys: [], keys_secondary: { logic: 'and_any', keys: [] }, scan_depth: 'same_as_global' },
+        position: { type: 'at_depth', role: 'system', depth: 4, order: 100 }, content: '', probability: 100,
+        recursion: { prevent_incoming: false, prevent_outgoing: false, delay_until: null },
+        effect: { sticky: null, cooldown: null, delay: null },
+      }],
+    },
+    worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const result = JSON.parse(JSON.stringify(await context.__acceptance)) as Record<string, Record<string, unknown>[] | Record<string, unknown>>
+  const replaced = result.replaced as Record<string, unknown>[]
+  assert.equal(replaced.length, 1)
+  assert.deepEqual(replaced[0], {
+    uid: 7, display_index: 0, comment: '旧式条目', enabled: false, type: 'selective',
+    position: 'at_depth_as_assistant', depth: 6, order: 31, probability: 70,
+    keys: ['门'], key: ['门'], logic: 'and_all', filters: ['夜'], filter: ['夜'], scan_depth: 4,
+    case_sensitive: true, match_whole_words: false, use_group_scoring: true, automation_id: 'legacy-event',
+    exclude_recursion: true, prevent_recursion: false, delay_until_recursion: 2,
+    content: '门只在夜里打开。', group: '夜间', group_prioritized: true, group_weight: 88,
+    sticky: 3, cooldown: 2, delay: 1, constant: false, disable: true,
+  })
+  const set = result.set as Record<string, unknown>[]
+  assert.equal(set[0]?.enabled, true)
+  assert.equal(set[0]?.content, '门在月升后打开。')
+  const created = result.created as { entries: Record<string, unknown>[]; new_uids: number[] }
+  assert.deepEqual(created.new_uids, [0])
+  assert.equal(created.entries[1]?.comment, '新增条目')
+  assert.equal(created.entries[1]?.position, 'before_author_note')
+  const deleted = result.deleted as { entries: Record<string, unknown>[]; delete_occurred: boolean }
+  assert.equal(deleted.delete_occurred, true)
+  assert.deepEqual(deleted.entries.map(entry => entry.uid), [0])
+
+  const writes = (context.posted as Record<string, unknown>[]).filter(message => message.action === 'worldbook-mutate')
+  assert.equal(writes.length, 4)
+  const firstRequest = writes[0]?.request as { entries?: Record<string, unknown>[] }
+  assert.equal(firstRequest.entries?.[0]?.name, '旧式条目')
+  assert.equal((firstRequest.entries?.[0]?.position as Record<string, unknown>)?.role, 'assistant')
 })
 
 test('runs preset scripts before character scripts for the selected view', () => {
