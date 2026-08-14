@@ -470,6 +470,53 @@ window.__injectionReady = Promise.resolve().then(() => {
   ])
 })
 
+test('reevaluates Tavern Helper injection filters after variable snapshots change', () => {
+  const script = String.raw`
+injectPrompts([{
+  id: 'conditional', position: 'none', depth: 0, role: 'system',
+  content: '触发条件世界书', should_scan: true,
+  filter: () => getVariables({ type: 'chat' }).enabled === true,
+}]);
+`
+  const snapshot = {
+    scriptId: 'conditional-injector', scriptName: '条件注入', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: { enabled: false }, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  } as const
+  const html = tavernScriptFrameSource({
+    id: 'conditional-injector', name: '条件注入', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, snapshot)
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const mutations = (): Record<string, unknown>[] => (context.posted as Record<string, unknown>[])
+    .filter(message => message.action === 'injections-replace')
+  assert.equal(mutations().length, 0)
+  const sync = (enabled: boolean, injectedPrompts: readonly unknown[]): void => {
+    ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+      action: 'variables-sync',
+      scopes: { ...snapshot.scopes, chat: { enabled } },
+      messages: [],
+      injectedPrompts,
+      worldbooks: {},
+      worldbookBindings: snapshot.worldbookBindings,
+      activeWorldbookEntries: [],
+    })
+  }
+  sync(true, [])
+  assert.deepEqual(JSON.parse(JSON.stringify(mutations().at(-1)?.prompts)), [{
+    id: 'conditional', position: 'none', depth: 0, role: 'system',
+    content: '触发条件世界书', shouldScan: true, once: false,
+  }])
+  sync(false, mutations().at(-1)?.prompts as readonly unknown[])
+  assert.deepEqual(JSON.parse(JSON.stringify(mutations().at(-1)?.prompts)), [])
+})
+
 test('consumes only one-shot prompt injections after a completed generation event', async () => {
   const html = tavernScriptFrameSource({
     id: 'once-injector', name: '单次提示', content: '', info: '', enabled: true,
