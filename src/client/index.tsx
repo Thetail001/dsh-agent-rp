@@ -17,6 +17,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
 import type { ImportedTavernHelperScript } from '../import/types.ts'
+import { importTavernRegex } from '../tavern-regex.ts'
 import type { TavernHelperMutationRequest, TavernWorldbookEntry } from '../tavern-helper.ts'
 import {
   TAVERN_GENERATION_PATH,
@@ -4805,23 +4806,13 @@ function tavernPresetConfiguration(
   const extensions = typeof preset.extensions === 'object' && preset.extensions !== null && !Array.isArray(preset.extensions)
     ? preset.extensions as Record<string, unknown> : {}
   const candidates = Array.isArray(extensions.regex_scripts) ? extensions.regex_scripts : []
-  const regex = active.regexScripts.map((script, index) => {
-    const byId = script.id === undefined ? undefined : candidates.find(candidate => {
-      if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return false
-      return (candidate as Record<string, unknown>).id === script.id
-    })
-    const candidate = byId ?? candidates[index]
-    const item = typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate)
-      ? candidate as Record<string, unknown> : {}
-    const disabled = typeof item.enabled === 'boolean' ? !item.enabled
-      : typeof item.disabled === 'boolean' ? item.disabled : script.disabled
-    const minDepth = item.min_depth === null || (typeof item.min_depth === 'number' && Number.isFinite(item.min_depth))
-      ? item.min_depth as number | null : script.minDepth
-    const maxDepth = item.max_depth === null || (typeof item.max_depth === 'number' && Number.isFinite(item.max_depth))
-      ? item.max_depth as number | null : script.maxDepth
-    return { index, disabled, minDepth, maxDepth }
-  })
-  return { operation: 'replace', revision, order, prompts: definitions, content: [], generation, regex }
+  const regexScripts = candidates.map(importTavernRegex)
+  const regex = regexScripts.map((script, index) => ({
+    index, disabled: script.disabled, minDepth: script.minDepth, maxDepth: script.maxDepth,
+  }))
+  return {
+    operation: 'replace', revision, order, prompts: definitions, content: [], generation, regex, regexScripts,
+  }
 }
 
 function tavernScriptSnapshot(

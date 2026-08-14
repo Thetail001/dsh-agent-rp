@@ -91,6 +91,17 @@ function runtimeAcceptanceContext(preview: readonly unknown[]) {
   const parent = {
     postMessage(message: Record<string, unknown>) {
       posted.push(message)
+      if (message.action === 'preset-replace') {
+        queueMicrotask(() => {
+          for (const listener of listeners.get('message') ?? []) listener({
+            source: parent,
+            data: {
+              source: 'dsh-agent-rp-host', action: 'preset-result', requestId: message.requestId, ok: true,
+            },
+          })
+        })
+        return
+      }
       if (message.action !== 'generation-preview') return
       queueMicrotask(() => {
         for (const listener of listeners.get('message') ?? []) listener({
@@ -192,6 +203,45 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.ok(source!.indexOf('var prompts=await __dshPromptPreview')
     < source!.indexOf("var response=await window.fetch('/api/backends/chat-completions/generate'"))
   assert.match(source!, /window\.getModelList=/u)
+})
+
+test('lets Tavern scripts replace the complete preset regex list', async () => {
+  const script = String.raw`
+window.__regexMutation = replaceTavernRegexes([{
+  id: 'script-added', script_name: '', enabled: true,
+  find_regex: '/old/gu', replace_string: 'new', trim_strings: [],
+  source: { user_input: false, ai_output: true, slash_command: false, world_info: false, reasoning: false },
+  destination: { display: true, prompt: false }, run_on_edit: false,
+  min_depth: null, max_depth: null,
+}], { type: 'preset', name: 'in_use' }).then(() => getTavernRegexes({ type: 'preset', name: 'in_use' }));
+`
+  const html = tavernScriptFrameSource({
+    id: 'regex-editor', name: '正则编辑', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'regex-editor', scriptName: '正则编辑', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test',
+    approvedScriptOrigins: [], preset: {
+      name: '预设', revision: 1,
+      value: { settings: {}, prompts: [], prompts_unused: [], extensions: { regex_scripts: [] } },
+    },
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const stored = JSON.parse(JSON.stringify(await context.__regexMutation)) as Record<string, unknown>[]
+  assert.equal(stored.length, 1)
+  assert.equal(stored[0]?.script_name, '未命名-script-added')
+  const posted = (context.posted as Record<string, unknown>[]).find(message => message.action === 'preset-replace')
+  assert.equal(
+    ((posted?.preset as { extensions?: { regex_scripts?: Record<string, unknown>[] } })
+      ?.extensions?.regex_scripts?.[0]?.script_name),
+    '未命名-script-added',
+  )
 })
 
 test('lets V18-style dry-run listeners capture prompts without Host generation', async () => {

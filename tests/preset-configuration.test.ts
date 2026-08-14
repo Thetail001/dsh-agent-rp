@@ -11,6 +11,7 @@ import { createPresetSessionSeed, readActiveSessionPreset } from '../src/import/
 import { parseSillyTavernPresetJson } from '../src/import/sillytavern-preset.ts'
 import { assembleSillyTavernPreset } from '../src/preset-prompt.ts'
 import type { FileAttachmentRef } from '../src/import/session-character.ts'
+import { importTavernRegex } from '../src/tavern-regex.ts'
 
 const source = {
   attachmentId: 'preset-source',
@@ -239,4 +240,55 @@ test('edits preset regex switches and depths independently from prompt modules',
   assert.throws(() => configurePreset(active, {
     operation: 'replace', revision: 0, order: preset.order, content: [], generation: {}, regex: [{ index: 1, disabled: true }],
   }), /does not match/u)
+
+  const added = importTavernRegex({
+    id: 'added-by-script', script_name: '', enabled: true,
+    find_regex: '/status/gu', replace_string: '状态', trim_strings: [],
+    source: { user_input: false, ai_output: true, slash_command: false, world_info: false, reasoning: false },
+    destination: { display: true, prompt: false }, run_on_edit: true, min_depth: 0, max_depth: 4,
+  }, 1)
+  const replaced = configurePreset(active, {
+    operation: 'replace', revision: 0, order: preset.order, content: [], generation: {},
+    regexScripts: [{ ...preset.regexScripts[0]!, disabled: true }, added],
+    regex: [
+      { index: 0, disabled: true, minDepth: null, maxDepth: null },
+      { index: 1, disabled: false, minDepth: 0, maxDepth: 4 },
+    ],
+  })
+  assert.equal(replaced.regexScripts.length, 2)
+  assert.equal(replaced.regexScripts[0]?.disabled, true)
+  assert.deepEqual(replaced.regexScripts[1], {
+    id: 'added-by-script', scriptName: '未命名-added-by-script', findRegex: '/status/gu', replaceString: '状态',
+    trimStrings: [], placement: [2], disabled: false, markdownOnly: true, promptOnly: false,
+    runOnEdit: true, substituteRegex: 0, minDepth: 0, maxDepth: 4,
+  })
+  assert.equal(replaced.extensionSummary.regexScriptCount, 2)
+
+  const removed = configurePreset({ ...active, preset: replaced, revision: 1 }, {
+    operation: 'replace', revision: 1, order: preset.order, content: [], generation: {},
+    regexScripts: [], regex: [],
+  })
+  assert.equal(removed.regexScripts.length, 0)
+  assert.equal(removed.extensionSummary.regexScriptCount, 0)
+
+  const seed = createPresetSessionSeed([], preset, source)
+  const args = JSON.stringify({
+    operation: 'replace', revision: 0, order: preset.order, content: [], generation: {},
+    regexScripts: [added], regex: [{ index: 0, disabled: false, minDepth: 0, maxDepth: 4 }],
+  })
+  const configured: SessionEvent<'command/run'> = {
+    type: 'command/run', seq: seed.length, time: Date.now(),
+    data: { commandId: CommandId('regex-replace'), name: 'rp-preset-configure', args, source: { kind: 'user' } },
+  }
+  const reopened = readActiveSessionPreset([...seed, configured])
+  assert.deepEqual(reopened?.preset.regexScripts, [added])
+  assert.equal(reopened?.preset.extensionSummary.regexScriptCount, 1)
+  assert.deepEqual(
+    (parsePresetConfigurationRequest(args) as Extract<ReturnType<typeof parsePresetConfigurationRequest>, { operation: 'replace' }>).regexScripts,
+    [added],
+  )
+  assert.throws(() => importTavernRegex({
+    script_name: 'broken', find_regex: '/x/u', replace_string: '', trim_strings: [],
+    source: null, destination: { display: true, prompt: false }, min_depth: null, max_depth: null,
+  }, 0), /source/u)
 })

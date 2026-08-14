@@ -1,8 +1,10 @@
 /** Pure validation and state transitions for session Prompt Manager changes. */
 
+import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { ActiveSessionPreset } from './import/session-preset.ts'
 import type { ImportedSillyTavernPreset, SillyTavernPresetGeneration } from './import/sillytavern-preset.ts'
 import { presetRegexScripts } from './import/sillytavern-preset.ts'
+import { parseRegexScript } from './import/regex-script.ts'
 import type { PresetConfigurationRequest } from './preset-configuration-types.ts'
 
 const FORCE_TOGGLE_MARKERS = new Set([
@@ -86,6 +88,12 @@ function regex(value: unknown): Extract<PresetConfigurationRequest, { operation:
         ? {} : { maxDepth: nullableFiniteDepth(record.maxDepth, `regex[${itemIndex}].maxDepth`) }),
     }
   })
+}
+
+function regexScripts(value: unknown): Extract<PresetConfigurationRequest, { operation: 'replace' }>['regexScripts'] {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new Error('regexScripts must be an array')
+  return value.map((item, itemIndex) => parseRegexScript(item as JsonValue, `regexScripts[${itemIndex}]`))
 }
 
 function content(value: unknown): readonly { readonly identifier: string; readonly content: string }[] {
@@ -191,6 +199,7 @@ export function parsePresetConfigurationRequest(source: string): PresetConfigura
         content: content(value.content),
         generation: generation(value.generation),
         regex: regex(value.regex),
+        ...value.regexScripts === undefined ? {} : { regexScripts: regexScripts(value.regexScripts)! },
       }
     case 'toggle': {
       if (typeof value.enabled !== 'boolean') throw new Error('enabled must be a boolean')
@@ -303,7 +312,9 @@ export function configurePreset(
         throw new Error(`preset module ${JSON.stringify(identifier)} has no editable content`)
       }
     }
-    const scripts = presetRegexScripts(active.preset)
+    const scripts = request.regexScripts === undefined
+      ? presetRegexScripts(active.preset)
+      : request.regexScripts.map(script => ({ ...script }))
     if (request.regex.length !== scripts.length
       || request.regex.some(entry => entry.index >= scripts.length)) {
       throw new Error('preset regex configuration does not match the active script set')
@@ -320,6 +331,10 @@ export function configurePreset(
         revision: request.revision,
         ...request.generation,
       }),
+      extensionSummary: {
+        ...active.preset.extensionSummary,
+        regexScriptCount: scripts.length,
+      },
       regexScripts: scripts.map((script, index) => {
         const configured = regexByIndex.get(index)
         if (configured === undefined) return { ...script }

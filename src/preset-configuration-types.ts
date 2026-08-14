@@ -1,3 +1,5 @@
+import type { ImportedRegexScript } from './import/types.ts'
+
 /** Browser-to-Host mutation accepted by the session Prompt Manager. */
 export type PresetConfigurationRequest =
   | {
@@ -25,6 +27,8 @@ export type PresetConfigurationRequest =
       readonly minDepth?: number | null
       readonly maxDepth?: number | null
     }[]
+    /** Complete replacement supplied by Tavern Helper; absent for Prompt Manager edits. */
+    readonly regexScripts?: readonly ImportedRegexScript[]
   }
   | {
     readonly operation: 'toggle'
