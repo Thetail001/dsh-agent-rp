@@ -8,6 +8,39 @@ export type TavernVariableScope = 'global' | 'preset' | 'character' | 'chat' | '
 
 type JsonRecord = Readonly<Record<string, JsonValue>>
 
+/** One normalized Tavern Helper script retained in a Session-owned script tree. */
+export interface TavernScript {
+  readonly type: 'script'
+  readonly enabled: boolean
+  readonly name: string
+  readonly id: string
+  readonly content: string
+  readonly info: string
+  readonly button: {
+    readonly enabled: boolean
+    readonly buttons: readonly { readonly name: string; readonly visible: boolean }[]
+  }
+  readonly data: JsonRecord
+  readonly export_with: { readonly data: boolean; readonly button: boolean }
+}
+
+/** One normalized Tavern Helper folder containing direct child scripts. */
+export interface TavernScriptFolder {
+  readonly type: 'folder'
+  readonly enabled: boolean
+  readonly name: string
+  readonly id: string
+  readonly icon: string
+  readonly color: string
+  readonly scripts: readonly TavernScript[]
+}
+
+/** One public Tavern Helper script-tree node. */
+export type TavernScriptTree = TavernScript | TavernScriptFolder
+
+/** Script-tree storage scopes exposed by Tavern Helper. */
+export type TavernScriptTreeScope = 'global' | 'preset' | 'character'
+
 /** JSON-safe Tavern Helper worldbook entry retained in one roleplay Session. */
 export interface TavernWorldbookEntry {
   readonly uid: number
@@ -114,6 +147,8 @@ export interface TavernHelperState {
     readonly message: JsonRecord
   }
   readonly scripts: Readonly<Record<string, JsonRecord>>
+  /** Session-local script-tree replacements; imported source files remain unchanged. */
+  readonly scriptTrees?: Readonly<Partial<Record<TavernScriptTreeScope, readonly TavernScriptTree[]>>>
   /** Script-authored prompts retained for subsequent model requests in this chat. */
   readonly injectedPrompts?: readonly TavernInjectedPrompt[]
   /** Contiguous transcript prefix excluded from the Session surface but retained for Tavern APIs. */
@@ -124,7 +159,7 @@ export interface TavernHelperState {
   readonly deletedWorldbookNames?: readonly string[]
   readonly worldbookBindings?: TavernWorldbookBindings
   readonly lastMutation?: {
-    readonly scope: TavernVariableScope | 'worldbook' | 'injection'
+    readonly scope: TavernVariableScope | 'worldbook' | 'injection' | 'script-tree'
     readonly scriptId?: string
   }
 }
@@ -157,6 +192,14 @@ export type TavernWorldbookMutationRequest =
   | { readonly format: 0; readonly operation: 'bind-character-worldbooks'; readonly primary: string | null; readonly additional: readonly string[] }
   | { readonly format: 0; readonly operation: 'bind-chat-worldbook'; readonly name: string | null }
 
+/** Browser request replacing one Session-local Tavern Helper script tree. */
+export interface TavernScriptTreeMutationRequest {
+  readonly format: 0
+  readonly operation: 'replace-script-trees'
+  readonly scope: TavernScriptTreeScope
+  readonly trees: readonly TavernScriptTree[]
+}
+
 /** Browser request replacing every prompt currently owned by one script. */
 export interface TavernInjectionMutationRequest {
   readonly format: 0
@@ -167,7 +210,7 @@ export interface TavernInjectionMutationRequest {
 
 /** One validated mutation sent by an isolated Tavern Helper script. */
 export type TavernHelperMutationRequest = TavernHelperVariableMutationRequest | TavernWorldbookMutationRequest
-  | TavernChatMutationRequest | TavernInjectionMutationRequest
+  | TavernChatMutationRequest | TavernInjectionMutationRequest | TavernScriptTreeMutationRequest
 
 const STATE_PREFIX = 'agent-rp-tavern-helper-v0:'
 const MAX_MUTATION_BYTES = 2 * 1024 * 1024
@@ -175,6 +218,7 @@ const MAX_WORLDBOOK_ENTRIES = 10_000
 const MAX_CHAT_MESSAGES = 10_000
 const MAX_INJECTED_PROMPTS = 256
 const MAX_INJECTED_PROMPT_CHARS = 256 * 1024
+const MAX_SCRIPT_TREES = 512
 
 function record(value: unknown, name: string): JsonRecord {
   const snapshot = snapshotJsonValue(value) as JsonValue | undefined
@@ -265,6 +309,100 @@ function chatMessage(value: unknown, index: number, creating: boolean): TavernCh
 function chatMessages(value: unknown, creating: boolean): readonly TavernChatMessageInput[] {
   if (!Array.isArray(value) || value.length > MAX_CHAT_MESSAGES) throw new Error('Tavern Helper chat messages are invalid')
   return value.map((message, index) => chatMessage(message, index, creating))
+}
+
+function scriptTreeId(value: unknown, label: string): string {
+  const id = text(value, label).trim()
+  if (id === '' || id.length > 512) throw new Error(`${label} is invalid`)
+  return id
+}
+
+function scriptTreeBoolean(value: unknown, label: string, fallback: boolean): boolean {
+  if (value === undefined) return fallback
+  if (typeof value !== 'boolean') throw new Error(`${label} must be a boolean`)
+  return value
+}
+
+function tavernScript(value: unknown, label: string, ids: Set<string>): TavernScript {
+  const script = nested(value)
+  if (script.type !== 'script') throw new Error(`${label}.type must be 'script'`)
+  const id = scriptTreeId(script.id, `${label}.id`)
+  if (ids.has(id)) throw new Error(`Tavern Helper script tree id '${id}' is duplicated`)
+  ids.add(id)
+  const button = nested(script.button)
+  const rawButtons = button.buttons ?? []
+  if (!Array.isArray(rawButtons) || rawButtons.length > 50) throw new Error(`${label}.button.buttons is invalid`)
+  const buttons = rawButtons.map((value, index) => {
+    const item = nested(value)
+    return {
+      name: text(item.name, `${label}.button.buttons[${index}].name`),
+      visible: scriptTreeBoolean(item.visible, `${label}.button.buttons[${index}].visible`, true),
+    }
+  })
+  const exported = nested(script.export_with)
+  return {
+    type: 'script',
+    enabled: scriptTreeBoolean(script.enabled, `${label}.enabled`, false),
+    name: text(script.name, `${label}.name`),
+    id,
+    content: text(script.content, `${label}.content`),
+    info: text(script.info, `${label}.info`),
+    button: {
+      enabled: scriptTreeBoolean(button.enabled, `${label}.button.enabled`, true),
+      buttons,
+    },
+    data: record(script.data ?? {}, `${label}.data`),
+    export_with: {
+      data: scriptTreeBoolean(exported.data, `${label}.export_with.data`, true),
+      button: scriptTreeBoolean(exported.button, `${label}.export_with.button`, true),
+    },
+  }
+}
+
+function tavernScriptTrees(value: unknown, label = 'Tavern Helper script trees'): readonly TavernScriptTree[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`)
+  const ids = new Set<string>()
+  let count = 0
+  const trees = value.map((candidate, index): TavernScriptTree => {
+    const tree = nested(candidate)
+    const treeLabel = `${label}[${index}]`
+    count++
+    if (tree.type !== 'folder') return tavernScript(candidate, treeLabel, ids)
+    const id = scriptTreeId(tree.id, `${treeLabel}.id`)
+    if (ids.has(id)) throw new Error(`Tavern Helper script tree id '${id}' is duplicated`)
+    ids.add(id)
+    const children = tree.scripts ?? []
+    if (!Array.isArray(children)) throw new Error(`${treeLabel}.scripts must be an array`)
+    count += children.length
+    if (count > MAX_SCRIPT_TREES) throw new Error('Tavern Helper script tree is too large')
+    return {
+      type: 'folder',
+      enabled: scriptTreeBoolean(tree.enabled, `${treeLabel}.enabled`, false),
+      name: text(tree.name, `${treeLabel}.name`),
+      id,
+      icon: text(tree.icon, `${treeLabel}.icon`, 'fa-solid fa-folder'),
+      color: text(tree.color, `${treeLabel}.color`),
+      scripts: children.map((script, scriptIndex) => tavernScript(script, `${treeLabel}.scripts[${scriptIndex}]`, ids)),
+    }
+  })
+  if (count > MAX_SCRIPT_TREES) throw new Error('Tavern Helper script tree is too large')
+  return trees
+}
+
+function flattenedTavernScripts(trees: readonly TavernScriptTree[]): readonly TavernScript[] {
+  return trees.flatMap(tree => tree.type === 'folder' ? tree.scripts : [tree])
+}
+
+function tavernScriptScopeIds(state: TavernHelperState, scope: TavernScriptTreeScope): Set<string> {
+  const override = state.scriptTrees?.[scope]
+  if (override !== undefined) return new Set(flattenedTavernScripts(override).map(script => script.id))
+  if (scope === 'global') return new Set()
+  if (scope === 'preset') return new Set(state.presetScriptIds ?? [])
+  const excluded = new Set([
+    ...(state.presetScriptIds ?? []),
+    ...flattenedTavernScripts(state.scriptTrees?.global ?? []).map(script => script.id),
+  ])
+  return new Set(Object.keys(state.scripts).filter(id => !excluded.has(id)))
 }
 
 function worldbookEntry(value: unknown, index: number, used: Set<number>): TavernWorldbookEntry {
@@ -385,19 +523,34 @@ export function initializeTavernHelperState(
   previous?: TavernHelperState,
 ): TavernHelperState {
   const sameCharacter = previous?.characterSourceId === characterSourceId
+  const characterOverride = sameCharacter ? previous?.scriptTrees?.character : undefined
+  const activeCharacterScripts = characterOverride === undefined
+    ? frontend.tavernHelperScripts : flattenedTavernScripts(characterOverride)
+  const activeGlobalScripts = flattenedTavernScripts(previous?.scriptTrees?.global ?? [])
+  const globalScripts = Object.fromEntries(activeGlobalScripts.map(script => [
+    script.id,
+    previous?.scripts[script.id] ?? script.data,
+  ]))
   const presetScripts = Object.fromEntries((previous?.presetScriptIds ?? []).flatMap(id => {
     const value = previous?.scripts[id]
     return value === undefined ? [] : [[id, value]]
   }))
   const scripts = {
+    ...globalScripts,
     ...presetScripts,
-    ...Object.fromEntries(frontend.tavernHelperScripts.map(script => [
+    ...Object.fromEntries(activeCharacterScripts.map(script => [
       script.id,
       sameCharacter ? previous?.scripts[script.id] ?? script.data : script.data,
     ])),
   }
   const scriptIds = new Set(Object.keys(scripts))
   const prompts = previous?.injectedPrompts?.filter(prompt => scriptIds.has(prompt.scriptId))
+  const scriptTrees = previous?.scriptTrees === undefined ? undefined : {
+    ...(previous.scriptTrees.global === undefined ? {} : { global: previous.scriptTrees.global }),
+    ...(previous.scriptTrees.preset === undefined ? {} : { preset: previous.scriptTrees.preset }),
+    ...(!sameCharacter || previous.scriptTrees.character === undefined
+      ? {} : { character: previous.scriptTrees.character }),
+  }
   return {
     format: 0,
     characterSourceId,
@@ -412,6 +565,7 @@ export function initializeTavernHelperState(
       message: sameCharacter ? previous.scopes.message : {},
     },
     scripts,
+    ...(scriptTrees === undefined ? {} : { scriptTrees }),
     ...(prompts === undefined ? {} : { injectedPrompts: prompts }),
     ...(previous?.worldbooks === undefined ? {} : { worldbooks: previous.worldbooks }),
     ...(previous?.deletedWorldbookNames === undefined ? {} : { deletedWorldbookNames: previous.deletedWorldbookNames }),
@@ -431,20 +585,26 @@ export function initializeTavernHelperPresetState(
   const previousPresetIds = new Set(state.presetScriptIds ?? [])
   const characterScripts = Object.fromEntries(Object.entries(state.scripts)
     .filter(([id]) => !previousPresetIds.has(id)))
+  const presetOverride = samePreset ? state.scriptTrees?.preset : undefined
+  const activePresetScripts = presetOverride === undefined ? scripts : flattenedTavernScripts(presetOverride)
   const nextScripts = {
     ...characterScripts,
-    ...Object.fromEntries(scripts.map(script => [
+    ...Object.fromEntries(activePresetScripts.map(script => [
       script.id,
       samePreset ? state.scripts[script.id] ?? script.data : script.data,
     ])),
   }
   const scriptIds = new Set(Object.keys(nextScripts))
+  const scriptTrees = state.scriptTrees === undefined ? undefined : samePreset
+    ? state.scriptTrees
+    : Object.fromEntries(Object.entries(state.scriptTrees).filter(([scope]) => scope !== 'preset'))
   return {
     ...state,
     presetSourceId,
-    presetScriptIds: scripts.map(script => script.id),
+    presetScriptIds: activePresetScripts.map(script => script.id),
     scopes: { ...state.scopes, preset: samePreset ? state.scopes.preset : variables },
     scripts: nextScripts,
+    ...(scriptTrees === undefined ? {} : { scriptTrees }),
     ...(state.injectedPrompts === undefined
       ? {} : { injectedPrompts: state.injectedPrompts.filter(prompt => scriptIds.has(prompt.scriptId)) }),
   }
@@ -495,6 +655,17 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
       throw new Error('set-chat-hidden requires a valid non-negative range and hidden flag')
     }
     return { format: 0, operation: value.operation, start, end, hidden: value.hidden }
+  }
+  if (value.format === 0 && value.operation === 'replace-script-trees') {
+    if (value.scope !== 'global' && value.scope !== 'preset' && value.scope !== 'character') {
+      throw new Error('Tavern Helper script tree scope is invalid')
+    }
+    return {
+      format: 0,
+      operation: value.operation,
+      scope: value.scope,
+      trees: tavernScriptTrees(value.trees),
+    }
   }
   if (value.format === 0 && value.operation === 'replace-worldbook') {
     return { format: 0, operation: value.operation, name: worldbookName(value.name), entries: worldbookEntries(value.entries) }
@@ -554,6 +725,33 @@ export function applyTavernHelperMutation(
       || request.operation === 'delete-chat-messages' || request.operation === 'rotate-chat-messages'
       || request.operation === 'set-chat-hidden') {
       return { ...state, revision: state.revision + 1, lastMutation: { scope: 'chat' } }
+    }
+    if (request.operation === 'replace-script-trees') {
+      const scriptTrees = { ...state.scriptTrees, [request.scope]: request.trees }
+      const scopeIds = {
+        global: request.scope === 'global'
+          ? new Set(flattenedTavernScripts(request.trees).map(script => script.id))
+          : tavernScriptScopeIds(state, 'global'),
+        preset: request.scope === 'preset'
+          ? new Set(flattenedTavernScripts(request.trees).map(script => script.id))
+          : tavernScriptScopeIds(state, 'preset'),
+        character: request.scope === 'character'
+          ? new Set(flattenedTavernScripts(request.trees).map(script => script.id))
+          : tavernScriptScopeIds(state, 'character'),
+      }
+      const activeIds = new Set([...scopeIds.global, ...scopeIds.preset, ...scopeIds.character])
+      const scripts = Object.fromEntries(Object.entries(state.scripts).filter(([id]) => activeIds.has(id)))
+      for (const script of flattenedTavernScripts(request.trees)) scripts[script.id] = script.data
+      return {
+        ...state,
+        revision: state.revision + 1,
+        ...(request.scope === 'preset' ? { presetScriptIds: [...scopeIds.preset] } : {}),
+        scripts,
+        scriptTrees,
+        ...(state.injectedPrompts === undefined
+          ? {} : { injectedPrompts: state.injectedPrompts.filter(prompt => activeIds.has(prompt.scriptId)) }),
+        lastMutation: { scope: 'script-tree' },
+      }
     }
     if (request.operation === 'replace-script-injections') {
       if (!(request.scriptId in state.scripts)) throw new Error('Tavern Helper injected prompts have an unknown scriptId')
@@ -641,6 +839,19 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     id,
     record(value, `Tavern Helper script ${id} variables`),
   ]))
+  const parsedScriptTrees = parsed.scriptTrees === undefined ? undefined : (() => {
+    const scopes = record(parsed.scriptTrees, 'Tavern Helper script trees')
+    const unsupported = Object.keys(scopes).find(scope => scope !== 'global' && scope !== 'preset' && scope !== 'character')
+    if (unsupported !== undefined) throw new Error(`Tavern Helper script tree scope '${unsupported}' is invalid`)
+    return Object.fromEntries(Object.entries(scopes).map(([scope, trees]) => [
+      scope,
+      tavernScriptTrees(trees, `Tavern Helper ${scope} script trees`),
+    ])) as TavernHelperState['scriptTrees']
+  })()
+  if (parsedScriptTrees !== undefined && Object.values(parsedScriptTrees)
+    .flatMap(trees => flattenedTavernScripts(trees ?? [])).some(script => !(script.id in parsedScripts))) {
+    throw new Error('Tavern Helper script trees reference missing script variables')
+  }
   const parsedWorldbooks = parsed.worldbooks === undefined
     ? undefined
     : Object.fromEntries(Object.entries(record(parsed.worldbooks, 'Tavern Helper worldbooks'))
@@ -699,7 +910,7 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     const value = mutation as Record<string, unknown>
     if (value.scope !== 'global' && value.scope !== 'preset' && value.scope !== 'character'
       && value.scope !== 'chat' && value.scope !== 'message' && value.scope !== 'script'
-      && value.scope !== 'worldbook' && value.scope !== 'injection') {
+      && value.scope !== 'worldbook' && value.scope !== 'injection' && value.scope !== 'script-tree') {
       throw new Error('Tavern Helper last mutation scope is invalid')
     }
     if (value.scriptId !== undefined && typeof value.scriptId !== 'string') {
@@ -715,6 +926,7 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     revision: parsed.revision,
     scopes: parsedScopes,
     scripts: parsedScripts,
+    ...(parsedScriptTrees === undefined ? {} : { scriptTrees: parsedScriptTrees }),
     ...(parsedInjectedPrompts === undefined ? {} : { injectedPrompts: parsedInjectedPrompts }),
     ...(hiddenPrefix === undefined ? {} : { hiddenPrefix }),
     ...(parsedWorldbooks === undefined ? {} : { worldbooks: parsedWorldbooks }),

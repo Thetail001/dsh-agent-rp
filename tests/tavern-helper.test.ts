@@ -354,6 +354,48 @@ test('keeps preset and character script state independent across reloads', () =>
   assert.deepEqual(reloaded.scripts.preset, { presetRuns: 3 })
 })
 
+test('persists Session-local script tree replacements and their new script variables', () => {
+  const initial = initializeTavernHelperState({
+    regexScripts: [], tavernHelperScriptNames: ['旧脚本'], tavernHelperVariables: {}, tavernHelperScripts: [{
+      id: 'old-script', name: '旧脚本', content: 'void 0', info: '', enabled: true,
+      buttonEnabled: true, buttons: [], data: { old: true },
+    }],
+  }, 'card-script-tree')
+  const request = parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0,
+    operation: 'replace-script-trees',
+    scope: 'character',
+    trees: [{
+      type: 'folder', enabled: true, name: '工具', id: 'tools', icon: 'folder', color: '#123456',
+      scripts: [{
+        type: 'script', enabled: true, name: '新脚本', id: 'new-script', content: 'void 0', info: '状态工具',
+        button: { enabled: true, buttons: [{ name: '查看', visible: true }] },
+        data: { runs: 2 }, export_with: { data: true, button: true },
+      }],
+    }],
+  }))
+  const withGlobal = applyTavernHelperMutation(initial, parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0, operation: 'replace-script-trees', scope: 'global', trees: [{
+      type: 'script', enabled: true, name: '全局脚本', id: 'global-script', content: 'void 0', info: '',
+      button: { enabled: true, buttons: [] }, data: { global: true },
+      export_with: { data: true, button: true },
+    }],
+  })))
+  const updated = applyTavernHelperMutation(withGlobal, request)
+  const decoded = decodeTavernHelperState(encodeTavernHelperState(updated))
+
+  assert.equal(decoded?.lastMutation?.scope, 'script-tree')
+  assert.equal(decoded?.scriptTrees?.character?.[0]?.type, 'folder')
+  assert.deepEqual(decoded?.scripts, { 'global-script': { global: true }, 'new-script': { runs: 2 } })
+
+  const reloaded = initializeTavernHelperState({
+    regexScripts: [], tavernHelperScriptNames: [], tavernHelperVariables: {}, tavernHelperScripts: [],
+  }, 'different-card', decoded)
+  assert.equal(reloaded.scriptTrees?.character, undefined)
+  assert.equal(reloaded.scriptTrees?.global?.[0]?.id, 'global-script')
+  assert.deepEqual(reloaded.scripts, { 'global-script': { global: true } })
+})
+
 test('persists script-created worldbooks and activates them only after binding', () => {
   const initial = initializeTavernHelperState({
     regexScripts: [], tavernHelperScriptNames: [], tavernHelperVariables: {}, tavernHelperScripts: [],

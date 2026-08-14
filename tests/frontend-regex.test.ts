@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import type { ImportedRegexScript } from '../src/import/types.ts'
-import { tavernScriptFrameSource } from '../src/client/tavern-runtime.ts'
+import { tavernScriptFrameSource, type TavernScriptSnapshot } from '../src/client/tavern-runtime.ts'
 import { parseTavernSlashCommand } from '../src/client/tavern-slash.ts'
 import {
   AI_OUTPUT_PLACEMENT,
@@ -102,7 +102,7 @@ function runtimeAcceptanceContext(preview: readonly unknown[]) {
         })
         return
       }
-      if (message.action === 'worldbook-mutate') {
+      if (message.action === 'worldbook-mutate' || message.action === 'variables-replace') {
         queueMicrotask(() => {
           for (const listener of listeners.get('message') ?? []) listener({
             source: parent,
@@ -321,7 +321,7 @@ window.__regexReads = {
 })
 
 test('lets Tavern scripts inspect preset and character script trees without sharing mutations', () => {
-  const characterScript = {
+  const characterScript: TavernScriptSnapshot['characterScriptTrees'][number] = {
     type: 'script', enabled: true, name: '角色状态', id: 'character-status', content: 'void 0', info: '',
     button: { enabled: true, buttons: [{ name: '查看', visible: true }] }, data: { mode: 'compact' },
     export_with: { data: true, button: true },
@@ -360,6 +360,53 @@ window.__scriptTrees = {
     'character-status': [{ button_id: 'character-status_查看', button_name: '查看' }],
     'preset-tool': [{ button_id: 'preset-tool_查看', button_name: '查看' }],
   })
+})
+
+test('persists synchronous and asynchronous Tavern script tree updates', async () => {
+  const characterScript: TavernScriptSnapshot['characterScriptTrees'][number] = {
+    type: 'script', enabled: true, name: '初始脚本', id: 'character-tool', content: 'void 0', info: '',
+    button: { enabled: true, buttons: [{ name: '查看', visible: true }] }, data: { mode: 'compact' },
+    export_with: { data: true, button: true },
+  }
+  const script = String.raw`
+window.__acceptance = (async () => {
+  await replaceVariables({ mode: 'fresh' }, { type: 'script' });
+  const sync = updateScriptTreesWith(trees => trees.map(tree => ({ ...tree, name: '同步修改' })), { type: 'character' });
+  const asyncResult = await updateScriptTreesWith(async trees => [{
+    type: 'folder', enabled: true, name: '工具箱', id: 'tools', scripts: trees,
+  }], { type: 'character' });
+  return { sync, asyncResult, current: getScriptTrees({ type: 'character' }), buttons: getAllEnabledScriptButtons() };
+})();
+`
+  const html = tavernScriptFrameSource({
+    id: 'character-tool', name: '脚本写入', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'character-tool', scriptName: '脚本写入', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [],
+    presetScriptTrees: [], characterScriptTrees: [characterScript], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const result = JSON.parse(JSON.stringify(await context.__acceptance)) as Record<string, unknown>
+  assert.equal((result.sync as Record<string, unknown>[])[0]?.name, '同步修改')
+  assert.deepEqual(result.current, result.asyncResult)
+  assert.equal(((result.current as Record<string, unknown>[])[0]?.scripts as Record<string, unknown>[])[0]?.name, '同步修改')
+  assert.deepEqual(result.buttons, {
+    'character-tool': [{ button_id: 'character-tool_查看', button_name: '查看' }],
+  })
+  const writes = (context.posted as Record<string, unknown>[]).filter(message => message.action === 'worldbook-mutate')
+  assert.equal(writes.length, 2)
+  assert.deepEqual(writes.map(message => (message.request as Record<string, unknown>).operation), [
+    'replace-script-trees', 'replace-script-trees',
+  ])
+  const firstTrees = (writes[0]?.request as { trees: { data: Record<string, unknown> }[] }).trees
+  assert.equal(firstTrees[0]?.data.mode, 'fresh')
 })
 
 test('applies and unregisters Tavern Helper macro-like replacements', () => {

@@ -17,8 +17,9 @@ import { createRoot, type Root } from 'react-dom/client'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
 import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/types.ts'
+import { parseTavernHelperScripts } from '../import/tavern-helper.ts'
 import { importTavernRegex } from '../tavern-regex.ts'
-import type { TavernHelperMutationRequest, TavernWorldbookEntry } from '../tavern-helper.ts'
+import type { TavernHelperMutationRequest, TavernScriptTree, TavernScriptTreeScope, TavernWorldbookEntry } from '../tavern-helper.ts'
 import {
   TAVERN_GENERATION_PATH,
   TAVERN_MODEL_LIST_PATH,
@@ -4698,6 +4699,41 @@ function tavernHelperScript(script: ImportedTavernHelperScript, publicTree = fal
   }
 }
 
+function tavernScriptTrees(
+  projection: AgentRpProjection,
+  scope: TavernScriptTreeScope,
+): readonly TavernScriptTree[] {
+  const replacement = projection.tavern?.scriptTrees?.[scope]
+  let normalized: readonly TavernScriptTree[]
+  if (replacement !== undefined) {
+    normalized = replacement
+  } else {
+    const scripts = scope === 'preset'
+      ? projection.preset?.tavernHelperScripts ?? []
+      : scope === 'character' ? projection.frontend?.tavernHelperScripts ?? [] : []
+    normalized = scripts.map(script => tavernHelperScript(script, true) as unknown as TavernScriptTree)
+  }
+  const variables = projection.tavern?.scripts ?? {}
+  const withVariables = (script: Extract<TavernScriptTree, { readonly type: 'script' }>) => ({
+    ...script,
+    data: variables[script.id] ?? script.data,
+  })
+  return normalized.map(tree => tree.type === 'folder'
+    ? { ...tree, scripts: tree.scripts.map(withVariables) }
+    : withVariables(tree))
+}
+
+function activeTavernScripts(
+  projection: AgentRpProjection,
+  scope: TavernScriptTreeScope,
+): readonly ImportedTavernHelperScript[] {
+  const replacement = projection.tavern?.scriptTrees?.[scope]
+  if (replacement !== undefined) return parseTavernHelperScripts(replacement, `session.${scope}.scriptTrees`)
+  return scope === 'preset'
+    ? projection.preset?.tavernHelperScripts ?? []
+    : scope === 'character' ? projection.frontend?.tavernHelperScripts ?? [] : []
+}
+
 function currentTavernPreset(projection: AgentRpProjection): TavernScriptSnapshot['preset'] {
   const preset = projection.preset
   if (preset === undefined) return undefined
@@ -4873,8 +4909,9 @@ function tavernScriptSnapshot(
     })),
     characterRegexScripts: (projection.frontend?.regexScripts ?? [])
       .map((entry, index) => tavernRegex(entry, index, 'character')),
-    presetScriptTrees: (projection.preset?.tavernHelperScripts ?? []).map(script => tavernHelperScript(script, true)),
-    characterScriptTrees: (projection.frontend?.tavernHelperScripts ?? []).map(script => tavernHelperScript(script, true)),
+    globalScriptTrees: tavernScriptTrees(projection, 'global'),
+    presetScriptTrees: tavernScriptTrees(projection, 'preset'),
+    characterScriptTrees: tavernScriptTrees(projection, 'character'),
     injectedPrompts: (state?.injectedPrompts ?? []).flatMap(prompt => {
       if (prompt.scriptId !== script.id) return []
       const { scriptId: _scriptId, ...value } = prompt
@@ -4919,12 +4956,13 @@ function TavernScriptRuntime({
   readonly sessionId: SessionId
 }) {
   const scripts = [
-    ...(projection.preset?.tavernHelperScripts ?? []),
-    ...(projection.frontend?.tavernHelperScripts ?? []),
+    ...activeTavernScripts(projection, 'global'),
+    ...activeTavernScripts(projection, 'preset'),
+    ...activeTavernScripts(projection, 'character'),
   ].filter(script => script.enabled && script.content.trim() !== '')
   const [approvedOrigins, setApprovedOrigins] = useState(readApprovedTavernScriptOrigins)
   const scriptOrigins = [...new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...approvedOrigins])].sort()
-  const signature = `${scripts.map(script => `${script.id}\u0000${script.content}`).join('\u0001')}\u0002${scriptOrigins.join('\u0001')}`
+  const signature = `${scripts.map(script => JSON.stringify(script)).join('\u0001')}\u0002${scriptOrigins.join('\u0001')}`
   const [frames, setFrames] = useState<readonly {
     readonly script: ImportedTavernHelperScript
     readonly source?: string
@@ -5025,6 +5063,7 @@ function TavernScriptRuntime({
       source: 'dsh-agent-rp-host', action: 'variables-sync',
       scopes: snapshot.scopes, messages: snapshot.messages,
       characterRegexScripts: snapshot.characterRegexScripts,
+      globalScriptTrees: snapshot.globalScriptTrees,
       presetScriptTrees: snapshot.presetScriptTrees,
       characterScriptTrees: snapshot.characterScriptTrees,
       injectedPrompts: snapshot.injectedPrompts,
