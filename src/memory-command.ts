@@ -4,6 +4,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands'
 import {
   encodeAgentRpMemoryCommandRecord,
+  findAgentRpMemorySubjectConflict,
   parseAgentRpMemoryCommandRequest,
   readAgentRpMemoryHistory,
 } from './memory.ts'
@@ -23,6 +24,10 @@ export function executeAgentRpMemoryCommand(invocation: {
   const history = readAgentRpMemoryHistory(invocation.agent.session.events)
   if (!history.active.some(record => record.id === request.id)) {
     throw new Error('这条记忆已经被纠正或忘记，请刷新后再试')
+  }
+  if (request.operation === 'correct') {
+    const conflict = findAgentRpMemorySubjectConflict(history.active, request.subject, request.id)
+    if (conflict !== undefined) throw new Error(`“${request.subject}”已经是另一条有效记忆的主题，请先整理其中一条`)
   }
   return {
     kind: 'success',

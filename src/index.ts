@@ -803,7 +803,7 @@ export function installAgentRp(
   ctx.systemPrompt.context({ name: 'approval:policy', order: 0, text: '' })
   ctx.tools.register(defineTool({
     name: 'remember',
-    description: 'Persist one confirmed fact, promise, preference, relationship change, or shared event for later turns in this Session. Use supersedes only when correcting one currently active memory id.',
+    description: 'Persist one confirmed fact, promise, preference, relationship change, or shared event for later turns in this Session. Do not repeat information already covered. When this topic already exists, use supersedes with its active memory id instead of adding another record.',
     parameters: {
       kind: {
         type: 'string',

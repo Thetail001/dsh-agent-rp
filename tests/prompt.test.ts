@@ -24,6 +24,7 @@ test('makes the top-level Agent the character and permits concise silence', () =
   assert.match(prompt, /短答、停顿或暂不追问/u)
   assert.match(prompt, /普通寒暄/u)
   assert.match(prompt, /先调用 remember/u)
+  assert.match(prompt, /同一主题发生变化/u)
   assert.match(prompt, /不存在的共同经历/u)
   assert.doesNotMatch(prompt, /狼人|主持人|子代理/u)
 })

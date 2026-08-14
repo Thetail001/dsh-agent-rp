@@ -2402,6 +2402,7 @@ function MemoryManagerDialog({ load, onManage, onClose }: {
   const [subject, setSubject] = useState('')
   const [text, setText] = useState('')
   const [forgetting, setForgetting] = useState<string>()
+  const [query, setQuery] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const refresh = (): Promise<void> => load().then(setMemories)
@@ -2430,6 +2431,9 @@ function MemoryManagerDialog({ load, onManage, onClose }: {
       setError(reason instanceof Error ? reason.message : String(reason))
     }).finally(() => { setBusy(false) })
   }
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const visibleMemories = (memories ?? []).filter(memory => normalizedQuery === ''
+    || `${memory.subject}\n${memory.text}\n${memoryKindLabels[memory.kind]}`.toLocaleLowerCase().includes(normalizedQuery))
   return <div role="dialog" aria-modal="true" aria-label="角色记忆" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1200,
@@ -2441,7 +2445,10 @@ function MemoryManagerDialog({ load, onManage, onClose }: {
     }}>
       <header style={{ alignItems: 'start', display: 'flex', gap: '16px', justifyContent: 'space-between' }}>
         <div>
-          <h2 style={{ fontSize: '17px', margin: 0 }}>角色记忆</h2>
+          <div style={{ alignItems: 'center', display: 'flex', gap: '8px' }}>
+            <h2 style={{ fontSize: '17px', margin: 0 }}>角色记忆</h2>
+            {memories !== undefined && <span style={{ fontSize: '11px', opacity: .45 }}>{memories.length} 条有效</span>}
+          </div>
           <p style={{ fontSize: '12px', lineHeight: 1.55, margin: '5px 0 0', opacity: .58 }}>
             这些内容会在之后的回复中继续生效。纠正和忘记都会保留在本机会话历史中
           </p>
@@ -2458,8 +2465,15 @@ function MemoryManagerDialog({ load, onManage, onClose }: {
         <strong style={{ display: 'block', fontSize: '13px' }}>还没有持久记忆</strong>
         <span style={{ display: 'block', fontSize: '12px', marginTop: '6px', opacity: .52 }}>角色在确实值得长期保留时才会记下来</span>
       </div>}
+      {memories !== undefined && memories.length > 5 && <input type="search" value={query} aria-label="搜索角色记忆"
+        placeholder="搜索主题或内容" onChange={event => { setQuery(event.target.value) }} style={{
+          ...settingsFieldStyle, boxSizing: 'border-box', marginTop: '16px', width: '100%',
+        }} />}
+      {memories !== undefined && memories.length > 0 && visibleMemories.length === 0 && <p style={{
+        fontSize: '12px', margin: '18px 0 2px', opacity: .55, textAlign: 'center',
+      }}>没有找到匹配的记忆</p>}
       {memories !== undefined && memories.length > 0 && <div style={{ display: 'grid', gap: '10px', marginTop: '18px' }}>
-        {memories.map(memory => <article key={memory.id} style={{
+        {visibleMemories.map(memory => <article key={memory.id} style={{
           background: 'var(--dsw-alias-bg-layer-1, #222226)', border: '1px solid var(--dsw-alias-border-l2, #3e3e43)',
           borderRadius: '11px', padding: '13px',
         }}>

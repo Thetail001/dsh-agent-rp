@@ -110,6 +110,22 @@ test('keeps correction history while only the replacement remains active', () =>
   assert.match(renderMemoryContext(session.events), /苏州/u)
 })
 
+test('rejects a duplicate active topic unless the existing record is superseded', () => {
+  const session = Session.create(SessionId('agent-rp-duplicate-topic'))
+  const firstInput = { kind: 'preference', subject: '红茶', text: '用户喝红茶不加柠檬' } as const
+  const firstCallSeq = appendRememberCall(session, 'remember-1', firstInput)
+  const first = prepareAgentRpMemory(session, 'remember-1', firstInput)
+  appendRememberResult(session, 'remember-1', first, firstCallSeq)
+
+  const duplicate = { kind: 'preference', subject: ' 红茶 ', text: '用户喜欢热红茶' } as const
+  appendRememberCall(session, 'remember-2', duplicate)
+  assert.throws(() => prepareAgentRpMemory(session, 'remember-2', duplicate), /use supersedes/u)
+
+  const replacement = { ...duplicate, supersedes: first.id }
+  appendRememberCall(session, 'remember-3', replacement)
+  assert.equal(prepareAgentRpMemory(session, 'remember-3', replacement).supersedes, first.id)
+})
+
 test('lets the user correct and forget active memory without invoking the model', () => {
   const agent = { session: Session.create(SessionId('agent-rp-user-memory')) } as Agent
   const oldInput = { kind: 'preference', subject: '红茶', text: '用户喜欢在红茶里加柠檬' } as const
@@ -143,6 +159,35 @@ test('lets the user correct and forget active memory without invoking the model'
   assert.equal(forgotten.all.length, 2)
   assert.deepEqual(forgotten.active, [])
   assert.equal(renderMemoryContext(agent.session.events), '当前没有已记录的持久记忆。')
+})
+
+test('rejects a user correction that would collide with another active topic', () => {
+  const agent = { session: Session.create(SessionId('agent-rp-user-memory-conflict')) } as Agent
+  const teaInput = { kind: 'preference', subject: '红茶', text: '用户喝红茶不加柠檬' } as const
+  const teaCallSeq = appendRememberCall(agent.session, 'remember-tea', teaInput)
+  const tea = prepareAgentRpMemory(agent.session, 'remember-tea', teaInput)
+  appendRememberResult(agent.session, 'remember-tea', tea, teaCallSeq)
+  const homeInput = { kind: 'fact', subject: '住处', text: '用户住在杭州' } as const
+  const homeCallSeq = appendRememberCall(agent.session, 'remember-home', homeInput)
+  const home = prepareAgentRpMemory(agent.session, 'remember-home', homeInput)
+  appendRememberResult(agent.session, 'remember-home', home, homeCallSeq)
+  const commandId = CommandId('memory-command-conflict')
+  const request = {
+    format: 0,
+    operation: 'correct',
+    id: home.id,
+    kind: 'fact',
+    subject: '红茶',
+    text: '用户住在杭州',
+  } as const
+  agent.session.append('command/run', {
+    commandId,
+    name: 'rp-memory',
+    args: JSON.stringify(request),
+    source: { kind: 'user' },
+  })
+
+  assert.throws(() => executeAgentRpMemoryCommand({ commandId, agent, rawInput: JSON.stringify(request) }), /另一条有效记忆/u)
 })
 
 test('copies only active memory into a new Session where it remains editable', () => {

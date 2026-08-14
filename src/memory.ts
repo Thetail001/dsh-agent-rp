@@ -103,6 +103,20 @@ function normalizeText(value: string, field: string, maximum: number): string {
   return normalized
 }
 
+function memorySubjectKey(value: string): string {
+  return value.trim().toLocaleLowerCase()
+}
+
+/** Find another active record that already owns one stable topic. */
+export function findAgentRpMemorySubjectConflict(
+  active: readonly AgentRpMemoryRecord[],
+  subject: string,
+  replacing?: AgentRpMemoryId,
+): AgentRpMemoryRecord | undefined {
+  const key = memorySubjectKey(subject)
+  return active.find(record => record.id !== replacing && memorySubjectKey(record.subject) === key)
+}
+
 function object(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${label}不是对象`)
   return value as Record<string, unknown>
@@ -447,12 +461,18 @@ export function prepareAgentRpMemory(
   if (supersedes !== undefined && !history.active.some(record => record.id === supersedes)) {
     throw new Error(`cannot supersede missing or inactive Agent RP memory ${JSON.stringify(supersedes)}`)
   }
+  const subject = normalizeText(input.subject, 'subject', SUBJECT_MAX_LENGTH)
+  const text = normalizeText(input.text, 'text', TEXT_MAX_LENGTH)
+  const conflict = findAgentRpMemorySubjectConflict(history.active, subject, supersedes)
+  if (conflict !== undefined) {
+    throw new Error(`memory subject ${JSON.stringify(subject)} is already active as ${conflict.id}; use supersedes to update it`)
+  }
   return {
     version: 0,
     id: AgentRpMemoryId(`memory-${call.seq}`),
     kind: input.kind,
-    subject: normalizeText(input.subject, 'subject', SUBJECT_MAX_LENGTH),
-    text: normalizeText(input.text, 'text', TEXT_MAX_LENGTH),
+    subject,
+    text,
     sourceEventSeq: call.seq,
     ...(supersedes === undefined ? {} : { supersedes }),
   }
