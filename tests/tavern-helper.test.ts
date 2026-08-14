@@ -9,6 +9,17 @@ import {
   parseTavernHelperMutationRequest,
 } from '../src/tavern-helper.ts'
 import { activeTavernWorldbooks, withTavernWorldbooks } from '../src/world-info-configuration-core.ts'
+import { tavernModelListEndpoint } from '../src/tavern-model-list-http.ts'
+
+test('resolves OpenAI-compatible model list endpoints without retaining query credentials', () => {
+  assert.equal(tavernModelListEndpoint('https://example.com/v1').href, 'https://example.com/v1/models')
+  assert.equal(tavernModelListEndpoint('https://example.com/v1/chat/completions?token=secret').href,
+    'https://example.com/v1/models')
+  assert.equal(tavernModelListEndpoint('http://127.0.0.1:11434/v1/models').href,
+    'http://127.0.0.1:11434/v1/models')
+  assert.throws(() => tavernModelListEndpoint('file:///models'), /HTTP 或 HTTPS/u)
+  assert.throws(() => tavernModelListEndpoint('https://user:secret@example.com/v1'), /账号或密码/u)
+})
 
 test('parses Tavern Helper chat mutation operations', () => {
   assert.deepEqual(parseTavernHelperMutationRequest(JSON.stringify({

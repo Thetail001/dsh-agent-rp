@@ -115,6 +115,7 @@ import { executeImageGenerationCommand } from './image-generation-command.ts'
 import { installImageGenerationHttp } from './image-generation-http.ts'
 import { executeTavernHelperMutation } from './tavern-helper-command.ts'
 import { installTavernGenerationHttp } from './tavern-generation-http.ts'
+import { installTavernModelListHttp } from './tavern-model-list-http.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -1034,6 +1035,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
         installImageGenerationHttp(webCtx, generatedImageLibrary, webCtx.credentials, server)
         installTavernGenerationHttp(webCtx, server)
+        installTavernModelListHttp(webCtx, server)
       })
     }
     mountHost('httpServer')
