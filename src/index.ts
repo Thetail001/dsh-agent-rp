@@ -118,6 +118,11 @@ import { GeneratedImageLibrary } from './generated-image-library.ts'
 import { executeImageGenerationCommand } from './image-generation-command.ts'
 import { installImageGenerationHttp } from './image-generation-http.ts'
 import { executeTavernHelperMutation } from './tavern-helper-command.ts'
+import {
+  readTavernHelperState,
+  tavernInjectedInChatPrompts,
+  tavernInjectedScanText,
+} from './tavern-helper.ts'
 import { executeTavernTrigger } from './tavern-trigger.ts'
 import { installTavernGenerationHttp } from './tavern-generation-http.ts'
 import { installTavernModelListHttp } from './tavern-model-list-http.ts'
@@ -677,6 +682,7 @@ export function installAgentRp(
       if (agent !== undefined) pendingMessagesByAgent.delete(agent)
       const active = importedCharacter(agentsByScope, scope)
       if (agent === undefined) return renderCharacterPrompt(config)
+      const injectedScanText = tavernInjectedScanText(readTavernHelperState(agent.session.events))
       const sources = readActiveSessionLorebookSources(agent)
       const worldInfoConfiguration = readWorldInfoConfiguration(agent.session.events)
       const configuredSources = sources.map(source => ({
@@ -690,7 +696,7 @@ export function installAgentRp(
         degradations: source.degradations as ImportedWorldInfo['degradations'],
         raw: {},
       }] : [])
-      const standaloneLore = renderImportedWorldInfos(worldInfos, agent.session, pendingMessages)
+      const standaloneLore = renderImportedWorldInfos(worldInfos, agent.session, pendingMessages, injectedScanText)
       if (active === undefined) {
         const importedChat = readSillyTavernChatIdentity(agent.session.events)
         if (importedChat !== undefined) {
@@ -714,7 +720,7 @@ export function installAgentRp(
       )
       const { persona, userName } = identity
       const mvu = readCurrentMvuState(card, agent.session.events)
-      const characterLore = renderImportedLorebook(card, agent.session, pendingMessages, mvu?.statData)
+      const characterLore = renderImportedLorebook(card, agent.session, pendingMessages, mvu?.statData, injectedScanText)
       const preset = readActiveSessionPreset(agent.session.events)?.preset
       if (preset !== undefined) {
         const assembled = assembleSillyTavernPreset(preset, {
@@ -758,7 +764,10 @@ export function installAgentRp(
   installPromptRegexStream(
     ctx,
     sessionId => agentsBySession.get(sessionId),
-    agent => presetInChatByAgent.get(agent) ?? [],
+    agent => [
+      ...(presetInChatByAgent.get(agent) ?? []),
+      ...tavernInjectedInChatPrompts(readTavernHelperState(agent.session.events)),
+    ],
   )
   installMvuStreamCompletion(ctx, sessionId => agentsBySession.get(sessionId))
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {

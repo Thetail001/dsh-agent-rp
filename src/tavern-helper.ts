@@ -114,6 +114,8 @@ export interface TavernHelperState {
     readonly message: JsonRecord
   }
   readonly scripts: Readonly<Record<string, JsonRecord>>
+  /** Script-authored prompts retained for subsequent model requests in this chat. */
+  readonly injectedPrompts?: readonly TavernInjectedPrompt[]
   /** Contiguous transcript prefix excluded from the Session surface but retained for Tavern APIs. */
   readonly hiddenPrefix?: readonly TavernHiddenMessage[]
   /** Script-authored books and full replacements of imported books, keyed by visible name. */
@@ -122,9 +124,21 @@ export interface TavernHelperState {
   readonly deletedWorldbookNames?: readonly string[]
   readonly worldbookBindings?: TavernWorldbookBindings
   readonly lastMutation?: {
-    readonly scope: TavernVariableScope | 'worldbook'
+    readonly scope: TavernVariableScope | 'worldbook' | 'injection'
     readonly scriptId?: string
   }
+}
+
+/** One validated model prompt owned by an isolated Tavern Helper script. */
+export interface TavernInjectedPrompt {
+  readonly id: string
+  readonly scriptId: string
+  readonly position: 'in_chat' | 'none'
+  readonly depth: number
+  readonly role: 'system' | 'assistant' | 'user'
+  readonly content: string
+  readonly shouldScan: boolean
+  readonly once: boolean
 }
 
 /** Browser request replacing one Tavern Helper variable namespace. */
@@ -143,14 +157,24 @@ export type TavernWorldbookMutationRequest =
   | { readonly format: 0; readonly operation: 'bind-character-worldbooks'; readonly primary: string | null; readonly additional: readonly string[] }
   | { readonly format: 0; readonly operation: 'bind-chat-worldbook'; readonly name: string | null }
 
+/** Browser request replacing every prompt currently owned by one script. */
+export interface TavernInjectionMutationRequest {
+  readonly format: 0
+  readonly operation: 'replace-script-injections'
+  readonly scriptId: string
+  readonly prompts: readonly Omit<TavernInjectedPrompt, 'scriptId'>[]
+}
+
 /** One validated mutation sent by an isolated Tavern Helper script. */
 export type TavernHelperMutationRequest = TavernHelperVariableMutationRequest | TavernWorldbookMutationRequest
-  | TavernChatMutationRequest
+  | TavernChatMutationRequest | TavernInjectionMutationRequest
 
 const STATE_PREFIX = 'agent-rp-tavern-helper-v0:'
 const MAX_MUTATION_BYTES = 2 * 1024 * 1024
 const MAX_WORLDBOOK_ENTRIES = 10_000
 const MAX_CHAT_MESSAGES = 10_000
+const MAX_INJECTED_PROMPTS = 256
+const MAX_INJECTED_PROMPT_CHARS = 256 * 1024
 
 function record(value: unknown, name: string): JsonRecord {
   const snapshot = snapshotJsonValue(value) as JsonValue | undefined
@@ -309,6 +333,51 @@ function worldbookEntries(value: unknown): readonly TavernWorldbookEntry[] {
   return value.map((entry, index) => worldbookEntry(entry, index, used))
 }
 
+function injectedPrompt(value: unknown, index: number, scriptId?: string): TavernInjectedPrompt {
+  const prompt = nested(value)
+  const id = text(prompt.id, `injected prompt[${index}].id`).trim()
+  if (id === '' || id.length > 512) throw new Error(`injected prompt[${index}].id is invalid`)
+  if (prompt.position !== 'in_chat' && prompt.position !== 'none') {
+    throw new Error(`injected prompt[${index}].position is invalid`)
+  }
+  if (prompt.role !== 'system' && prompt.role !== 'assistant' && prompt.role !== 'user') {
+    throw new Error(`injected prompt[${index}].role is invalid`)
+  }
+  const depth = integer(prompt.depth, `injected prompt[${index}].depth`)
+  const content = text(prompt.content, `injected prompt[${index}].content`)
+  if (depth < 0 || depth > 20_000 || content.length > MAX_INJECTED_PROMPT_CHARS) {
+    throw new Error(`injected prompt[${index}] is too large`)
+  }
+  const owner = scriptId ?? text(prompt.scriptId, `injected prompt[${index}].scriptId`)
+  if (owner === '') throw new Error(`injected prompt[${index}].scriptId is invalid`)
+  if ((prompt.shouldScan !== undefined && typeof prompt.shouldScan !== 'boolean')
+    || (prompt.should_scan !== undefined && typeof prompt.should_scan !== 'boolean')
+    || (prompt.once !== undefined && typeof prompt.once !== 'boolean')) {
+    throw new Error(`injected prompt[${index}] flags are invalid`)
+  }
+  return {
+    id,
+    scriptId: owner,
+    position: prompt.position,
+    depth,
+    role: prompt.role,
+    content,
+    shouldScan: prompt.shouldScan === undefined ? prompt.should_scan === true : prompt.shouldScan === true,
+    once: prompt.once === true,
+  }
+}
+
+function injectedPrompts(value: unknown, scriptId?: string): readonly TavernInjectedPrompt[] {
+  if (!Array.isArray(value) || value.length > MAX_INJECTED_PROMPTS) {
+    throw new Error('Tavern Helper injected prompts are invalid')
+  }
+  const prompts = value.map((prompt, index) => injectedPrompt(prompt, index, scriptId))
+  if (new Set(prompts.map(prompt => prompt.id)).size !== prompts.length) {
+    throw new Error('Tavern Helper injected prompt ids must be unique')
+  }
+  return prompts
+}
+
 /** Create the script state for one active card while retaining Session-wide namespaces. */
 export function initializeTavernHelperState(
   frontend: ImportedCharacterFrontend,
@@ -320,6 +389,15 @@ export function initializeTavernHelperState(
     const value = previous?.scripts[id]
     return value === undefined ? [] : [[id, value]]
   }))
+  const scripts = {
+    ...presetScripts,
+    ...Object.fromEntries(frontend.tavernHelperScripts.map(script => [
+      script.id,
+      sameCharacter ? previous?.scripts[script.id] ?? script.data : script.data,
+    ])),
+  }
+  const scriptIds = new Set(Object.keys(scripts))
+  const prompts = previous?.injectedPrompts?.filter(prompt => scriptIds.has(prompt.scriptId))
   return {
     format: 0,
     characterSourceId,
@@ -333,13 +411,8 @@ export function initializeTavernHelperState(
       chat: previous?.scopes.chat ?? {},
       message: sameCharacter ? previous.scopes.message : {},
     },
-    scripts: {
-      ...presetScripts,
-      ...Object.fromEntries(frontend.tavernHelperScripts.map(script => [
-        script.id,
-        sameCharacter ? previous?.scripts[script.id] ?? script.data : script.data,
-      ])),
-    },
+    scripts,
+    ...(prompts === undefined ? {} : { injectedPrompts: prompts }),
     ...(previous?.worldbooks === undefined ? {} : { worldbooks: previous.worldbooks }),
     ...(previous?.deletedWorldbookNames === undefined ? {} : { deletedWorldbookNames: previous.deletedWorldbookNames }),
     ...(previous?.worldbookBindings === undefined ? {} : { worldbookBindings: previous.worldbookBindings }),
@@ -358,18 +431,22 @@ export function initializeTavernHelperPresetState(
   const previousPresetIds = new Set(state.presetScriptIds ?? [])
   const characterScripts = Object.fromEntries(Object.entries(state.scripts)
     .filter(([id]) => !previousPresetIds.has(id)))
+  const nextScripts = {
+    ...characterScripts,
+    ...Object.fromEntries(scripts.map(script => [
+      script.id,
+      samePreset ? state.scripts[script.id] ?? script.data : script.data,
+    ])),
+  }
+  const scriptIds = new Set(Object.keys(nextScripts))
   return {
     ...state,
     presetSourceId,
     presetScriptIds: scripts.map(script => script.id),
     scopes: { ...state.scopes, preset: samePreset ? state.scopes.preset : variables },
-    scripts: {
-      ...characterScripts,
-      ...Object.fromEntries(scripts.map(script => [
-        script.id,
-        samePreset ? state.scripts[script.id] ?? script.data : script.data,
-      ])),
-    },
+    scripts: nextScripts,
+    ...(state.injectedPrompts === undefined
+      ? {} : { injectedPrompts: state.injectedPrompts.filter(prompt => scriptIds.has(prompt.scriptId)) }),
   }
 }
 
@@ -440,6 +517,17 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
   if (value.format === 0 && value.operation === 'bind-chat-worldbook') {
     return { format: 0, operation: value.operation, name: value.name === null ? null : worldbookName(value.name) }
   }
+  if (value.format === 0 && value.operation === 'replace-script-injections') {
+    if (typeof value.scriptId !== 'string' || value.scriptId === '') {
+      throw new Error('Tavern Helper injected prompts require a scriptId')
+    }
+    return {
+      format: 0,
+      operation: value.operation,
+      scriptId: value.scriptId,
+      prompts: injectedPrompts(value.prompts, value.scriptId).map(({ scriptId: _scriptId, ...prompt }) => prompt),
+    }
+  }
   if (value.format !== 0 || (value.scope !== 'global' && value.scope !== 'preset'
     && value.scope !== 'character' && value.scope !== 'chat' && value.scope !== 'message'
     && value.scope !== 'script')) {
@@ -466,6 +554,19 @@ export function applyTavernHelperMutation(
       || request.operation === 'delete-chat-messages' || request.operation === 'rotate-chat-messages'
       || request.operation === 'set-chat-hidden') {
       return { ...state, revision: state.revision + 1, lastMutation: { scope: 'chat' } }
+    }
+    if (request.operation === 'replace-script-injections') {
+      if (!(request.scriptId in state.scripts)) throw new Error('Tavern Helper injected prompts have an unknown scriptId')
+      const replacedIds = new Set(request.prompts.map(prompt => prompt.id))
+      return {
+        ...state,
+        revision: state.revision + 1,
+        injectedPrompts: [
+          ...(state.injectedPrompts ?? []).filter(prompt => prompt.scriptId !== request.scriptId && !replacedIds.has(prompt.id)),
+          ...request.prompts.map(prompt => ({ ...prompt, scriptId: request.scriptId })),
+        ],
+        lastMutation: { scope: 'injection', scriptId: request.scriptId },
+      }
     }
     if (request.operation === 'replace-worldbook') {
       const deleted = new Set(state.deletedWorldbookNames ?? [])
@@ -544,6 +645,11 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     ? undefined
     : Object.fromEntries(Object.entries(record(parsed.worldbooks, 'Tavern Helper worldbooks'))
       .map(([name, entries]) => [worldbookName(name), worldbookEntries(entries)]))
+  const parsedInjectedPrompts = parsed.injectedPrompts === undefined
+    ? undefined : injectedPrompts(parsed.injectedPrompts)
+  if (parsedInjectedPrompts?.some(prompt => !(prompt.scriptId in parsedScripts)) === true) {
+    throw new Error('Tavern Helper injected prompts reference an unknown scriptId')
+  }
   const deletedWorldbookNames = parsed.deletedWorldbookNames === undefined
     ? undefined : stringArray(parsed.deletedWorldbookNames, 'Tavern Helper deleted worldbook names').map(worldbookName)
   let hiddenPrefix: readonly TavernHiddenMessage[] | undefined
@@ -592,7 +698,8 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     }
     const value = mutation as Record<string, unknown>
     if (value.scope !== 'global' && value.scope !== 'preset' && value.scope !== 'character'
-      && value.scope !== 'chat' && value.scope !== 'message' && value.scope !== 'script' && value.scope !== 'worldbook') {
+      && value.scope !== 'chat' && value.scope !== 'message' && value.scope !== 'script'
+      && value.scope !== 'worldbook' && value.scope !== 'injection') {
       throw new Error('Tavern Helper last mutation scope is invalid')
     }
     if (value.scriptId !== undefined && typeof value.scriptId !== 'string') {
@@ -608,12 +715,32 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     revision: parsed.revision,
     scopes: parsedScopes,
     scripts: parsedScripts,
+    ...(parsedInjectedPrompts === undefined ? {} : { injectedPrompts: parsedInjectedPrompts }),
     ...(hiddenPrefix === undefined ? {} : { hiddenPrefix }),
     ...(parsedWorldbooks === undefined ? {} : { worldbooks: parsedWorldbooks }),
     ...(deletedWorldbookNames === undefined ? {} : { deletedWorldbookNames }),
     ...(worldbookBindings === undefined ? {} : { worldbookBindings }),
     ...(lastMutation === undefined ? {} : { lastMutation }),
   }
+}
+
+/** Project durable script injections into the existing in-chat prompt inserter. */
+export function tavernInjectedInChatPrompts(state: TavernHelperState | undefined): readonly {
+  readonly role: 'system' | 'assistant' | 'user'
+  readonly content: string
+  readonly depth: number
+  readonly order: number
+}[] {
+  return (state?.injectedPrompts ?? []).flatMap(prompt => prompt.position === 'in_chat' && prompt.content.trim() !== ''
+    ? [{ role: prompt.role, content: prompt.content, depth: prompt.depth, order: 100 }]
+    : [])
+}
+
+/** Return script prompt text that participates in the next lorebook scan. */
+export function tavernInjectedScanText(state: TavernHelperState | undefined): readonly string[] {
+  return (state?.injectedPrompts ?? []).flatMap(prompt => prompt.shouldScan && prompt.content.trim() !== ''
+    ? [prompt.content]
+    : [])
 }
 
 /** Fold the latest Tavern Helper state from private command results. */

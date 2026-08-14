@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { CommandId } from '@deepseek-ai/dsh-commands'
 import {
   applyTavernHelperMutation,
   decodeTavernHelperState,
@@ -9,6 +10,8 @@ import {
   initializeTavernHelperState,
   initializeTavernHelperPresetState,
   parseTavernHelperMutationRequest,
+  tavernInjectedInChatPrompts,
+  tavernInjectedScanText,
 } from '../src/tavern-helper.ts'
 import { activeTavernWorldbooks, withTavernWorldbooks } from '../src/world-info-configuration-core.ts'
 import {
@@ -371,4 +374,87 @@ test('persists script-created worldbooks and activates them only after binding',
     format: 0, operation: 'bind-chat-worldbook', name: '旅店记忆',
   })
   assert.deepEqual(activeTavernWorldbooks(sources, bound).map(source => source.name), ['旅店记忆'])
+})
+
+test('persists script-owned prompt injections and projects only model-visible entries', () => {
+  const initial = initializeTavernHelperState({
+    regexScripts: [], tavernHelperScriptNames: ['状态提示'], tavernHelperVariables: {},
+    tavernHelperScripts: [{
+      id: 'status', name: '状态提示', content: '', info: '', enabled: true,
+      buttonEnabled: false, buttons: [], data: {},
+    }],
+  }, 'card-1')
+  const request = parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0,
+    operation: 'replace-script-injections',
+    scriptId: 'status',
+    prompts: [
+      { id: 'visible', position: 'in_chat', depth: 1, role: 'assistant', content: '保持安静', shouldScan: true, once: true },
+      { id: 'scan-only', position: 'none', depth: 0, role: 'system', content: '只用于扫描', shouldScan: true, once: false },
+    ],
+  }))
+  const decoded = decodeTavernHelperState(encodeTavernHelperState(applyTavernHelperMutation(initial, request)))
+  assert.deepEqual(decoded?.injectedPrompts, [
+    {
+      id: 'visible', scriptId: 'status', position: 'in_chat', depth: 1,
+      role: 'assistant', content: '保持安静', shouldScan: true, once: true,
+    },
+    {
+      id: 'scan-only', scriptId: 'status', position: 'none', depth: 0,
+      role: 'system', content: '只用于扫描', shouldScan: true, once: false,
+    },
+  ])
+  assert.deepEqual(tavernInjectedInChatPrompts(decoded), [
+    { role: 'assistant', content: '保持安静', depth: 1, order: 100 },
+  ])
+  assert.deepEqual(tavernInjectedScanText(decoded), ['保持安静', '只用于扫描'])
+  assert.deepEqual(decoded?.lastMutation, { scope: 'injection', scriptId: 'status' })
+})
+
+test('includes durable Tavern Helper injections in auxiliary prompt previews', async () => {
+  const session = Session.create(SessionId('injected-preview'))
+  const initial = initializeTavernHelperState({
+    regexScripts: [], tavernHelperScriptNames: ['提示脚本'], tavernHelperVariables: {},
+    tavernHelperScripts: [{
+      id: 'injector', name: '提示脚本', content: '', info: '', enabled: true,
+      buttonEnabled: false, buttons: [], data: {},
+    }],
+  }, 'card-1')
+  const state = applyTavernHelperMutation(initial, {
+    format: 0,
+    operation: 'replace-script-injections',
+    scriptId: 'injector',
+    prompts: [{
+      id: 'tone', position: 'in_chat', depth: 1, role: 'assistant', content: '当前语气：轻声',
+      shouldScan: false, once: false,
+    }],
+  })
+  session.append('command/done', {
+    commandId: CommandId('injected-preview-state'), kind: 'success', text: encodeTavernHelperState(state),
+  })
+  const agent = {
+    session,
+    options: { model: 'test-model' },
+    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T> {
+      return task(new AbortController().signal)
+    },
+  }
+  const preview = await runTavernPromptPreview({
+    get: (name: string) => name === 'agents' ? { get: () => agent } : undefined,
+    systemPrompt: {
+      assemble: async () => ({
+        sections: [{ name: 'base', text: '角色设定' }], contexts: [], tools: [], variables: {},
+      }),
+    },
+  } as never, {
+    format: 0,
+    sessionId: 'injected-preview',
+    mode: 'raw',
+    config: { user_input: '继续说', ordered_prompts: ['system_prompt', 'user_input'] },
+  })
+  assert.deepEqual(preview.prompts, [
+    { role: 'system', content: '角色设定' },
+    { role: 'assistant', content: '当前语气：轻声' },
+    { role: 'user', content: '继续说' },
+  ])
 })

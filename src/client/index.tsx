@@ -4875,6 +4875,11 @@ function tavernScriptSnapshot(
       .map((entry, index) => tavernRegex(entry, index, 'character')),
     presetScriptTrees: (projection.preset?.tavernHelperScripts ?? []).map(script => tavernHelperScript(script, true)),
     characterScriptTrees: (projection.frontend?.tavernHelperScripts ?? []).map(script => tavernHelperScript(script, true)),
+    injectedPrompts: (state?.injectedPrompts ?? []).flatMap(prompt => {
+      if (prompt.scriptId !== script.id) return []
+      const { scriptId: _scriptId, ...value } = prompt
+      return [value]
+    }),
     displayRegexScripts: [
       ...(projection.preset?.regexScripts ?? []),
       ...(projection.frontend?.regexScripts ?? []),
@@ -5022,6 +5027,7 @@ function TavernScriptRuntime({
       characterRegexScripts: snapshot.characterRegexScripts,
       presetScriptTrees: snapshot.presetScriptTrees,
       characterScriptTrees: snapshot.characterScriptTrees,
+      injectedPrompts: snapshot.injectedPrompts,
       displayRegexScripts: snapshot.displayRegexScripts,
       worldbooks: snapshot.worldbooks, worldbookBindings: snapshot.worldbookBindings,
       activeWorldbookEntries: snapshot.activeWorldbookEntries,
@@ -5065,7 +5071,7 @@ function TavernScriptRuntime({
       ...(generationId === undefined ? {} : { generationId }),
       controller,
     })
-    void runGeneration(sessionId, { mode, config }, controller.signal).then(value => {
+    void mutationQueue.current.then(() => runGeneration(sessionId, { mode, config }, controller.signal)).then(value => {
       target.postMessage({ source: 'dsh-agent-rp-host', action: 'generation-result', requestId, ok: true, value }, '*')
     }).catch((reason: unknown) => {
       target.postMessage({
@@ -5091,7 +5097,7 @@ function TavernScriptRuntime({
       ...(generationId === undefined ? {} : { generationId }),
       controller,
     })
-    void runPromptPreview(sessionId, { mode, config }, controller.signal).then(value => {
+    void mutationQueue.current.then(() => runPromptPreview(sessionId, { mode, config }, controller.signal)).then(value => {
       target.postMessage({
         source: 'dsh-agent-rp-host', action: 'generation-preview-result', requestId, ok: true, value,
       }, '*')
@@ -5229,6 +5235,7 @@ function TavernScriptRuntime({
         readonly messageId?: unknown
         readonly preset?: unknown
         readonly generationId?: unknown
+        readonly prompts?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
@@ -5397,6 +5404,27 @@ function TavernScriptRuntime({
         broadcast({ action: 'event', eventType: message.eventType, args: message.args }, event.source as Window)
         return
       }
+      if (message.action === 'injections-replace' && typeof message.requestId === 'string'
+        && Array.isArray(message.prompts)) {
+        const target = event.source as Window
+        const request: Extract<TavernHelperMutationRequest, { operation: 'replace-script-injections' }> = {
+          format: 0,
+          operation: 'replace-script-injections',
+          scriptId: entry.script.id,
+          prompts: message.prompts as Extract<TavernHelperMutationRequest, {
+            operation: 'replace-script-injections'
+          }>['prompts'],
+        }
+        mutationQueue.current = mutationQueue.current.then(() => runMutation(sessionId, request)).then(() => {
+          target.postMessage({ source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: true }, '*')
+        }).catch((reason: unknown) => {
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: false,
+            error: reason instanceof Error ? reason.message : String(reason),
+          }, '*')
+        })
+        return
+      }
       if (message.action === 'trigger-slash' && typeof message.requestId === 'string'
         && typeof message.value === 'string' && message.value.length <= 65_536) {
         const target = event.source as Window
@@ -5419,11 +5447,11 @@ function TavernScriptRuntime({
           const scoped = ctx.sessions.scope(sessionId)
           const conversation = scoped?.get('conversation') as IConversation | undefined
           if (conversation === undefined) reject(new Error('当前角色会话尚未准备好发送消息'))
-          else void Promise.resolve(conversation.send(command.text)).then(resolve, reject)
+          else void mutationQueue.current.then(() => conversation.send(command.text)).then(resolve, reject)
           return
         }
         if (command?.kind === 'trigger') {
-          void runTrigger(sessionId).then(resolve, reject)
+          void mutationQueue.current.then(() => runTrigger(sessionId)).then(resolve, reject)
           return
         }
         const visibility = message.value.match(/^\/(hide|unhide)\s+(\d+)(?:-(\d+))?\s*$/iu)

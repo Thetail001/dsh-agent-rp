@@ -142,6 +142,12 @@ function runtimeAcceptanceContext(preview: readonly unknown[]) {
     getComputedStyle() { return { display: 'block', visibility: 'visible', getPropertyValue() { return '' } } },
     parent,
     posted,
+    dispatchHost(data: Record<string, unknown>) {
+      for (const listener of listeners.get('message') ?? []) listener({
+        source: parent,
+        data: { source: 'dsh-agent-rp-host', ...data },
+      })
+    },
     queueMicrotask,
     setTimeout,
     clearTimeout,
@@ -194,6 +200,8 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(source!, /window\.unregisterMacroLike=/u)
   assert.match(source!, /window\.substitudeMacros=/u)
   assert.match(source!, /window\.substituteParams=/u)
+  assert.match(source!, /window\.injectPrompts=/u)
+  assert.match(source!, /window\.uninjectPrompts=/u)
   assert.match(source!, /window\.getScriptTrees=/u)
   assert.match(source!, /window\.getAllEnabledScriptButtons=/u)
   assert.match(source!, /window\.generateRaw=/u)
@@ -418,6 +426,77 @@ window.__sillyTavernMacros = {
     throughContext: '角色/旅人/1',
     latestChatText: '去灯塔。',
   })
+})
+
+test('relays filtered Tavern Helper prompt injections and their disposer to the Host', async () => {
+  const script = String.raw`
+const registration = injectPrompts([
+  { id: 'active', position: 'in_chat', depth: 2, role: 'system', content: '当前场景' },
+  { id: 'filtered', position: 'in_chat', depth: 0, role: 'user', content: '不应注入', filter: () => false },
+], { once: true });
+window.__injectionReady = Promise.resolve().then(() => {
+  registration.uninject();
+  return Promise.resolve();
+});
+`
+  const html = tavernScriptFrameSource({
+    id: 'prompt-injector', name: '提示注入', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'prompt-injector', scriptName: '提示注入', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  assert.equal((context.posted as Record<string, unknown>[]).filter(message => message.action === 'injections-replace').length, 1)
+  await context.__injectionReady
+  await Promise.resolve()
+  const mutations = (context.posted as Record<string, unknown>[])
+    .filter(message => message.action === 'injections-replace')
+  assert.deepEqual(JSON.parse(JSON.stringify(mutations.map(message => message.prompts))), [
+    [{
+      id: 'active', position: 'in_chat', depth: 2, role: 'system', content: '当前场景',
+      shouldScan: false, once: true,
+    }],
+    [],
+  ])
+})
+
+test('consumes only one-shot prompt injections after a completed generation event', async () => {
+  const html = tavernScriptFrameSource({
+    id: 'once-injector', name: '单次提示', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, '', {
+    scriptId: 'once-injector', scriptName: '单次提示', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+    injectedPrompts: [
+      { id: 'once', position: 'in_chat', depth: 0, role: 'system', content: '仅一次', shouldScan: true, once: true },
+      { id: 'lasting', position: 'in_chat', depth: 0, role: 'system', content: '保留', shouldScan: true, once: false },
+    ],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'event', eventType: 'generation_ended', args: [0],
+  })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const mutation = (context.posted as Record<string, unknown>[])
+    .findLast(message => message.action === 'injections-replace')
+  assert.deepEqual(JSON.parse(JSON.stringify(mutation?.prompts)), [
+    { id: 'lasting', position: 'in_chat', depth: 0, role: 'system', content: '保留', shouldScan: true, once: false },
+  ])
 })
 
 test('lets V18-style dry-run listeners capture prompts without Host generation', async () => {

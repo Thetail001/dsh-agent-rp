@@ -65,8 +65,9 @@ export function renderImportedWorldInfos(
   worldInfos: readonly ImportedWorldInfo[],
   session: Session,
   pendingMessages: readonly UserMessage[] = [],
+  scanText: readonly string[] = [],
 ) {
-  const messages = visibleDialogue(session, pendingMessages)
+  const messages = [...visibleDialogue(session, pendingMessages), ...scanText]
   return worldInfos.reduce((result, worldInfo) => {
     const active = activateLorebook(worldInfo.lorebook, messages)
     result.beforeCharacter.push(...active.beforeCharacter)
@@ -171,10 +172,11 @@ export function renderImportedLorebook(
   session: Session,
   pendingMessages: readonly UserMessage[] = [],
   statData?: import('@deepseek-ai/dsh-session').JsonValue,
+  scanText: readonly string[] = [],
 ) {
   const active = card.lorebook === undefined
     ? { beforeCharacter: [], afterCharacter: [] }
-    : activateLorebook(card.lorebook, visibleDialogue(session, pendingMessages))
+    : activateLorebook(card.lorebook, [...visibleDialogue(session, pendingMessages), ...scanText])
   return {
     beforeCharacter: active.beforeCharacter.map(value => substituteMvuMacros(value, statData)),
     afterCharacter: active.afterCharacter.map(value => substituteMvuMacros(value, statData)),

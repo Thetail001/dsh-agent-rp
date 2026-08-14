@@ -15,6 +15,8 @@ import { renderContextSnapshot, renderPrompt } from '@deepseek-ai/dsh-system-pro
 import { parse as parseYaml } from 'yaml'
 import type { AgentRpHttpServer } from './host-http.ts'
 import { readActiveSessionPreset } from './import/session-preset.ts'
+import { injectSillyTavernInChatPrompts } from './preset-prompt.ts'
+import { readTavernHelperState, tavernInjectedInChatPrompts } from './tavern-helper.ts'
 import {
   TAVERN_GENERATION_PATH,
   TAVERN_PROMPT_PREVIEW_PATH,
@@ -332,7 +334,7 @@ function modelMessageText(message: Message): string {
 function openAiPrompts(input: { readonly system?: string; readonly messages: readonly Message[] }): readonly TavernPrompt[] {
   return [
     ...(input.system === undefined ? [] : [{ role: 'system' as const, content: input.system }]),
-    ...input.messages.flatMap(message => message.role === 'user' || message.role === 'assistant'
+    ...input.messages.flatMap(message => message.role === 'system' || message.role === 'user' || message.role === 'assistant'
       ? [{ role: message.role, content: modelMessageText(message) }]
       : []),
   ]
@@ -541,8 +543,12 @@ async function generationInput(
     renderContextSnapshot(assembly),
     dialogueHistory(agent, config),
   )
-  if (input.messages.length === 0) throw new Error('酒馆脚本没有提供可生成的提示词')
-  return input
+  const messages = injectSillyTavernInChatPrompts(
+    input.messages,
+    tavernInjectedInChatPrompts(readTavernHelperState(agent.session.events)),
+  )
+  if (messages.length === 0) throw new Error('酒馆脚本没有提供可生成的提示词')
+  return { ...input, messages }
 }
 
 async function generate(ctx: Context, agent: Agent, mode: 'preset' | 'raw', config: ParsedGenerationConfig, signal: AbortSignal): Promise<string> {
