@@ -83,6 +83,39 @@ test('imports V1 and preserves unknown JSON fields', () => {
   assert.deepEqual(card.alternateGreetings, [])
 })
 
+test('imports the complete Tavern Helper script tree and initial variables', () => {
+  const card = parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: v2Data({
+      extensions: {
+        tavern_helper: {
+          variables: { theme: 'night' },
+          scripts: [{
+            type: 'script', id: 'inline', name: '状态同步', enabled: true,
+            content: 'insertOrAssignVariables({ ready: true })', info: 'fixture', data: { runs: 1 },
+            button: { enabled: true, buttons: [{ name: '刷新', visible: true }] },
+          }, {
+            type: 'folder', name: '关闭目录', enabled: false, scripts: [{
+              type: 'script', id: 'nested', name: '不运行', enabled: true, content: 'throw new Error()',
+            }],
+          }],
+        },
+      },
+    }),
+  }))
+
+  assert.deepEqual(card.frontend.tavernHelperScriptNames, ['状态同步'])
+  assert.deepEqual(card.frontend.tavernHelperVariables, { theme: 'night' })
+  assert.deepEqual(card.frontend.tavernHelperScripts, [{
+    id: 'inline', name: '状态同步', content: 'insertOrAssignVariables({ ready: true })', info: 'fixture',
+    enabled: true, buttonEnabled: true, buttons: [{ name: '刷新', visible: true }], data: { runs: 1 },
+  }, {
+    id: 'nested', name: '不运行', content: 'throw new Error()', info: '', enabled: false,
+    buttonEnabled: true, buttons: [], data: {},
+  }])
+})
+
 test('imports V2 lorebook and activates constant, primary, and selective entries', () => {
   const raw = {
     spec: 'chara_card_v2',

@@ -112,6 +112,8 @@ function importedId(preset: ImportedSillyTavernPreset): string {
     generation: preset.generation,
     formats: preset.formats,
     regexScripts: preset.regexScripts,
+    tavernHelperScripts: preset.tavernHelperScripts,
+    tavernHelperVariables: preset.tavernHelperVariables,
     extensionSummary: preset.extensionSummary,
     extensionCompatibility: preset.extensionCompatibility,
   })).digest('hex')

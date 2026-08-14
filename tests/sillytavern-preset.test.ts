@@ -63,7 +63,13 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
           })),
         },
       },
-      tavern_helper: { scripts: [{ enabled: true }, { enabled: false }] },
+      tavern_helper: {
+        variables: { presetTheme: 'fox' },
+        scripts: [
+          { id: 'preset-on', name: '预设脚本', content: 'eventOn("app_ready", () => {})', enabled: true, data: { runs: 1 } },
+          { id: 'preset-off', name: '关闭脚本', content: '', enabled: false },
+        ],
+      },
     },
   }), 'V18.json')
 
@@ -94,6 +100,12 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
   })
   assert.equal(preset.regexScripts.length, 40)
   assert.equal(preset.regexScripts.filter(script => !script.disabled).length, 22)
+  assert.deepEqual(preset.tavernHelperVariables, { presetTheme: 'fox' })
+  assert.equal(preset.tavernHelperScripts?.length, 2)
+  assert.deepEqual(preset.tavernHelperScripts?.[0], {
+    id: 'preset-on', name: '预设脚本', content: 'eventOn("app_ready", () => {})', info: '', enabled: true,
+    buttonEnabled: true, buttons: [], data: { runs: 1 },
+  })
   assert.equal(preset.prompts.at(-1)?.content, `内容 ${moduleCount - 1}`)
 })
 

@@ -26,7 +26,7 @@ const base: ImportedRegexScript = {
 
 const character = {
   name: '白露',
-  frontend: { regexScripts: [base], tavernHelperScriptNames: [] },
+  frontend: { regexScripts: [base], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {} },
 }
 
 test('runs preset scripts before character scripts for the selected view', () => {
@@ -44,7 +44,9 @@ test('supports raw and escaped macro substitution in the find expression', () =>
   const source = '宝宝.(白露)'
   const raw = [{ ...base, findRegex: String.raw`/{{user}}\.\({{char}}\)/gu`, replaceString: 'raw', substituteRegex: 1 }]
   const escaped = [{ ...base, findRegex: '/{{user}}{{char}}/gu', replaceString: 'escaped', substituteRegex: 2 }]
-  const specialCharacter = { name: '(白露)', frontend: { regexScripts: [], tavernHelperScriptNames: [] } }
+  const specialCharacter = { name: '(白露)', frontend: {
+    regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {},
+  } }
   assert.equal(renderCharacterDisplay(source, character, AI_OUTPUT_PLACEMENT, 0, '宝宝', raw), 'raw')
   assert.equal(renderCharacterDisplay('宝.宝(白露)', specialCharacter, AI_OUTPUT_PLACEMENT, 0, '宝.宝', escaped), 'escaped')
 })

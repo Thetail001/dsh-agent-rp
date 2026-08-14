@@ -35,10 +35,31 @@ export interface ImportedRegexScript {
   readonly maxDepth: number | null
 }
 
+/** One Tavern Helper button retained with its owning script. */
+export interface ImportedTavernHelperButton {
+  readonly name: string
+  readonly visible: boolean
+}
+
+/** One flattened Tavern Helper script retained from a card script tree. */
+export interface ImportedTavernHelperScript {
+  readonly id: string
+  readonly name: string
+  readonly content: string
+  readonly info: string
+  /** Effective enablement after applying all parent-folder switches. */
+  readonly enabled: boolean
+  readonly buttonEnabled: boolean
+  readonly buttons: readonly ImportedTavernHelperButton[]
+  readonly data: Readonly<Record<string, JsonValue>>
+}
+
 /** Character-owned lightweight frontend resources preserved at import. */
 export interface ImportedCharacterFrontend {
   readonly regexScripts: readonly ImportedRegexScript[]
   readonly tavernHelperScriptNames: readonly string[]
+  readonly tavernHelperScripts: readonly ImportedTavernHelperScript[]
+  readonly tavernHelperVariables: Readonly<Record<string, JsonValue>>
 }
 
 /** One Character Card V3 asset declaration retained independently of its transport. */

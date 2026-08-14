@@ -8,7 +8,11 @@ import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import { parseWorldInfoImportMeta, type WorldInfoImportMeta } from './import/session-world-info.ts'
 import { parseWorldInfoJson } from './import/world-info.ts'
 import type { ActiveSessionPreset, PresetImportMeta } from './import/session-preset.ts'
-import { presetRegexScripts, type ImportedSillyTavernPreset } from './import/sillytavern-preset.ts'
+import {
+  presetRegexScripts,
+  presetTavernHelperScripts,
+  type ImportedSillyTavernPreset,
+} from './import/sillytavern-preset.ts'
 import type { AgentRpProjection } from './projection-types.ts'
 import { applyMvuReply, readCurrentMvuState } from './mvu.ts'
 import { canEditPresetPrompt, canTogglePresetPrompt } from './preset-configuration.ts'
@@ -28,6 +32,12 @@ import type { WorldInfoConfigurationState } from './world-info-configuration-typ
 import { decodeSillyTavernChatCommandRecord, type SillyTavernChatCommandRecord } from './sillytavern-chat-protocol.ts'
 import { decodeWorldInfoLibraryImport } from './world-info-library-protocol.ts'
 import { decodePersonaCommandRecord } from './persona-command-protocol.ts'
+import {
+  decodeTavernHelperState,
+  initializeTavernHelperPresetState,
+  initializeTavernHelperState,
+  type TavernHelperState,
+} from './tavern-helper.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -58,6 +68,7 @@ const projectionSchema = {
       || record.worldInfoCount < 0
       || typeof record.worldInfo !== 'object' || record.worldInfo === null
       || (record.frontend !== undefined && (typeof record.frontend !== 'object' || record.frontend === null))
+      || (record.tavern !== undefined && (typeof record.tavern !== 'object' || record.tavern === null))
       || (record.preset !== undefined && (typeof record.preset !== 'object' || record.preset === null))
       || !Array.isArray(record.presetLibrary)
       || (record.lastRequest !== undefined && (typeof record.lastRequest !== 'object' || record.lastRequest === null))
@@ -74,7 +85,11 @@ interface AgentRpProjectionState {
   readonly cardLorebook?: SessionLorebookSource
   readonly standaloneWorldInfos: Readonly<Record<string, SessionLorebookSource>>
   readonly worldInfoConfiguration: WorldInfoConfigurationState
-  readonly surface: readonly { readonly seq: number; readonly text?: string }[]
+  readonly surface: readonly {
+    readonly seq: number
+    readonly text?: string
+    readonly role?: 'user' | 'assistant'
+  }[]
   readonly calls: Readonly<Record<string, ImportCall>>
   readonly personaCommands: Readonly<Record<string, number>>
   readonly mvu?: AgentRpProjection['mvu']
@@ -84,6 +99,7 @@ interface AgentRpProjectionState {
   readonly lastRequest?: AgentRpProjection['lastRequest']
   readonly generations: Readonly<Record<string, GenerationStateRecord>>
   readonly currentReplySeq?: number
+  readonly tavern?: TavernHelperState
 }
 
 const INITIAL_CHARACTER: AgentRpProjectionState['character'] = {
@@ -125,6 +141,20 @@ function cardProjection(
   }
 }
 
+function mvuAfterTavernMutation(
+  current: AgentRpProjectionState['mvu'],
+  tavern: TavernHelperState,
+): AgentRpProjectionState['mvu'] {
+  const scope = tavern.lastMutation?.scope
+  if (scope !== 'message' && scope !== 'chat') return current
+  const statData = tavern.scopes[scope].stat_data
+  if (statData === undefined || jsonObject(statData) === undefined) return current
+  return {
+    statData,
+    updateCount: (current?.updateCount ?? 0) + 1,
+  }
+}
+
 function cardLorebookSource(meta: CharacterImportMeta): SessionLorebookSource | undefined {
   const card = parseCharacterCardJson(JSON.stringify(meta.raw))
   if (card.lorebook === undefined) return undefined
@@ -161,13 +191,24 @@ function surfaceText(event: SessionEvent): string | undefined {
   return undefined
 }
 
+function surfaceRole(event: SessionEvent): 'user' | 'assistant' | undefined {
+  if (event.type === 'user/message' && (event.data.source.kind === 'user' || event.data.source.kind === 'model')) return 'user'
+  if (event.type === 'assistant/message' && event.data.message.source.kind === 'model') return 'assistant'
+  return undefined
+}
+
 function applySurface(
   surface: AgentRpProjectionState['surface'],
   event: SessionEvent,
 ): AgentRpProjectionState['surface'] {
   if (event.type !== 'user/message' && event.type !== 'assistant/message' && event.type !== 'tool/result') return surface
   const text = surfaceText(event)
-  const node = text === undefined ? { seq: event.seq } : { seq: event.seq, text }
+  const role = surfaceRole(event)
+  const node = {
+    seq: event.seq,
+    ...(text === undefined ? {} : { text }),
+    ...(role === undefined ? {} : { role }),
+  }
   const operation = event.surfaceOp
   if (operation === undefined) return surface
   if (operation === 'append') return [...surface, node]
@@ -281,6 +322,7 @@ function presetProjection(
   const importedPromptsById = new Map(importedPreset.prompts.map(prompt => [prompt.identifier, prompt]))
   const importedOrderById = new Map(importedPreset.order.map((entry, position) => [entry.identifier, { ...entry, position }]))
   const regexScripts = presetRegexScripts(preset)
+  const helperScripts = presetTavernHelperScripts(preset)
   const compatibility = preset.extensionCompatibility
   const appliedGeneration = [
     generation.temperature === undefined ? undefined : 'temperature',
@@ -334,8 +376,8 @@ function presetProjection(
     },
     compatibility?.tavernHelperScriptCount === undefined ? undefined : {
       name: 'Tavern Helper 脚本',
-      detail: `${compatibility.enabledTavernHelperScriptCount ?? 0}/${compatibility.tavernHelperScriptCount} 个在原预设中开启；依赖酒馆页面 API 的脚本不会执行`,
-      state: (compatibility.enabledTavernHelperScriptCount ?? 0) === 0 ? 'inactive' as const : 'unsupported' as const,
+      detail: `${helperScripts.filter(script => script.enabled).length}/${helperScripts.length} 个由隔离运行时接管`,
+      state: helperScripts.some(script => script.enabled) ? 'active' as const : 'inactive' as const,
     },
       ].filter((value): value is NonNullable<typeof value> => value !== undefined)
   return {
@@ -432,6 +474,8 @@ function presetProjection(
     activeDisplayRegexCount: regexScripts.filter(script => !script.disabled && script.markdownOnly).length,
     preservedPromptRegexCount: regexScripts.filter(script => !script.disabled && script.promptOnly).length,
     regexScripts: regexScripts.map((script, index) => ({ ...script, index })),
+    tavernHelperScripts: helperScripts,
+    tavernHelperVariables: preset.tavernHelperVariables ?? {},
     appliedGeneration,
     preservedGeneration,
     omittedExtensions: [
@@ -499,6 +543,21 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         } catch {
           return { ...withSurface, personaCommands }
         }
+      }
+    }
+    if (event.type === 'command/done' && event.data.kind === 'success') {
+      try {
+        const tavern = decodeTavernHelperState(event.data.text)
+        if (tavern !== undefined) {
+          const mvu = mvuAfterTavernMutation(withSurface.mvu, tavern)
+          return {
+            ...withSurface,
+            tavern,
+            ...(mvu === undefined ? {} : { mvu }),
+          }
+        }
+      } catch {
+        return withSurface
       }
     }
     const generation = event.type === 'command/done' && event.data.kind === 'success'
@@ -606,6 +665,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
           cardWorldInfoCount: projected.lorebookEntries,
           ...(cardLorebook === undefined ? {} : { cardLorebook }),
           mvu: readCurrentMvuState(card, []),
+          tavern: initializeTavernHelperState(card.frontend, launch.meta.result.sourceAttachmentId, withChat.tavern),
         }
       }
     }
@@ -625,6 +685,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         cardWorldInfoCount: projected.lorebookEntries,
         ...(cardLorebook === undefined ? {} : { cardLorebook }),
         mvu: readCurrentMvuState(card, []) ,
+        tavern: initializeTavernHelperState(card.frontend, event.data.meta.result.sourceAttachmentId, withSurface.tavern),
       }
     }
     if (event.type === 'command/done' && event.data.kind === 'success') {
@@ -650,6 +711,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
           cardWorldInfoCount: projected.lorebookEntries,
           ...(cardLorebook === undefined ? {} : { cardLorebook }),
           mvu: readCurrentMvuState(card, []),
+          tavern: initializeTavernHelperState(card.frontend, launch.meta.result.sourceAttachmentId, withSurface.tavern),
         }
       }
     }
@@ -665,6 +727,14 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         ...withSurface,
         preset: presetProjection(event.data.result.name, event.data.preset, 0, event.data.preset, event.data.libraryId),
         presetState,
+        ...(withSurface.tavern === undefined ? {} : {
+          tavern: initializeTavernHelperPresetState(
+            withSurface.tavern,
+            presetTavernHelperScripts(event.data.preset),
+            event.data.preset.tavernHelperVariables ?? {},
+            event.data.result.sourceAttachmentId,
+          ),
+        }),
       }
     }
     if (event.type === 'command/done' && event.data.kind === 'success') {
@@ -697,6 +767,14 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
           presetLibrary: library.entries,
           preset: presetProjection(selected.name, selected.preset, 0, selected.preset, selected.libraryId),
           presetState,
+          ...(withSurface.tavern === undefined ? {} : {
+            tavern: initializeTavernHelperPresetState(
+              withSurface.tavern,
+              presetTavernHelperScripts(selected.preset),
+              selected.preset.tavernHelperVariables ?? {},
+              `library:${selected.libraryId}`,
+            ),
+          }),
         }
       }
       if (withSurface.preset === undefined || withSurface.presetState === undefined || library.linkedLibraryId === undefined) {
@@ -808,6 +886,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         cardWorldInfoCount: projected.lorebookEntries,
         ...(cardLorebook === undefined ? {} : { cardLorebook }),
         mvu: readCurrentMvuState(card, []),
+        tavern: initializeTavernHelperState(card.frontend, meta.result.sourceAttachmentId, withSurface.tavern),
       }
     }
     if (kind === 'preset') {
@@ -824,6 +903,14 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
               preset: meta.preset,
               revision: 0,
             },
+            ...(withSurface.tavern === undefined ? {} : {
+              tavern: initializeTavernHelperPresetState(
+                withSurface.tavern,
+                presetTavernHelperScripts(meta.preset),
+                meta.preset.tavernHelperVariables ?? {},
+                meta.result.sourceAttachmentId,
+              ),
+            }),
           }
     }
     const meta = parseWorldInfoMeta(event.data.meta)
@@ -855,6 +942,14 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
       versions: group.versions,
     })),
     ...(state.currentReplySeq === undefined ? {} : { currentReplySeq: state.currentReplySeq }),
+    ...(state.tavern === undefined ? {} : {
+      tavern: {
+        ...state.tavern,
+        messages: state.surface.flatMap(({ text, role }) => text === undefined || role === undefined
+          ? []
+          : [{ messageId: 0, role, text }]).map((message, messageId) => ({ ...message, messageId })),
+      },
+    }),
   }),
-  stateVersion: 6,
+  stateVersion: 7,
 }

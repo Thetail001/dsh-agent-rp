@@ -2,6 +2,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import type {
   ClientContext, SessionId, SessionSummary, WorkspaceView,
 } from '@deepseek-ai/dsh-client-runtime/client'
@@ -13,6 +14,14 @@ import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import { createRoot, type Root } from 'react-dom/client'
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
+import type { ImportedTavernHelperScript } from '../import/types.ts'
+import type { TavernHelperMutationRequest } from '../tavern-helper.ts'
+import {
+  BUILT_IN_TAVERN_SCRIPT_ORIGINS,
+  resolveTavernScriptSource,
+  tavernScriptFrameSource,
+  type TavernScriptSnapshot,
+} from './tavern-runtime.ts'
 import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
 import type { WorldInfoConfigurationRequest, WorldInfoEditableEntry } from '../world-info-configuration-types.ts'
 import { exportSillyTavernPresetJson } from '../preset-export.ts'
@@ -379,6 +388,34 @@ function useRoleplayExpression(sessionId: SessionId | undefined): RoleplayExpres
 }
 
 const roleplayPresetPreferenceKey = 'dsh.agent-rp.preset'
+const tavernScriptOriginsKey = 'dsh.agent-rp.tavern-script-origins'
+
+function normalizedTavernScriptOrigin(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && url.origin === value ? url.origin : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function readApprovedTavernScriptOrigins(): ReadonlySet<string> {
+  try {
+    const value = JSON.parse(localStorage.getItem(tavernScriptOriginsKey) ?? '[]') as unknown
+    if (!Array.isArray(value)) return new Set()
+    return new Set(value.flatMap(item => {
+      const origin = normalizedTavernScriptOrigin(item)
+      return origin === undefined ? [] : [origin]
+    }))
+  } catch {
+    return new Set()
+  }
+}
+
+function writeApprovedTavernScriptOrigins(origins: ReadonlySet<string>): void {
+  localStorage.setItem(tavernScriptOriginsKey, JSON.stringify([...origins].sort()))
+}
 
 function readRoleplayPresetPreference(): string {
   const value = localStorage.getItem(roleplayPresetPreferenceKey)
@@ -642,6 +679,7 @@ function characterCapabilitySummary(projection: AgentRpProjection): string {
   const parts = [
     projection.worldInfoCount > 0 ? `${projection.worldInfoCount} 条世界书` : undefined,
     (projection.frontend?.regexScripts.length ?? 0) > 0 ? '轻前端' : undefined,
+    (projection.frontend?.tavernHelperScriptNames.length ?? 0) > 0 ? '酒馆脚本' : undefined,
     projection.mvu === undefined ? undefined : '动态状态',
     projection.preset === undefined ? undefined : `预设 · ${projection.preset.enabledCount} 项启用`,
   ].filter((part): part is string => part !== undefined)
@@ -1695,8 +1733,9 @@ function RoleplayHeader({
           {projection.worldInfoCount > 0 && <span style={chipStyle}>{projection.worldInfoCount} 条世界书设定</span>}
           {(projection.frontend?.regexScripts.length ?? 0) > 0 && <span style={chipStyle}>轻前端 · {projection.frontend?.regexScripts.length} 条显示规则</span>}
           {(projection.frontend?.tavernHelperScriptNames.length ?? 0) > 0 && <span style={chipStyle}>
-            {projection.mvu === undefined ? 'MVU · 未初始化' : `MVU · 已接通${projection.mvu.updateCount === 0 ? '' : ` · ${projection.mvu.updateCount} 次更新`}`}
+            酒馆脚本 · {projection.frontend?.tavernHelperScriptNames.length} 个启用 · 隔离运行
           </span>}
+          {projection.mvu !== undefined && <span style={chipStyle}>MVU · 已接通{projection.mvu.updateCount === 0 ? '' : ` · ${projection.mvu.updateCount} 次更新`}</span>}
           {(characterDetail?.imageAssets.length ?? 0) > 0 && <span style={chipStyle}>
             卡片资源 · {characterDetail?.imageAssets.length} 张图片
           </span>}
@@ -3716,12 +3755,274 @@ function RoleplayStatusDialog({ characterName, source, onClose }: {
   </div>
 }
 
+type RunTavernMutation = (sessionId: SessionId, request: TavernHelperMutationRequest) => Promise<void>
+
+function tavernScriptSnapshot(
+  projection: AgentRpProjection,
+  script: ImportedTavernHelperScript,
+  approvedScriptOrigins: readonly string[],
+): TavernScriptSnapshot {
+  const state = projection.tavern
+  const message = {
+    ...(state?.scopes.message ?? {}),
+    ...(projection.mvu === undefined ? {} : { stat_data: projection.mvu.statData }),
+  }
+  return {
+    scriptId: script.id,
+    scriptName: script.name,
+    scriptInfo: script.info,
+    buttons: script.buttons,
+    characterName: projection.characterName,
+    ...(projection.userName === undefined ? {} : { userName: projection.userName }),
+    approvedScriptOrigins,
+    scopes: {
+      global: state?.scopes.global ?? {},
+      preset: state?.scopes.preset ?? {},
+      character: state?.scopes.character ?? projection.frontend?.tavernHelperVariables ?? {},
+      chat: state?.scopes.chat ?? {},
+      message,
+      script: state?.scripts[script.id] ?? script.data,
+    },
+    messages: state?.messages ?? [],
+  }
+}
+
+function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessionId }: {
+  readonly ctx: Context
+  readonly inputActions: ComposerDockProps['inputActions']
+  readonly projection: AgentRpProjection
+  readonly runMutation: RunTavernMutation
+  readonly sessionId: SessionId
+}) {
+  const scripts = [
+    ...(projection.preset?.tavernHelperScripts ?? []),
+    ...(projection.frontend?.tavernHelperScripts ?? []),
+  ].filter(script => script.enabled && script.content.trim() !== '')
+  const [approvedOrigins, setApprovedOrigins] = useState(readApprovedTavernScriptOrigins)
+  const scriptOrigins = [...new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...approvedOrigins])].sort()
+  const signature = `${scripts.map(script => `${script.id}\u0000${script.content}`).join('\u0001')}\u0002${scriptOrigins.join('\u0001')}`
+  const [frames, setFrames] = useState<readonly {
+    readonly script: ImportedTavernHelperScript
+    readonly source?: string
+    readonly srcDoc?: string
+    readonly error?: string
+  }[]>([])
+  const [readyScriptIds, setReadyScriptIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [runtimeErrors, setRuntimeErrors] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const [externalScriptRequests, setExternalScriptRequests] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const frameRefs = useRef(new Map<string, HTMLIFrameElement>())
+  const projectionRef = useRef(projection)
+  const mutationQueue = useRef(Promise.resolve())
+  projectionRef.current = projection
+  useEffect(() => {
+    const controller = new AbortController()
+    setFrames([])
+    setReadyScriptIds(new Set())
+    setRuntimeErrors(new Map())
+    setExternalScriptRequests(new Map())
+    void Promise.all(scripts.map(async script => {
+      try {
+        const source = await resolveTavernScriptSource(script.content, controller.signal)
+        return {
+          script,
+          source,
+          srcDoc: tavernScriptFrameSource(
+            script,
+            source,
+            tavernScriptSnapshot(projectionRef.current, script, scriptOrigins),
+          ),
+        }
+      } catch (reason: unknown) {
+        return { script, error: reason instanceof Error ? reason.message : String(reason) }
+      }
+    })).then(result => { if (!controller.signal.aborted) setFrames(result) })
+    return () => { controller.abort() }
+  }, [signature])
+  const syncFrame = (frame: HTMLIFrameElement, script: ImportedTavernHelperScript): void => {
+    const snapshot = tavernScriptSnapshot(projectionRef.current, script, scriptOrigins)
+    frame.contentWindow?.postMessage({
+      source: 'dsh-agent-rp-host', action: 'variables-sync',
+      scopes: snapshot.scopes, messages: snapshot.messages,
+    }, '*')
+  }
+  const broadcast = (message: object, except?: Window | null): void => {
+    for (const frame of frameRefs.current.values()) {
+      if (frame.contentWindow !== except) frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', ...message }, '*')
+    }
+  }
+  useEffect(() => {
+    for (const entry of frames) {
+      const frame = frameRefs.current.get(entry.script.id)
+      if (frame !== undefined) syncFrame(frame, entry.script)
+    }
+  }, [projection.mvu, projection.tavern])
+  const previousMvu = useRef<string>()
+  useEffect(() => {
+    const current = projection.mvu === undefined ? undefined : JSON.stringify({ stat_data: projection.mvu.statData })
+    const before = previousMvu.current
+    previousMvu.current = current
+    if (current === undefined || before === undefined || current === before) return
+    const currentValue = JSON.parse(current) as object
+    const beforeValue = JSON.parse(before) as object
+    broadcast({ action: 'event', eventType: 'mag_variable_update_ended', args: [currentValue, beforeValue] })
+    broadcast({ action: 'event', eventType: 'message_received', args: [projection.tavern?.messages.at(-1)?.messageId ?? 0, 'normal'] })
+    broadcast({ action: 'event', eventType: 'generation_ended', args: [projection.tavern?.messages.at(-1)?.messageId ?? 0] })
+  }, [projection.mvu])
+  useEffect(() => {
+    const bridge = (event: MessageEvent<unknown>): void => {
+      const entry = frames.find(candidate => frameRefs.current.get(candidate.script.id)?.contentWindow === event.source)
+      if (entry === undefined || typeof event.data !== 'object' || event.data === null) return
+      const message = event.data as {
+        readonly source?: unknown
+        readonly action?: unknown
+        readonly requestId?: unknown
+        readonly scope?: unknown
+        readonly variables?: unknown
+        readonly value?: unknown
+        readonly eventType?: unknown
+        readonly args?: unknown
+        readonly origin?: unknown
+      }
+      if (message.source !== 'dsh-agent-rp-tavern-script') return
+      if (message.action === 'ready') {
+        setReadyScriptIds(current => new Set(current).add(entry.script.id))
+        setRuntimeErrors(current => {
+          if (!current.has(entry.script.id)) return current
+          const next = new Map(current)
+          next.delete(entry.script.id)
+          return next
+        })
+        const frame = frameRefs.current.get(entry.script.id)
+        if (frame === undefined) return
+        syncFrame(frame, entry.script)
+        frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'app_ready', args: [] }, '*')
+        frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'chat_id_changed', args: ['dsh-agent-rp'] }, '*')
+        if (projectionRef.current.mvu !== undefined) {
+          frame.contentWindow?.postMessage({
+            source: 'dsh-agent-rp-host', action: 'event', eventType: 'mag_variable_initiailized',
+            args: [{ stat_data: projectionRef.current.mvu.statData }, 0],
+          }, '*')
+        }
+        return
+      }
+      if (message.action === 'runtime-error') {
+        const detail = String(message.value)
+        setRuntimeErrors(current => new Map(current).set(entry.script.id, detail))
+        ctx.logger.warn(`agent-rp: Tavern Helper script ${JSON.stringify(entry.script.name)} failed: ${detail}`)
+        return
+      }
+      if (message.action === 'external-script-request') {
+        const origin = normalizedTavernScriptOrigin(message.origin)
+        if (origin !== undefined && !approvedOrigins.has(origin)) {
+          setExternalScriptRequests(current => new Map(current).set(entry.script.id, origin))
+        }
+        return
+      }
+      if (message.action === 'event-emit' && typeof message.eventType === 'string' && Array.isArray(message.args)) {
+        broadcast({ action: 'event', eventType: message.eventType, args: message.args }, event.source as Window)
+        return
+      }
+      if (message.action === 'trigger-slash' && typeof message.value === 'string' && message.value.length <= 65_536) {
+        const draft = message.value.match(/^\/setinput\s+([\s\S]*)$/u)
+        if (draft?.[1] !== undefined) {
+          inputActions.setDraft(draft[1])
+          return
+        }
+        const send = message.value.match(/^\/send\s+([\s\S]*?)(?:\|\/trigger)?$/u)
+        if (send?.[1] !== undefined) {
+          const scoped = ctx.sessions.scope(sessionId)
+          const conversation = scoped?.get('conversation') as IConversation | undefined
+          void conversation?.send(send[1])
+        }
+        return
+      }
+      if (message.action !== 'variables-replace' || typeof message.requestId !== 'string'
+        || (message.scope !== 'global' && message.scope !== 'preset' && message.scope !== 'character'
+          && message.scope !== 'chat' && message.scope !== 'message' && message.scope !== 'script')
+        || typeof message.variables !== 'object' || message.variables === null || Array.isArray(message.variables)) return
+      const target = event.source as Window
+      const request: TavernHelperMutationRequest = {
+        format: 0,
+        scope: message.scope,
+        ...(message.scope === 'script' ? { scriptId: entry.script.id } : {}),
+        variables: message.variables as Record<string, JsonValue>,
+      }
+      mutationQueue.current = mutationQueue.current.then(() => runMutation(sessionId, request)).then(() => {
+        target.postMessage({ source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: true }, '*')
+      }).catch((reason: unknown) => {
+        target.postMessage({
+          source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: false,
+          error: reason instanceof Error ? reason.message : String(reason),
+        }, '*')
+      })
+    }
+    window.addEventListener('message', bridge)
+    return () => { window.removeEventListener('message', bridge) }
+  }, [frames, inputActions, runMutation, sessionId])
+  if (scripts.length === 0) return null
+  const failures = frames.flatMap(entry => {
+    const error = entry.error ?? runtimeErrors.get(entry.script.id)
+    return error === undefined ? [] : [{ script: entry.script, error }]
+  })
+  const buttons = scripts.flatMap(script => script.buttonEnabled
+    ? script.buttons.filter(button => button.visible).map(button => ({ script, button }))
+    : [])
+  return <>
+    <div aria-hidden="true" style={{
+      height: '1px', left: '-10000px', opacity: 0, overflow: 'hidden', pointerEvents: 'none',
+      position: 'fixed', top: 0, width: '1px',
+    }}>
+      {frames.flatMap(entry => entry.source === undefined || entry.srcDoc === undefined ? [] : [<iframe
+        key={entry.script.id}
+        data-agent-rp-tavern-script={entry.script.id}
+        sandbox="allow-scripts"
+        srcDoc={entry.srcDoc}
+        style={{ border: 0, height: '1px', width: '1px' }}
+        ref={frame => {
+          if (frame === null) frameRefs.current.delete(entry.script.id)
+          else frameRefs.current.set(entry.script.id, frame)
+        }}
+      />])}
+    </div>
+    {buttons.map(({ script, button }) => <button type="button" key={`${script.id}:${button.name}`}
+      disabled={!readyScriptIds.has(script.id) || runtimeErrors.has(script.id)}
+      title={`${script.name} · ${button.name}`} onClick={() => {
+        frameRefs.current.get(script.id)?.contentWindow?.postMessage({
+          source: 'dsh-agent-rp-host', action: 'event', eventType: `${script.id}_${button.name}`, args: [],
+        }, '*')
+      }} style={{
+        background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '7px',
+        color: 'inherit', cursor: readyScriptIds.has(script.id) ? 'pointer' : 'wait', font: 'inherit',
+        fontSize: '11px', opacity: readyScriptIds.has(script.id) ? .72 : .4, padding: '3px 7px',
+      }}>{button.name}</button>)}
+    {[...externalScriptRequests].map(([scriptId, origin]) => <button type="button" key={`${scriptId}:${origin}`}
+      title={`允许隔离脚本从 ${origin} 加载 JavaScript`} onClick={() => {
+        const next = new Set(approvedOrigins)
+        next.add(origin)
+        writeApprovedTavernScriptOrigins(next)
+        setApprovedOrigins(next)
+      }} style={{
+        background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px',
+        color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .78, padding: '3px 7px',
+      }}>允许 {new URL(origin).hostname}</button>)}
+    {(readyScriptIds.size < scripts.length || failures.length > 0) && <span
+      title={failures.length === 0 ? '正在启动酒馆脚本' : failures.map(entry => `${entry.script.name}：${entry.error}`).join('\n')}
+      style={{
+      color: 'var(--dsw-alias-state-warning, #d5a64c)', fontSize: '11px', opacity: .72,
+    }}>脚本 {readyScriptIds.size}/{scripts.length}</span>}
+  </>
+}
+
 const chipStyle = {
   background: `color-mix(in srgb, ${color} 10%, transparent)`, borderRadius: '999px',
   color: 'inherit', fontSize: '11px', opacity: 0.76, padding: '5px 9px',
 } as const
 
-function roleplayComposerDockComponent(ctx: Context, runImageGeneration: RunImageGeneration): (props: ComposerDockProps) => JSX.Element | null {
+function roleplayComposerDockComponent(
+  ctx: Context,
+  runImageGeneration: RunImageGeneration,
+  runTavernMutation: RunTavernMutation,
+): (props: ComposerDockProps) => JSX.Element | null {
   return function RoleplayComposerDock({
     inputActions, sessionId, useProjection, useSessions, useSession,
   }: ComposerDockProps) {
@@ -3972,7 +4273,9 @@ function roleplayComposerDockComponent(ctx: Context, runImageGeneration: RunImag
           if (selected !== undefined && original !== null) {
             const rendered = renderCharacterDisplay(selected.text.replaceAll(statusPlaceholder, ''), {
               name: projection.characterName,
-              frontend: projection.frontend ?? { regexScripts: [], tavernHelperScriptNames: [] },
+              frontend: projection.frontend ?? {
+                regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {},
+              },
             }, AI_OUTPUT_PLACEMENT, 0, projection.userName, projection.preset?.regexScripts)
             const segments = splitCharacterDisplay(rendered)
             mountRenderedDisplay(item, original, segments)
@@ -4042,6 +4345,8 @@ function roleplayComposerDockComponent(ctx: Context, runImageGeneration: RunImag
   }, [chat, characterDetail, projection, viewMode])
   if (projection === undefined) return null
   return <div ref={rootRef} data-agent-rp-status style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
+    <TavernScriptRuntime ctx={ctx} inputActions={inputActions} projection={projection}
+      runMutation={runTavernMutation} sessionId={sessionId} />
     <button type="button" aria-label="生成聊天插图" title="生成聊天插图" onClick={() => { setDrawOpen(true) }} style={{
       alignItems: 'center', background: 'transparent', border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer',
       display: 'inline-flex', flex: '0 0 auto', font: 'inherit', fontSize: '11px', gap: '4px', opacity: .62, padding: '3px 7px',
@@ -4497,6 +4802,14 @@ export function apply(ctx: ClientContext): void {
     })
     return jobId
   }
+  const runTavernMutation: RunTavernMutation = async (sessionId, request) => {
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const response = await session.command(`/rp-tavern-variables ${JSON.stringify(request)}`)
+    if (!response.ok) throw new Error(response.error.message)
+    if (!response.value.matched) throw new Error('当前 Host 未启用酒馆脚本变量桥')
+  }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
   }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
@@ -4509,6 +4822,9 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left', id: 'agent-rp-blank-launcher', order: -100,
   }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-tavern-variables',
+  }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-character-library',
   }, () => null))
@@ -4546,7 +4862,7 @@ export function apply(ctx: ClientContext): void {
   }, props => <GenerationTail {...props} runGeneration={runGeneration} runImageGeneration={runImageGeneration} />))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
-  }, roleplayComposerDockComponent(ctx, runImageGeneration)))
+  }, roleplayComposerDockComponent(ctx, runImageGeneration, runTavernMutation)))
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock', id: 'agent-rp-sillytavern-import-hint', order: -10,
   }, importHintComponent(ctx, migrateSillyTavernDraft, listPresets)))

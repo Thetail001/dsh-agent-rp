@@ -19,7 +19,7 @@ const card: ImportedCharacterCard = {
   alternateGreetings: [],
   systemPrompt: '',
   postHistoryInstructions: '',
-  frontend: { regexScripts: [], tavernHelperScriptNames: [] },
+  frontend: { regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {} },
   degradations: [],
   raw: {},
 }

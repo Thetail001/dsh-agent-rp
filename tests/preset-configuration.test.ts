@@ -97,7 +97,7 @@ test('adds, runs, edits, and deletes one session-owned module', () => {
     card: {
       format: 0, version: 2, specVersion: '2.0', name: '角色', description: '', personality: '', scenario: '',
       firstMessage: '', messageExample: '', alternateGreetings: [], systemPrompt: '', postHistoryInstructions: '',
-      frontend: { regexScripts: [], tavernHelperScriptNames: [] }, degradations: [], raw: {},
+      frontend: { regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {} }, degradations: [], raw: {},
     },
     worldInfoBefore: [], worldInfoAfter: [], session: Session.create(SessionId('custom-preset-prompt')), pendingMessages: [],
   }).system, /SillyTavern user prompt · 自定义.*只在本会话使用/su)
@@ -170,7 +170,7 @@ test('replays the latest session configuration and rejects stale editor revision
     card: {
       format: 0, version: 2, specVersion: '2.0', name: '角色', description: '', personality: '', scenario: '',
       firstMessage: '', messageExample: '', alternateGreetings: [], systemPrompt: '', postHistoryInstructions: '',
-      frontend: { regexScripts: [], tavernHelperScriptNames: [] }, degradations: [], raw: {},
+      frontend: { regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {} }, degradations: [], raw: {},
     },
     worldInfoBefore: [], worldInfoAfter: [], session: Session.create(SessionId('configured-preset-prompt')), pendingMessages: [],
   })

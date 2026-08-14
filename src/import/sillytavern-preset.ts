@@ -2,7 +2,8 @@
 
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { parseRegexScript } from './regex-script.ts'
-import type { ImportedRegexScript } from './types.ts'
+import { parseTavernHelperScripts, tavernHelperVariables } from './tavern-helper.ts'
+import type { ImportedRegexScript, ImportedTavernHelperScript } from './types.ts'
 
 /** Role assigned to one Prompt Manager entry. */
 export type SillyTavernPresetRole = 'system' | 'user' | 'assistant'
@@ -65,6 +66,10 @@ export interface ImportedSillyTavernPreset {
   }
   /** Preset-scoped scripts executed before character-scoped scripts. */
   readonly regexScripts: readonly ImportedRegexScript[]
+  /** Preset-scoped Tavern Helper scripts executed before character scripts. */
+  readonly tavernHelperScripts?: readonly ImportedTavernHelperScript[]
+  /** Initial values for the Tavern Helper preset variable namespace. */
+  readonly tavernHelperVariables?: Readonly<Record<string, JsonValue>>
   readonly extensionSummary: {
     readonly regexScriptCount: number
     readonly hasSPreset: boolean
@@ -76,6 +81,11 @@ export interface ImportedSillyTavernPreset {
 /** Read preset scripts from the current normalized shape or a pre-regex session snapshot. */
 export function presetRegexScripts(preset: ImportedSillyTavernPreset): readonly ImportedRegexScript[] {
   return preset.regexScripts ?? []
+}
+
+/** Read executable Tavern Helper scripts from current or older preset snapshots. */
+export function presetTavernHelperScripts(preset: ImportedSillyTavernPreset): readonly ImportedTavernHelperScript[] {
+  return preset.tavernHelperScripts ?? []
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -196,6 +206,13 @@ export function parseSillyTavernPresetJson(source: string, fileName = 'SillyTave
         if (!Array.isArray(rawRegex)) throw new Error('extensions.regex_scripts must be an array')
         return rawRegex.map((value, index) => parseRegexScript(value as JsonValue, `extensions.regex_scripts[${index}]`))
       })()
+  const helper = optionalObject(extensions.tavern_helper)
+  const helperScripts = helper?.scripts === undefined
+    ? []
+    : (() => {
+        if (!Array.isArray(helper.scripts)) throw new Error('extensions.tavern_helper.scripts must be an array')
+        return parseTavernHelperScripts(helper.scripts, 'extensions.tavern_helper.scripts')
+      })()
   const compatibility = extensionCompatibility(extensions, rawRegex)
   return {
     format: 0,
@@ -220,6 +237,8 @@ export function parseSillyTavernPresetJson(source: string, fileName = 'SillyTave
       personality: text(record.personality_format, '{{personality}}'),
     },
     regexScripts,
+    tavernHelperScripts: helperScripts,
+    tavernHelperVariables: tavernHelperVariables(helper?.variables),
     extensionSummary: {
       regexScriptCount: regexScripts.length,
       hasSPreset: extensions.SPreset !== undefined && extensions.SPreset !== null,

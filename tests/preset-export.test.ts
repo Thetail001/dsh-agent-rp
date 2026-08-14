@@ -15,7 +15,14 @@ test('exports the supported current preset as a SillyTavern-compatible copy', ()
     personality_format: '<personality>{{personality}}</personality>',
     extensions: {
       SPreset: { unsupported: true },
-      tavern_helper: { unsupported: true },
+      tavern_helper: {
+        variables: { tone: 'soft' },
+        scripts: [{
+          type: 'script', id: 'preset-script', name: '状态', content: 'eventOn("app_ready", () => {})',
+          info: '同步状态', enabled: true, button: { enabled: true, buttons: [{ name: '刷新', visible: true }] },
+          data: { runs: 1 },
+        }],
+      },
       regex_scripts: [{
         scriptName: '显示', findRegex: '/x/gu', replaceString: 'y', trimStrings: [' '], placement: [2],
         disabled: false, markdownOnly: true, promptOnly: false, runOnEdit: true, substituteRegex: 2,
@@ -32,5 +39,7 @@ test('exports the supported current preset as a SillyTavern-compatible copy', ()
   assert.deepEqual(replayed.generation, source.generation)
   assert.deepEqual(replayed.formats, source.formats)
   assert.deepEqual(replayed.regexScripts, source.regexScripts)
-  assert.deepEqual(Object.keys(raw.extensions), ['regex_scripts'])
+  assert.deepEqual(replayed.tavernHelperScripts, source.tavernHelperScripts)
+  assert.deepEqual(replayed.tavernHelperVariables, source.tavernHelperVariables)
+  assert.deepEqual(Object.keys(raw.extensions), ['regex_scripts', 'tavern_helper'])
 })

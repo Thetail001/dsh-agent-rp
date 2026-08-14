@@ -11,6 +11,7 @@ import type {
   ImportedLorebookEntry,
 } from './types.ts'
 import { parseRegexScript } from './regex-script.ts'
+import { parseTavernHelperScripts, tavernHelperVariables } from './tavern-helper.ts'
 
 /** Maximum decoded JSON accepted from one card transport. */
 export const MAX_CHARACTER_CARD_JSON_BYTES = 2 * 1024 * 1024
@@ -78,16 +79,18 @@ function parseFrontend(data: JsonObject): ImportedCharacterFrontend {
     return rawRegex.map((value, index) => parseRegexScript(value, `data.extensions.regex_scripts[${index}]`))
   })()
   const helper = extensions?.tavern_helper
-  const helperScripts = helper === undefined ? [] : (() => {
-    const root = object(helper, 'data.extensions.tavern_helper')
-    if (root.scripts === undefined) return []
-    if (!Array.isArray(root.scripts)) throw new Error('data.extensions.tavern_helper.scripts must be an array')
-    return root.scripts.flatMap((value, index) => {
-      const script = object(value, `data.extensions.tavern_helper.scripts[${index}]`)
-      return script.enabled !== false && typeof script.name === 'string' ? [script.name] : []
-    })
+  const parsedHelper = helper === undefined ? undefined : object(helper, 'data.extensions.tavern_helper')
+  const helperScripts = parsedHelper === undefined ? [] : (() => {
+    if (parsedHelper.scripts === undefined) return []
+    if (!Array.isArray(parsedHelper.scripts)) throw new Error('data.extensions.tavern_helper.scripts must be an array')
+    return parseTavernHelperScripts(parsedHelper.scripts, 'data.extensions.tavern_helper.scripts')
   })()
-  return { regexScripts, tavernHelperScriptNames: helperScripts }
+  return {
+    regexScripts,
+    tavernHelperScriptNames: helperScripts.filter(script => script.enabled).map(script => script.name),
+    tavernHelperScripts: helperScripts,
+    tavernHelperVariables: tavernHelperVariables(parsedHelper?.variables),
+  }
 }
 
 function parseAssets(value: JsonValue | undefined): ImportedCharacterAsset[] {

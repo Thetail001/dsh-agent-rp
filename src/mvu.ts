@@ -3,6 +3,7 @@
 import { snapshotJsonValue, type JsonValue, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { ImportedCharacterCard } from './import/types.ts'
+import { decodeTavernHelperState } from './tavern-helper.ts'
 
 interface JsonPatchOperation {
   readonly op: 'replace' | 'delta' | 'insert' | 'remove' | 'move'
@@ -45,6 +46,20 @@ export function readCurrentMvuState(
   let updateCount = 0
   let lastError: string | undefined
   for (const event of events) {
+    if (event.type === 'command/done' && event.data.kind === 'success') {
+      const scriptState = decodeTavernHelperState(event.data.text)
+      const scope = scriptState?.lastMutation?.scope
+      if (scriptState !== undefined && (scope === 'message' || scope === 'chat')) {
+        const variables = scriptState.scopes[scope]
+        const replacement = variables.stat_data
+        if (replacement !== undefined && jsonRecord(replacement) !== undefined) {
+          statData = replacement
+          updateCount += 1
+          lastError = undefined
+        }
+      }
+      continue
+    }
     if (event.type !== 'assistant/message') continue
     const text = event.data.message.content
       .flatMap(block => block.type === 'text' ? [block.text] : [])

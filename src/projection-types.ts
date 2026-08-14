@@ -4,6 +4,7 @@ import type { ImportedCharacterFrontend } from './import/types.ts'
 import type { ImportedRegexScript } from './import/types.ts'
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
+import type { TavernHelperState } from './tavern-helper.ts'
 
 /** Current character identity and migration summary for one Roleplay Session. */
 export interface AgentRpProjection {
@@ -69,6 +70,14 @@ export interface AgentRpProjection {
     readonly statData: JsonValue
     readonly updateCount: number
     readonly lastError?: string
+  }
+  /** Isolated Tavern Helper scripts, durable variables, and their visible transcript input. */
+  readonly tavern?: TavernHelperState & {
+    readonly messages: readonly {
+      readonly messageId: number
+      readonly role: 'user' | 'assistant'
+      readonly text: string
+    }[]
   }
   /** Persistent alternatives for Roleplay replies that have been regenerated or continued. */
   readonly generations: readonly {
@@ -141,6 +150,8 @@ export interface AgentRpProjection {
     readonly activeDisplayRegexCount: number
     readonly preservedPromptRegexCount: number
     readonly regexScripts: readonly (ImportedRegexScript & { readonly index: number })[]
+    readonly tavernHelperScripts: readonly import('./import/types.ts').ImportedTavernHelperScript[]
+    readonly tavernHelperVariables: Readonly<Record<string, JsonValue>>
     readonly appliedGeneration: readonly string[]
     readonly preservedGeneration: readonly string[]
     readonly omittedExtensions: readonly string[]

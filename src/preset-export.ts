@@ -1,12 +1,12 @@
 /** SillyTavern-compatible export of the preset behavior Agent RP currently owns. */
 
 import type { ImportedSillyTavernPreset, SillyTavernPresetPrompt } from './import/sillytavern-preset.ts'
-import type { ImportedRegexScript } from './import/types.ts'
+import type { ImportedRegexScript, ImportedTavernHelperScript } from './import/types.ts'
 
 /** Normalized fields that can be represented by a standalone SillyTavern preset. */
 export type ExportableSillyTavernPreset = Pick<
   ImportedSillyTavernPreset,
-  'prompts' | 'order' | 'generation' | 'formats' | 'regexScripts'
+  'prompts' | 'order' | 'generation' | 'formats' | 'regexScripts' | 'tavernHelperScripts' | 'tavernHelperVariables'
 >
 
 function prompt(prompt: SillyTavernPresetPrompt): Record<string, unknown> {
@@ -41,9 +41,28 @@ function regex(script: ImportedRegexScript): Record<string, unknown> {
   }
 }
 
+function helperScript(script: ImportedTavernHelperScript): Record<string, unknown> {
+  return {
+    type: 'script',
+    id: script.id,
+    name: script.name,
+    content: script.content,
+    info: script.info,
+    enabled: script.enabled,
+    button: {
+      enabled: script.buttonEnabled,
+      buttons: script.buttons.map(button => ({ ...button })),
+    },
+    data: structuredClone(script.data),
+  }
+}
+
 /** Serialize the supported current configuration as a new SillyTavern preset JSON file. */
 export function exportSillyTavernPresetJson(preset: ExportableSillyTavernPreset): string {
   const generation = preset.generation
+  const helperScripts = preset.tavernHelperScripts ?? []
+  const helperVariables = preset.tavernHelperVariables ?? {}
+  const hasHelper = helperScripts.length > 0 || Object.keys(helperVariables).length > 0
   return `${JSON.stringify({
     prompts: preset.prompts.map(prompt),
     prompt_order: [{ character_id: 100001, order: preset.order.map(entry => ({ ...entry })) }],
@@ -60,6 +79,14 @@ export function exportSillyTavernPresetJson(preset: ExportableSillyTavernPreset)
     wi_format: preset.formats.worldInfo,
     scenario_format: preset.formats.scenario,
     personality_format: preset.formats.personality,
-    extensions: { regex_scripts: preset.regexScripts.map(regex) },
+    extensions: {
+      regex_scripts: preset.regexScripts.map(regex),
+      ...(hasHelper ? {
+        tavern_helper: {
+          scripts: helperScripts.map(helperScript),
+          variables: structuredClone(helperVariables),
+        },
+      } : {}),
+    },
   }, null, 2)}\n`
 }
