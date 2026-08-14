@@ -15,7 +15,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
 import type { ImportedTavernHelperScript } from '../import/types.ts'
-import type { TavernHelperMutationRequest } from '../tavern-helper.ts'
+import type { TavernHelperMutationRequest, TavernWorldbookEntry } from '../tavern-helper.ts'
 import {
   TAVERN_GENERATION_PATH,
   type TavernGenerationRequest,
@@ -3781,6 +3781,38 @@ type RunTavernGeneration = (
   request: Pick<TavernGenerationRequest, 'mode' | 'config'>,
 ) => Promise<string>
 
+function tavernWorldbookEntry(
+  entry: AgentRpProjection['worldInfo']['books'][number]['entries'][number],
+): TavernWorldbookEntry {
+  const parsedUid = Number(entry.sourceId)
+  return {
+    uid: Number.isSafeInteger(parsedUid) && parsedUid >= 0 ? parsedUid : entry.index,
+    name: entry.name ?? entry.comment ?? '',
+    enabled: entry.enabled && !entry.deleted,
+    strategy: {
+      type: entry.constant ? 'constant' : 'selective',
+      keys: entry.keys,
+      keys_secondary: {
+        logic: entry.secondaryLogic === 'and-all' ? 'and_all' : entry.secondaryLogic === 'not-all' ? 'not_all'
+          : entry.secondaryLogic === 'not-any' ? 'not_any' : 'and_any',
+        keys: entry.secondaryKeys,
+      },
+      scan_depth: entry.scanDepth ?? 'same_as_global',
+    },
+    position: {
+      type: entry.position === 'before_char' ? 'before_character_definition' : 'after_character_definition',
+      role: 'system',
+      depth: 4,
+      order: entry.insertionOrder,
+    },
+    content: entry.content,
+    probability: 100,
+    recursion: { prevent_incoming: false, prevent_outgoing: false, delay_until: null },
+    effect: { sticky: null, cooldown: null, delay: null },
+    ...(entry.ignoreBudget ? { ignoreBudget: true } : {}),
+  }
+}
+
 function tavernScriptSnapshot(
   projection: AgentRpProjection,
   script: ImportedTavernHelperScript,
@@ -3791,6 +3823,15 @@ function tavernScriptSnapshot(
     ...(state?.scopes.message ?? {}),
     ...(projection.mvu === undefined ? {} : { stat_data: projection.mvu.statData }),
   }
+  const projectedWorldbooks = Object.fromEntries(projection.worldInfo.books.map(book => [
+    book.name,
+    book.entries.filter(entry => !entry.deleted).map(tavernWorldbookEntry),
+  ]))
+  const worldbooks = { ...projectedWorldbooks, ...state?.worldbooks }
+  for (const name of state?.deletedWorldbookNames ?? []) delete worldbooks[name]
+  const characterBook = projection.worldInfo.books.find(book => book.source === 'character')
+  const importedGlobalBooks = projection.worldInfo.books
+    .filter(book => book.source === 'standalone' && !book.id.startsWith('script:')).map(book => book.name)
   return {
     scriptId: script.id,
     scriptName: script.name,
@@ -3806,6 +3847,12 @@ function tavernScriptSnapshot(
       chat: state?.scopes.chat ?? {},
       message,
       script: state?.scripts[script.id] ?? script.data,
+    },
+    worldbooks,
+    worldbookBindings: {
+      global: state?.worldbookBindings?.global ?? importedGlobalBooks,
+      character: state?.worldbookBindings?.character ?? { primary: characterBook?.name ?? null, additional: [] },
+      chat: state?.worldbookBindings?.chat ?? null,
     },
     messages: (state?.messages ?? []).map((entry, index, entries) => ({
       ...entry,
@@ -3886,6 +3933,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
     frame.contentWindow?.postMessage({
       source: 'dsh-agent-rp-host', action: 'variables-sync',
       scopes: snapshot.scopes, messages: snapshot.messages,
+      worldbooks: snapshot.worldbooks, worldbookBindings: snapshot.worldbookBindings,
     }, '*')
   }
   const broadcast = (message: object, except?: Window | null): void => {
@@ -3948,6 +3996,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
         readonly visible?: unknown
         readonly mode?: unknown
         readonly config?: unknown
+        readonly request?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
@@ -4035,6 +4084,20 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
           const conversation = scoped?.get('conversation') as IConversation | undefined
           void conversation?.send(send[1])
         }
+        return
+      }
+      if (message.action === 'worldbook-mutate' && typeof message.requestId === 'string'
+        && typeof message.request === 'object' && message.request !== null && !Array.isArray(message.request)) {
+        const target = event.source as Window
+        const request = message.request as TavernHelperMutationRequest
+        mutationQueue.current = mutationQueue.current.then(() => runMutation(sessionId, request)).then(() => {
+          target.postMessage({ source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: true }, '*')
+        }).catch((reason: unknown) => {
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: false,
+            error: reason instanceof Error ? reason.message : String(reason),
+          }, '*')
+        })
         return
       }
       if (message.action !== 'variables-replace' || typeof message.requestId !== 'string'

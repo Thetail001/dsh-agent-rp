@@ -2,6 +2,7 @@
 
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ImportedLorebook, ImportedLorebookEntry } from './import/types.ts'
+import type { TavernHelperState, TavernWorldbookEntry } from './tavern-helper.ts'
 import type {
   WorldInfoConfigurationRequest,
   WorldInfoConfigurationState,
@@ -16,6 +17,85 @@ export interface SessionLorebookSource {
   readonly source: 'character' | 'standalone'
   readonly lorebook: ImportedLorebook
   readonly degradations: readonly string[]
+}
+
+function importedScriptEntry(entry: TavernWorldbookEntry): ImportedLorebookEntry {
+  const logic = entry.strategy.keys_secondary.logic
+  const before = entry.position.type === 'before_character_definition'
+    || entry.position.type === 'before_example_messages' || entry.position.type === 'before_author_note'
+  return {
+    sourceId: String(entry.uid),
+    ...(entry.name === '' ? {} : { name: entry.name }),
+    keys: entry.strategy.keys,
+    secondaryKeys: entry.strategy.keys_secondary.keys,
+    content: entry.content,
+    enabled: entry.enabled && entry.probability > 0,
+    insertionOrder: entry.position.order,
+    selective: entry.strategy.type === 'selective',
+    constant: entry.strategy.type === 'constant',
+    caseSensitive: false,
+    matchWholeWords: false,
+    secondaryLogic: logic === 'and_all' ? 'and-all' : logic === 'not_all' ? 'not-all'
+      : logic === 'not_any' ? 'not-any' : 'and-any',
+    ...(entry.strategy.scan_depth === 'same_as_global' ? {} : { scanDepth: entry.strategy.scan_depth }),
+    position: before ? 'before_char' : 'after_char',
+    priority: entry.position.order,
+    ignoreBudget: entry.ignoreBudget === true,
+    useRegex: false,
+    hasDecorators: false,
+  }
+}
+
+/** Convert one script-authored Tavern Helper book into the prompt runtime representation. */
+export function tavernWorldbookLorebook(name: string, entries: readonly TavernWorldbookEntry[]): ImportedLorebook {
+  return { name, recursiveScanning: false, entries: entries.map(importedScriptEntry) }
+}
+
+/** Apply script replacements, creations, and deletions without mutating imported sources. */
+export function withTavernWorldbooks(
+  sources: readonly SessionLorebookSource[],
+  state: TavernHelperState | undefined,
+): readonly SessionLorebookSource[] {
+  if (state === undefined) return sources
+  const deleted = new Set(state.deletedWorldbookNames ?? [])
+  const replacements = state.worldbooks ?? {}
+  const names = new Set<string>()
+  const result = sources.flatMap(source => {
+    names.add(source.name)
+    if (deleted.has(source.name)) return []
+    const entries = replacements[source.name]
+    return [{ ...source, ...(entries === undefined ? {} : { lorebook: tavernWorldbookLorebook(source.name, entries) }) }]
+  })
+  for (const [name, entries] of Object.entries(replacements)) {
+    if (names.has(name) || deleted.has(name)) continue
+    result.push({ id: `script:${name}`, name, source: 'standalone', lorebook: tavernWorldbookLorebook(name, entries), degradations: [] })
+  }
+  return result
+}
+
+/** Select prompt-active books from the bindings scripts have explicitly changed. */
+export function activeTavernWorldbooks(
+  sources: readonly SessionLorebookSource[],
+  state: TavernHelperState | undefined,
+): readonly SessionLorebookSource[] {
+  const bindings = state?.worldbookBindings
+  if (bindings === undefined) return sources.filter(source => !source.id.startsWith('script:'))
+  const active = new Set<string>()
+  if (bindings.character === undefined) {
+    for (const source of sources) if (source.source === 'character') active.add(source.name)
+  } else {
+    if (bindings.character.primary !== null) active.add(bindings.character.primary)
+    for (const name of bindings.character.additional) active.add(name)
+  }
+  if (bindings.global === undefined) {
+    for (const source of sources) {
+      if (source.source === 'standalone' && !source.id.startsWith('script:')) active.add(source.name)
+    }
+  } else {
+    for (const name of bindings.global) active.add(name)
+  }
+  if (bindings.chat !== undefined && bindings.chat !== null) active.add(bindings.chat)
+  return sources.filter(source => active.has(source.name))
 }
 
 const RESULT_PREFIX = 'agent-rp-world-info-v0:'

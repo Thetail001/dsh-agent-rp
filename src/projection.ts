@@ -26,6 +26,7 @@ import {
   configuredLorebook,
   decodeWorldInfoConfiguration,
   editableWorldInfoEntry,
+  withTavernWorldbooks,
   type SessionLorebookSource,
 } from './world-info-configuration-core.ts'
 import type { WorldInfoConfigurationState } from './world-info-configuration-types.ts'
@@ -223,10 +224,10 @@ function applySurface(
 }
 
 function worldInfoProjection(state: AgentRpProjectionState): AgentRpProjection['worldInfo'] {
-  const sources = [
+  const sources = withTavernWorldbooks([
     ...(state.cardLorebook === undefined ? [] : [state.cardLorebook]),
     ...Object.values(state.standaloneWorldInfos),
-  ]
+  ], state.tavern)
   const messages = state.surface.flatMap(node => node.text === undefined ? [] : [node.text])
   let activeCount = 0
   const books = sources.map(source => {
@@ -925,31 +926,33 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
           },
         }
   },
-  view: state => ({
-    ...state.character,
-    worldInfoCount: state.cardWorldInfoCount
-      + Object.values(state.standaloneWorldInfos).reduce((total, source) => total + source.lorebook.entries.length, 0),
-    worldInfo: worldInfoProjection(state),
-    ...(state.mvu === undefined ? {} : { mvu: state.mvu }),
-    ...(state.preset === undefined ? {} : { preset: state.preset }),
-    presetLibrary: state.presetLibrary,
-    ...(state.lastRequest === undefined ? {} : { lastRequest: state.lastRequest }),
-    generations: Object.values(state.generations).map(group => ({
-      groupId: group.groupId,
-      anchorSeq: group.anchorSeq,
-      selectedVersionSeq: group.selectedVersionSeq,
-      assistantSeqs: group.assistantSeqs,
-      versions: group.versions,
-    })),
-    ...(state.currentReplySeq === undefined ? {} : { currentReplySeq: state.currentReplySeq }),
-    ...(state.tavern === undefined ? {} : {
-      tavern: {
-        ...state.tavern,
-        messages: state.surface.flatMap(({ text, role }) => text === undefined || role === undefined
-          ? []
-          : [{ messageId: 0, role, text }]).map((message, messageId) => ({ ...message, messageId })),
-      },
-    }),
-  }),
-  stateVersion: 7,
+  view: state => {
+    const worldInfo = worldInfoProjection(state)
+    return {
+      ...state.character,
+      worldInfoCount: worldInfo.books.reduce((total, book) => total + book.entries.filter(entry => !entry.deleted).length, 0),
+      worldInfo,
+      ...(state.mvu === undefined ? {} : { mvu: state.mvu }),
+      ...(state.preset === undefined ? {} : { preset: state.preset }),
+      presetLibrary: state.presetLibrary,
+      ...(state.lastRequest === undefined ? {} : { lastRequest: state.lastRequest }),
+      generations: Object.values(state.generations).map(group => ({
+        groupId: group.groupId,
+        anchorSeq: group.anchorSeq,
+        selectedVersionSeq: group.selectedVersionSeq,
+        assistantSeqs: group.assistantSeqs,
+        versions: group.versions,
+      })),
+      ...(state.currentReplySeq === undefined ? {} : { currentReplySeq: state.currentReplySeq }),
+      ...(state.tavern === undefined ? {} : {
+        tavern: {
+          ...state.tavern,
+          messages: state.surface.flatMap(({ text, role }) => text === undefined || role === undefined
+            ? []
+            : [{ messageId: 0, role, text }]).map((message, messageId) => ({ ...message, messageId })),
+        },
+      }),
+    }
+  },
+  stateVersion: 8,
 }

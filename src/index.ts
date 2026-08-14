@@ -41,8 +41,11 @@ import {
   type CharacterImportMeta,
   type FileAttachmentRef,
 } from './import/session-character.ts'
-import { CHARACTER_IMPORT_DEGRADATIONS } from './import/types.ts'
-import { WORLD_INFO_IMPORT_DEGRADATIONS } from './import/types.ts'
+import {
+  CHARACTER_IMPORT_DEGRADATIONS,
+  WORLD_INFO_IMPORT_DEGRADATIONS,
+  type ImportedWorldInfo,
+} from './import/types.ts'
 import { parseWorldInfoJsonBytes } from './import/world-info.ts'
 import { parseSillyTavernChatBytes } from './import/sillytavern-chat.ts'
 import { parseSillyTavernPresetBytes, presetJson } from './import/sillytavern-preset.ts'
@@ -55,7 +58,6 @@ import {
 import {
   isJsonWorldInfoAttachment,
   prepareWorldInfoImportResult,
-  readActiveSessionWorldInfos,
   type WorldInfoImportMeta,
 } from './import/session-world-info.ts'
 import {
@@ -101,7 +103,10 @@ import { installSessionLaunchHttp } from './session-launch-http.ts'
 import { executeGenerationCommand } from './generation.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
 import { configuredLorebook, readWorldInfoConfiguration } from './world-info-configuration-core.ts'
-import { executeWorldInfoConfiguration, readSessionLorebookSources } from './world-info-configuration.ts'
+import {
+  executeWorldInfoConfiguration,
+  readActiveSessionLorebookSources,
+} from './world-info-configuration.ts'
 import { WorldInfoLibrary } from './world-info-library.ts'
 import { executeWorldInfoLibraryCommand } from './world-info-library-command.ts'
 import { installWorldInfoLibraryHttp } from './world-info-library-http.ts'
@@ -651,17 +656,19 @@ export function installAgentRp(
       if (agent !== undefined) pendingMessagesByAgent.delete(agent)
       const active = importedCharacter(agentsByScope, scope)
       if (agent === undefined) return renderCharacterPrompt(config)
-      const sources = readSessionLorebookSources(agent)
+      const sources = readActiveSessionLorebookSources(agent)
       const worldInfoConfiguration = readWorldInfoConfiguration(agent.session.events)
       const configuredSources = sources.map(source => ({
         source,
         configured: configuredLorebook(source, worldInfoConfiguration).lorebook,
       }))
-      const worldInfos = readActiveSessionWorldInfos(agent.session.events).map(imported => {
-        const id = `standalone:${imported.result.sourceAttachmentId}`
-        const configured = configuredSources.find(value => value.source.id === id)?.configured
-        return configured === undefined ? imported.worldInfo : { ...imported.worldInfo, lorebook: configured }
-      })
+      const worldInfos = configuredSources.flatMap(({ source, configured }) => source.source === 'standalone' ? [{
+        format: 0 as const,
+        name: source.name,
+        lorebook: configured,
+        degradations: source.degradations as ImportedWorldInfo['degradations'],
+        raw: {},
+      }] : [])
       const standaloneLore = renderImportedWorldInfos(worldInfos, agent.session, pendingMessages)
       if (active === undefined) {
         const importedChat = readSillyTavernChatIdentity(agent.session.events)
@@ -677,7 +684,8 @@ export function installAgentRp(
       }
       const importedCard = cardFromImportMeta(active.meta)
       const cardLorebook = configuredSources.find(value => value.source.source === 'character')?.configured
-      const card = cardLorebook === undefined ? importedCard : { ...importedCard, lorebook: cardLorebook }
+      const { lorebook: _importedLorebook, ...cardWithoutLorebook } = importedCard
+      const card = cardLorebook === undefined ? cardWithoutLorebook : { ...importedCard, lorebook: cardLorebook }
       const identity = resolveSessionPersonaIdentity(
         agent.session.events,
         active.result.userName,

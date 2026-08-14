@@ -8,6 +8,7 @@ import {
   initializeTavernHelperPresetState,
   parseTavernHelperMutationRequest,
 } from '../src/tavern-helper.ts'
+import { activeTavernWorldbooks, withTavernWorldbooks } from '../src/world-info-configuration-core.ts'
 
 test('persists isolated Tavern Helper variable namespaces', () => {
   const state = initializeTavernHelperState({
@@ -67,4 +68,26 @@ test('keeps preset and character script state independent across reloads', () =>
   assert.deepEqual(reloaded.scopes.preset, { theme: 'fox' })
   assert.deepEqual(reloaded.scripts.character, { characterRuns: 1 })
   assert.deepEqual(reloaded.scripts.preset, { presetRuns: 3 })
+})
+
+test('persists script-created worldbooks and activates them only after binding', () => {
+  const initial = initializeTavernHelperState({
+    regexScripts: [], tavernHelperScriptNames: [], tavernHelperVariables: {}, tavernHelperScripts: [],
+  }, 'card-1')
+  const replaced = applyTavernHelperMutation(initial, parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0,
+    operation: 'replace-worldbook',
+    name: '旅店记忆',
+    entries: [{ name: '钥匙', content: '钥匙藏在钟下。', strategy: { type: 'constant' } }],
+  })))
+  const sources = withTavernWorldbooks([], decodeTavernHelperState(encodeTavernHelperState(replaced)))
+
+  assert.equal(sources[0]?.name, '旅店记忆')
+  assert.equal(sources[0]?.lorebook.entries[0]?.content, '钥匙藏在钟下。')
+  assert.deepEqual(activeTavernWorldbooks(sources, replaced), [])
+
+  const bound = applyTavernHelperMutation(replaced, {
+    format: 0, operation: 'bind-chat-worldbook', name: '旅店记忆',
+  })
+  assert.deepEqual(activeTavernWorldbooks(sources, bound).map(source => source.name), ['旅店记忆'])
 })

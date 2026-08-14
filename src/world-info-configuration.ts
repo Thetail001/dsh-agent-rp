@@ -4,18 +4,21 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
 import { readActiveSessionWorldInfos } from './import/session-world-info.ts'
 import {
+  activeTavernWorldbooks,
   configureWorldInfo,
   encodeWorldInfoConfiguration,
   parseWorldInfoConfigurationRequest,
   readWorldInfoConfiguration,
+  withTavernWorldbooks,
   type SessionLorebookSource,
 } from './world-info-configuration-core.ts'
+import { readTavernHelperState } from './tavern-helper.ts'
 
 /** Resolve all imported books in their prompt order. */
 export function readSessionLorebookSources(agent: Agent): readonly SessionLorebookSource[] {
   const active = readActiveSessionCharacter(agent.session.events)
   const card = active === undefined ? undefined : cardFromImportMeta(active.meta)
-  return [
+  return withTavernWorldbooks([
     ...(card?.lorebook === undefined || active === undefined ? [] : [{
       id: `character:${active.result.sourceAttachmentId}`,
       name: card.lorebook.name?.trim() || `${card.nickname?.trim() || card.name}的世界书`,
@@ -30,7 +33,12 @@ export function readSessionLorebookSources(agent: Agent): readonly SessionLorebo
       lorebook: value.worldInfo.lorebook,
       degradations: value.result.degradations,
     })),
-  ]
+  ], readTavernHelperState(agent.session.events))
+}
+
+/** Resolve only the books that should participate in the next model request. */
+export function readActiveSessionLorebookSources(agent: Agent): readonly SessionLorebookSource[] {
+  return activeTavernWorldbooks(readSessionLorebookSources(agent), readTavernHelperState(agent.session.events))
 }
 
 /** Execute one World Info manager mutation and persist its complete overlay snapshot. */
