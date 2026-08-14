@@ -3810,6 +3810,9 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessi
   const [readyScriptIds, setReadyScriptIds] = useState<ReadonlySet<string>>(() => new Set())
   const [runtimeErrors, setRuntimeErrors] = useState<ReadonlyMap<string, string>>(() => new Map())
   const [externalScriptRequests, setExternalScriptRequests] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const [surfaceScriptIds, setSurfaceScriptIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [panelOpen, setPanelOpen] = useState(false)
+  const [panelScriptId, setPanelScriptId] = useState<string>()
   const frameRefs = useRef(new Map<string, HTMLIFrameElement>())
   const projectionRef = useRef(projection)
   const mutationQueue = useRef(Promise.resolve())
@@ -3820,6 +3823,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessi
     setReadyScriptIds(new Set())
     setRuntimeErrors(new Map())
     setExternalScriptRequests(new Map())
+    setSurfaceScriptIds(new Set())
     void Promise.all(scripts.map(async script => {
       try {
         const source = await resolveTavernScriptSource(script.content, controller.signal)
@@ -3882,6 +3886,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessi
         readonly eventType?: unknown
         readonly args?: unknown
         readonly origin?: unknown
+        readonly visible?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
@@ -3909,6 +3914,16 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessi
         const detail = String(message.value)
         setRuntimeErrors(current => new Map(current).set(entry.script.id, detail))
         ctx.logger.warn(`agent-rp: Tavern Helper script ${JSON.stringify(entry.script.name)} failed: ${detail}`)
+        return
+      }
+      if (message.action === 'surface' && typeof message.visible === 'boolean') {
+        setSurfaceScriptIds(current => {
+          if (current.has(entry.script.id) === message.visible) return current
+          const next = new Set(current)
+          if (message.visible) next.add(entry.script.id)
+          else next.delete(entry.script.id)
+          return next
+        })
         return
       }
       if (message.action === 'external-script-request') {
@@ -3967,23 +3982,79 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessi
   const buttons = scripts.flatMap(script => script.buttonEnabled
     ? script.buttons.filter(button => button.visible).map(button => ({ script, button }))
     : [])
+  const panelFrames = frames.filter(entry => entry.srcDoc !== undefined && surfaceScriptIds.has(entry.script.id))
+  const activePanelScriptId = panelFrames.some(entry => entry.script.id === panelScriptId)
+    ? panelScriptId
+    : panelFrames[0]?.script.id
   return <>
-    <div aria-hidden="true" style={{
-      height: '1px', left: '-10000px', opacity: 0, overflow: 'hidden', pointerEvents: 'none',
-      position: 'fixed', top: 0, width: '1px',
-    }}>
-      {frames.flatMap(entry => entry.source === undefined || entry.srcDoc === undefined ? [] : [<iframe
-        key={entry.script.id}
-        data-agent-rp-tavern-script={entry.script.id}
-        sandbox="allow-scripts"
-        srcDoc={entry.srcDoc}
-        style={{ border: 0, height: '1px', width: '1px' }}
-        ref={frame => {
-          if (frame === null) frameRefs.current.delete(entry.script.id)
-          else frameRefs.current.set(entry.script.id, frame)
-        }}
-      />])}
+    <div aria-hidden={!panelOpen} {...panelOpen ? { role: 'dialog', 'aria-modal': true, 'aria-label': '酒馆脚本面板' } : {}}
+      style={panelOpen ? {
+        alignItems: 'center', background: 'rgba(0,0,0,.68)', display: 'flex', inset: 0,
+        justifyContent: 'center', padding: '20px', position: 'fixed', zIndex: 1100,
+      } : {
+        height: '1px', left: '-10000px', opacity: 0, overflow: 'hidden', pointerEvents: 'none',
+        position: 'fixed', top: 0, width: '1px',
+      }} onMouseDown={event => { if (panelOpen && event.target === event.currentTarget) setPanelOpen(false) }}>
+      <section style={panelOpen ? {
+        background: 'var(--dsw-alias-bg-base, #111216)', border: '1px solid var(--dsw-alias-border-l2, #35373d)',
+        borderRadius: '14px', boxShadow: '0 20px 64px rgba(0,0,0,.45)', display: 'flex', flexDirection: 'column',
+        height: 'min(82vh, 760px)', maxWidth: '1120px', overflow: 'hidden', width: 'min(94vw, 1120px)',
+      } : { display: 'contents' }}>
+        {panelOpen && <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #35373d)', display: 'flex', gap: '8px', padding: '10px 12px' }}>
+          <strong style={{ fontSize: '13px', marginRight: '4px' }}>酒馆脚本</strong>
+          <div style={{ display: 'flex', flex: '1 1 auto', gap: '6px', minWidth: 0, overflowX: 'auto' }}>
+            {panelFrames.map(entry => <button type="button" key={entry.script.id} onClick={() => { setPanelScriptId(entry.script.id) }} style={{
+              background: entry.script.id === activePanelScriptId ? 'var(--dsw-alias-bg-elevated, #2a2c32)' : 'transparent',
+              border: '1px solid var(--dsw-alias-border-l2, #41434a)', borderRadius: '7px', color: 'inherit', cursor: 'pointer',
+              flex: '0 0 auto', font: 'inherit', fontSize: '11px', maxWidth: '240px', overflow: 'hidden', padding: '5px 8px',
+              textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>{entry.script.name || '未命名脚本'}</button>)}
+          </div>
+          <span style={{ flex: '0 0 auto', fontSize: '11px', opacity: .58 }}>{readyScriptIds.size}/{scripts.length} 已启动</span>
+          <button type="button" aria-label="关闭酒馆脚本面板" onClick={() => { setPanelOpen(false) }} style={{
+            background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '20px', padding: '2px 6px',
+          }}>×</button>
+        </header>}
+        {frames.flatMap(entry => entry.source === undefined || entry.srcDoc === undefined ? [] : [<iframe
+          key={entry.script.id}
+          title={entry.script.name || '酒馆脚本'}
+          data-agent-rp-tavern-script={entry.script.id}
+          sandbox="allow-scripts"
+          srcDoc={entry.srcDoc}
+          style={panelOpen ? {
+            background: 'transparent', border: 0, display: entry.script.id === activePanelScriptId ? 'block' : 'none',
+            flex: '1 1 auto', minHeight: 0, width: '100%',
+          } : { border: 0, height: '1px', width: '1px' }}
+          ref={frame => {
+            if (frame === null) frameRefs.current.delete(entry.script.id)
+            else frameRefs.current.set(entry.script.id, frame)
+          }}
+        />])}
+        {panelOpen && panelFrames.length === 0 && <div style={{
+          alignItems: 'center', display: 'flex', flex: '1 1 auto', justifyContent: 'center', minHeight: 0, padding: '24px',
+        }}><div style={{ maxWidth: '520px', width: '100%' }}>
+          <p style={{ fontSize: '13px', margin: '0 0 12px', opacity: .72 }}>这些脚本在后台运行，没有单独界面。</p>
+          {frames.map(entry => {
+            const error = entry.error ?? runtimeErrors.get(entry.script.id)
+            return <div key={entry.script.id} style={{
+              alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #35373d)', display: 'flex',
+              gap: '10px', padding: '9px 2px',
+            }}><span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {entry.script.name || '未命名脚本'}
+            </span><span style={{ color: error === undefined ? 'inherit' : 'var(--dsw-alias-state-warning, #d5a64c)', fontSize: '11px', opacity: .66 }}>
+              {error === undefined ? (readyScriptIds.has(entry.script.id) ? '运行中' : '启动中') : '运行失败'}
+            </span></div>
+          })}
+        </div></div>}
+        {panelOpen && frames.find(entry => entry.script.id === activePanelScriptId)?.error !== undefined && <p style={{
+          margin: 'auto', maxWidth: '720px', padding: '20px',
+        }}>{frames.find(entry => entry.script.id === activePanelScriptId)?.error}</p>}
+      </section>
     </div>
+    <button type="button" onClick={() => { setPanelOpen(true) }} title="打开隔离运行的酒馆脚本界面" style={{
+      background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '7px',
+      color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .72, padding: '3px 7px',
+    }}>脚本 {readyScriptIds.size}/{scripts.length}</button>
     {buttons.map(({ script, button }) => <button type="button" key={`${script.id}:${button.name}`}
       disabled={!readyScriptIds.has(script.id) || runtimeErrors.has(script.id)}
       title={`${script.name} · ${button.name}`} onClick={() => {
