@@ -48,7 +48,7 @@ async function readUpload(request: IncomingMessage): Promise<Uint8Array> {
   return new Uint8Array(Buffer.concat(chunks))
 }
 
-/** Register a model-free preset upload route for the Roleplay UI. */
+/** Register model-free preset listing and upload routes for the Roleplay UI. */
 export function installPresetLibraryHttp(ctx: Context, library: PresetLibrary, server: AgentRpHttpServer): void {
   ctx.effect(() => server.register({
     kind: 'exact',
@@ -59,8 +59,12 @@ export function installPresetLibraryHttp(ctx: Context, library: PresetLibrary, s
         return
       }
       try {
+        if (request.method === 'GET') {
+          json(response, 200, { format: 0, entries: library.list() })
+          return
+        }
         if (request.method !== 'POST') {
-          response.setHeader('allow', 'POST')
+          response.setHeader('allow', 'GET, POST')
           json(response, 405, { error: 'method not allowed' })
           return
         }

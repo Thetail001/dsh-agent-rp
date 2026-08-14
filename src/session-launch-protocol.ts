@@ -13,6 +13,7 @@ export interface CharacterSessionLaunchRequest {
   readonly characterId: string
   readonly greetingIndex: number
   readonly persona?: SessionPersonaSnapshot
+  readonly presetId?: string
 }
 
 /** Start a new Session from one retained SillyTavern JSONL import. */

@@ -4,9 +4,11 @@ import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from './character-library.ts'
 import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
+import { createPresetSessionSeed } from './import/session-preset.ts'
 import { createSillyTavernChatSeed, resolveSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import { createSillyTavernMigrationSeed } from './import/sillytavern-migration-seed.ts'
 import type { FileAttachmentRef } from './import/session-character.ts'
+import type { PresetLibrary, PresetLibraryEntry } from './preset-library.ts'
 import { substituteCardMacros } from './prompt.ts'
 import { parseSessionPersona } from './session-persona.ts'
 import type { AgentRpSessionLaunchRequest } from './session-launch-protocol.ts'
@@ -33,7 +35,9 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
     if (typeof record.characterId !== 'string' || !/^card-[a-f0-9]{32}$/u.test(record.characterId)
       || typeof record.greetingIndex !== 'number' || !Number.isSafeInteger(record.greetingIndex)
       || record.greetingIndex < 0
-      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'characterId', 'greetingIndex', 'persona'].includes(key))) {
+      || (record.presetId !== undefined
+        && (typeof record.presetId !== 'string' || !/^[a-z0-9-]{8,80}$/u.test(record.presetId)))
+      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'characterId', 'greetingIndex', 'persona', 'presetId'].includes(key))) {
       throw new Error('角色会话启动请求字段无效')
     }
     const persona = record.persona === undefined ? undefined : parseSessionPersona(record.persona)
@@ -44,6 +48,7 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       characterId: record.characterId,
       greetingIndex: record.greetingIndex,
       ...(persona === undefined ? {} : { persona }),
+      ...(typeof record.presetId === 'string' ? { presetId: record.presetId } : {}),
     }
   }
   if (record.kind === 'chat') {
@@ -62,6 +67,16 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
     }
   }
   throw new Error('角色会话启动类型无效')
+}
+
+function presetAttachment(entry: PresetLibraryEntry): FileAttachmentRef {
+  return {
+    kind: 'file',
+    attachmentId: AttachmentId(`library:${entry.id}`),
+    bytes: Buffer.byteLength(JSON.stringify(entry.preset), 'utf8'),
+    name: 'preset.json',
+    mediaType: 'application/json',
+  }
 }
 
 function libraryAttachment(
@@ -88,6 +103,7 @@ function libraryAttachment(
 export function prepareAgentRpSession(
   characters: CharacterLibrary,
   chats: SillyTavernChatLibrary,
+  presets: PresetLibrary,
   request: AgentRpSessionLaunchRequest,
 ): PreparedAgentRpSession {
   if (request.kind === 'character') {
@@ -104,8 +120,7 @@ export function prepareAgentRpSession(
       asset.mediaType,
     )
     const userName = request.persona?.name
-    return {
-      seed: createCharacterCardSessionSeed(
+    const characterSeed = createCharacterCardSessionSeed(
         resolved.card,
         source,
         request.greetingIndex,
@@ -114,7 +129,15 @@ export function prepareAgentRpSession(
         userName,
         request.persona,
         request.characterId,
-      ),
+      )
+    const seed = request.presetId === undefined
+      ? characterSeed
+      : (() => {
+          const entry = presets.get(request.presetId)
+          return createPresetSessionSeed(characterSeed, entry.preset, presetAttachment(entry), entry.id)
+        })()
+    return {
+      seed,
       title: resolved.detail.displayName,
     }
   }

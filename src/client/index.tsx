@@ -20,6 +20,8 @@ import { projectPresetPromptSections } from '../preset-sections.ts'
 import {
   PRESET_LIBRARY_PATH,
   type PresetLibraryImportResponse,
+  type PresetLibraryListResponse,
+  type PresetLibrarySummary,
 } from '../preset-library-http-protocol.ts'
 import {
   AI_OUTPUT_PLACEMENT, renderCharacterDisplay, splitCharacterDisplay,
@@ -207,7 +209,9 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
     character: CharacterLibraryDetail,
     greetingIndex: number,
     persona?: SessionPersonaSnapshot,
+    presetId?: string,
   ) => Promise<void>
+  readonly listPresets: () => Promise<readonly PresetLibrarySummary[]>
   readonly listPersonas: () => Promise<readonly PersonaLibraryEntry[]>
   readonly savePersona: (request: PersonaLibrarySaveRequest) => Promise<PersonaLibraryEntry>
   readonly deletePersona: (id: string) => Promise<PersonaLibraryEntry>
@@ -945,6 +949,7 @@ type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick
   | 'importCharacterFile'
   | 'migrateChat'
   | 'startCharacterSession'
+  | 'listPresets'
   | 'listPersonas'
   | 'savePersona'
   | 'deletePersona'
@@ -956,7 +961,7 @@ type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick
 function BlankRoleplayLauncher({
   session, sessionId,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, startCharacterSession,
-  listPersonas, savePersona, deletePersona,
+  listPresets, listPersonas, savePersona, deletePersona,
   workspaceSettings, workspaceList,
 }: BlankRoleplayLauncherProps) {
   const [libraryOpen, setLibraryOpen] = useState(false)
@@ -994,9 +999,10 @@ function BlankRoleplayLauncher({
       setCharacterArchived={setCharacterArchived}
       importCharacterFile={importCharacterFile}
       onClose={() => { setLibraryOpen(false) }}
-      onStart={(character, greetingIndex, persona) => startCharacterSession(
-        sessionId, character, greetingIndex, persona,
+      onStart={(character, greetingIndex, persona, presetId) => startCharacterSession(
+        sessionId, character, greetingIndex, persona, presetId,
       )}
+      listPresets={listPresets}
       listPersonas={listPersonas}
       savePersona={savePersona}
       deletePersona={deletePersona}
@@ -1118,7 +1124,7 @@ function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
   configureWorldInfo, importWorldInfo,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, startCharacterSession,
-  listPersonas, savePersona, deletePersona, applyPersona, loadModelCapabilities,
+  listPresets, listPersonas, savePersona, deletePersona, applyPersona, loadModelCapabilities,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projected = useProjection('agentRp')
@@ -1371,9 +1377,10 @@ function RoleplayHeader({
       setCharacterArchived={setCharacterArchived}
       importCharacterFile={importCharacterFile}
       onClose={() => { setLibraryOpen(false) }}
-      onStart={(character, greetingIndex, userName) => startCharacterSession(
-        sessionId, character, greetingIndex, userName,
+      onStart={(character, greetingIndex, persona, presetId) => startCharacterSession(
+        sessionId, character, greetingIndex, persona, presetId,
       )}
+      listPresets={listPresets}
       listPersonas={listPersonas}
       savePersona={savePersona}
       deletePersona={deletePersona}
@@ -1712,19 +1719,20 @@ function WorldInfoEntryEditor({ draft, saving, onCancel, onSave }: {
 
 function CharacterLibraryDialog({
   currentCharacterName, listCharacters, readCharacter, setCharacterArchived, importCharacterFile,
-  listPersonas, savePersona, deletePersona, onClose, onStart,
+  listPresets, listPersonas, savePersona, deletePersona, onClose, onStart,
 }: {
   readonly currentCharacterName: string
   readonly listCharacters: HeaderProps['listCharacters']
   readonly readCharacter: HeaderProps['readCharacter']
   readonly setCharacterArchived: HeaderProps['setCharacterArchived']
   readonly importCharacterFile: HeaderProps['importCharacterFile']
+  readonly listPresets: HeaderProps['listPresets']
   readonly listPersonas: HeaderProps['listPersonas']
   readonly savePersona: HeaderProps['savePersona']
   readonly deletePersona: HeaderProps['deletePersona']
   readonly onClose: () => void
   readonly onStart: (
-    character: CharacterLibraryDetail, greetingIndex: number, persona?: SessionPersonaSnapshot,
+    character: CharacterLibraryDetail, greetingIndex: number, persona?: SessionPersonaSnapshot, presetId?: string,
   ) => Promise<void>
 }) {
   const narrow = useNarrowCharacterLibrary()
@@ -1734,6 +1742,8 @@ function CharacterLibraryDialog({
   const [entries, setEntries] = useState<readonly CharacterLibrarySummary[]>()
   const [selected, setSelected] = useState<CharacterLibraryDetail>()
   const [greetingIndex, setGreetingIndex] = useState(0)
+  const [presets, setPresets] = useState<readonly PresetLibrarySummary[]>()
+  const [presetId, setPresetId] = useState('')
   const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
   const [personaId, setPersonaId] = useState('')
   const [editingPersona, setEditingPersona] = useState(false)
@@ -1752,6 +1762,19 @@ function CharacterLibraryDialog({
   const [error, setError] = useState<string>()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const selectionRequestRef = useRef(0)
+  useEffect(() => {
+    let current = true
+    void listPresets().then(value => {
+      if (!current) return
+      setPresets(value)
+      setPresetId(selectedId => value.some(entry => entry.id === selectedId) ? selectedId : '')
+    }, listError => {
+      if (!current) return
+      setPresets([])
+      setError(listError instanceof Error ? listError.message : String(listError))
+    })
+    return () => { current = false }
+  }, [listPresets])
   useEffect(() => {
     let current = true
     selectionRequestRef.current += 1
@@ -2038,6 +2061,26 @@ function CharacterLibraryDialog({
                 <span style={{ fontSize: '13px' }}>{greeting.trim() === '' ? '无开场白' : greeting}</span>
               </button>)}
             </div>
+            <label htmlFor="agent-rp-session-preset" style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '20px 0 8px', opacity: .65 }}>对话预设</label>
+            <select id="agent-rp-session-preset" value={presetId} onChange={event => { setPresetId(event.target.value) }} style={{
+              background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+              borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 10px', width: '100%',
+            }}>
+              <option value="">不使用预设</option>
+              {presets?.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+            </select>
+            <div style={{ fontSize: '11px', lineHeight: 1.55, marginTop: '6px', opacity: .5 }}>
+              {presets === undefined
+                ? '正在读取预设…'
+                : presets.length === 0
+                  ? '预设库暂无内容，可在角色会话的预设设置中导入'
+                  : (() => {
+                      const preset = presets.find(entry => entry.id === presetId)
+                      return preset === undefined
+                        ? '新会话不会启用酒馆预设'
+                        : `${preset.enabledCount}/${preset.promptCount} 项启用${preset.regexScriptCount === 0 ? '' : ` · ${preset.regexScriptCount} 条正则`}`
+                    })()}
+            </div>
             <div style={{ alignItems: 'center', display: 'flex', margin: '20px 0 7px' }}>
               <label htmlFor="agent-rp-session-persona" style={{ fontSize: '12px', fontWeight: 620, opacity: .65 }}>你的身份（Persona）</label>
               <button type="button" onClick={() => {
@@ -2155,7 +2198,7 @@ function CharacterLibraryDialog({
             const persona = personas?.find(entry => entry.id === personaId)
             void onStart(selected, greetingIndex, persona === undefined ? undefined : {
               id: persona.id, name: persona.name, description: persona.description,
-            }).then(() => {
+            }, presetId === '' ? undefined : presetId).then(() => {
               setStarting(false)
               onClose()
             }, startError => {
@@ -3629,6 +3672,7 @@ export function apply(ctx: ClientContext): void {
     character: CharacterLibraryDetail,
     greetingIndex: number,
     persona?: SessionPersonaSnapshot,
+    presetId?: string,
   ): Promise<void> => {
     await launchRoleplaySession({
       format: 0,
@@ -3637,6 +3681,7 @@ export function apply(ctx: ClientContext): void {
       characterId: character.id,
       greetingIndex,
       ...(persona === undefined ? {} : { persona }),
+      ...(presetId === undefined ? {} : { presetId }),
     })
   }
   const archiveConsumedBlankSession = async (sessionId: SessionId): Promise<void> => {
@@ -3652,10 +3697,11 @@ export function apply(ctx: ClientContext): void {
     character: CharacterLibraryDetail,
     greetingIndex: number,
     persona?: SessionPersonaSnapshot,
+    presetId?: string,
   ): Promise<void> => {
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
     if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话选择角色')
-    await startCharacterSession(sessionId, character, greetingIndex, persona)
+    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId)
     await archiveConsumedBlankSession(sessionId)
   }
   const startCharacterFromCurrentSession = async (
@@ -3663,8 +3709,9 @@ export function apply(ctx: ClientContext): void {
     character: CharacterLibraryDetail,
     greetingIndex: number,
     persona?: SessionPersonaSnapshot,
+    presetId?: string,
   ): Promise<void> => {
-    await startCharacterSession(sessionId, character, greetingIndex, persona)
+    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId)
   }
   const migrateChat = async (sourceSessionId: SessionId, chatFile: File, cardFile?: File): Promise<void> => {
     if (!/\.jsonl$/iu.test(chatFile.name)) throw new Error('请选择 SillyTavern 导出的 JSONL 聊天记录')
@@ -3732,6 +3779,12 @@ export function apply(ctx: ClientContext): void {
   }
   const listPersonas = async (): Promise<readonly PersonaLibraryEntry[]> => {
     const value = await personaLibraryJson<{ readonly format: 0; readonly entries: readonly PersonaLibraryEntry[] }>()
+    return value.entries
+  }
+  const listPresets = async (): Promise<readonly PresetLibrarySummary[]> => {
+    const response = await fetch(PRESET_LIBRARY_PATH, { headers: { accept: 'application/json' } })
+    const value = await response.json() as Partial<PresetLibraryListResponse> & { readonly error?: string }
+    if (!response.ok || value.entries === undefined) throw new Error(value.error ?? `预设库请求失败（${response.status}）`)
     return value.entries
   }
   const savePersona = async (request: PersonaLibrarySaveRequest): Promise<PersonaLibraryEntry> => {
@@ -3823,7 +3876,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -3832,7 +3885,7 @@ export function apply(ctx: ClientContext): void {
   }, props => <WorkspaceSettingsSection {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} />))
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left', id: 'agent-rp-blank-launcher', order: -100,
-  }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-character-library',
   }, () => null))

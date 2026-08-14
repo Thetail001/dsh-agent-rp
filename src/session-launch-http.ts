@@ -9,6 +9,7 @@ import { CharacterLibrary } from './character-library.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
 import { prepareAgentRpSession, parseAgentRpSessionLaunchRequest } from './session-launch.ts'
 import { AGENT_RP_SESSION_PATH } from './session-launch-protocol.ts'
+import type { PresetLibrary } from './preset-library.ts'
 import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
 
 const MAX_REQUEST_BYTES = 32 * 1024
@@ -102,6 +103,7 @@ export async function launchAgentRpSession(
   ctx: Context,
   characters: CharacterLibrary,
   chats: SillyTavernChatLibrary,
+  presetLibrary: PresetLibrary,
   input: unknown,
 ): Promise<{ readonly sessionId: SessionId; readonly title: string; readonly seed: readonly SessionEvent[] }> {
   const request = parseAgentRpSessionLaunchRequest(input)
@@ -118,10 +120,10 @@ export async function launchAgentRpSession(
   const source = agents.get(sourceId)
   if (source === undefined) throw new Error('来源会话当前不可用')
 
-  const presets = ctx.get('agentPresets') as AgentPresetGateway | undefined
-  if (presets === undefined) throw new Error('当前 Host 无法挂载角色会话预设')
-  const preset = await presets.resolve('agent-rp')
-  const prepared = prepareAgentRpSession(characters, chats, request)
+  const agentPresets = ctx.get('agentPresets') as AgentPresetGateway | undefined
+  if (agentPresets === undefined) throw new Error('当前 Host 无法挂载角色会话预设')
+  const preset = await agentPresets.resolve('agent-rp')
+  const prepared = prepareAgentRpSession(characters, chats, presetLibrary, request)
   const sessionId = SessionId(`session-${randomUUID()}`)
   const agentOptions: AgentOptions = {
     provider: models.result.value.current.provider,
@@ -135,7 +137,7 @@ export async function launchAgentRpSession(
       ...(source.session.header.cwd === undefined ? {} : { cwd: source.session.header.cwd }),
       agentPreset: preset.id,
     },
-    setup: async agentCtx => { await presets.mount(agentCtx, preset.id) },
+    setup: async agentCtx => { await agentPresets.mount(agentCtx, preset.id) },
   })
   const selected = await apiProxy.sessions.selectModel({
     rpcId: `agent-rp-select-${randomUUID()}`,
@@ -179,6 +181,7 @@ export function installSessionLaunchHttp(
   hostCtx: Context,
   characters: CharacterLibrary,
   chats: SillyTavernChatLibrary,
+  presets: PresetLibrary,
   server: AgentRpHttpServer,
 ): void {
   routeCtx.effect(() => server.register({
@@ -195,7 +198,7 @@ export function installSessionLaunchHttp(
         return
       }
       try {
-        const result = await launchAgentRpSession(hostCtx, characters, chats, await readJson(request))
+        const result = await launchAgentRpSession(hostCtx, characters, chats, presets, await readJson(request))
         json(response, 200, { format: 0, sessionId: result.sessionId, title: result.title })
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)

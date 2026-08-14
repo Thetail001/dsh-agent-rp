@@ -994,7 +994,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
         installPresetLibraryHttp(webCtx, presetLibrary, server)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)
-        installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, server)
+        installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, server)
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
       })
