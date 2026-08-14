@@ -3924,8 +3924,17 @@ type RunPresetConfiguration = (sessionId: SessionId, request: PresetConfiguratio
 type RunTavernGeneration = (
   sessionId: SessionId,
   request: Pick<TavernGenerationRequest, 'mode' | 'config'>,
+  signal?: AbortSignal,
 ) => Promise<string>
 type RunTavernModelList = (request: Omit<TavernModelListRequest, 'format'>) => Promise<readonly string[]>
+
+interface QueuedTavernGeneration {
+  readonly target: Window
+  readonly requestId: string
+  readonly mode: 'preset' | 'raw'
+  readonly config: Readonly<Record<string, unknown>>
+  readonly generationId?: string
+}
 
 function tavernWorldbookEntry(
   entry: AgentRpProjection['worldInfo']['books'][number]['entries'][number],
@@ -4274,18 +4283,13 @@ function TavernScriptRuntime({
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelScriptId, setPanelScriptId] = useState<string>()
   const frameRefs = useRef(new Map<string, HTMLIFrameElement>())
-  const generationQueue = useRef(new Map<string, {
+  const generationQueue = useRef(new Map<string, QueuedTavernGeneration[]>())
+  const customGenerationQueue = useRef(new Map<string, QueuedTavernGeneration[]>())
+  const activeGenerations = useRef(new Map<string, {
     readonly target: Window
-    readonly requestId: string
-    readonly mode: 'preset' | 'raw'
-    readonly config: Readonly<Record<string, unknown>>
-  }[]>())
-  const customGenerationQueue = useRef(new Map<string, {
-    readonly target: Window
-    readonly requestId: string
-    readonly mode: 'preset' | 'raw'
-    readonly config: Readonly<Record<string, unknown>>
-  }[]>())
+    readonly generationId?: string
+    readonly controller: AbortController
+  }>())
   const modelListQueue = useRef(new Map<string, {
     readonly target: Window
     readonly requestId: string
@@ -4315,6 +4319,8 @@ function TavernScriptRuntime({
     setGenerationRequests(new Map())
     customGenerationQueue.current.clear()
     setCustomGenerationRequests(new Map())
+    for (const active of activeGenerations.current.values()) active.controller.abort()
+    activeGenerations.current.clear()
     modelListQueue.current.clear()
     setModelListRequests(new Map())
     setSurfaceScriptIds(new Set())
@@ -4334,7 +4340,11 @@ function TavernScriptRuntime({
         return { script, error: reason instanceof Error ? reason.message : String(reason) }
       }
     })).then(result => { if (!controller.signal.aborted) setFrames(result) })
-    return () => { controller.abort() }
+    return () => {
+      controller.abort()
+      for (const active of activeGenerations.current.values()) active.controller.abort()
+      activeGenerations.current.clear()
+    }
   }, [sessionId, signature])
   const syncFrame = (frame: HTMLIFrameElement, script: ImportedTavernHelperScript): void => {
     const snapshot = tavernScriptSnapshot(projectionRef.current, script, scriptOrigins, sessionId)
@@ -4369,18 +4379,29 @@ function TavernScriptRuntime({
     origin,
   ].join('\u0000')
   const executeGeneration = (
+    scriptId: string,
     target: Window,
     requestId: string,
     mode: 'preset' | 'raw',
     config: Readonly<Record<string, unknown>>,
   ): void => {
-    void runGeneration(sessionId, { mode, config }).then(value => {
+    const key = `${scriptId}\u0000${requestId}`
+    const controller = new AbortController()
+    const generationId = typeof config.generation_id === 'string' ? config.generation_id : undefined
+    activeGenerations.current.set(key, {
+      target,
+      ...(generationId === undefined ? {} : { generationId }),
+      controller,
+    })
+    void runGeneration(sessionId, { mode, config }, controller.signal).then(value => {
       target.postMessage({ source: 'dsh-agent-rp-host', action: 'generation-result', requestId, ok: true, value }, '*')
     }).catch((reason: unknown) => {
       target.postMessage({
         source: 'dsh-agent-rp-host', action: 'generation-result', requestId, ok: false,
         error: reason instanceof Error ? reason.message : String(reason),
       }, '*')
+    }).finally(() => {
+      activeGenerations.current.delete(key)
     })
   }
   const executeModelList = (
@@ -4397,6 +4418,56 @@ function TavernScriptRuntime({
         error: reason instanceof Error ? reason.message : String(reason),
       }, '*')
     })
+  }
+  const cancelGenerations = (scriptId: string, target: Window, generationId?: string): void => {
+    const matches = (request: QueuedTavernGeneration): boolean => request.target === target
+      && (generationId === undefined || request.generationId === generationId)
+    const reject = (request: QueuedTavernGeneration): void => {
+      request.target.postMessage({
+        source: 'dsh-agent-rp-host', action: 'generation-result', requestId: request.requestId,
+        ok: false, error: '酒馆脚本生成已取消',
+      }, '*')
+    }
+    const localQueue = generationQueue.current.get(scriptId) ?? []
+    const localCancelled = localQueue.filter(matches)
+    const localRemaining = localQueue.filter(request => !matches(request))
+    for (const request of localCancelled) reject(request)
+    if (localRemaining.length === 0) generationQueue.current.delete(scriptId)
+    else generationQueue.current.set(scriptId, localRemaining)
+    if (localCancelled.length > 0) {
+      setGenerationRequests(current => {
+        const next = new Map(current)
+        if (localRemaining.length === 0) next.delete(scriptId)
+        else next.set(scriptId, localRemaining.length)
+        return next
+      })
+    }
+    const changedCustom = new Map<string, number>()
+    for (const [approvalKey, queue] of customGenerationQueue.current) {
+      const cancelled = queue.filter(matches)
+      if (cancelled.length === 0) continue
+      const remaining = queue.filter(request => !matches(request))
+      for (const request of cancelled) reject(request)
+      if (remaining.length === 0) customGenerationQueue.current.delete(approvalKey)
+      else customGenerationQueue.current.set(approvalKey, remaining)
+      changedCustom.set(approvalKey, remaining.length)
+    }
+    if (changedCustom.size > 0) {
+      setCustomGenerationRequests(current => {
+        const next = new Map(current)
+        for (const [approvalKey, count] of changedCustom) {
+          const existing = next.get(approvalKey)
+          if (count === 0 || existing === undefined) next.delete(approvalKey)
+          else next.set(approvalKey, { ...existing, count })
+        }
+        return next
+      })
+    }
+    for (const active of activeGenerations.current.values()) {
+      if (active.target === target && (generationId === undefined || active.generationId === generationId)) {
+        active.controller.abort()
+      }
+    }
   }
   useEffect(() => {
     for (const entry of frames) {
@@ -4439,6 +4510,7 @@ function TavernScriptRuntime({
         readonly buttons?: unknown
         readonly messageId?: unknown
         readonly preset?: unknown
+        readonly generationId?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
@@ -4499,20 +4571,25 @@ function TavernScriptRuntime({
         }
         return
       }
+      if (message.action === 'generation-cancel' && typeof message.generationId === 'string') {
+        cancelGenerations(entry.script.id, event.source as Window, message.generationId)
+        return
+      }
+      if (message.action === 'generation-cancel-all') {
+        cancelGenerations(entry.script.id, event.source as Window)
+        return
+      }
       if (message.action === 'generate' && typeof message.requestId === 'string'
         && (message.mode === 'preset' || message.mode === 'raw')
         && typeof message.config === 'object' && message.config !== null && !Array.isArray(message.config)) {
         const target = event.source as Window
-        const request: {
-          readonly target: Window
-          readonly requestId: string
-          readonly mode: 'preset' | 'raw'
-          readonly config: Readonly<Record<string, unknown>>
-        } = {
+        const config = message.config as Readonly<Record<string, unknown>>
+        const request: QueuedTavernGeneration = {
           target,
           requestId: message.requestId,
           mode: message.mode,
-          config: message.config as Readonly<Record<string, unknown>>,
+          config,
+          ...(typeof config.generation_id === 'string' ? { generationId: config.generation_id } : {}),
         }
         const customApi = request.config.custom_api
         if (customApi !== undefined) {
@@ -4534,7 +4611,7 @@ function TavernScriptRuntime({
           }
           const approvalKey = customGenerationApprovalKey(entry.script.id, origin)
           if (approvedCustomGenerations.has(approvalKey)) {
-            executeGeneration(target, request.requestId, request.mode, request.config)
+            executeGeneration(entry.script.id, target, request.requestId, request.mode, request.config)
           } else {
             const queued = customGenerationQueue.current.get(approvalKey) ?? []
             queued.push(request)
@@ -4546,7 +4623,7 @@ function TavernScriptRuntime({
           return
         }
         if (approvedGenerations.has(generationApprovalKey(entry.script.id))) {
-          executeGeneration(target, request.requestId, request.mode, request.config)
+          executeGeneration(entry.script.id, target, request.requestId, request.mode, request.config)
         } else {
           const queued = generationQueue.current.get(entry.script.id) ?? []
           queued.push(request)
@@ -4786,7 +4863,7 @@ function TavernScriptRuntime({
             remaining.delete(scriptId)
             return remaining
           })
-          for (const request of queued) executeGeneration(request.target, request.requestId, request.mode, request.config)
+          for (const request of queued) executeGeneration(scriptId, request.target, request.requestId, request.mode, request.config)
         }} style={{
           background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px',
           color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .78, padding: '3px 7px',
@@ -4807,7 +4884,7 @@ function TavernScriptRuntime({
             remaining.delete(approvalKey)
             return remaining
           })
-          for (const item of queued) executeGeneration(item.target, item.requestId, item.mode, item.config)
+          for (const item of queued) executeGeneration(request.scriptId, item.target, item.requestId, item.mode, item.config)
         }} style={{
           background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px',
           color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .78, padding: '3px 7px',
@@ -5666,11 +5743,12 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok) throw new Error(response.error.message)
     if (!response.value.matched) throw new Error('当前 Host 未启用酒馆脚本变量桥')
   }
-  const runTavernGeneration: RunTavernGeneration = async (sessionId, request) => {
+  const runTavernGeneration: RunTavernGeneration = async (sessionId, request, signal) => {
     const response = await fetch(TAVERN_GENERATION_PATH, {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
       body: JSON.stringify({ format: 0, sessionId, ...request }),
+      ...(signal === undefined ? {} : { signal }),
     })
     const responseText = await response.text()
     let value: Partial<TavernGenerationResponse> & { readonly error?: string }

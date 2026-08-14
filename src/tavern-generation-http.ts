@@ -12,6 +12,7 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { renderContextSnapshot, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+import { parse as parseYaml } from 'yaml'
 import type { AgentRpHttpServer } from './host-http.ts'
 import { readActiveSessionPreset } from './import/session-preset.ts'
 import {
@@ -24,6 +25,11 @@ const MAX_REQUEST_BYTES = 512 * 1024
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 const MAX_TEXT_CHARS = 256 * 1024
 const MAX_ORDERED_PROMPTS = 256
+const MAX_CUSTOM_FIELD_CHARS = 64 * 1024
+const MAX_CUSTOM_OBJECT_KEYS = 128
+const MAX_CUSTOM_HEADERS = 64
+const PROTECTED_CUSTOM_BODY_KEYS = new Set(['messages', 'model', 'stream'])
+const FORBIDDEN_CUSTOM_HEADERS = new Set(['connection', 'content-length', 'host', 'transfer-encoding'])
 
 type TavernPrompt = { readonly role: 'system' | 'user' | 'assistant'; readonly content: string }
 
@@ -36,6 +42,9 @@ interface ParsedCustomApiConfig {
   readonly topP?: number
   readonly frequencyPenalty?: number
   readonly presencePenalty?: number
+  readonly includeBody?: Readonly<Record<string, unknown>>
+  readonly excludeBody?: readonly string[]
+  readonly includeHeaders?: Readonly<Record<string, string>>
 }
 
 interface ParsedGenerationConfig {
@@ -142,6 +151,79 @@ function optionalText(value: unknown, label: string, maximum: number): string | 
   return result === '' ? undefined : result
 }
 
+function customYaml(value: unknown, label: string): unknown {
+  if (typeof value !== 'string') return value
+  if (value.length > MAX_CUSTOM_FIELD_CHARS) throw new Error(`${label}过长`)
+  try {
+    return parseYaml(value, { maxAliasCount: 0 }) as unknown
+  } catch (error: unknown) {
+    throw new Error(`${label}不是有效 JSON 或 YAML`, { cause: error })
+  }
+}
+
+function safeCustomValue(value: unknown, label: string, depth = 0): unknown {
+  if (depth > 12) throw new Error(`${label}嵌套过深`)
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (Array.isArray(value)) {
+    if (value.length > MAX_CUSTOM_OBJECT_KEYS) throw new Error(`${label}项目过多`)
+    return value.map((item, index) => safeCustomValue(item, `${label}[${index}]`, depth + 1))
+  }
+  if (typeof value !== 'object') throw new Error(`${label}包含不支持的值`)
+  const entries = Object.entries(value)
+  if (entries.length > MAX_CUSTOM_OBJECT_KEYS) throw new Error(`${label}字段过多`)
+  return Object.fromEntries(entries.map(([key, item]) => {
+    if (key.length > 256 || key === '__proto__' || key === 'constructor' || key === 'prototype') {
+      throw new Error(`${label}包含不安全的字段名`)
+    }
+    return [key, safeCustomValue(item, `${label}.${key}`, depth + 1)]
+  }))
+}
+
+function customBody(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const parsed = safeCustomValue(customYaml(value, 'custom_api.custom_include_body'), 'custom_api.custom_include_body')
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('custom_api.custom_include_body 必须是对象')
+  }
+  return parsed as Readonly<Record<string, unknown>>
+}
+
+function customExclusions(value: unknown): readonly string[] | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const parsed = customYaml(value, 'custom_api.custom_exclude_body')
+  if (!Array.isArray(parsed) || parsed.length > MAX_CUSTOM_OBJECT_KEYS
+    || parsed.some(item => typeof item !== 'string' || item.length > 256)) {
+    throw new Error('custom_api.custom_exclude_body 必须是字符串数组')
+  }
+  return [...new Set(parsed)] as string[]
+}
+
+function customHeaders(value: unknown): Readonly<Record<string, string>> | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const parsed = customYaml(value, 'custom_api.custom_include_headers')
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('custom_api.custom_include_headers 必须是对象')
+  }
+  const entries = Object.entries(parsed)
+  if (entries.length > MAX_CUSTOM_HEADERS) throw new Error('custom_api.custom_include_headers 字段过多')
+  return Object.fromEntries(entries.map(([name, item]) => {
+    const normalized = name.toLowerCase()
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/u.test(name) || FORBIDDEN_CUSTOM_HEADERS.has(normalized)) {
+      throw new Error(`custom_api.custom_include_headers 不允许设置 ${JSON.stringify(name)}`)
+    }
+    if ((typeof item !== 'string' && typeof item !== 'number' && typeof item !== 'boolean')
+      || (typeof item === 'number' && !Number.isFinite(item))) {
+      throw new Error(`custom_api.custom_include_headers.${name} 必须是标量`)
+    }
+    const text = String(item)
+    if (text.length > 8_192 || /[\r\n]/u.test(text)) {
+      throw new Error(`custom_api.custom_include_headers.${name} 无效`)
+    }
+    return [name, text]
+  }))
+}
+
 function parseCustomApi(value: unknown): ParsedCustomApiConfig {
   const custom = object(value, 'custom_api')
   const proxyPreset = optionalText(custom.proxy_preset, 'custom_api.proxy_preset', 512)
@@ -155,10 +237,9 @@ function parseCustomApi(value: unknown): ParsedCustomApiConfig {
   if (!['custom', 'deepseek', 'mistralai', 'moonshot', 'openai', 'openrouter', 'xai'].includes(source)) {
     throw new Error(`custom_api.source ${JSON.stringify(source)} 不是 OpenAI-compatible 来源`)
   }
-  if (custom.custom_include_body !== undefined || custom.custom_exclude_body !== undefined
-    || custom.custom_include_headers !== undefined) {
-    throw new Error('自定义请求体或请求头覆盖尚未开放')
-  }
+  const includeBody = customBody(custom.custom_include_body)
+  const excludeBody = customExclusions(custom.custom_exclude_body)
+  const includeHeaders = customHeaders(custom.custom_include_headers)
   if (custom.top_k !== undefined && custom.top_k !== 'same_as_preset' && custom.top_k !== 'unset') {
     throw new Error('custom_api.top_k 尚未开放')
   }
@@ -176,6 +257,9 @@ function parseCustomApi(value: unknown): ParsedCustomApiConfig {
     ...(topP === undefined ? {} : { topP }),
     ...(frequencyPenalty === undefined ? {} : { frequencyPenalty }),
     ...(presencePenalty === undefined ? {} : { presencePenalty }),
+    ...(includeBody === undefined ? {} : { includeBody }),
+    ...(excludeBody === undefined ? {} : { excludeBody }),
+    ...(includeHeaders === undefined ? {} : { includeHeaders }),
   }
 }
 
@@ -292,6 +376,19 @@ function responseText(value: unknown): string {
   throw new Error('自定义模型没有返回文本')
 }
 
+function mergeCustomBody(target: Record<string, unknown>, source: Readonly<Record<string, unknown>>, topLevel = true): void {
+  for (const [key, value] of Object.entries(source)) {
+    if (topLevel && PROTECTED_CUSTOM_BODY_KEYS.has(key)) continue
+    const current = target[key]
+    if (typeof current === 'object' && current !== null && !Array.isArray(current)
+      && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      mergeCustomBody(current as Record<string, unknown>, value as Readonly<Record<string, unknown>>, false)
+    } else {
+      target[key] = value
+    }
+  }
+}
+
 async function customGeneration(
   input: { readonly system?: string; readonly messages: readonly Message[] },
   custom: ParsedCustomApiConfig,
@@ -301,7 +398,7 @@ async function customGeneration(
   const model = custom.model ?? fallbackModel
   if (model === undefined || model.trim() === '') throw new Error('custom_api.model 不能为空')
   const endpoint = tavernChatCompletionsEndpoint(custom.apiurl)
-  const body = JSON.stringify({
+  const requestBody: Record<string, unknown> = {
     model,
     messages: openAiPrompts(input),
     stream: false,
@@ -310,16 +407,23 @@ async function customGeneration(
     ...(custom.topP === undefined ? {} : { top_p: custom.topP }),
     ...(custom.frequencyPenalty === undefined ? {} : { frequency_penalty: custom.frequencyPenalty }),
     ...(custom.presencePenalty === undefined ? {} : { presence_penalty: custom.presencePenalty }),
+  }
+  if (custom.includeBody !== undefined) mergeCustomBody(requestBody, custom.includeBody)
+  for (const key of custom.excludeBody ?? []) {
+    if (!PROTECTED_CUSTOM_BODY_KEYS.has(key)) delete requestBody[key]
+  }
+  const body = JSON.stringify(requestBody)
+  const headers = new Headers({
+    accept: 'application/json',
+    'content-type': 'application/json',
+    ...(custom.key === undefined ? {} : { authorization: `Bearer ${custom.key}` }),
   })
+  for (const [name, value] of Object.entries(custom.includeHeaders ?? {})) headers.set(name, value)
   let response: Response
   try {
     response = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        accept: 'application/json',
-        'content-type': 'application/json',
-        ...(custom.key === undefined ? {} : { authorization: `Bearer ${custom.key}` }),
-      },
+      headers,
       body,
       signal,
     })
@@ -462,6 +566,7 @@ async function generate(ctx: Context, agent: Agent, mode: 'preset' | 'raw', conf
 export async function runTavernGeneration(
   ctx: Context,
   input: TavernGenerationRequest | unknown,
+  requestSignal?: AbortSignal,
 ): Promise<TavernGenerationResponse> {
   const request = parseRequest(input)
   const agents = ctx.get('agents') as Context['agents'] | undefined
@@ -469,7 +574,11 @@ export async function runTavernGeneration(
   const agent = agents.get(request.sessionId)
   if (agent === undefined) throw new Error('当前角色会话不可用')
   const text = await agent.runMaintenance(async maintenanceSignal => {
-    const signal = AbortSignal.any([maintenanceSignal, AbortSignal.timeout(180_000)])
+    const signal = AbortSignal.any([
+      maintenanceSignal,
+      AbortSignal.timeout(180_000),
+      ...(requestSignal === undefined ? [] : [requestSignal]),
+    ])
     return generate(ctx, agent, request.mode, request.config, signal)
   })
   return { format: 0, text }
@@ -490,11 +599,20 @@ export function installTavernGenerationHttp(ctx: Context, server: AgentRpHttpSer
         json(response, 405, { error: 'method not allowed' })
         return
       }
+      const controller = new AbortController()
+      const abortRequest = (): void => { controller.abort() }
+      const abortResponse = (): void => { if (!response.writableEnded) controller.abort() }
+      request.once('aborted', abortRequest)
+      response.once('close', abortResponse)
       try {
-        json(response, 200, await runTavernGeneration(ctx, await readJson(request)))
+        json(response, 200, await runTavernGeneration(ctx, await readJson(request), controller.signal))
       } catch (error: unknown) {
+        if (response.destroyed) return
         const message = error instanceof Error ? error.message : String(error)
         json(response, /正在|idle|maintenance/iu.test(message) ? 409 : /过大|过长/iu.test(message) ? 413 : 400, { error: message })
+      } finally {
+        request.removeListener('aborted', abortRequest)
+        response.removeListener('close', abortResponse)
       }
     },
   }), 'agent-rp: Tavern Helper generation HTTP')

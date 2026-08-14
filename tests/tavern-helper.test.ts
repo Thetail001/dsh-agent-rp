@@ -37,12 +37,18 @@ test('forwards one approved custom generation without retaining chat history at 
       return task(new AbortController().signal)
     },
   }
-  let requested: { readonly url: string; readonly authorization: string | null; readonly body: unknown } | undefined
+  let requested: {
+    readonly url: string
+    readonly authorization: string | null
+    readonly trace: string | null
+    readonly body: unknown
+  } | undefined
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (input, init) => {
     requested = {
       url: String(input),
       authorization: new Headers(init?.headers).get('authorization'),
+      trace: new Headers(init?.headers).get('x-v18-trace'),
       body: JSON.parse(String(init?.body)) as unknown,
     }
     return new Response(JSON.stringify({ choices: [{ message: { content: '辅助结果' } }] }), {
@@ -68,13 +74,23 @@ test('forwards one approved custom generation without retaining chat history at 
         custom_api: {
           apiurl: 'https://example.com/v1?token=discarded', key: 'test-key', model: 'custom-model', source: 'openai',
           max_tokens: 321, temperature: 0.4, top_p: 0.8, frequency_penalty: -0.2, presence_penalty: 0.3,
+          custom_include_body: [
+            'top_k: 24',
+            'response_options:',
+            '  include_usage: true',
+            'model: ignored-model',
+            'stream: true',
+          ].join('\n'),
+          custom_exclude_body: ['temperature', 'model', 'stream'],
+          custom_include_headers: JSON.stringify({ Authorization: 'Bearer hook-key', 'X-V18-Trace': 18 }),
         },
       },
     })
     assert.equal(result.text, '辅助结果')
     assert.deepEqual(requested, {
       url: 'https://example.com/v1/chat/completions',
-      authorization: 'Bearer test-key',
+      authorization: 'Bearer hook-key',
+      trace: '18',
       body: {
         model: 'custom-model',
         messages: [
@@ -83,12 +99,84 @@ test('forwards one approved custom generation without retaining chat history at 
         ],
         stream: false,
         max_tokens: 321,
-        temperature: 0.4,
         top_p: 0.8,
         frequency_penalty: -0.2,
         presence_penalty: 0.3,
+        top_k: 24,
+        response_options: { include_usage: true },
       },
     })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('rejects unsafe custom generation headers before contacting the model', async () => {
+  const session = Session.create(SessionId('unsafe-custom-generation'))
+  const agent = {
+    session,
+    options: { model: 'fallback-model' },
+    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T> {
+      return task(new AbortController().signal)
+    },
+  }
+  await assert.rejects(runTavernGeneration({
+    get: (name: string) => name === 'agents' ? { get: () => agent } : undefined,
+    systemPrompt: {
+      assemble: async () => ({ sections: [], contexts: [], tools: [], variables: {} }),
+    },
+  } as never, {
+    format: 0,
+    sessionId: 'unsafe-custom-generation',
+    mode: 'raw',
+    config: {
+      user_input: '测试',
+      custom_api: {
+        apiurl: 'https://example.com/v1', model: 'custom-model',
+        custom_include_headers: 'Host: attacker.example',
+      },
+    },
+  }), /不允许设置 "Host"/u)
+})
+
+test('cancels an active custom generation when its browser request closes', async () => {
+  const session = Session.create(SessionId('cancel-custom-generation'))
+  const agent = {
+    session,
+    options: { model: 'fallback-model' },
+    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T> {
+      return task(new AbortController().signal)
+    },
+  }
+  const originalFetch = globalThis.fetch
+  let started: (() => void) | undefined
+  const contacted = new Promise<void>(resolve => { started = resolve })
+  globalThis.fetch = async (_input, init) => {
+    started?.()
+    await new Promise<never>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    })
+    throw new Error('unreachable')
+  }
+  const controller = new AbortController()
+  try {
+    const running = runTavernGeneration({
+      get: (name: string) => name === 'agents' ? { get: () => agent } : undefined,
+      systemPrompt: {
+        assemble: async () => ({ sections: [], contexts: [], tools: [], variables: {} }),
+      },
+    } as never, {
+      format: 0,
+      sessionId: 'cancel-custom-generation',
+      mode: 'raw',
+      config: {
+        user_input: '等待取消',
+        custom_api: { apiurl: 'https://example.com/v1', model: 'custom-model' },
+      },
+    }, controller.signal)
+    await contacted
+    controller.abort()
+    await assert.rejects(running, /已取消或超时/u)
   } finally {
     globalThis.fetch = originalFetch
   }
