@@ -1,23 +1,31 @@
 /** Same-origin Host route for copying local Agent RP assets into dsh-rp-distribution. */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { basename } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { CharacterLibrary } from './character-library.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
 import { exportSillyTavernPresetJson } from './preset-export.ts'
+import { parseSillyTavernPresetBytes } from './import/sillytavern-preset.ts'
 import { PersonaLibrary } from './persona-library.ts'
 import { PresetLibrary } from './preset-library.ts'
+import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
 import { WorldInfoLibrary } from './world-info-library.ts'
 import {
   RP_DISTRIBUTION_ASSET_KINDS,
   RP_DISTRIBUTION_BRIDGE_PATH,
+  type RpDistributionAssetImportRequest,
+  type RpDistributionChatImportRequest,
   type RpDistributionAssetKind,
   type RpDistributionTransferRequest,
 } from './rp-distribution-bridge-protocol.ts'
 import {
+  exportRpDistributionChat,
   probeRpDistribution,
+  readRpDistributionSource,
   transferToRpDistribution,
+  type RpDistributionFetch,
   type RpDistributionImportPayload,
 } from './rp-distribution-bridge.ts'
 
@@ -34,6 +42,29 @@ function trustedBrowserRequest(request: IncomingMessage): boolean {
   } catch {
     return false
   }
+}
+
+function chatImportRequest(value: unknown): RpDistributionChatImportRequest | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const request = value as Record<string, unknown>
+  if (request.operation !== 'import-chat') return undefined
+  if (request.format !== 0 || typeof request.target !== 'string' || typeof request.sessionId !== 'string'
+    || Object.keys(request).some(key => !['format', 'operation', 'target', 'sessionId'].includes(key))) {
+    throw new Error('RP 会话迁移请求字段无效')
+  }
+  return request as unknown as RpDistributionChatImportRequest
+}
+
+function assetImportRequest(value: unknown): RpDistributionAssetImportRequest | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const request = value as Record<string, unknown>
+  if (request.operation !== 'import-asset') return undefined
+  if (request.format !== 0 || typeof request.target !== 'string' || typeof request.id !== 'string'
+    || !RP_DISTRIBUTION_ASSET_KINDS.includes(request.kind as RpDistributionAssetKind)
+    || Object.keys(request).some(key => !['format', 'operation', 'target', 'kind', 'id'].includes(key))) {
+    throw new Error('RP 资产迁移请求字段无效')
+  }
+  return request as unknown as RpDistributionAssetImportRequest
 }
 
 function json(response: ServerResponse, status: number, value: unknown): void {
@@ -120,6 +151,64 @@ function payloadFor(
   }
 }
 
+function jsonFilename(sourceId: string, fallback: string): string {
+  const name = basename(sourceId.trim()).slice(0, 240)
+  if (name === '') return fallback
+  return /\.json$/iu.test(name) ? name : `${name}.json`
+}
+
+function personaSource(source: string): { readonly format: 0; readonly name: string; readonly description: string } {
+  let value: unknown
+  try {
+    value = JSON.parse(source)
+  } catch (error: unknown) {
+    throw new Error('模块化 RP Persona 来源不是 JSON', { cause: error })
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('模块化 RP Persona 来源不是对象')
+  }
+  const entry = value as Record<string, unknown>
+  if (typeof entry.name !== 'string' || typeof entry.description !== 'string') {
+    throw new Error('模块化 RP Persona 来源字段无效')
+  }
+  return { format: 0, name: entry.name, description: entry.description }
+}
+
+/** Copy one retained remote JSON source through the receiving Agent RP library parser. */
+export async function receiveRpDistributionAsset(
+  request: RpDistributionAssetImportRequest,
+  characterLibrary: CharacterLibrary,
+  presetLibrary: PresetLibrary,
+  personaLibrary: PersonaLibrary,
+  worldInfoLibrary: WorldInfoLibrary,
+  fetcher: RpDistributionFetch = fetch,
+): Promise<{ readonly target: string; readonly savedId: string; readonly name: string }> {
+  const portable = await readRpDistributionSource(request.target, request.kind, request.id, fetcher)
+  const data = new TextEncoder().encode(portable.source)
+  if (request.kind === 'character') {
+    const entry = characterLibrary.importFile({
+      data,
+      filename: jsonFilename(portable.sourceId, 'character.json'),
+      mediaType: 'application/json',
+    })
+    return { target: portable.target, savedId: entry.id, name: entry.displayName }
+  }
+  if (request.kind === 'preset') {
+    const preset = parseSillyTavernPresetBytes(data, jsonFilename(portable.sourceId, 'preset.json'))
+    const entry = presetLibrary.import(preset)
+    return { target: portable.target, savedId: entry.id, name: entry.name }
+  }
+  if (request.kind === 'persona') {
+    const entry = personaLibrary.save(personaSource(portable.source))
+    return { target: portable.target, savedId: entry.id, name: entry.name }
+  }
+  const upload = worldInfoLibrary.importFile({
+    data,
+    filename: jsonFilename(portable.sourceId, 'world-info.json'),
+  })
+  return { target: portable.target, savedId: upload.id, name: upload.name }
+}
+
 /** Register the loopback-only bridge used by the RP interoperability settings page. */
 export function installRpDistributionBridgeHttp(
   ctx: Context,
@@ -127,6 +216,7 @@ export function installRpDistributionBridgeHttp(
   presetLibrary: PresetLibrary,
   personaLibrary: PersonaLibrary,
   worldInfoLibrary: WorldInfoLibrary,
+  chatLibrary: SillyTavernChatLibrary,
   server: AgentRpHttpServer,
 ): void {
   ctx.effect(() => server.register({
@@ -145,7 +235,48 @@ export function installRpDistributionBridgeHttp(
           return
         }
         if (request.method === 'POST') {
-          const input = transferRequest(await readJson(request))
+          const value = await readJson(request)
+          const chat = chatImportRequest(value)
+          if (chat !== undefined) {
+            const exported = await exportRpDistributionChat(chat.target, chat.sessionId)
+            const upload = chatLibrary.importFile({
+              data: new TextEncoder().encode(exported.source),
+              filename: exported.filename,
+            })
+            json(response, 200, {
+              format: 0,
+              operation: 'import-chat',
+              target: exported.target,
+              sourceSessionId: exported.sourceSessionId,
+              importId: upload.id,
+              filename: upload.name,
+              messageCount: upload.messageCount,
+              characterName: exported.characterName,
+              userName: exported.userName,
+            })
+            return
+          }
+          const asset = assetImportRequest(value)
+          if (asset !== undefined) {
+            const imported = await receiveRpDistributionAsset(
+              asset,
+              characterLibrary,
+              presetLibrary,
+              personaLibrary,
+              worldInfoLibrary,
+            )
+            json(response, 200, {
+              format: 0,
+              operation: 'import-asset',
+              target: imported.target,
+              kind: asset.kind,
+              sourceId: asset.id,
+              savedId: imported.savedId,
+              name: imported.name,
+            })
+            return
+          }
+          const input = transferRequest(value)
           const result = await transferToRpDistribution(
             input.target,
             payloadFor(input, characterLibrary, presetLibrary, personaLibrary, worldInfoLibrary),

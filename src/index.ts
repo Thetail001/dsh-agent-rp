@@ -1051,6 +1051,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
           presetLibrary,
           personaLibrary,
           worldInfoLibrary,
+          chatLibrary,
           server,
         )
       })

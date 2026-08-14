@@ -103,6 +103,8 @@ import {
 import {
   RP_DISTRIBUTION_BRIDGE_PATH,
   type RpDistributionAssetKind,
+  type RpDistributionAssetImportResponse,
+  type RpDistributionChatImportResponse,
   type RpDistributionProbeResponse,
   type RpDistributionTransferResponse,
 } from '../rp-distribution-bridge-protocol.ts'
@@ -286,6 +288,12 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly setCharacterArchived: (id: string, archived: boolean) => Promise<CharacterLibraryDetail>
   readonly importCharacterFile: (file: File) => Promise<CharacterLibraryImportResult>
   readonly migrateChat: (sessionId: SessionId, chatFile: File, cardFile?: File, presetId?: string) => Promise<void>
+  readonly migrateRpDistributionChat: (
+    sessionId: SessionId,
+    target: string,
+    remoteSessionId: string,
+    presetId?: string,
+  ) => Promise<void>
   readonly startCharacterSession: (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -978,15 +986,19 @@ function useNarrowCharacterLibrary(): boolean {
   )
 }
 
-function SillyTavernImportDialog({ listPresets, onClose, onImport }: {
+function SillyTavernImportDialog({ listPresets, onClose, onImport, onImportRpDistribution }: {
   readonly listPresets: HeaderProps['listPresets']
   readonly onClose: () => void
   readonly onImport: (chatFile: File, cardFile?: File, presetId?: string) => Promise<void>
+  readonly onImportRpDistribution: (target: string, sessionId: string, presetId?: string) => Promise<void>
 }) {
   const chatRef = useRef<HTMLInputElement | null>(null)
   const cardRef = useRef<HTMLInputElement | null>(null)
   const [chatFile, setChatFile] = useState<File>()
   const [cardFile, setCardFile] = useState<File>()
+  const [sourceMode, setSourceMode] = useState<'jsonl' | 'rp-distribution'>('jsonl')
+  const [rpTarget, setRpTarget] = useState(initialRpDistributionTarget)
+  const [rpSessionId, setRpSessionId] = useState('')
   const { entries: presets, error: presetError, presetId, selectPreset } = usePresetPreference(listPresets)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
@@ -998,9 +1010,9 @@ function SillyTavernImportDialog({ listPresets, onClose, onImport }: {
       background: 'var(--dsw-alias-bg-base, #151518)', border: '1px solid var(--dsw-alias-border-l2, #38383d)',
       borderRadius: '16px', boxShadow: '0 24px 80px rgba(0,0,0,.5)', maxWidth: '520px', padding: '24px', width: 'min(94vw, 520px)',
     }}>
-      <h2 style={{ fontSize: '17px', margin: 0 }}>迁移 SillyTavern 聊天</h2>
+      <h2 style={{ fontSize: '17px', margin: 0 }}>迁移聊天</h2>
       <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '9px 0 20px', opacity: .58 }}>
-        选择导出的 JSONL。角色卡可选；一同选择时，新会话会直接采用这张卡
+        从 SillyTavern JSONL 或本机模块化 RP 会话创建一段可以继续的新会话
       </p>
       {error !== undefined && <p role="alert" style={{ color: '#e47a7a', fontSize: '12px', margin: '0 0 12px' }}>{error}</p>}
       <input ref={chatRef} type="file" accept=".jsonl,application/x-ndjson" hidden onChange={event => {
@@ -1013,14 +1025,36 @@ function SillyTavernImportDialog({ listPresets, onClose, onImport }: {
         event.currentTarget.value = ''
         if (file !== undefined) setCardFile(file)
       }} />
-      <div style={{ display: 'grid', gap: '8px' }}>
-        <button type="button" disabled={busy} onClick={() => { chatRef.current?.click() }} style={{ ...secondaryButtonStyle, textAlign: 'left' }}>
-          {chatFile === undefined ? '选择聊天记录 JSONL' : `聊天记录 · ${chatFile.name}`}
-        </button>
-        <button type="button" disabled={busy} onClick={() => { cardRef.current?.click() }} style={{ ...secondaryButtonStyle, textAlign: 'left' }}>
-          {cardFile === undefined ? '选择角色卡（可选）' : `角色卡 · ${cardFile.name}`}
-        </button>
+      <div style={{ display: 'grid', gap: '8px', gridTemplateColumns: '1fr 1fr', marginBottom: '14px' }}>
+        <button type="button" disabled={busy} aria-pressed={sourceMode === 'jsonl'} onClick={() => { setSourceMode('jsonl') }}
+          style={sourceMode === 'jsonl' ? primaryButtonStyle : secondaryButtonStyle}>SillyTavern JSONL</button>
+        <button type="button" disabled={busy} aria-pressed={sourceMode === 'rp-distribution'} onClick={() => { setSourceMode('rp-distribution') }}
+          style={sourceMode === 'rp-distribution' ? primaryButtonStyle : secondaryButtonStyle}>模块化 RP 会话</button>
       </div>
+      {sourceMode === 'jsonl'
+        ? <div style={{ display: 'grid', gap: '8px' }}>
+            <button type="button" disabled={busy} onClick={() => { chatRef.current?.click() }} style={{ ...secondaryButtonStyle, textAlign: 'left' }}>
+              {chatFile === undefined ? '选择聊天记录 JSONL' : `聊天记录 · ${chatFile.name}`}
+            </button>
+            <button type="button" disabled={busy} onClick={() => { cardRef.current?.click() }} style={{ ...secondaryButtonStyle, textAlign: 'left' }}>
+              {cardFile === undefined ? '选择角色卡（可选）' : `角色卡 · ${cardFile.name}`}
+            </button>
+          </div>
+        : <div style={{ display: 'grid', gap: '10px' }}>
+            <label style={{ display: 'grid', fontSize: '12px', gap: '6px' }}>
+              模块化 RP 地址
+              <input value={rpTarget} onChange={event => { setRpTarget(event.target.value) }} placeholder="http://127.0.0.1:3092"
+                style={settingsFieldStyle} />
+            </label>
+            <label style={{ display: 'grid', fontSize: '12px', gap: '6px' }}>
+              原会话 ID
+              <input value={rpSessionId} onChange={event => { setRpSessionId(event.target.value) }} placeholder="session-…"
+                style={settingsFieldStyle} />
+            </label>
+            <p style={{ fontSize: '11px', lineHeight: 1.55, margin: 0, opacity: .5 }}>
+              原会话需要仍在本机模块化 RP 中可读取；迁移不会修改它
+            </p>
+          </div>}
       <label style={{ display: 'block', fontSize: '12px', fontWeight: 620, marginTop: '16px', opacity: .68 }}>
         对话预设
         <select aria-label="迁移对话预设" value={presetId} onChange={event => { selectPreset(event.target.value) }} style={{
@@ -1048,11 +1082,14 @@ function SillyTavernImportDialog({ listPresets, onClose, onImport }: {
       </div>
       <div style={{ display: 'flex', gap: '9px', justifyContent: 'flex-end', marginTop: '22px' }}>
         <button type="button" disabled={busy} onClick={onClose} style={secondaryButtonStyle}>取消</button>
-        <button type="button" disabled={busy || chatFile === undefined} onClick={() => {
-          if (chatFile === undefined) return
+        <button type="button" disabled={busy || (sourceMode === 'jsonl' ? chatFile === undefined : rpTarget.trim() === '' || rpSessionId.trim() === '')} onClick={() => {
           setBusy(true)
           setError(undefined)
-          void onImport(chatFile, cardFile, presetId === '' ? undefined : presetId).then(onClose, (reason: unknown) => {
+          const selectedPreset = presetId === '' ? undefined : presetId
+          const operation = sourceMode === 'jsonl'
+            ? onImport(chatFile!, cardFile, selectedPreset)
+            : onImportRpDistribution(rpTarget, rpSessionId, selectedPreset)
+          void operation.then(onClose, (reason: unknown) => {
             setError(reason instanceof Error ? reason.message : String(reason))
             setBusy(false)
           })
@@ -1223,6 +1260,7 @@ type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick
   | 'setCharacterArchived'
   | 'importCharacterFile'
   | 'migrateChat'
+  | 'migrateRpDistributionChat'
   | 'startCharacterSession'
   | 'listPresets'
   | 'listPersonas'
@@ -1235,7 +1273,8 @@ type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick
 
 function BlankRoleplayLauncher({
   session, sessionId,
-  listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, startCharacterSession,
+  listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, migrateRpDistributionChat,
+  startCharacterSession,
   listPresets, listPersonas, savePersona, deletePersona,
   workspaceSettings, workspaceList,
 }: BlankRoleplayLauncherProps) {
@@ -1283,7 +1322,13 @@ function BlankRoleplayLauncher({
       deletePersona={deletePersona}
     />}
     {migrationOpen && <SillyTavernImportDialog listPresets={listPresets} onClose={() => { setMigrationOpen(false) }}
-      onImport={(chatFile, cardFile, presetId) => migrateChat(sessionId, chatFile, cardFile, presetId)} />}
+      onImport={(chatFile, cardFile, presetId) => migrateChat(sessionId, chatFile, cardFile, presetId)}
+      onImportRpDistribution={(target, remoteSessionId, presetId) => migrateRpDistributionChat(
+        sessionId,
+        target,
+        remoteSessionId,
+        presetId,
+      )} />}
   </>
 }
 
@@ -1303,6 +1348,11 @@ interface RpDistributionBridgeSectionProps extends PropsRuntime<'settings.sectio
     kind: RpDistributionAssetKind,
     id: string,
   ) => Promise<RpDistributionTransferResponse>
+  readonly receive: (
+    target: string,
+    kind: RpDistributionAssetKind,
+    id: string,
+  ) => Promise<RpDistributionAssetImportResponse>
 }
 
 const settingsFieldStyle = {
@@ -1763,6 +1813,17 @@ function initialRpDistributionTarget(): string {
   }
 }
 
+function validRpDistributionRemoteAssets(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const assets = value as Record<string, unknown>
+  return ['characters', 'presets', 'personas', 'worldInfos'].every((key) => {
+    const entries = assets[key]
+    return Array.isArray(entries) && entries.every(entry => typeof entry === 'object' && entry !== null
+      && !Array.isArray(entry) && typeof (entry as Record<string, unknown>).id === 'string'
+      && typeof (entry as Record<string, unknown>).name === 'string')
+  })
+}
+
 function RpDistributionBridgeSection({
   listCharacters,
   listPresets,
@@ -1770,6 +1831,7 @@ function RpDistributionBridgeSection({
   listWorldInfos,
   probe,
   transfer,
+  receive,
 }: RpDistributionBridgeSectionProps) {
   const [target, setTarget] = useState(initialRpDistributionTarget)
   const [connected, setConnected] = useState<RpDistributionProbeResponse>()
@@ -1818,27 +1880,55 @@ function RpDistributionBridgeSection({
       setError(reason instanceof Error ? reason.message : String(reason))
     }).finally(() => { setBusy(undefined) })
   }
+  const copyBack = (kind: RpDistributionAssetKind, id: string, label: string): void => {
+    if (connected === undefined) return
+    const key = `back:${kind}:${id}`
+    setBusy(key)
+    setError(undefined)
+    setNotice(undefined)
+    void receive(connected.target, kind, id).then(async (result) => {
+      const [nextCharacters, nextPresets, nextPersonas, nextWorldInfos] = await Promise.all([
+        Promise.all([listCharacters('active'), listCharacters('archived')]).then(([active, archived]) => [...active, ...archived]),
+        listPresets(),
+        listPersonas(),
+        listWorldInfos(),
+      ])
+      setCharacters(nextCharacters)
+      setPresets(nextPresets)
+      setPersonas(nextPersonas)
+      setWorldInfos(nextWorldInfos)
+      setNotice(`已把「${result.name || label}」复制到 Agent RP`)
+    }).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => { setBusy(undefined) })
+  }
   const group = (
     title: string,
     kind: RpDistributionAssetKind,
     entries: readonly { readonly id: string; readonly name: string }[],
+    direction: 'out' | 'back',
   ): JSX.Element => <div style={{ marginTop: '20px' }}>
     <h3 style={{ fontSize: '13px', margin: '0 0 8px' }}>{title}<span style={{ fontWeight: 400, marginLeft: '6px', opacity: .45 }}>{entries.length}</span></h3>
     {entries.length === 0
-      ? <p style={{ fontSize: '12px', margin: 0, opacity: .5 }}>Agent RP 中还没有可复制的内容</p>
+      ? <p style={{ fontSize: '12px', margin: 0, opacity: .5 }}>
+          {direction === 'out' ? 'Agent RP 中还没有可复制的内容' : '模块化 RP 中还没有可复制的内容'}
+        </p>
       : <div style={{ border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '10px', overflow: 'hidden' }}>
         {entries.map((entry, index) => {
-          const key = `${kind}:${entry.id}`
+          const key = direction === 'out' ? `${kind}:${entry.id}` : `back:${kind}:${entry.id}`
           return <div key={key} style={{
             alignItems: 'center', borderTop: index === 0 ? 'none' : '1px solid var(--dsw-alias-border-l2, #3d3d43)',
             display: 'flex', gap: '12px', padding: '9px 11px',
           }}>
             <span style={{ flex: '1 1 auto', fontSize: '13px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</span>
-            <button type="button" disabled={busy !== undefined} onClick={() => { copy(kind, entry.id, entry.name) }} style={{
+            <button type="button" disabled={busy !== undefined} onClick={() => {
+              if (direction === 'out') copy(kind, entry.id, entry.name)
+              else copyBack(kind, entry.id, entry.name)
+            }} style={{
               background: `color-mix(in srgb, ${color} 11%, transparent)`,
               border: `1px solid color-mix(in srgb, ${color} 28%, transparent)`, borderRadius: '7px',
               color: 'inherit', cursor: busy === undefined ? 'pointer' : 'default', font: 'inherit', fontSize: '12px', padding: '5px 9px',
-            }}>{busy === key ? '正在复制…' : '复制过去'}</button>
+            }}>{busy === key ? '正在复制…' : direction === 'out' ? '复制过去' : '复制回来'}</button>
           </div>
         })}
       </div>}
@@ -1846,7 +1936,7 @@ function RpDistributionBridgeSection({
   return <section style={{ margin: '0 auto', maxWidth: '720px', padding: '8px 4px 32px' }}>
     <h2 style={{ fontSize: '18px', margin: '0 0 8px' }}>RP 互通</h2>
     <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '0 0 18px', opacity: .62 }}>
-      把 Agent RP 保存的原始角色卡、预设、Persona 和世界书复制到本机运行的 dsh-rp-distribution。源库和现有会话不会改变
+      在 Agent RP 与本机模块化 RP 之间复制角色卡、预设、Persona 和世界书。复制不会修改来源库或现有会话
     </p>
     <div style={{ alignItems: 'end', display: 'grid', gap: '8px', gridTemplateColumns: 'minmax(0, 1fr) auto' }}>
       <label style={{ display: 'grid', fontSize: '12px', gap: '6px' }}>
@@ -1865,10 +1955,16 @@ function RpDistributionBridgeSection({
     {notice !== undefined && <p role="status" style={{ color: 'var(--dsw-alias-state-success, #4fba83)', fontSize: '12px', margin: '13px 0 0' }}>{notice}</p>}
     {error !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', margin: '13px 0 0' }}>{error}</p>}
     {connected !== undefined && <>
-      {group('角色卡', 'character', characters.map(entry => ({ id: entry.id, name: entry.displayName })))}
-      {group('预设', 'preset', presets)}
-      {group('Persona', 'persona', personas)}
-      {group('世界书', 'world-info', worldInfos)}
+      <h3 style={{ fontSize: '14px', margin: '24px 0 0' }}>Agent RP → 模块化 RP</h3>
+      {group('角色卡', 'character', characters.map(entry => ({ id: entry.id, name: entry.displayName })), 'out')}
+      {group('预设', 'preset', presets, 'out')}
+      {group('Persona', 'persona', personas, 'out')}
+      {group('世界书', 'world-info', worldInfos, 'out')}
+      <h3 style={{ fontSize: '14px', margin: '28px 0 0' }}>模块化 RP → Agent RP</h3>
+      {group('角色卡', 'character', connected.remoteAssets.characters, 'back')}
+      {group('预设', 'preset', connected.remoteAssets.presets, 'back')}
+      {group('Persona', 'persona', connected.remoteAssets.personas, 'back')}
+      {group('世界书', 'world-info', connected.remoteAssets.worldInfos, 'back')}
     </>}
   </section>
 }
@@ -1876,7 +1972,8 @@ function RpDistributionBridgeSection({
 function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
   configureWorldInfo, importWorldInfo,
-  listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, startCharacterSession,
+  listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, migrateRpDistributionChat,
+  startCharacterSession,
   listPresets, listPersonas, savePersona, deletePersona, applyPersona, loadModelCapabilities,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
@@ -2009,7 +2106,13 @@ function RoleplayHeader({
       }}>当前状态</button>}
     </div>
     {migrationOpen && <SillyTavernImportDialog listPresets={listPresets} onClose={() => { setMigrationOpen(false) }}
-      onImport={(chatFile, cardFile, presetId) => migrateChat(sessionId, chatFile, cardFile, presetId)} />}
+      onImport={(chatFile, cardFile, presetId) => migrateChat(sessionId, chatFile, cardFile, presetId)}
+      onImportRpDistribution={(target, remoteSessionId, presetId) => migrateRpDistributionChat(
+        sessionId,
+        target,
+        remoteSessionId,
+        presetId,
+      )} />}
     {personaOpen && <PersonaManagerDialog
       {...(projection.persona === undefined ? {} : { current: projection.persona })}
       listPersonas={listPersonas}
@@ -5765,6 +5868,25 @@ export function apply(ctx: ClientContext): void {
     ctx.sessions.open(sessionId)
     return sessionId
   }
+  const retainRpDistributionChat = async (
+    target: string,
+    sessionId: string,
+  ): Promise<RpDistributionChatImportResponse> => {
+    const response = await fetch(RP_DISTRIBUTION_BRIDGE_PATH, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ format: 0, operation: 'import-chat', target, sessionId }),
+    })
+    const value = await response.json() as Partial<RpDistributionChatImportResponse> & { readonly error?: string }
+    if (!response.ok || value.format !== 0 || value.operation !== 'import-chat'
+      || typeof value.target !== 'string' || typeof value.sourceSessionId !== 'string'
+      || typeof value.importId !== 'string' || typeof value.filename !== 'string'
+      || typeof value.messageCount !== 'number' || typeof value.characterName !== 'string'
+      || typeof value.userName !== 'string') {
+      throw new Error(value.error ?? `模块化 RP 会话迁移失败（${response.status}）`)
+    }
+    return value as RpDistributionChatImportResponse
+  }
   const startCharacterSession = async (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -5841,6 +5963,22 @@ export function apply(ctx: ClientContext): void {
       ...(presetId === undefined ? {} : { presetId }),
     })
   }
+  const migrateRpDistributionChat = async (
+    sourceSessionId: SessionId,
+    target: string,
+    remoteSessionId: string,
+    presetId?: string,
+  ): Promise<void> => {
+    const imported = await retainRpDistributionChat(target, remoteSessionId)
+    try { window.localStorage.setItem(RP_DISTRIBUTION_TARGET_KEY, imported.target) } catch {}
+    await launchRoleplaySession({
+      format: 0,
+      sourceSessionId,
+      kind: 'chat',
+      importId: imported.importId,
+      ...(presetId === undefined ? {} : { presetId }),
+    })
+  }
   const migrateSillyTavernDraft: MigrateSillyTavernDraft = async (sourceSessionId, attachments, inputActions, presetId) => {
     const chatAttachment = attachments.find(attachment => attachment.kind === 'file' && /\.jsonl$/iu.test(attachment.file.name))
     if (chatAttachment === undefined) throw new Error('没有找到 JSONL 聊天记录')
@@ -5866,6 +6004,17 @@ export function apply(ctx: ClientContext): void {
     const summary = ctx.sessions.list.getSnapshot().byId[sourceSessionId]
     if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话迁移聊天')
     await migrateChat(sourceSessionId, chatFile, cardFile, presetId)
+    await archiveConsumedBlankSession(sourceSessionId)
+  }
+  const migrateRpDistributionChatFromBlankSession = async (
+    sourceSessionId: SessionId,
+    target: string,
+    remoteSessionId: string,
+    presetId?: string,
+  ): Promise<void> => {
+    const summary = ctx.sessions.list.getSnapshot().byId[sourceSessionId]
+    if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话迁移聊天')
+    await migrateRpDistributionChat(sourceSessionId, target, remoteSessionId, presetId)
     await archiveConsumedBlankSession(sourceSessionId)
   }
   const personaLibraryJson = async <T,>(
@@ -6082,7 +6231,8 @@ export function apply(ctx: ClientContext): void {
     const value = await response.json() as Partial<RpDistributionProbeResponse> & { readonly error?: string }
     if (!response.ok || value.format !== 0 || typeof value.target !== 'string'
       || typeof value.generatedAt !== 'number' || typeof value.experienceCount !== 'number'
-      || typeof value.componentCount !== 'number' || typeof value.capabilityCount !== 'number') {
+      || typeof value.componentCount !== 'number' || typeof value.capabilityCount !== 'number'
+      || !validRpDistributionRemoteAssets(value.remoteAssets)) {
       throw new Error(value.error ?? `模块化 RP 连接失败（${response.status}）`)
     }
     return value as RpDistributionProbeResponse
@@ -6106,9 +6256,27 @@ export function apply(ctx: ClientContext): void {
     }
     return value as RpDistributionTransferResponse
   }
+  const receiveRpDistribution = async (
+    target: string,
+    kind: RpDistributionAssetKind,
+    id: string,
+  ): Promise<RpDistributionAssetImportResponse> => {
+    const response = await fetch(RP_DISTRIBUTION_BRIDGE_PATH, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ format: 0, operation: 'import-asset', target, kind, id }),
+    })
+    const value = await response.json() as Partial<RpDistributionAssetImportResponse> & { readonly error?: string }
+    if (!response.ok || value.format !== 0 || value.operation !== 'import-asset'
+      || typeof value.target !== 'string' || value.kind !== kind || value.sourceId !== id
+      || typeof value.savedId !== 'string' || typeof value.name !== 'string') {
+      throw new Error(value.error ?? `RP 资产复制失败（${response.status}）`)
+    }
+    return value as RpDistributionAssetImportResponse
+  }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} migrateRpDistributionChat={migrateRpDistributionChat} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -6122,10 +6290,10 @@ export function apply(ctx: ClientContext): void {
     label: 'RP 互通',
   }, props => <RpDistributionBridgeSection {...props} listCharacters={listCharacters} listPresets={listPresets}
     listPersonas={listPersonas} listWorldInfos={listWorldInfos}
-    probe={probeRpDistribution} transfer={transferRpDistribution} />))
+    probe={probeRpDistribution} transfer={transferRpDistribution} receive={receiveRpDistribution} />))
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left', id: 'agent-rp-blank-launcher', order: -100,
-  }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} migrateRpDistributionChat={migrateRpDistributionChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-tavern-variables',
   }, () => null))
