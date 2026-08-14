@@ -13,6 +13,7 @@ export interface RegexCharacter {
 export type CharacterDisplaySegment =
   | { readonly kind: 'markdown'; readonly text: string }
   | { readonly kind: 'html'; readonly source: string }
+  | { readonly kind: 'inline-html'; readonly source: string }
 
 interface SourceLine {
   readonly start: number
@@ -63,6 +64,29 @@ function stripUnknownTagsOutsideCode(value: string): string {
   return result
 }
 
+function hasDisplayHtmlOutsideCode(value: string): boolean {
+  let cursor = 0
+  let codeTicks = 0
+  while (cursor < value.length) {
+    if (value[cursor] === '`') {
+      let end = cursor + 1
+      while (value[end] === '`') end += 1
+      const ticks = end - cursor
+      if (codeTicks === 0) codeTicks = ticks
+      else if (ticks === codeTicks) codeTicks = 0
+      cursor = end
+      continue
+    }
+    if (codeTicks === 0 && value[cursor] === '<') {
+      const tag = value.slice(cursor).match(/^<\/?([A-Za-z][A-Za-z0-9:_-]*)(?:\s[^<>]*?)?\s*\/?>/u)
+      const name = tag?.[1]?.toLowerCase()
+      if (name !== undefined && HTML_DISPLAY_TAGS.has(name)) return true
+    }
+    cursor += 1
+  }
+  return false
+}
+
 /**
  * Match SillyTavern's Markdown display for model-defined wrapper elements.
  * Unknown HTML-like tags are discarded there while their text remains. Code
@@ -106,6 +130,10 @@ function isFrontendDocument(info: string, source: string): boolean {
 function appendMarkdown(segments: CharacterDisplaySegment[], text: string): void {
   const normalized = normalizeSillyTavernMarkdown(text)
   if (normalized === '') return
+  if (hasDisplayHtmlOutsideCode(normalized)) {
+    segments.push({ kind: 'inline-html', source: normalized })
+    return
+  }
   const previous = segments.at(-1)
   if (previous?.kind === 'markdown') {
     segments[segments.length - 1] = { kind: 'markdown', text: previous.text + normalized }
@@ -247,13 +275,17 @@ function runScripts(
   userName?: string,
   presetScripts: readonly ImportedRegexScript[] = [],
 ): string {
-  return [...presetScripts, ...card.frontend.regexScripts].reduce((text, script) => {
+  const scripts = [...presetScripts, ...card.frontend.regexScripts]
+  const normalized = scripts.reduce((text, script) => {
     if (script.disabled || !script.placement.includes(placement) || !inDepth(script, depth)) return text
-    const selected = view === 'display'
-      ? script.markdownOnly
-      : script.promptOnly
-    return selected ? applyScript(text, script, card, userName) : text
+    return !script.markdownOnly && !script.promptOnly ? applyScript(text, script, card, userName) : text
   }, raw)
+  return scripts.reduce((text, script) => {
+    if (script.disabled || !script.placement.includes(placement) || !inDepth(script, depth)) return text
+    return (view === 'display' ? script.markdownOnly : script.promptOnly)
+      ? applyScript(text, script, card, userName)
+      : text
+  }, normalized)
 }
 
 /** Apply character display-only scripts without executing their HTML. */

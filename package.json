@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-agent-rp",
-  "version": "0.0.0-rc.95",
+  "version": "0.0.0-rc.96",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -100,7 +100,9 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "3.18.1",
+    "dompurify": "3.3.0",
     "fflate": "0.8.3",
+    "marked": "16.4.2",
     "png-chunk-text": "1.0.0",
     "png-chunks-extract": "1.0.0",
     "yaml": "2.9.0"

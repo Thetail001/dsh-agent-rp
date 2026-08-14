@@ -11,6 +11,8 @@ import type { CommandRowProps, IConversation, TurnTailOwnerProps } from '@deepse
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
 import { createRoot, type Root } from 'react-dom/client'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
@@ -680,6 +682,21 @@ function cardFrameSource(
   return `<!doctype html><html><head>${head}</head><body>${adapted}</body></html>`
 }
 
+function inlineCardFrameSource(
+  source: string,
+  statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined,
+  character?: CharacterLibraryDetail,
+): string {
+  const markdown = marked.parse(source, { async: false, breaks: true, gfm: true }) as string
+  const sanitized = DOMPurify.sanitize(markdown, {
+    ADD_TAGS: ['style'],
+    FORBID_ATTR: ['srcdoc'],
+    FORBID_TAGS: ['base', 'embed', 'form', 'iframe', 'link', 'meta', 'object', 'script'],
+    USE_PROFILES: { html: true },
+  })
+  return cardFrameSource(sanitized, statData, character)
+}
+
 function CharacterDisplay({ segments, statData, characterName, character }: {
   readonly segments: readonly CharacterDisplaySegment[]
   readonly statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined
@@ -694,7 +711,9 @@ function CharacterDisplay({ segments, statData, characterName, character }: {
           title={`${characterName}的轻前端界面 ${index + 1}`}
           data-agent-rp-frame
           sandbox="allow-scripts"
-          srcDoc={cardFrameSource(segment.source, statData, character)}
+          srcDoc={segment.kind === 'html'
+            ? cardFrameSource(segment.source, statData, character)
+            : inlineCardFrameSource(segment.source, statData, character)}
           style={{ background: 'transparent', border: 0, colorScheme: 'dark', display: 'block', height: '72px', maxWidth: '100%', width: '100%' }}
         />)}
   </div>

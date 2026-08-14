@@ -345,6 +345,46 @@ test('keeps display-only and prompt-only execution separate', () => {
   assert.equal(renderCharacterPromptView('old', character, AI_OUTPUT_PLACEMENT, 0, '宝宝', prompt), 'new')
 })
 
+test('runs ordinary message scripts before view-specific scripts', () => {
+  const ordinary = { ...base, findRegex: '/<StatusBlocks>([\\s\\S]*?)<\\/StatusBlocks>/gu', replaceString: '$1', markdownOnly: false }
+  const display = { ...base, findRegex: '/状态：(.+)/gu', replaceString: '```html\n<details><summary>状态</summary>$1</details>\n```' }
+  const prompt = { ...base, findRegex: '/状态：(.+)/gu', replaceString: '状态记录：$1', markdownOnly: false, promptOnly: true }
+  const source = '<StatusBlocks>状态：平静</StatusBlocks>'
+  const noCardScripts = { ...character, frontend: { ...character.frontend, regexScripts: [] } }
+
+  assert.equal(renderCharacterDisplay(source, noCardScripts, AI_OUTPUT_PLACEMENT, 0, '宝宝', [ordinary, display]),
+    '```html\n<details><summary>状态</summary>平静</details>\n```')
+  assert.equal(renderCharacterPromptView(source, noCardScripts, AI_OUTPUT_PLACEMENT, 0, '宝宝', [ordinary, prompt]),
+    '状态记录：平静')
+})
+
+test('runs the same two regex phases inside the isolated Tavern runtime', () => {
+  const ordinary = { ...base, findRegex: '/<StatusBlocks>([\\s\\S]*?)<\\/StatusBlocks>/gu', replaceString: '$1', markdownOnly: false }
+  const display = { ...base, findRegex: '/状态：(.+)/gu', replaceString: '<details><summary>状态</summary>$1</details>' }
+  const html = tavernScriptFrameSource({
+    id: 'status-runtime', name: '状态栏', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, '', {
+    scriptId: 'status-runtime', scriptName: '状态栏', scriptInfo: '', buttons: [],
+    characterName: '白露', characterId: 'bailu.png', chatId: 'session-test',
+    approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {},
+    worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [],
+    messages: [{ messageId: 0, seq: 1, role: 'assistant', text: '', isHidden: false, data: {}, extra: {} }],
+    displayRegexScripts: [ordinary, display],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const format = context.formatAsDisplayedMessage as (text: string, option: { readonly message_id: number }) => string
+
+  assert.equal(format('<StatusBlocks>状态：平静</StatusBlocks>', { message_id: 0 }),
+    '<details><summary>状态</summary>平静</details>')
+})
+
 test('supports raw and escaped macro substitution in the find expression', () => {
   const source = '宝宝.(白露)'
   const raw = [{ ...base, findRegex: String.raw`/{{user}}\.\({{char}}\)/gu`, replaceString: 'raw', substituteRegex: 1 }]
@@ -378,9 +418,14 @@ test('keeps prose and each fenced frontend document in source order', () => {
   ])
 })
 
-test('leaves ordinary fenced code and inline HTML in native Markdown', () => {
-  const source = '前文\n\n```ts\nconst body = "<body>"\n```\n\n<div>片段</div>'
+test('keeps HTML examples in fenced code as native Markdown', () => {
+  const source = '前文\n\n```ts\nconst body = "<body>"\n```'
   assert.deepEqual(splitCharacterDisplay(source), [{ kind: 'markdown', text: source }])
+})
+
+test('isolates ordinary inline HTML for sanitized rendering', () => {
+  const source = '正文\n\n<details><summary>状态</summary>平静</details>'
+  assert.deepEqual(splitCharacterDisplay(source), [{ kind: 'inline-html', source }])
 })
 
 test('hides model-defined wrapper tags while preserving their displayed text', () => {
