@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 import { constants } from 'node:fs'
-import { access, chmod, copyFile, link, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { access, chmod, copyFile, link, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, parse, resolve } from 'node:path'
 
 const marker = 'dsh-agent-rp Android hard-link fallback'
 const restrictedLinkCodes = '["EACCES", "EPERM", "EMLINK", "ENOSYS"]'
@@ -112,14 +112,52 @@ async function supportsHardLinks() {
   }
 }
 
+async function supportsAncestorDirectorySync() {
+  if (
+    process.env.DSH_AGENT_RP_FORCE_HARDLINK_FALLBACK === '1' ||
+    process.env.DSH_AGENT_RP_FORCE_ANCESTOR_SYNC_FALLBACK === '1'
+  ) {
+    return false
+  }
+  const home = resolve(homedir())
+  const root = parse(home).root
+  let level = home
+  while (level !== root) {
+    const parent = dirname(level)
+    let handle
+    try {
+      handle = await open(parent, constants.O_RDONLY)
+      await handle.sync()
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? error.code : undefined
+      if (code === 'EACCES' || code === 'EPERM' || code === 'ENOSYS') return false
+      throw error
+    } finally {
+      await handle?.close()
+    }
+    level = parent
+  }
+  return true
+}
+
 const dshRoot = process.argv[2] === undefined ? undefined : resolve(process.argv[2])
 if (dshRoot === undefined) fail('usage: node termux-compat.mjs <global DSH package root>')
 await access(join(dshRoot, 'package.json'), constants.R_OK)
 
-if (await supportsHardLinks()) {
+const hardLinks = await supportsHardLinks()
+const ancestorDirectorySync = hardLinks ? await supportsAncestorDirectorySync() : true
+
+if (hardLinks) {
   process.stdout.write('当前文件系统支持硬链接，不需要会话兼容补丁。\n')
 } else {
-  process.stdout.write('当前安卓文件系统拒绝硬链接，正在启用会话与角色卡存储兼容层。\n')
+  process.stdout.write('当前安卓文件系统拒绝硬链接，正在启用会话存储兼容层。\n')
   await patchFile(await packageEntry(dshRoot, '@deepseek-ai/dsh-session-persistence-jsonl'), patchSession)
+}
+
+if (hardLinks && ancestorDirectorySync) {
+  process.stdout.write('当前文件系统支持角色卡与附件所需的持久化操作。\n')
+} else {
+  const reason = hardLinks ? '系统祖先目录不允许同步' : '文件系统拒绝硬链接'
+  process.stdout.write(`角色卡与附件存储受限（${reason}），正在启用兼容层。\n`)
   await patchFile(await packageEntry(dshRoot, '@deepseek-ai/dsh-attachment-local'), patchAttachment)
 }

@@ -47,7 +47,13 @@ curl -fsSL https://raw.githubusercontent.com/hewzhew/dsh-agent-rp/main/scripts/i
 dsh-agent-rp --port 3080
 ```
 
+若启动或导入角色卡时遇到问题，运行 `dsh-agent-rp-doctor` 即可得到一份可直接贴到 Issue 的脱敏体检结果。它只检查版本、模块和 Android 文件系统能力，不读取令牌、角色卡或会话内容。
+
 随后在同一部手机的浏览器打开 `http://127.0.0.1:3080`。重新运行安装命令即可更新；角色卡和会话位于 `~/.dsh`，安装器不会删除它们。当前路线只承诺角色聊天所需能力，不把老设备上的 bash 沙箱或编码 Agent 计入手机预览范围。
+
+需要长时间把页面留在后台时，可以先在 Termux 运行 `termux-wake-lock`，结束后运行 `termux-wake-unlock`，避免系统过早挂起本地服务；这不会绕过 Android 的电池优化设置。
+
+页面正常打开后，可以在 Chrome 或 Edge 的菜单中选择“添加到主屏幕”或“安装应用”。DSH 已提供全屏 Web App 清单，图标启动后仍会连接 Termux 中的本地服务；重启手机后需要先重新运行 `dsh-agent-rp --port 3080`。
 
 ## 第一次开聊
 

@@ -79,6 +79,8 @@ support_dir="$HOME/.local/share/dsh-agent-rp"
 bin_dir="$HOME/.local/bin"
 mkdir -p "$support_dir" "$bin_dir"
 curl -fsSL "$AGENT_RP_RAW_BASE/scripts/termux-compat.mjs" -o "$support_dir/termux-compat.mjs"
+curl -fsSL "$AGENT_RP_RAW_BASE/scripts/doctor-termux.sh" -o "$bin_dir/dsh-agent-rp-doctor"
+chmod 700 "$bin_dir/dsh-agent-rp-doctor"
 node "$support_dir/termux-compat.mjs" "$dsh_root"
 
 launcher="$bin_dir/dsh-agent-rp"
@@ -100,4 +102,5 @@ node --expose-internals "$dsh_root/lib/bin.js" plugin --profile web add "$AGENT_
 printf '\n\033[1;32m安装完成。\033[0m\n'
 printf '运行：\033[1mdsh-agent-rp --port 3080\033[0m\n'
 printf '然后用手机浏览器打开：\033[1mhttp://127.0.0.1:3080\033[0m\n'
+printf '遇到问题时运行：\033[1mdsh-agent-rp-doctor\033[0m\n'
 printf '更新插件时重新运行本安装命令即可；角色卡和会话保存在 ~/.dsh，不会被覆盖。\n'
