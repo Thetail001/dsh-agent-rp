@@ -4213,6 +4213,9 @@ function tavernScriptSnapshot(
       character: state?.worldbookBindings?.character ?? { primary: characterBook?.name ?? null, additional: [] },
       chat: state?.worldbookBindings?.chat ?? null,
     },
+    activeWorldbookEntries: projection.worldInfo.books.flatMap(book => book.entries
+      .filter(entry => entry.active && !entry.deleted)
+      .map(entry => `${book.name}.${tavernWorldbookEntry(entry).uid}`)),
     messages: (state?.messages ?? []).map((entry, index, entries) => ({
       ...entry,
       data: index === entries.length - 1 ? message : {},
@@ -4363,6 +4366,7 @@ function TavernScriptRuntime({
       scopes: snapshot.scopes, messages: snapshot.messages,
       displayRegexScripts: snapshot.displayRegexScripts,
       worldbooks: snapshot.worldbooks, worldbookBindings: snapshot.worldbookBindings,
+      activeWorldbookEntries: snapshot.activeWorldbookEntries,
       preset: snapshot.preset,
     }, '*')
   }

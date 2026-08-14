@@ -138,6 +138,7 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
     },
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
     worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [],
     messages: [],
     displayRegexScripts: [base],
   })
@@ -224,6 +225,7 @@ window.__acceptance = generate({
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
     worldbooks: {},
     worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [],
     messages: [], displayRegexScripts: [],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
@@ -252,6 +254,65 @@ window.__acceptance = generate({
   const actions = (context.posted as Record<string, unknown>[]).map(message => message.action)
   assert.ok(actions.includes('generation-preview'))
   assert.ok(!actions.includes('generate'))
+})
+
+test('exposes worldbook entries and precise activation evidence to Tavern scripts', async () => {
+  const script = String.raw`
+window.__acceptance = Promise.all([
+  getLorebookEntries('规则书'),
+  getLorebookEntries('规则书', { filter: { type: 'constant' } }),
+]).then(([entries, constants]) => ({
+  entries,
+  constants,
+  activated: SillyTavern.getContext().chatMetadata.wi_activated,
+}));
+`
+  const html = tavernScriptFrameSource({
+    id: 'worldbook-reader', name: '世界书读取', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'worldbook-reader', scriptName: '世界书读取', scriptInfo: '', buttons: [],
+    characterName: '白露', characterId: 'bailu.png', chatId: 'session-test',
+    approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: { own: 'value' }, message: {}, script: {} },
+    worldbooks: {
+      规则书: [{
+        uid: 7, name: '常驻规则', enabled: true,
+        strategy: {
+          type: 'constant', keys: ['规则'],
+          keys_secondary: { logic: 'and_any', keys: ['附加'] }, scan_depth: 2,
+        },
+        position: { type: 'before_character_definition', role: 'system', depth: 4, order: 23 },
+        content: '不得遗忘。', probability: 100,
+        recursion: { prevent_incoming: false, prevent_outgoing: true, delay_until: null },
+        effect: { sticky: 2, cooldown: null, delay: null },
+      }],
+    },
+    worldbookBindings: { global: ['规则书'], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: ['规则书.7'], messages: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const result = JSON.parse(JSON.stringify(await context.__acceptance)) as {
+    entries: Record<string, unknown>[]
+    constants: Record<string, unknown>[]
+    activated: string[]
+  }
+  assert.deepEqual(result.activated, ['规则书.7'])
+  assert.equal(result.entries.length, 1)
+  assert.deepEqual(result.constants, result.entries)
+  assert.deepEqual(result.entries[0], {
+    uid: 7, display_index: 0, comment: '常驻规则', enabled: true, type: 'constant',
+    position: 'before_character_definition', depth: null, order: 23, probability: 100,
+    keys: ['规则'], key: ['规则'], logic: 'and_any', filters: ['附加'], scan_depth: 2,
+    case_sensitive: 'same_as_global', match_whole_words: 'same_as_global',
+    use_group_scoring: 'same_as_global', automation_id: null,
+    exclude_recursion: false, prevent_recursion: true, delay_until_recursion: false,
+    content: '不得遗忘。', group: '', group_prioritized: false, group_weight: 100,
+    sticky: 2, cooldown: null, delay: null, constant: true, disable: false,
+  })
 })
 
 test('runs preset scripts before character scripts for the selected view', () => {
