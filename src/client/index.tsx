@@ -332,6 +332,64 @@ function useRoleplayExpression(sessionId: SessionId | undefined): RoleplayExpres
   }, () => sessionId === undefined ? 'default' : readRoleplayExpression(sessionId), () => 'default')
 }
 
+const roleplayPresetPreferenceKey = 'dsh.agent-rp.preset'
+
+function readRoleplayPresetPreference(): string {
+  const value = localStorage.getItem(roleplayPresetPreferenceKey)
+  return value !== null && /^[a-z0-9-]{8,80}$/u.test(value) ? value : ''
+}
+
+function writeRoleplayPresetPreference(presetId: string): void {
+  localStorage.setItem(roleplayPresetPreferenceKey, presetId)
+}
+
+function usePresetPreference(
+  listPresets: HeaderProps['listPresets'],
+  enabled = true,
+): {
+  readonly entries: readonly PresetLibrarySummary[] | undefined
+  readonly error?: string
+  readonly presetId: string
+  readonly selectPreset: (presetId: string) => void
+} {
+  const [entries, setEntries] = useState<readonly PresetLibrarySummary[]>()
+  const [error, setError] = useState<string>()
+  const [presetId, setPresetId] = useState(readRoleplayPresetPreference)
+  useEffect(() => {
+    if (!enabled) {
+      setEntries([])
+      setError(undefined)
+      return
+    }
+    let current = true
+    setEntries(undefined)
+    setError(undefined)
+    void listPresets().then(value => {
+      if (!current) return
+      setEntries(value)
+      setPresetId(selectedId => {
+        if (value.some(entry => entry.id === selectedId)) return selectedId
+        writeRoleplayPresetPreference('')
+        return ''
+      })
+    }, reason => {
+      if (!current) return
+      setEntries([])
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { current = false }
+  }, [enabled, listPresets])
+  return {
+    entries,
+    ...(error === undefined ? {} : { error }),
+    presetId,
+    selectPreset(value) {
+      writeRoleplayPresetPreference(value)
+      setPresetId(value)
+    },
+  }
+}
+
 async function characterLibraryJson<T>(path = ''): Promise<T> {
   const response = await fetch(`${CHARACTER_LIBRARY_PATH}${path}`, { headers: { accept: 'application/json' } })
   const value = await response.json() as { readonly error?: string } & T
@@ -740,23 +798,9 @@ function SillyTavernImportDialog({ listPresets, onClose, onImport }: {
   const cardRef = useRef<HTMLInputElement | null>(null)
   const [chatFile, setChatFile] = useState<File>()
   const [cardFile, setCardFile] = useState<File>()
-  const [presets, setPresets] = useState<readonly PresetLibrarySummary[]>()
-  const [presetId, setPresetId] = useState('')
+  const { entries: presets, error: presetError, presetId, selectPreset } = usePresetPreference(listPresets)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
-  useEffect(() => {
-    let current = true
-    void listPresets().then(value => {
-      if (!current) return
-      setPresets(value)
-      setPresetId(selectedId => value.some(entry => entry.id === selectedId) ? selectedId : '')
-    }, reason => {
-      if (!current) return
-      setPresets([])
-      setError(reason instanceof Error ? reason.message : String(reason))
-    })
-    return () => { current = false }
-  }, [listPresets])
   return <div role="dialog" aria-modal="true" aria-label="迁移 SillyTavern 聊天" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.66)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1250,
@@ -790,7 +834,7 @@ function SillyTavernImportDialog({ listPresets, onClose, onImport }: {
       </div>
       <label style={{ display: 'block', fontSize: '12px', fontWeight: 620, marginTop: '16px', opacity: .68 }}>
         对话预设
-        <select aria-label="迁移对话预设" value={presetId} onChange={event => { setPresetId(event.target.value) }} style={{
+        <select aria-label="迁移对话预设" value={presetId} onChange={event => { selectPreset(event.target.value) }} style={{
           background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
           borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', display: 'block', font: 'inherit',
           marginTop: '7px', padding: '9px 10px', width: '100%',
@@ -800,7 +844,9 @@ function SillyTavernImportDialog({ listPresets, onClose, onImport }: {
         </select>
       </label>
       <div style={{ fontSize: '11px', lineHeight: 1.55, marginTop: '6px', opacity: .5 }}>
-        {presets === undefined
+        {presetError !== undefined
+          ? presetError
+          : presets === undefined
           ? '正在读取预设…'
           : presets.length === 0
             ? '预设库暂无内容'
@@ -1782,8 +1828,7 @@ function CharacterLibraryDialog({
   const [entries, setEntries] = useState<readonly CharacterLibrarySummary[]>()
   const [selected, setSelected] = useState<CharacterLibraryDetail>()
   const [greetingIndex, setGreetingIndex] = useState(0)
-  const [presets, setPresets] = useState<readonly PresetLibrarySummary[]>()
-  const [presetId, setPresetId] = useState('')
+  const { entries: presets, error: presetError, presetId, selectPreset } = usePresetPreference(listPresets)
   const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
   const [personaId, setPersonaId] = useState('')
   const [editingPersona, setEditingPersona] = useState(false)
@@ -1802,19 +1847,6 @@ function CharacterLibraryDialog({
   const [error, setError] = useState<string>()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const selectionRequestRef = useRef(0)
-  useEffect(() => {
-    let current = true
-    void listPresets().then(value => {
-      if (!current) return
-      setPresets(value)
-      setPresetId(selectedId => value.some(entry => entry.id === selectedId) ? selectedId : '')
-    }, listError => {
-      if (!current) return
-      setPresets([])
-      setError(listError instanceof Error ? listError.message : String(listError))
-    })
-    return () => { current = false }
-  }, [listPresets])
   useEffect(() => {
     let current = true
     selectionRequestRef.current += 1
@@ -2102,7 +2134,7 @@ function CharacterLibraryDialog({
               </button>)}
             </div>
             <label htmlFor="agent-rp-session-preset" style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '20px 0 8px', opacity: .65 }}>对话预设</label>
-            <select id="agent-rp-session-preset" value={presetId} onChange={event => { setPresetId(event.target.value) }} style={{
+            <select id="agent-rp-session-preset" value={presetId} onChange={event => { selectPreset(event.target.value) }} style={{
               background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
               borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 10px', width: '100%',
             }}>
@@ -2110,7 +2142,9 @@ function CharacterLibraryDialog({
               {presets?.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
             </select>
             <div style={{ fontSize: '11px', lineHeight: 1.55, marginTop: '6px', opacity: .5 }}>
-              {presets === undefined
+              {presetError !== undefined
+                ? presetError
+                : presets === undefined
                 ? '正在读取预设…'
                 : presets.length === 0
                   ? '预设库暂无内容，可在角色会话的预设设置中导入'
@@ -3553,21 +3587,12 @@ function importHintComponent(
   return function SillyTavernImportHint({ input, inputActions, sessionId }: ImportHintProps): JSX.Element | null {
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string>()
-    const [presets, setPresets] = useState<readonly PresetLibrarySummary[]>([])
-    const [presetId, setPresetId] = useState('')
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
-    useEffect(() => {
-      if (summary?.agentPreset !== 'agent-rp') return
-      let current = true
-      void listPresets().then(value => {
-        if (!current) return
-        setPresets(value)
-        setPresetId(selectedId => value.some(entry => entry.id === selectedId) ? selectedId : '')
-      }, reason => {
-        if (current) setError(reason instanceof Error ? reason.message : String(reason))
-      })
-      return () => { current = false }
-    }, [listPresets, summary?.agentPreset])
+    const { entries: loadedPresets, error: presetError, presetId, selectPreset } = usePresetPreference(
+      listPresets,
+      summary?.agentPreset === 'agent-rp',
+    )
+    const presets = loadedPresets ?? []
     if (summary?.agentPreset !== 'agent-rp') return null
     const scoped = ctx.sessions.scope(sessionId)
     const conversation = scoped?.get('conversation') as (IConversation & Partial<DraftResolver>) | undefined
@@ -3590,10 +3615,10 @@ function importHintComponent(
         <div style={{ fontSize: '12px', lineHeight: 1.45, marginTop: '2px', opacity: 0.62 }}>{migration
           ? '将创建一个角色会话，并保留原聊天历史'
           : chat ? '将从这份记录创建新的角色会话' : blank ? '请选择导入类型' : '发送后开始导入'}</div>
-        {error !== undefined && <div style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '4px' }}>{error}</div>}
+        {(error ?? presetError) !== undefined && <div style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '4px' }}>{error ?? presetError}</div>}
       </div>
       {(chat || migration) && <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
-        <select aria-label="迁移对话预设" value={presetId} onChange={event => { setPresetId(event.target.value) }} style={{
+        <select aria-label="迁移对话预设" value={presetId} onChange={event => { selectPreset(event.target.value) }} style={{
           background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
           borderRadius: '7px', color: 'inherit', font: 'inherit', fontSize: '11px', maxWidth: '150px', padding: '5px 7px',
         }}>
