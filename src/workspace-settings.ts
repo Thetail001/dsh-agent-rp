@@ -12,8 +12,8 @@ export const AGENT_RP_WORKSPACE_IDS_FIELD = 'workspaceIds'
 /** Supported workspace visibility modes. */
 export const AGENT_RP_WORKSPACE_MODES = ['all', 'selected'] as const
 
-/** Image providers available in the first local generation release. */
-export const AGENT_RP_IMAGE_PROVIDERS = ['openai', 'a1111'] as const
+/** Image providers available for explicit roleplay illustrations. */
+export const AGENT_RP_IMAGE_PROVIDERS = ['openai', 'a1111', 'comfyui'] as const
 
 /** Durable image provider settings; credentials are stored separately. */
 export interface ImageGenerationSettings {
@@ -31,6 +31,13 @@ export interface ImageGenerationSettings {
     readonly steps: number
     readonly cfgScale: number
     readonly sampler: string
+    readonly negativePrompt: string
+  }
+  readonly comfyui: {
+    readonly endpoint: string
+    readonly workflow: string
+    readonly width: number
+    readonly height: number
     readonly negativePrompt: string
   }
 }
@@ -75,6 +82,13 @@ const DEFAULT_IMAGE_GENERATION_SETTINGS: ImageGenerationSettings = {
     steps: 28,
     cfgScale: 7,
     sampler: 'DPM++ 2M Karras',
+    negativePrompt: '',
+  },
+  comfyui: {
+    endpoint: 'http://127.0.0.1:8188',
+    workflow: '',
+    width: 768,
+    height: 1024,
     negativePrompt: '',
   },
 }
@@ -130,11 +144,15 @@ export function normalizeImageGenerationSettings(value: unknown): ImageGeneratio
   if (value === undefined) return structuredClone(DEFAULT_AGENT_RP_SETTINGS.imageGeneration)
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Agent RP 图片设置不是对象')
   const record = value as Record<string, unknown>
-  if (record.provider !== 'openai' && record.provider !== 'a1111') throw new Error('Agent RP 图片提供方无效')
+  if (record.provider !== 'openai' && record.provider !== 'a1111' && record.provider !== 'comfyui') {
+    throw new Error('Agent RP 图片提供方无效')
+  }
   const openai = typeof record.openai === 'object' && record.openai !== null && !Array.isArray(record.openai)
     ? record.openai as Record<string, unknown> : {}
   const a1111 = typeof record.a1111 === 'object' && record.a1111 !== null && !Array.isArray(record.a1111)
     ? record.a1111 as Record<string, unknown> : {}
+  const comfyui = typeof record.comfyui === 'object' && record.comfyui !== null && !Array.isArray(record.comfyui)
+    ? record.comfyui as Record<string, unknown> : {}
   const size = openai.size ?? DEFAULT_AGENT_RP_SETTINGS.imageGeneration.openai.size
   if (size !== '1024x1024' && size !== '1024x1536' && size !== '1536x1024') throw new Error('OpenAI 图片尺寸无效')
   return {
@@ -153,6 +171,13 @@ export function normalizeImageGenerationSettings(value: unknown): ImageGeneratio
       cfgScale: finite(a1111.cfgScale, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.a1111.cfgScale, 0, 30, 'A1111 CFG'),
       sampler: text(a1111.sampler, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.a1111.sampler, 300, 'A1111 采样器'),
       negativePrompt: text(a1111.negativePrompt, '', 8_000, 'A1111 负面提示词'),
+    },
+    comfyui: {
+      endpoint: endpoint(comfyui.endpoint, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.comfyui.endpoint, 'ComfyUI 服务地址'),
+      workflow: text(comfyui.workflow, '', 256 * 1024, 'ComfyUI API 工作流'),
+      width: integer(comfyui.width, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.comfyui.width, 64, 4_096, 'ComfyUI 宽度'),
+      height: integer(comfyui.height, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.comfyui.height, 64, 4_096, 'ComfyUI 高度'),
+      negativePrompt: text(comfyui.negativePrompt, '', 8_000, 'ComfyUI 负面提示词'),
     },
   }
 }

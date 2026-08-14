@@ -28,7 +28,7 @@ export interface GeneratedImageJob {
   readonly format: 0
   readonly id: string
   readonly request: ImageGenerationRequest
-  readonly provider: 'openai' | 'a1111'
+  readonly provider: 'openai' | 'a1111' | 'comfyui'
   readonly status: GeneratedImageJobStatus
   readonly progress: number
   readonly phase: string

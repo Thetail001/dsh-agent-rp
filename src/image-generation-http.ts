@@ -16,7 +16,7 @@ import type { AgentRpHttpServer } from './host-http.ts'
 import { normalizeImageGenerationSettings } from './workspace-settings.ts'
 
 const MAX_CREDENTIAL_REQUEST_BYTES = 16 * 1024
-const MAX_TEST_REQUEST_BYTES = 32 * 1024
+const MAX_TEST_REQUEST_BYTES = 512 * 1024
 const imageApiKeyRef = credentialRef(AGENT_RP_IMAGE_API_KEY_REF)
 
 function trustedBrowserRequest(request: IncomingMessage, sandboxedImage: boolean): boolean {

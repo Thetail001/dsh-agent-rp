@@ -18,6 +18,15 @@ function endpoint(value: string, suffix: string): URL {
   return parsed
 }
 
+function serviceEndpoint(value: string, suffix: string): URL {
+  const parsed = new URL(value)
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('图片服务地址必须使用 http 或 https')
+  if (parsed.username !== '' || parsed.password !== '') throw new Error('图片服务地址不能包含用户名或密码')
+  if (parsed.hash !== '' || parsed.search !== '') throw new Error('图片服务地址不能包含查询参数或片段')
+  parsed.pathname = `${parsed.pathname.replace(/\/+$/u, '')}${suffix}`
+  return parsed
+}
+
 function providerError(provider: string, status: number, body: string): Error {
   let detail = body.trim().slice(0, 800)
   try {
@@ -81,6 +90,18 @@ export async function testImageProvider(
   }
   const headers: Record<string, string> = { accept: 'application/json' }
   if (apiKey !== undefined) headers.authorization = `Bearer ${apiKey}`
+  if (settings.provider === 'comfyui') {
+    const response = await fetchConnection('ComfyUI', serviceEndpoint(settings.comfyui.endpoint, '/system_stats'), {
+      headers, signal,
+    })
+    if (!response.ok) throw providerError('ComfyUI 连接测试', response.status, await response.text())
+    await discard(response)
+    if (settings.comfyui.workflow.trim() === '') {
+      return { status: 'reachable', detail: 'ComfyUI 已连接；还需要粘贴“API 格式”的工作流' }
+    }
+    renderComfyWorkflow(settings, '连接测试')
+    return { status: 'verified', detail: 'ComfyUI 和 API 工作流均可用；测试没有提交绘图任务' }
+  }
   const url = endpoint(settings.a1111.endpoint, '/sdapi/v1/samplers')
   url.pathname = url.pathname.replace(/\/sdapi\/v1\/txt2img$/u, '/sdapi/v1/samplers')
   const response = await fetchConnection('A1111 / Forge', url, { headers, signal })
@@ -225,6 +246,187 @@ async function generateA1111(
   }
 }
 
+interface ComfyOutputImage {
+  readonly filename: string
+  readonly subfolder: string
+  readonly type: string
+}
+
+function renderComfyWorkflow(settings: ImageGenerationSettings, prompt: string): Readonly<Record<string, unknown>> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(settings.comfyui.workflow)
+  } catch (error) {
+    throw new Error('ComfyUI API 工作流不是有效的 JSON', { cause: error })
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('ComfyUI API 工作流必须是节点对象')
+  }
+  const seed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)
+  const replacements = new Map<string, string | number>([
+    ['{{prompt}}', prompt],
+    ['{{negative_prompt}}', settings.comfyui.negativePrompt],
+    ['{{width}}', settings.comfyui.width],
+    ['{{height}}', settings.comfyui.height],
+    ['{{seed}}', seed],
+  ])
+  let promptUses = 0
+  const replace = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      const exact = replacements.get(value)
+      if (exact !== undefined) {
+        if (value === '{{prompt}}') promptUses += 1
+        return exact
+      }
+      let result = value
+      for (const [token, replacement] of replacements) {
+        if (result.includes(token)) {
+          if (token === '{{prompt}}') promptUses += 1
+          result = result.replaceAll(token, () => String(replacement))
+        }
+      }
+      return result
+    }
+    if (Array.isArray(value)) return value.map(replace)
+    if (typeof value !== 'object' || value === null) return value
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, replace(child)]))
+  }
+  const workflow = replace(parsed) as Readonly<Record<string, unknown>>
+  if (promptUses === 0) throw new Error('ComfyUI API 工作流中没有 {{prompt}} 占位符')
+  return workflow
+}
+
+function comfyOutput(record: unknown): ComfyOutputImage | undefined {
+  if (typeof record !== 'object' || record === null || Array.isArray(record)) return undefined
+  const outputs = (record as Record<string, unknown>).outputs
+  if (typeof outputs !== 'object' || outputs === null || Array.isArray(outputs)) return undefined
+  for (const output of Object.values(outputs)) {
+    if (typeof output !== 'object' || output === null || Array.isArray(output)) continue
+    const images = (output as Record<string, unknown>).images
+    if (!Array.isArray(images)) continue
+    for (const image of images) {
+      if (typeof image !== 'object' || image === null || Array.isArray(image)) continue
+      const value = image as Record<string, unknown>
+      if (typeof value.filename === 'string' && typeof value.subfolder === 'string' && typeof value.type === 'string') {
+        return { filename: value.filename, subfolder: value.subfolder, type: value.type }
+      }
+    }
+  }
+  return undefined
+}
+
+function comfyFailure(record: unknown): string | undefined {
+  if (typeof record !== 'object' || record === null || Array.isArray(record)) return undefined
+  const status = (record as Record<string, unknown>).status
+  if (typeof status !== 'object' || status === null || Array.isArray(status)) return undefined
+  const value = status as Record<string, unknown>
+  if (value.status_str !== 'error' && value.completed !== false) return undefined
+  const detail = JSON.stringify(value.messages ?? value.status_str).slice(0, 800)
+  return detail === '' ? '工作流执行失败' : detail
+}
+
+async function wait(ms: number, signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const completed = (): void => {
+      signal.removeEventListener('abort', aborted)
+      resolve()
+    }
+    const timer = setTimeout(completed, ms)
+    timer.unref()
+    const aborted = (): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', aborted)
+      reject(signal.reason instanceof Error ? signal.reason : new DOMException('Aborted', 'AbortError'))
+    }
+    if (signal.aborted) aborted()
+    else signal.addEventListener('abort', aborted, { once: true })
+  })
+}
+
+async function cancelComfyJob(endpointValue: string, headers: Record<string, string>, promptId: string): Promise<void> {
+  try {
+    const response = await fetch(serviceEndpoint(endpointValue, `/api/jobs/${encodeURIComponent(promptId)}/cancel`), {
+      method: 'POST', headers,
+    })
+    if (response.ok) return
+    await discard(response)
+  } catch {
+    // Older ComfyUI builds do not expose targeted job cancellation.
+  }
+  try {
+    await fetch(serviceEndpoint(endpointValue, '/queue'), {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ delete: [promptId] }),
+    })
+  } catch {
+    // The local command is already cancelled; an unavailable queue adds no further action.
+  }
+}
+
+async function generateComfyUi(
+  settings: ImageGenerationSettings,
+  apiKey: string | undefined,
+  prompt: string,
+  signal: AbortSignal,
+  progress: ImageGenerationProgress,
+): Promise<GeneratedImageAsset> {
+  const workflow = renderComfyWorkflow(settings, prompt)
+  const headers: Record<string, string> = { accept: 'application/json' }
+  if (apiKey !== undefined) headers.authorization = `Bearer ${apiKey}`
+  progress(0.05, '正在提交 ComfyUI 工作流')
+  const response = await fetchConnection('ComfyUI', serviceEndpoint(settings.comfyui.endpoint, '/prompt'), {
+    method: 'POST', signal,
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: workflow, client_id: crypto.randomUUID() }),
+  })
+  const body = await response.text()
+  if (!response.ok) throw providerError('ComfyUI', response.status, body)
+  let submitted: { readonly prompt_id?: unknown }
+  try {
+    submitted = JSON.parse(body) as typeof submitted
+  } catch {
+    throw new Error('ComfyUI 返回了无法识别的任务结果')
+  }
+  if (typeof submitted.prompt_id !== 'string' || submitted.prompt_id === '') {
+    throw new Error('ComfyUI 没有返回 prompt_id')
+  }
+  const promptId = submitted.prompt_id
+  progress(0.12, 'ComfyUI 已接受任务')
+  try {
+    for (let attempt = 0; ; attempt += 1) {
+      const historyResponse = await fetchConnection(
+        'ComfyUI',
+        serviceEndpoint(settings.comfyui.endpoint, `/history/${encodeURIComponent(promptId)}`),
+        { headers, signal },
+      )
+      if (!historyResponse.ok) throw providerError('ComfyUI 历史查询', historyResponse.status, await historyResponse.text())
+      const history = await historyResponse.json() as Record<string, unknown>
+      const record = history[promptId]
+      if (record !== undefined) {
+        const failure = comfyFailure(record)
+        if (failure !== undefined) throw new Error(`ComfyUI 工作流执行失败：${failure}`)
+        const output = comfyOutput(record)
+        if (output === undefined) throw new Error('ComfyUI 工作流已结束，但没有返回图片输出')
+        progress(0.94, '正在保存 ComfyUI 图片')
+        const url = serviceEndpoint(settings.comfyui.endpoint, '/view')
+        url.searchParams.set('filename', output.filename)
+        url.searchParams.set('subfolder', output.subfolder)
+        url.searchParams.set('type', output.type)
+        const imageResponse = await fetchConnection('ComfyUI 图片', url, { headers, signal })
+        if (!imageResponse.ok) throw providerError('ComfyUI 图片下载', imageResponse.status, await imageResponse.text())
+        const declared = Number(imageResponse.headers.get('content-length'))
+        if (Number.isFinite(declared) && declared > MAX_PROVIDER_IMAGE_BYTES) throw new Error('ComfyUI 返回的图片过大')
+        return decodeBase64Image(Buffer.from(await imageResponse.arrayBuffer()).toString('base64'))
+      }
+      progress(Math.min(0.88, 0.15 + attempt * 0.025), 'ComfyUI 正在绘制')
+      await wait(1_000, signal)
+    }
+  } catch (error) {
+    if (signal.aborted) await cancelComfyJob(settings.comfyui.endpoint, headers, promptId)
+    throw error
+  }
+}
+
 /** Generate one image through the configured provider. */
 export function generateImage(
   settings: ImageGenerationSettings,
@@ -233,7 +435,7 @@ export function generateImage(
   signal: AbortSignal,
   progress: ImageGenerationProgress,
 ): Promise<GeneratedImageAsset> {
-  return settings.provider === 'openai'
-    ? generateOpenAi(settings, apiKey, prompt, signal, progress)
-    : generateA1111(settings, apiKey, prompt, signal, progress)
+  if (settings.provider === 'openai') return generateOpenAi(settings, apiKey, prompt, signal, progress)
+  if (settings.provider === 'comfyui') return generateComfyUi(settings, apiKey, prompt, signal, progress)
+  return generateA1111(settings, apiKey, prompt, signal, progress)
 }

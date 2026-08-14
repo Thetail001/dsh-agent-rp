@@ -123,6 +123,79 @@ test('checks A1111 through its sampler catalog', async () => {
   }
 })
 
+test('checks ComfyUI without submitting its configured workflow', async () => {
+  const original = globalThis.fetch
+  let requested: string | undefined
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    requested = String(input)
+    return new Response(JSON.stringify({ system: {} }), { status: 200 })
+  }) as typeof fetch
+  try {
+    const settings = { ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration, provider: 'comfyui' as const }
+    const result = await testImageProvider(settings, undefined, new AbortController().signal)
+    assert.deepEqual(result, { status: 'reachable', detail: 'ComfyUI 已连接；还需要粘贴“API 格式”的工作流' })
+    assert.equal(requested, 'http://127.0.0.1:8188/system_stats')
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('submits a parameterized ComfyUI workflow and downloads its output', async () => {
+  const original = globalThis.fetch
+  let submitted: Record<string, unknown> | undefined
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/prompt') {
+      submitted = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return new Response(JSON.stringify({ prompt_id: 'prompt-1' }), { status: 200 })
+    }
+    if (url.pathname === '/history/prompt-1') {
+      return new Response(JSON.stringify({
+        'prompt-1': {
+          outputs: { 9: { images: [{ filename: 'scene.png', subfolder: 'agent-rp', type: 'output' }] } },
+          status: { completed: true, status_str: 'success' },
+        },
+      }), { status: 200 })
+    }
+    assert.equal(url.pathname, '/view')
+    assert.equal(url.searchParams.get('filename'), 'scene.png')
+    assert.equal(url.searchParams.get('subfolder'), 'agent-rp')
+    assert.equal(url.searchParams.get('type'), 'output')
+    return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } })
+  }) as typeof fetch
+  try {
+    const settings = {
+      ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,
+      provider: 'comfyui' as const,
+      comfyui: {
+        ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration.comfyui,
+        width: 640,
+        height: 896,
+        negativePrompt: '模糊',
+        workflow: JSON.stringify({
+          1: { class_type: 'CLIPTextEncode', inputs: { text: '场景：{{prompt}}', negative: '{{negative_prompt}}' } },
+          2: { class_type: 'EmptyLatentImage', inputs: { width: '{{width}}', height: '{{height}}', seed: '{{seed}}' } },
+        }),
+      },
+    }
+    const stages: string[] = []
+    const result = await generateImage(
+      settings, undefined, request.prompt, new AbortController().signal,
+      (_progress, phase) => { stages.push(phase) },
+    )
+    assert.deepEqual(result.data, png)
+    const workflow = submitted?.prompt as Record<string, { readonly inputs: Record<string, unknown> }>
+    assert.equal(workflow['1']?.inputs.text, `场景：${request.prompt}`)
+    assert.equal(workflow['1']?.inputs.negative, '模糊')
+    assert.equal(workflow['2']?.inputs.width, 640)
+    assert.equal(workflow['2']?.inputs.height, 896)
+    assert.equal(typeof workflow['2']?.inputs.seed, 'number')
+    assert.deepEqual(stages, ['正在提交 ComfyUI 工作流', 'ComfyUI 已接受任务', '正在保存 ComfyUI 图片'])
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 test('describes an unreachable image service without exposing fetch internals', async () => {
   const original = globalThis.fetch
   globalThis.fetch = (async () => { throw new TypeError('fetch failed') }) as typeof fetch

@@ -47,6 +47,28 @@ test('adopts existing single image settings as the default profile', () => {
   assert.deepEqual(settings.imageProfiles, [{ id: 'default', name: '默认配置', settings: imageGeneration }])
 })
 
+test('normalizes a reusable ComfyUI API workflow', () => {
+  const workflow = '{"1":{"class_type":"CLIPTextEncode","inputs":{"text":"{{prompt}}"}}}'
+  const settings = normalizeAgentRpSettings({
+    workspaceMode: 'all',
+    workspaceIds: [],
+    imageGeneration: {
+      ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,
+      provider: 'comfyui',
+      comfyui: {
+        ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration.comfyui,
+        endpoint: 'http://127.0.0.1:8188/',
+        workflow,
+        width: 640,
+        height: 896,
+      },
+    },
+  })
+  assert.equal(settings.imageGeneration.provider, 'comfyui')
+  assert.equal(settings.imageGeneration.comfyui.workflow, workflow)
+  assert.equal(settings.imageGeneration.comfyui.width, 640)
+})
+
 test('uses the selected image profile and rejects ambiguous profile lists', () => {
   const local = {
     ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,

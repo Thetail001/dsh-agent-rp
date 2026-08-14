@@ -1238,7 +1238,7 @@ const settingsFieldStyle = {
 } as const
 
 function nextImageProfileName(profiles: readonly ImageGenerationProfile[], provider: ImageGenerationSettings['provider']): string {
-  const base = provider === 'openai' ? 'OpenAI 配置' : 'A1111 配置'
+  const base = provider === 'openai' ? 'OpenAI 配置' : provider === 'a1111' ? 'A1111 配置' : 'ComfyUI 配置'
   const names = new Set(profiles.map(profile => profile.name.toLowerCase()))
   if (!names.has(base.toLowerCase())) return base
   let suffix = 2
@@ -1396,6 +1396,7 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
       }} style={settingsFieldStyle}>
         <option value="openai">OpenAI Images / 兼容接口</option>
         <option value="a1111">A1111 / Forge</option>
+        <option value="comfyui">ComfyUI</option>
       </select>
     </label>
     {draft.provider === 'openai' ? <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', marginTop: '12px' }}>
@@ -1420,7 +1421,7 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
           <option value="1536x1024">1536 × 1024（横图）</option>
         </select>
       </label>
-    </div> : <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', marginTop: '12px' }}>
+    </div> : draft.provider === 'a1111' ? <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', marginTop: '12px' }}>
       <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>接口地址
         <input value={draft.a1111.endpoint} disabled={!writable} onChange={event => {
           editDraft(current => ({ ...current, a1111: { ...current.a1111, endpoint: event.target.value } }))
@@ -1447,11 +1448,38 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
           editDraft(current => ({ ...current, a1111: { ...current.a1111, negativePrompt: event.target.value } }))
         }} style={{ ...settingsFieldStyle, resize: 'vertical' }} />
       </label>
+    </div> : <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', marginTop: '12px' }}>
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>ComfyUI 服务地址
+        <input value={draft.comfyui.endpoint} disabled={!writable} placeholder="http://127.0.0.1:8188" onChange={event => {
+          editDraft(current => ({ ...current, comfyui: { ...current.comfyui, endpoint: event.target.value } }))
+        }} style={settingsFieldStyle} />
+      </label>
+      {([['宽度', 'width'], ['高度', 'height']] as const).map(([label, field]) => <label key={field} style={labelStyle}>{label}
+        <input type="number" value={draft.comfyui[field]} disabled={!writable} onChange={event => {
+          editDraft(current => ({ ...current, comfyui: { ...current.comfyui, [field]: Number(event.target.value) } }))
+        }} style={settingsFieldStyle} />
+      </label>)}
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>默认负面提示词
+        <textarea value={draft.comfyui.negativePrompt} disabled={!writable} rows={3} onChange={event => {
+          editDraft(current => ({ ...current, comfyui: { ...current.comfyui, negativePrompt: event.target.value } }))
+        }} style={{ ...settingsFieldStyle, resize: 'vertical' }} />
+      </label>
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>API 格式工作流
+        <textarea value={draft.comfyui.workflow} disabled={!writable} rows={12} spellCheck={false}
+          placeholder={'在 ComfyUI 中打开“开发者模式”，导出 API 格式工作流，再把正向提示词改成 {{prompt}}'}
+          onChange={event => {
+            editDraft(current => ({ ...current, comfyui: { ...current.comfyui, workflow: event.target.value } }))
+          }} style={{ ...settingsFieldStyle, fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', resize: 'vertical' }} />
+      </label>
+      <p style={{ fontSize: '11px', gridColumn: '1 / -1', lineHeight: 1.6, margin: '-3px 0 0', opacity: .58 }}>
+        必填：{'{{prompt}}'}。可选：{'{{negative_prompt}}'}、{'{{width}}'}、{'{{height}}'}、{'{{seed}}'}。
+        插件会保留节点和连线，只替换这些占位符。
+      </p>
     </div>}
     <div style={{ alignItems: 'end', display: 'grid', gap: '9px', gridTemplateColumns: 'minmax(0, 1fr) auto', marginTop: '15px' }}>
       <label style={labelStyle}>服务密钥（所有配置共用）
         <input type="password" autoComplete="new-password" value={credentialValue}
-          placeholder={credential?.configured === true ? `已配置${credential.source === undefined ? '' : ` · ${credential.source}`}` : 'OpenAI 必填；A1111 可留空'}
+          placeholder={credential?.configured === true ? `已配置${credential.source === undefined ? '' : ` · ${credential.source}`}` : 'OpenAI 必填；A1111 / ComfyUI 可留空'}
           disabled={credentialBusy || credential?.writable === false} onChange={event => { setCredentialValue(event.target.value) }}
           style={settingsFieldStyle} />
       </label>
