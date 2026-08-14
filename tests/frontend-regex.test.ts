@@ -64,6 +64,7 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(source!, /window\.replaceTavernRegexes=/u)
   assert.match(source!, /window\.updateTavernRegexesWith=/u)
   assert.match(source!, /window\.formatAsTavernRegexedString=/u)
+  assert.match(source!, /window\.generateRaw=/u)
   assert.match(source!, /window\.getModelList=/u)
 })
 

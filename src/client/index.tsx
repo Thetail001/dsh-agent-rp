@@ -403,6 +403,7 @@ function useRoleplayExpression(sessionId: SessionId | undefined): RoleplayExpres
 const roleplayPresetPreferenceKey = 'dsh.agent-rp.preset'
 const tavernScriptOriginsKey = 'dsh.agent-rp.tavern-script-origins'
 const tavernScriptGenerationApprovalsKey = 'dsh.agent-rp.tavern-script-generation-approvals'
+const tavernScriptCustomGenerationApprovalsKey = 'dsh.agent-rp.tavern-script-custom-generation-approvals'
 const tavernScriptModelApprovalsKey = 'dsh.agent-rp.tavern-script-model-approvals'
 
 function normalizedTavernScriptOrigin(value: unknown): string | undefined {
@@ -454,6 +455,20 @@ function readApprovedTavernScriptGenerations(): ReadonlySet<string> {
 
 function writeApprovedTavernScriptGenerations(approvals: ReadonlySet<string>): void {
   localStorage.setItem(tavernScriptGenerationApprovalsKey, JSON.stringify([...approvals].sort()))
+}
+
+function readApprovedTavernScriptCustomGenerations(): ReadonlySet<string> {
+  try {
+    const value = JSON.parse(localStorage.getItem(tavernScriptCustomGenerationApprovalsKey) ?? '[]') as unknown
+    if (!Array.isArray(value)) return new Set()
+    return new Set(value.filter((item): item is string => typeof item === 'string' && item.length <= 3_072))
+  } catch {
+    return new Set()
+  }
+}
+
+function writeApprovedTavernScriptCustomGenerations(approvals: ReadonlySet<string>): void {
+  localStorage.setItem(tavernScriptCustomGenerationApprovalsKey, JSON.stringify([...approvals].sort()))
 }
 
 function readApprovedTavernScriptModels(): ReadonlySet<string> {
@@ -4243,6 +4258,12 @@ function TavernScriptRuntime({
   const [externalScriptRequests, setExternalScriptRequests] = useState<ReadonlyMap<string, string>>(() => new Map())
   const [approvedGenerations, setApprovedGenerations] = useState(readApprovedTavernScriptGenerations)
   const [generationRequests, setGenerationRequests] = useState<ReadonlyMap<string, number>>(() => new Map())
+  const [approvedCustomGenerations, setApprovedCustomGenerations] = useState(readApprovedTavernScriptCustomGenerations)
+  const [customGenerationRequests, setCustomGenerationRequests] = useState<ReadonlyMap<string, {
+    readonly scriptId: string
+    readonly origin: string
+    readonly count: number
+  }>>(() => new Map())
   const [approvedModels, setApprovedModels] = useState(readApprovedTavernScriptModels)
   const [modelListRequests, setModelListRequests] = useState<ReadonlyMap<string, {
     readonly scriptId: string
@@ -4254,6 +4275,12 @@ function TavernScriptRuntime({
   const [panelScriptId, setPanelScriptId] = useState<string>()
   const frameRefs = useRef(new Map<string, HTMLIFrameElement>())
   const generationQueue = useRef(new Map<string, {
+    readonly target: Window
+    readonly requestId: string
+    readonly mode: 'preset' | 'raw'
+    readonly config: Readonly<Record<string, unknown>>
+  }[]>())
+  const customGenerationQueue = useRef(new Map<string, {
     readonly target: Window
     readonly requestId: string
     readonly mode: 'preset' | 'raw'
@@ -4286,6 +4313,8 @@ function TavernScriptRuntime({
     setExternalScriptRequests(new Map())
     generationQueue.current.clear()
     setGenerationRequests(new Map())
+    customGenerationQueue.current.clear()
+    setCustomGenerationRequests(new Map())
     modelListQueue.current.clear()
     setModelListRequests(new Map())
     setSurfaceScriptIds(new Set())
@@ -4328,6 +4357,12 @@ function TavernScriptRuntime({
     scriptId,
   ].join('\u0000')
   const modelApprovalKey = (scriptId: string, origin: string): string => [
+    projectionRef.current.tavern?.characterSourceId ?? 'unknown-character',
+    projectionRef.current.tavern?.presetSourceId ?? 'no-preset',
+    scriptId,
+    origin,
+  ].join('\u0000')
+  const customGenerationApprovalKey = (scriptId: string, origin: string): string => [
     projectionRef.current.tavern?.characterSourceId ?? 'unknown-character',
     projectionRef.current.tavern?.presetSourceId ?? 'no-preset',
     scriptId,
@@ -4479,6 +4514,37 @@ function TavernScriptRuntime({
           mode: message.mode,
           config: message.config as Readonly<Record<string, unknown>>,
         }
+        const customApi = request.config.custom_api
+        if (customApi !== undefined) {
+          if (typeof customApi !== 'object' || customApi === null || Array.isArray(customApi)) {
+            target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'generation-result', requestId: request.requestId,
+              ok: false, error: 'custom_api 必须是对象',
+            }, '*')
+            return
+          }
+          const apiurl = (customApi as Readonly<Record<string, unknown>>).apiurl
+          const origin = normalizedTavernModelOrigin(apiurl)
+          if (origin === undefined) {
+            target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'generation-result', requestId: request.requestId,
+              ok: false, error: typeof apiurl === 'string' ? 'API 地址只支持 HTTP 或 HTTPS' : 'custom_api.apiurl 不能为空',
+            }, '*')
+            return
+          }
+          const approvalKey = customGenerationApprovalKey(entry.script.id, origin)
+          if (approvedCustomGenerations.has(approvalKey)) {
+            executeGeneration(target, request.requestId, request.mode, request.config)
+          } else {
+            const queued = customGenerationQueue.current.get(approvalKey) ?? []
+            queued.push(request)
+            customGenerationQueue.current.set(approvalKey, queued)
+            setCustomGenerationRequests(current => new Map(current).set(approvalKey, {
+              scriptId: entry.script.id, origin, count: queued.length,
+            }))
+          }
+          return
+        }
         if (approvedGenerations.has(generationApprovalKey(entry.script.id))) {
           executeGeneration(target, request.requestId, request.mode, request.config)
         } else {
@@ -4601,7 +4667,7 @@ function TavernScriptRuntime({
     }
     window.addEventListener('message', bridge)
     return () => { window.removeEventListener('message', bridge) }
-  }, [approvedGenerations, approvedModels, frames, inputActions, onDisplayOverride, runGeneration, runModelList,
+  }, [approvedCustomGenerations, approvedGenerations, approvedModels, frames, inputActions, onDisplayOverride, runGeneration, runModelList,
     runMutation, runPresetConfiguration, sessionId])
   if (scripts.length === 0) return null
   const failures = frames.flatMap(entry => {
@@ -4725,6 +4791,27 @@ function TavernScriptRuntime({
           background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px',
           color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .78, padding: '3px 7px',
         }}>允许 {script?.name || '脚本'} 调用模型{count > 1 ? ` (${count})` : ''}</button>
+    })}
+    {[...customGenerationRequests].map(([approvalKey, request]) => {
+      const script = scripts.find(entry => entry.id === request.scriptId)
+      return <button type="button" key={`custom-generation:${approvalKey}`}
+        title={`允许这个隔离脚本连接 ${request.origin} 并生成文本；生成会消耗该 API 的额度，密钥只转发给该地址`} onClick={() => {
+          const next = new Set(approvedCustomGenerations)
+          next.add(approvalKey)
+          writeApprovedTavernScriptCustomGenerations(next)
+          setApprovedCustomGenerations(next)
+          const queued = customGenerationQueue.current.get(approvalKey) ?? []
+          customGenerationQueue.current.delete(approvalKey)
+          setCustomGenerationRequests(current => {
+            const remaining = new Map(current)
+            remaining.delete(approvalKey)
+            return remaining
+          })
+          for (const item of queued) executeGeneration(item.target, item.requestId, item.mode, item.config)
+        }} style={{
+          background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px',
+          color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .78, padding: '3px 7px',
+        }}>允许 {script?.name || '脚本'} 使用 {new URL(request.origin).hostname} 生成{request.count > 1 ? ` (${request.count})` : ''}</button>
     })}
     {[...modelListRequests].map(([approvalKey, request]) => {
       const script = scripts.find(entry => entry.id === request.scriptId)

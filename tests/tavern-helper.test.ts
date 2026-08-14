@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import {
   applyTavernHelperMutation,
   decodeTavernHelperState,
@@ -9,7 +11,88 @@ import {
   parseTavernHelperMutationRequest,
 } from '../src/tavern-helper.ts'
 import { activeTavernWorldbooks, withTavernWorldbooks } from '../src/world-info-configuration-core.ts'
+import { runTavernGeneration, tavernChatCompletionsEndpoint } from '../src/tavern-generation-http.ts'
 import { tavernModelListEndpoint } from '../src/tavern-model-list-http.ts'
+
+test('resolves OpenAI-compatible custom generation endpoints without retaining query credentials', () => {
+  assert.equal(tavernChatCompletionsEndpoint('https://example.com/v1').href,
+    'https://example.com/v1/chat/completions')
+  assert.equal(tavernChatCompletionsEndpoint('https://example.com/v1/models?token=secret').href,
+    'https://example.com/v1/chat/completions')
+  assert.equal(tavernChatCompletionsEndpoint('http://127.0.0.1:11434/v1/chat/completions').href,
+    'http://127.0.0.1:11434/v1/chat/completions')
+  assert.throws(() => tavernChatCompletionsEndpoint('file:///generate'), /HTTP 或 HTTPS/u)
+  assert.throws(() => tavernChatCompletionsEndpoint('https://user:secret@example.com/v1'), /账号或密码/u)
+})
+
+test('forwards one approved custom generation without retaining chat history at depth zero', async () => {
+  const session = Session.create(SessionId('custom-generation'))
+  session.append('user/message', createUserMessage({
+    source: { kind: 'user' }, content: [{ type: 'text', text: '不应发送的历史' }],
+  }), { surfaceOp: 'append' })
+  const agent = {
+    session,
+    options: { model: 'fallback-model' },
+    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T> {
+      return task(new AbortController().signal)
+    },
+  }
+  let requested: { readonly url: string; readonly authorization: string | null; readonly body: unknown } | undefined
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    requested = {
+      url: String(input),
+      authorization: new Headers(init?.headers).get('authorization'),
+      body: JSON.parse(String(init?.body)) as unknown,
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: '辅助结果' } }] }), {
+      headers: { 'content-type': 'application/json' }, status: 200,
+    })
+  }
+  try {
+    const result = await runTavernGeneration({
+      get: (name: string) => name === 'agents' ? { get: () => agent } : undefined,
+      systemPrompt: {
+        assemble: async () => ({
+          sections: [{ name: 'base', text: 'DSH base' }], contexts: [], tools: [], variables: {},
+        }),
+      },
+    } as never, {
+      format: 0,
+      sessionId: 'custom-generation',
+      mode: 'raw',
+      config: {
+        user_input: '只发送当前任务',
+        max_chat_history: 0,
+        ordered_prompts: [{ role: 'system', content: '辅助系统提示' }, 'chat_history', 'user_input'],
+        custom_api: {
+          apiurl: 'https://example.com/v1?token=discarded', key: 'test-key', model: 'custom-model', source: 'openai',
+          max_tokens: 321, temperature: 0.4, top_p: 0.8, frequency_penalty: -0.2, presence_penalty: 0.3,
+        },
+      },
+    })
+    assert.equal(result.text, '辅助结果')
+    assert.deepEqual(requested, {
+      url: 'https://example.com/v1/chat/completions',
+      authorization: 'Bearer test-key',
+      body: {
+        model: 'custom-model',
+        messages: [
+          { role: 'system', content: '辅助系统提示' },
+          { role: 'user', content: '只发送当前任务' },
+        ],
+        stream: false,
+        max_tokens: 321,
+        temperature: 0.4,
+        top_p: 0.8,
+        frequency_penalty: -0.2,
+        presence_penalty: 0.3,
+      },
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
 
 test('resolves OpenAI-compatible model list endpoints without retaining query credentials', () => {
   assert.equal(tavernModelListEndpoint('https://example.com/v1').href, 'https://example.com/v1/models')
