@@ -328,8 +328,6 @@ type GenerationTailProps = TurnTailOwnerProps & {
   readonly useSession: PropsRuntime<'conversation.composer.dock'>['useSession']
 }
 
-const pendingRewriteDrafts = new Map<SessionId, string>()
-
 const color = 'var(--dsw-alias-state-business-primary, #6f78e8)'
 const statusPlaceholder = '<StatusPlaceHolderImpl/>'
 
@@ -721,9 +719,9 @@ function RewriteTurnDialog({ initialText, busy, error, onClose, onRewrite }: {
     }}>
       <h2 style={{ fontSize: '15px', margin: 0 }}>改写这轮</h2>
       <p style={{ fontSize: '12px', lineHeight: 1.6, margin: '7px 0 12px', opacity: .62 }}>
-        将从这句话之前创建一条新对话。原对话不会被修改。
+        确认后会从这句话之前创建新对话，发送改写内容并重新生成回复。原对话不会被修改。
       </p>
-      <textarea autoFocus aria-label="改写后的消息" disabled={busy} value={text} onChange={event => { setText(event.target.value) }}
+      <textarea autoFocus aria-label="改写后的消息" disabled={busy} maxLength={8_000} value={text} onChange={event => { setText(event.target.value) }}
         onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) submit() }} style={{
           background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
           borderRadius: '10px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', fontSize: '13px',
@@ -735,7 +733,7 @@ function RewriteTurnDialog({ initialText, busy, error, onClose, onRewrite }: {
         <button type="button" disabled={busy || text.trim() === ''} onClick={submit} style={{
           ...generationButtonStyle, background: `color-mix(in srgb, ${color} 18%, transparent)`,
           borderColor: `color-mix(in srgb, ${color} 48%, transparent)`, fontSize: '12px', minHeight: '30px', opacity: 1,
-        }}>{busy ? '正在创建…' : '在新对话中改写'}</button>
+        }}>{busy ? '正在创建…' : '发送并重新生成'}</button>
       </div>
     </section>
   </div>
@@ -5374,12 +5372,11 @@ function roleplayComposerDockComponent(
   runPresetConfiguration: RunPresetConfiguration,
 ): (props: ComposerDockProps) => JSX.Element | null {
   return function RoleplayComposerDock({
-    inputActions, sessionId, useInput, useProjection, useSessions, useSession,
+    inputActions, sessionId, useProjection, useSessions, useSession,
   }: ComposerDockProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projection = roleplaySummary(summary, useProjection('agentRp'))
   const chat = useSession(state => state.chat)
-  const draft = useInput(state => state.draft)
   const viewMode = useRoleplayViewMode(sessionId)
   const [drawOpen, setDrawOpen] = useState(false)
   const [displayOverrides, setDisplayOverrides] = useState<ReadonlyMap<number, string>>(() => new Map())
@@ -5394,12 +5391,6 @@ function roleplayComposerDockComponent(
     setDisplayOverrides(current => new Map(current).set(messageId, value))
   }, [])
   useEffect(() => { setDisplayOverrides(new Map()) }, [sessionId, transcriptSignature])
-  useEffect(() => {
-    const pending = pendingRewriteDrafts.get(sessionId)
-    if (pending === undefined || draft !== '') return
-    inputActions.setDraft(pending)
-    pendingRewriteDrafts.delete(sessionId)
-  }, [draft, inputActions, sessionId])
   useLayoutEffect(() => {
     const scroll = rootRef.current?.closest<HTMLElement>('[data-conversation-scroll]')
     if (scroll == null || background === undefined || projection?.avatarLibraryId === undefined || viewMode !== 'immersive') return
@@ -5937,10 +5928,7 @@ export function apply(ctx: ClientContext): void {
     }
     return { entry: value.entry, outcome: value.outcome }
   }
-  const launchRoleplaySession = async (
-    request: AgentRpSessionLaunchRequest,
-    beforeOpen?: (sessionId: SessionId) => void,
-  ): Promise<SessionId> => {
+  const launchRoleplaySession = async (request: AgentRpSessionLaunchRequest): Promise<SessionId> => {
     const response = await fetch(AGENT_RP_SESSION_PATH, {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -5961,7 +5949,6 @@ export function apply(ctx: ClientContext): void {
     if (ctx.sessions.list.getSnapshot().byId[sessionId] === undefined) {
       throw new Error('角色会话已创建，但客户端尚未收到它；请刷新页面后重试')
     }
-    beforeOpen?.(sessionId)
     ctx.sessions.open(sessionId)
     return sessionId
   }
@@ -5971,7 +5958,8 @@ export function apply(ctx: ClientContext): void {
       sourceSessionId,
       kind: 'rewrite',
       turn,
-    }, sessionId => { pendingRewriteDrafts.set(sessionId, draft) })
+      text: draft,
+    })
   }
   const continueFromTurn = async (sourceSessionId: SessionId, atSeq: number): Promise<void> => {
     const sessionId = await ctx.sessions.fork({ sessionId: sourceSessionId, atSeq, increaseTitle: true })

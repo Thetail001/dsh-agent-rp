@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from './character-library.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
@@ -183,6 +184,12 @@ export async function launchAgentRpSession(
     } catch (error: unknown) {
       ctx.logger.warn(`agent-rp: Session ${JSON.stringify(sessionId)} remains ungrouped: ${String(error)}`)
     }
+  }
+  if (request.kind === 'rewrite') {
+    handle.agent.followup(createUserMessage({
+      content: [{ type: 'text', text: request.text }],
+      source: { kind: 'user' },
+    }))
   }
   return { sessionId, title: prepared.title, seed: prepared.seed }
 }

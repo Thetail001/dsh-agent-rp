@@ -32,6 +32,7 @@ export interface RewriteSessionLaunchRequest {
   readonly sourceSessionId: string
   readonly kind: 'rewrite'
   readonly turn: number
+  readonly text: string
 }
 
 /** Complete model-free Session launch accepted by the Agent RP Host. */

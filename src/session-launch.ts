@@ -71,7 +71,8 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
   }
   if (record.kind === 'rewrite') {
     if (typeof record.turn !== 'number' || !Number.isSafeInteger(record.turn) || record.turn < 1
-      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'turn'].includes(key))) {
+      || typeof record.text !== 'string' || record.text.trim() === '' || record.text.length > 8_000
+      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'turn', 'text'].includes(key))) {
       throw new Error('改写会话请求字段无效')
     }
     return {
@@ -79,6 +80,7 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       sourceSessionId: record.sourceSessionId as string,
       kind: 'rewrite',
       turn: record.turn,
+      text: record.text,
     }
   }
   throw new Error('角色会话启动类型无效')

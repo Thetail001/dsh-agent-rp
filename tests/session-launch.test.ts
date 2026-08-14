@@ -216,11 +216,20 @@ test('rejects paths and extra browser-owned launch fields', () => {
     sourceSessionId: 'source',
     kind: 'rewrite',
     turn: 3,
-  }), { format: 0, sourceSessionId: 'source', kind: 'rewrite', turn: 3 })
+    text: '换一种说法。',
+  }), { format: 0, sourceSessionId: 'source', kind: 'rewrite', turn: 3, text: '换一种说法。' })
   assert.throws(() => parseAgentRpSessionLaunchRequest({
     format: 0,
     sourceSessionId: 'source',
     kind: 'rewrite',
     turn: 0,
+    text: '无效轮次',
+  }), /字段无效/u)
+  assert.throws(() => parseAgentRpSessionLaunchRequest({
+    format: 0,
+    sourceSessionId: 'source',
+    kind: 'rewrite',
+    turn: 1,
+    text: '   ',
   }), /字段无效/u)
 })
