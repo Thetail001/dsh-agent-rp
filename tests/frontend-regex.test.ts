@@ -170,7 +170,7 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
     worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
     activeWorldbookEntries: [],
-    messages: [],
+    messages: [], characterRegexScripts: [],
     displayRegexScripts: [base],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
@@ -227,7 +227,7 @@ window.__regexMutation = replaceTavernRegexes([{
     },
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
     worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
-    activeWorldbookEntries: [], messages: [], displayRegexScripts: [],
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], displayRegexScripts: [],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
   assert.notEqual(source, undefined)
@@ -242,6 +242,56 @@ window.__regexMutation = replaceTavernRegexes([{
       ?.extensions?.regex_scripts?.[0]?.script_name),
     '未命名-script-added',
   )
+})
+
+test('lets Tavern scripts inspect current character regexes through new and legacy APIs', () => {
+  const characterRegex = {
+    id: 'character-regex', script_name: '角色状态栏', enabled: true,
+    find_regex: '/status/gu', replace_string: '状态', trim_strings: [],
+    source: { user_input: false, ai_output: true, slash_command: false, world_info: false, reasoning: false },
+    destination: { display: true, prompt: false }, run_on_edit: false,
+    min_depth: null, max_depth: null,
+  }
+  const presetRegex = { ...characterRegex, id: 'preset-regex', script_name: '预设清理' }
+  const script = String.raw`
+const mutable = getTavernRegexes({ type: 'character', name: 'current' });
+mutable[0].script_name = '不应污染快照';
+window.__regexReads = {
+  enabled: isCharacterTavernRegexesEnabled(),
+  character: getTavernRegexes({ type: 'character', name: '角色' }),
+  preset: getTavernRegexes({ type: 'preset', name: 'in_use' }),
+  global: getTavernRegexes({ type: 'global' }),
+  legacyAll: getTavernRegexes(),
+  legacyCharacter: getTavernRegexes({ scope: 'character', enable_state: 'enabled' }),
+  legacyGlobal: getTavernRegexes({ scope: 'global' }),
+};
+`
+  const html = tavernScriptFrameSource({
+    id: 'regex-reader', name: '正则读取', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'regex-reader', scriptName: '正则读取', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    preset: {
+      name: '预设', revision: 1,
+      value: { settings: {}, prompts: [], prompts_unused: [], extensions: { regex_scripts: [presetRegex] } },
+    },
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [characterRegex], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const result = JSON.parse(JSON.stringify(context.__regexReads)) as Record<string, unknown>
+  assert.equal(result.enabled, true)
+  assert.deepEqual(result.character, [characterRegex])
+  assert.deepEqual(result.preset, [presetRegex])
+  assert.deepEqual(result.global, [])
+  assert.deepEqual(result.legacyAll, [{ ...characterRegex, scope: 'character' }])
+  assert.deepEqual(result.legacyCharacter, [{ ...characterRegex, scope: 'character' }])
+  assert.deepEqual(result.legacyGlobal, [])
 })
 
 test('lets V18-style dry-run listeners capture prompts without Host generation', async () => {
@@ -296,7 +346,7 @@ window.__acceptance = generate({
     worldbooks: {},
     worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
     activeWorldbookEntries: [],
-    messages: [], displayRegexScripts: [],
+    messages: [], characterRegexScripts: [], displayRegexScripts: [],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
   assert.notEqual(source, undefined)
@@ -359,7 +409,7 @@ window.__acceptance = Promise.all([
       }],
     },
     worldbookBindings: { global: ['规则书'], character: { primary: null, additional: [] }, chat: null },
-    activeWorldbookEntries: ['规则书.7'], messages: [], displayRegexScripts: [],
+    activeWorldbookEntries: ['规则书.7'], messages: [], characterRegexScripts: [], displayRegexScripts: [],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
   assert.notEqual(source, undefined)
@@ -447,6 +497,7 @@ test('runs the same two regex phases inside the isolated Tavern runtime', () => 
     worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
     activeWorldbookEntries: [],
     messages: [{ messageId: 0, seq: 1, role: 'assistant', text: '', isHidden: false, data: {}, extra: {} }],
+    characterRegexScripts: [],
     displayRegexScripts: [ordinary, display],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]

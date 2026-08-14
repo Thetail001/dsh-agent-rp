@@ -16,7 +16,7 @@ import { marked } from 'marked'
 import { createRoot, type Root } from 'react-dom/client'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
-import type { ImportedTavernHelperScript } from '../import/types.ts'
+import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/types.ts'
 import { importTavernRegex } from '../tavern-regex.ts'
 import type { TavernHelperMutationRequest, TavernWorldbookEntry } from '../tavern-helper.ts'
 import {
@@ -4661,11 +4661,13 @@ function tavernPresetPrompt(
   }
 }
 
-function tavernPresetRegex(
-  script: NonNullable<AgentRpProjection['preset']>['regexScripts'][number],
+function tavernRegex(
+  script: ImportedRegexScript,
+  index: number,
+  scope: 'preset' | 'character',
 ): Record<string, JsonValue> {
   return {
-    id: script.id ?? `preset-regex-${script.index}`,
+    id: script.id ?? `${scope}-regex-${index}`,
     script_name: script.scriptName,
     enabled: !script.disabled,
     find_regex: script.findRegex,
@@ -4682,7 +4684,7 @@ function tavernPresetRegex(
     run_on_edit: script.runOnEdit,
     min_depth: script.minDepth,
     max_depth: script.maxDepth,
-    disabled: script.disabled,
+    ...(scope === 'preset' ? { disabled: script.disabled } : {}),
   }
 }
 
@@ -4728,7 +4730,7 @@ function currentTavernPreset(projection: AgentRpProjection): TavernScriptSnapsho
     prompts: preset.prompts.filter(prompt => prompt.attached).map(tavernPresetPrompt),
     prompts_unused: preset.prompts.filter(prompt => !prompt.attached).map(tavernPresetPrompt),
     extensions: {
-      regex_scripts: preset.regexScripts.map(tavernPresetRegex),
+      regex_scripts: preset.regexScripts.map((script, index) => tavernRegex(script, index, 'preset')),
       tavern_helper: {
         scripts: preset.tavernHelperScripts.map(tavernPresetHelperScript),
         variables: structuredClone(preset.tavernHelperVariables),
@@ -4868,6 +4870,8 @@ function tavernScriptSnapshot(
       data: index === entries.length - 1 ? message : {},
       extra: {},
     })),
+    characterRegexScripts: (projection.frontend?.regexScripts ?? [])
+      .map((entry, index) => tavernRegex(entry, index, 'character')),
     displayRegexScripts: [
       ...(projection.preset?.regexScripts ?? []),
       ...(projection.frontend?.regexScripts ?? []),
@@ -5012,6 +5016,7 @@ function TavernScriptRuntime({
     frame.contentWindow?.postMessage({
       source: 'dsh-agent-rp-host', action: 'variables-sync',
       scopes: snapshot.scopes, messages: snapshot.messages,
+      characterRegexScripts: snapshot.characterRegexScripts,
       displayRegexScripts: snapshot.displayRegexScripts,
       worldbooks: snapshot.worldbooks, worldbookBindings: snapshot.worldbookBindings,
       activeWorldbookEntries: snapshot.activeWorldbookEntries,
