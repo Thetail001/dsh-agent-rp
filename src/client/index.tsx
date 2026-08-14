@@ -50,6 +50,7 @@ import {
   type CharacterDisplaySegment,
 } from '../frontend-regex.ts'
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
+import { parseTavernSlashCommand } from './tavern-slash.ts'
 import {
   CHARACTER_LIBRARY_PATH,
   characterLibraryImageUrl,
@@ -4753,18 +4754,21 @@ function TavernScriptRuntime({
             error: reason instanceof Error ? reason.message : String(reason),
           }, '*')
         }
-        const draft = message.value.match(/^\/setinput\s+([\s\S]*)$/u)
-        if (draft?.[1] !== undefined) {
-          inputActions.setDraft(draft[1])
+        const command = parseTavernSlashCommand(message.value)
+        if (command?.kind === 'set-input' && !command.trigger) {
+          inputActions.setDraft(command.text)
           resolve()
           return
         }
-        const send = message.value.match(/^\/send\s+([\s\S]*?)(?:\|\/trigger)?$/u)
-        if (send?.[1] !== undefined) {
+        if (command?.kind === 'send' || command?.kind === 'set-input') {
           const scoped = ctx.sessions.scope(sessionId)
           const conversation = scoped?.get('conversation') as IConversation | undefined
           if (conversation === undefined) reject(new Error('当前角色会话尚未准备好发送消息'))
-          else void Promise.resolve(conversation.send(send[1])).then(resolve, reject)
+          else void Promise.resolve(conversation.send(command.text)).then(resolve, reject)
+          return
+        }
+        if (command?.kind === 'trigger') {
+          reject(new Error('当前尚不支持用 /trigger 单独唤醒角色；请使用 /send 内容 || /trigger'))
           return
         }
         const visibility = message.value.match(/^\/(hide|unhide)\s+(\d+)(?:-(\d+))?\s*$/iu)
@@ -5185,16 +5189,15 @@ function roleplayComposerDockComponent(
         return
       }
       if (message.action !== 'trigger-slash') return
-      const draft = message.value.match(/^\/setinput\s+([\s\S]*)$/u)
-      if (draft?.[1] !== undefined) {
-        inputActions.setDraft(draft[1])
+      const command = parseTavernSlashCommand(message.value)
+      if (command?.kind === 'set-input' && !command.trigger) {
+        inputActions.setDraft(command.text)
         return
       }
-      const send = message.value.match(/^\/send\s+([\s\S]*?)(?:\|\/trigger)?$/u)
-      if (send?.[1] === undefined) return
+      if (command?.kind !== 'send' && command?.kind !== 'set-input') return
       const scoped = ctx.sessions.scope(sessionId)
       const conversation = scoped?.get('conversation') as IConversation | undefined
-      void conversation?.send(send[1])
+      void conversation?.send(command.text)
     }
     const mountRenderedDisplay = (
       item: HTMLElement,

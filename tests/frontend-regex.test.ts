@@ -3,6 +3,7 @@ import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import type { ImportedRegexScript } from '../src/import/types.ts'
 import { tavernScriptFrameSource } from '../src/client/tavern-runtime.ts'
+import { parseTavernSlashCommand } from '../src/client/tavern-slash.ts'
 import {
   AI_OUTPUT_PLACEMENT,
   normalizeSillyTavernMarkdown,
@@ -30,6 +31,24 @@ const character = {
   name: '白露',
   frontend: { regexScripts: [base], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {} },
 }
+
+test('parses Tavern send and trigger pipelines without leaking commands into chat', () => {
+  assert.deepEqual(parseTavernSlashCommand('/send 选择A || /trigger'), { kind: 'send', text: '选择A' })
+  assert.deepEqual(parseTavernSlashCommand('/send 选择B |/trigger'), { kind: 'send', text: '选择B' })
+  assert.deepEqual(parseTavernSlashCommand('/send 选择C||/trigger  '), { kind: 'send', text: '选择C' })
+  assert.deepEqual(parseTavernSlashCommand('/send 普通消息'), { kind: 'send', text: '普通消息' })
+})
+
+test('distinguishes Tavern draft updates, triggered drafts, and a bare trigger', () => {
+  assert.deepEqual(parseTavernSlashCommand('/setinput 暂存内容'), {
+    kind: 'set-input', text: '暂存内容', trigger: false,
+  })
+  assert.deepEqual(parseTavernSlashCommand('/setinput 立即发送 | /trigger'), {
+    kind: 'set-input', text: '立即发送', trigger: true,
+  })
+  assert.deepEqual(parseTavernSlashCommand('/trigger'), { kind: 'trigger' })
+  assert.equal(parseTavernSlashCommand('/echo 未支持'), undefined)
+})
 
 class RuntimeElement {
   readonly children: RuntimeElement[] = []
