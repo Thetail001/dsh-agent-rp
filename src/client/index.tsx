@@ -3963,6 +3963,21 @@ function tavernScriptSnapshot(
   }
 }
 
+function runtimeScriptButtons(value: unknown): readonly { readonly name: string; readonly visible: boolean }[] | undefined {
+  if (!Array.isArray(value) || value.length > 50) return undefined
+  const names = new Set<string>()
+  const buttons: { readonly name: string; readonly visible: boolean }[] = []
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return undefined
+    const button = item as Record<string, unknown>
+    if (typeof button.name !== 'string' || button.name.trim() === '' || button.name.length > 200
+      || typeof button.visible !== 'boolean' || names.has(button.name)) return undefined
+    names.add(button.name)
+    buttons.push({ name: button.name, visible: button.visible })
+  }
+  return buttons
+}
+
 function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, runMutation, sessionId }: {
   readonly ctx: Context
   readonly inputActions: ComposerDockProps['inputActions']
@@ -3986,6 +4001,10 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
   }[]>([])
   const [readyScriptIds, setReadyScriptIds] = useState<ReadonlySet<string>>(() => new Set())
   const [runtimeErrors, setRuntimeErrors] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const [runtimeButtons, setRuntimeButtons] = useState<ReadonlyMap<string, readonly {
+    readonly name: string
+    readonly visible: boolean
+  }[]>>(() => new Map())
   const [externalScriptRequests, setExternalScriptRequests] = useState<ReadonlyMap<string, string>>(() => new Map())
   const [approvedGenerations, setApprovedGenerations] = useState(readApprovedTavernScriptGenerations)
   const [generationRequests, setGenerationRequests] = useState<ReadonlyMap<string, number>>(() => new Map())
@@ -4007,6 +4026,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
     setFrames([])
     setReadyScriptIds(new Set())
     setRuntimeErrors(new Map())
+    setRuntimeButtons(new Map())
     setExternalScriptRequests(new Map())
     generationQueue.current.clear()
     setGenerationRequests(new Map())
@@ -4098,6 +4118,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
         readonly mode?: unknown
         readonly config?: unknown
         readonly request?: unknown
+        readonly buttons?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
@@ -4111,6 +4132,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
         const frame = frameRefs.current.get(entry.script.id)
         if (frame === undefined) return
         syncFrame(frame, entry.script)
+        frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'script-buttons-request' }, '*')
         frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'app_ready', args: [] }, '*')
         frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'chat_id_changed', args: ['dsh-agent-rp'] }, '*')
         if (projectionRef.current.mvu !== undefined) {
@@ -4125,6 +4147,11 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
         const detail = String(message.value)
         setRuntimeErrors(current => new Map(current).set(entry.script.id, detail))
         ctx.logger.warn(`agent-rp: Tavern Helper script ${JSON.stringify(entry.script.name)} failed: ${detail}`)
+        return
+      }
+      if (message.action === 'script-buttons') {
+        const buttons = runtimeScriptButtons(message.buttons)
+        if (buttons !== undefined) setRuntimeButtons(current => new Map(current).set(entry.script.id, buttons))
         return
       }
       if (message.action === 'surface' && typeof message.visible === 'boolean') {
@@ -4230,7 +4257,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
     return error === undefined ? [] : [{ script: entry.script, error }]
   })
   const buttons = scripts.flatMap(script => script.buttonEnabled
-    ? script.buttons.filter(button => button.visible).map(button => ({ script, button }))
+    ? (runtimeButtons.get(script.id) ?? script.buttons).filter(button => button.visible).map(button => ({ script, button }))
     : [])
   const panelFrames = frames.filter(entry => entry.srcDoc !== undefined && surfaceScriptIds.has(entry.script.id))
   const activePanelScriptId = panelFrames.some(entry => entry.script.id === panelScriptId)

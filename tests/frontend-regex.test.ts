@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { ImportedRegexScript } from '../src/import/types.ts'
+import { tavernScriptFrameSource } from '../src/client/tavern-runtime.ts'
 import {
   AI_OUTPUT_PLACEMENT,
   normalizeSillyTavernMarkdown,
@@ -28,6 +29,24 @@ const character = {
   name: '白露',
   frontend: { regexScripts: [base], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {} },
 }
+
+test('builds a parseable Tavern runtime with dynamic script button APIs', () => {
+  const html = tavernScriptFrameSource({
+    id: 'travel', name: '地点选择', content: '', info: '测试', enabled: true,
+    buttonEnabled: true, buttons: [{ name: '开始', visible: true }], data: {},
+  }, 'replaceScriptButtons([{name:"学校",visible:true}])', {
+    scriptId: 'travel', scriptName: '地点选择', scriptInfo: '测试',
+    buttons: [{ name: '开始', visible: true }], characterName: '白露', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    messages: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  assert.doesNotThrow(() => { Function(source!) })
+  assert.match(source!, /window\.replaceScriptButtons=/u)
+  assert.match(source!, /window\.updateScriptButtonsWith=/u)
+})
 
 test('runs preset scripts before character scripts for the selected view', () => {
   const preset = [{ ...base, scriptName: 'preset', findRegex: '/seed/gu', replaceString: 'old' }]
