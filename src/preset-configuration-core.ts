@@ -62,7 +62,13 @@ function order(value: unknown): readonly { readonly identifier: string; readonly
   })
 }
 
-function regex(value: unknown): readonly { readonly index: number; readonly disabled: boolean }[] {
+function nullableFiniteDepth(value: unknown, label: string): number | null {
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${label} must be a finite number or null`)
+  return value
+}
+
+function regex(value: unknown): Extract<PresetConfigurationRequest, { operation: 'replace' }>['regex'] {
   if (!Array.isArray(value)) throw new Error('regex must be an array')
   const seen = new Set<number>()
   return value.map((item, itemIndex) => {
@@ -71,7 +77,14 @@ function regex(value: unknown): readonly { readonly index: number; readonly disa
     if (seen.has(scriptIndex)) throw new Error(`regex repeats script index ${scriptIndex}`)
     seen.add(scriptIndex)
     if (typeof record.disabled !== 'boolean') throw new Error(`regex[${itemIndex}].disabled must be a boolean`)
-    return { index: scriptIndex, disabled: record.disabled }
+    return {
+      index: scriptIndex,
+      disabled: record.disabled,
+      ...(record.minDepth === undefined
+        ? {} : { minDepth: nullableFiniteDepth(record.minDepth, `regex[${itemIndex}].minDepth`) }),
+      ...(record.maxDepth === undefined
+        ? {} : { maxDepth: nullableFiniteDepth(record.maxDepth, `regex[${itemIndex}].maxDepth`) }),
+    }
   })
 }
 
@@ -295,7 +308,7 @@ export function configurePreset(
       || request.regex.some(entry => entry.index >= scripts.length)) {
       throw new Error('preset regex configuration does not match the active script set')
     }
-    const disabledByIndex = new Map(request.regex.map(entry => [entry.index, entry.disabled]))
+    const regexByIndex = new Map(request.regex.map(entry => [entry.index, entry]))
     return {
       ...structuredClone(active.preset),
       prompts: nextPrompts.map(prompt => contentById.has(prompt.identifier)
@@ -307,7 +320,16 @@ export function configurePreset(
         revision: request.revision,
         ...request.generation,
       }),
-      regexScripts: scripts.map((script, index) => ({ ...script, disabled: disabledByIndex.get(index) ?? script.disabled })),
+      regexScripts: scripts.map((script, index) => {
+        const configured = regexByIndex.get(index)
+        if (configured === undefined) return { ...script }
+        return {
+          ...script,
+          disabled: configured.disabled,
+          ...(configured.minDepth === undefined ? {} : { minDepth: configured.minDepth }),
+          ...(configured.maxDepth === undefined ? {} : { maxDepth: configured.maxDepth }),
+        }
+      }),
     }
   }
   if (request.operation === 'generation') {

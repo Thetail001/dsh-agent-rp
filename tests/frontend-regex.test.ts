@@ -60,6 +60,10 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(source!, /window\.getPreset=/u)
   assert.match(source!, /window\.updatePresetWith=/u)
   assert.match(source!, /window\.setPreset=/u)
+  assert.match(source!, /window\.getTavernRegexes=/u)
+  assert.match(source!, /window\.replaceTavernRegexes=/u)
+  assert.match(source!, /window\.updateTavernRegexesWith=/u)
+  assert.match(source!, /window\.formatAsTavernRegexedString=/u)
 })
 
 test('runs preset scripts before character scripts for the selected view', () => {

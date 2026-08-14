@@ -19,7 +19,12 @@ export type PresetConfigurationRequest =
       readonly maxTokens?: number | null
       readonly reasoningEffort?: string | null
     }
-    readonly regex: readonly { readonly index: number; readonly disabled: boolean }[]
+    readonly regex: readonly {
+      readonly index: number
+      readonly disabled: boolean
+      readonly minDepth?: number | null
+      readonly maxDepth?: number | null
+    }[]
   }
   | {
     readonly operation: 'toggle'

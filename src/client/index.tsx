@@ -4098,7 +4098,11 @@ function tavernPresetConfiguration(
       ? candidate as Record<string, unknown> : {}
     const disabled = typeof item.enabled === 'boolean' ? !item.enabled
       : typeof item.disabled === 'boolean' ? item.disabled : script.disabled
-    return { index, disabled }
+    const minDepth = item.min_depth === null || (typeof item.min_depth === 'number' && Number.isFinite(item.min_depth))
+      ? item.min_depth as number | null : script.minDepth
+    const maxDepth = item.max_depth === null || (typeof item.max_depth === 'number' && Number.isFinite(item.max_depth))
+      ? item.max_depth as number | null : script.maxDepth
+    return { index, disabled, minDepth, maxDepth }
   })
   return { operation: 'replace', revision, order, prompts: definitions, content: [], generation, regex }
 }

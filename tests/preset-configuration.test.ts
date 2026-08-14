@@ -201,7 +201,7 @@ test('decodes the private manager command at its Host boundary', () => {
   })), { operation: 'generation', revision: 0, reasoningEffort: 'provider-owned-level' })
 })
 
-test('edits preset regex switches independently from prompt modules', () => {
+test('edits preset regex switches and depths independently from prompt modules', () => {
   const preset = parseSillyTavernPresetJson(JSON.stringify({
     prompts: [{ identifier: 'main', name: '主提示', role: 'system', content: 'main', marker: true }],
     prompt_order: [{ character_id: 100001, order: [{ identifier: 'main', enabled: true }] }],
@@ -218,10 +218,24 @@ test('edits preset regex switches independently from prompt modules', () => {
     result: { ...activePreset().result, regexScriptCount: 1 },
   }
   const disabled = configurePreset(active, {
-    operation: 'replace', revision: 0, order: preset.order, content: [], generation: {}, regex: [{ index: 0, disabled: true }],
+    operation: 'replace', revision: 0, order: preset.order, content: [], generation: {},
+    regex: [{ index: 0, disabled: true, minDepth: 2, maxDepth: 8 }],
   })
   assert.equal(disabled.regexScripts[0]?.disabled, true)
+  assert.equal(disabled.regexScripts[0]?.minDepth, 2)
+  assert.equal(disabled.regexScripts[0]?.maxDepth, 8)
   assert.equal(disabled.order[0]?.enabled, true)
+  const decoded = parsePresetConfigurationRequest(JSON.stringify({
+    operation: 'replace', revision: 0, order: preset.order, content: [], generation: {},
+    regex: [{ index: 0, disabled: false, minDepth: null, maxDepth: -1 }],
+  }))
+  assert.equal(decoded.operation, 'replace')
+  if (decoded.operation !== 'replace') assert.fail('expected replace operation')
+  assert.deepEqual(decoded.regex, [{ index: 0, disabled: false, minDepth: null, maxDepth: -1 }])
+  assert.throws(() => parsePresetConfigurationRequest(JSON.stringify({
+    operation: 'replace', revision: 0, order: preset.order, content: [], generation: {},
+    regex: [{ index: 0, disabled: false, minDepth: '2' }],
+  })), /minDepth/u)
   assert.throws(() => configurePreset(active, {
     operation: 'replace', revision: 0, order: preset.order, content: [], generation: {}, regex: [{ index: 1, disabled: true }],
   }), /does not match/u)
