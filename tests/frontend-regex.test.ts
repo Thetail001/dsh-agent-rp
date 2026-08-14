@@ -10,6 +10,7 @@ import {
   renderCharacterDisplay,
   renderCharacterPromptView,
   splitCharacterDisplay,
+  traceCharacterPromptView,
 } from '../src/frontend-regex.ts'
 
 const base: ImportedRegexScript = {
@@ -356,6 +357,29 @@ test('runs ordinary message scripts before view-specific scripts', () => {
     '```html\n<details><summary>状态</summary>平静</details>\n```')
   assert.equal(renderCharacterPromptView(source, noCardScripts, AI_OUTPUT_PLACEMENT, 0, '宝宝', [ordinary, prompt]),
     '状态记录：平静')
+})
+
+test('reports prompt regex outcomes without exposing expressions or replacements', () => {
+  const scripts = [
+    { ...base, scriptName: 'ordinary', markdownOnly: false, findRegex: '/old/gu' },
+    { ...base, scriptName: 'prompt', markdownOnly: false, promptOnly: true, findRegex: '/new/gu', replaceString: 'done' },
+    { ...base, scriptName: 'display', findRegex: '/done/gu' },
+  ]
+  const trace = traceCharacterPromptView(
+    'old',
+    { ...character, frontend: { ...character.frontend, regexScripts: [] } },
+    AI_OUTPUT_PLACEMENT,
+    0,
+    '宝宝',
+    scripts,
+  )
+  assert.equal(trace.text, 'done')
+  assert.deepEqual(trace.scripts, [
+    { index: 0, scriptName: 'ordinary', outcome: 'applied' },
+    { index: 1, scriptName: 'prompt', outcome: 'applied' },
+    { index: 2, scriptName: 'display', outcome: 'display-only' },
+  ])
+  assert.equal(JSON.stringify(trace).includes('/old/'), false)
 })
 
 test('runs the same two regex phases inside the isolated Tavern runtime', () => {

@@ -219,11 +219,11 @@ test('mounts commands when public DSH omits prompt extension gateways', async (c
   await root.plugin(AgentRegistry)
   const preset = createScope(root, {})
   const commands: string[] = []
-  root.provide('apiProxy' as never, {} as never)
   root.provide('systemPrompt' as never, { section: () => () => {}, context: () => () => {} } as never)
   root.provide('tools' as never, { register: () => () => {} } as never)
   root.provide('commands' as never, {
-    register(definition: { readonly name: string }) {
+    register(definition: { readonly name: string; readonly input: { readonly hint: string } }) {
+      assert.notEqual(definition.input.hint.trim(), '')
       commands.push(definition.name)
       return () => {}
     },

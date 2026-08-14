@@ -2,6 +2,9 @@
 
 import type { ImportedCharacterFrontend, ImportedRegexScript } from './import/types.ts'
 
+/** Message-source field identifying a logged model-only prompt-regex replacement. */
+export const PROMPT_REGEX_SOURCE_MARKER = 'dshAgentRpPromptRegex'
+
 /** Minimal identity needed by a character-owned regex script. */
 export interface RegexCharacter {
   readonly name: string
@@ -14,6 +17,106 @@ export type CharacterDisplaySegment =
   | { readonly kind: 'markdown'; readonly text: string }
   | { readonly kind: 'html'; readonly source: string }
   | { readonly kind: 'inline-html'; readonly source: string }
+
+/** Why one regex script did or did not affect a prompt message. */
+export type PromptRegexOutcome =
+  | 'applied'
+  | 'disabled'
+  | 'display-only'
+  | 'placement'
+  | 'depth'
+  | 'invalid'
+  | 'no-match'
+
+/** Prompt rendering result with one non-sensitive outcome per ordered script. */
+export interface PromptRegexTrace {
+  readonly text: string
+  readonly scripts: readonly {
+    readonly index: number
+    readonly scriptName: string
+    readonly outcome: PromptRegexOutcome
+  }[]
+}
+
+/** Non-sensitive result of the latest model-facing regex pass. */
+export interface PromptRegexTraceRecord {
+  readonly format: 0
+  readonly turn: number
+  readonly step: number
+  readonly messageCount: number
+  readonly replacementCount: number
+  readonly scripts: readonly {
+    readonly source: 'preset' | 'character'
+    readonly index: number
+    readonly scriptName: string
+    readonly outcome: PromptRegexOutcome
+    readonly affectedMessages: number
+  }[]
+}
+
+/** Metadata carried by the latest model-only surface replacement. */
+export interface PromptRegexSourceMarker {
+  readonly format: 0
+  readonly originalSeq: number
+  readonly trace?: PromptRegexTraceRecord
+}
+
+const PROMPT_REGEX_OUTCOMES = new Set<PromptRegexOutcome>([
+  'applied',
+  'disabled',
+  'display-only',
+  'placement',
+  'depth',
+  'invalid',
+  'no-match',
+])
+
+function promptRegexTraceRecord(value: unknown): PromptRegexTraceRecord | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (record.format !== 0
+    || typeof record.turn !== 'number' || !Number.isSafeInteger(record.turn) || record.turn < 0
+    || typeof record.step !== 'number' || !Number.isSafeInteger(record.step) || record.step < 0
+    || typeof record.messageCount !== 'number' || !Number.isSafeInteger(record.messageCount) || record.messageCount < 0
+    || typeof record.replacementCount !== 'number' || !Number.isSafeInteger(record.replacementCount) || record.replacementCount < 0
+    || !Array.isArray(record.scripts)) return undefined
+  const scripts: PromptRegexTraceRecord['scripts'][number][] = []
+  for (const value of record.scripts) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+    const script = value as Record<string, unknown>
+    if ((script.source !== 'preset' && script.source !== 'character')
+      || typeof script.index !== 'number' || !Number.isSafeInteger(script.index) || script.index < 0
+      || typeof script.scriptName !== 'string'
+      || typeof script.outcome !== 'string' || !PROMPT_REGEX_OUTCOMES.has(script.outcome as PromptRegexOutcome)
+      || typeof script.affectedMessages !== 'number' || !Number.isSafeInteger(script.affectedMessages)
+      || script.affectedMessages < 0) return undefined
+    scripts.push({
+      source: script.source,
+      index: script.index,
+      scriptName: script.scriptName,
+      outcome: script.outcome as PromptRegexOutcome,
+      affectedMessages: script.affectedMessages,
+    })
+  }
+  return {
+    format: 0,
+    turn: record.turn,
+    step: record.step,
+    messageCount: record.messageCount,
+    replacementCount: record.replacementCount,
+    scripts,
+  }
+}
+
+/** Read model-only replacement metadata without trusting durable source fields. */
+export function readPromptRegexSourceMarker(value: unknown): PromptRegexSourceMarker | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (record.format !== 0 || typeof record.originalSeq !== 'number'
+    || !Number.isSafeInteger(record.originalSeq) || record.originalSeq < 0) return undefined
+  const trace = promptRegexTraceRecord(record.trace)
+  return { format: 0, originalSeq: record.originalSeq, ...(trace === undefined ? {} : { trace }) }
+}
 
 interface SourceLine {
   readonly start: number
@@ -249,9 +352,21 @@ function applyScript(
   card: RegexCharacter,
   userName?: string,
 ): string {
+  return applyScriptWithOutcome(raw, script, card, userName).text
+}
+
+function applyScriptWithOutcome(
+  raw: string,
+  script: ImportedRegexScript,
+  card: RegexCharacter,
+  userName?: string,
+): { readonly text: string; readonly outcome: 'applied' | 'invalid' | 'no-match' } {
   const find = compileRegex(substitutedFindRegex(script, card, userName))
-  if (find === undefined || script.findRegex === '' || raw === '') return raw
-  return raw.replace(find, (...args: unknown[]) => {
+  if (find === undefined || script.findRegex === '') return { text: raw, outcome: 'invalid' }
+  if (raw === '') return { text: raw, outcome: 'no-match' }
+  let matched = false
+  const text = raw.replace(find, (...args: unknown[]) => {
+    matched = true
     const groups = typeof args.at(-1) === 'object' && args.at(-1) !== null
       ? args.at(-1) as Record<string, string | undefined>
       : undefined
@@ -264,6 +379,7 @@ function applyScript(
     )
     return substituteCardMacros(replacement, card, userName)
   })
+  return { text, outcome: matched ? 'applied' : 'no-match' }
 }
 
 function runScripts(
@@ -310,6 +426,50 @@ export function renderCharacterPromptView(
   presetScripts?: readonly ImportedRegexScript[],
 ): string {
   return runScripts(raw, card, placement, 'prompt', depth, userName, presetScripts)
+}
+
+/** Render the prompt view and explain each script without exposing its expression or replacement. */
+export function traceCharacterPromptView(
+  raw: string,
+  card: RegexCharacter,
+  placement: number,
+  depth?: number,
+  userName?: string,
+  presetScripts: readonly ImportedRegexScript[] = [],
+): PromptRegexTrace {
+  const scripts = [...presetScripts, ...card.frontend.regexScripts]
+  const outcomes = new Map<number, PromptRegexOutcome>()
+  let text = raw
+  for (const [index, script] of scripts.entries()) {
+    if (script.disabled) outcomes.set(index, 'disabled')
+    else if (!script.placement.includes(placement)) outcomes.set(index, 'placement')
+    else if (!inDepth(script, depth)) outcomes.set(index, 'depth')
+    else if (script.markdownOnly || script.promptOnly) {
+      if (script.markdownOnly && !script.promptOnly) outcomes.set(index, 'display-only')
+    } else {
+      const result = applyScriptWithOutcome(text, script, card, userName)
+      text = result.text
+      outcomes.set(index, result.outcome)
+    }
+  }
+  for (const [index, script] of scripts.entries()) {
+    if (outcomes.has(index)) continue
+    if (!script.promptOnly) {
+      outcomes.set(index, 'display-only')
+      continue
+    }
+    const result = applyScriptWithOutcome(text, script, card, userName)
+    text = result.text
+    outcomes.set(index, result.outcome)
+  }
+  return {
+    text,
+    scripts: scripts.map((script, index) => ({
+      index,
+      scriptName: script.scriptName,
+      outcome: outcomes.get(index) ?? 'no-match',
+    })),
+  }
 }
 
 /** Remove a single outer Markdown HTML fence emitted by card display scripts. */

@@ -39,6 +39,7 @@ import {
   initializeTavernHelperState,
   type TavernHelperState,
 } from './tavern-helper.ts'
+import { PROMPT_REGEX_SOURCE_MARKER, readPromptRegexSourceMarker } from './frontend-regex.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -73,6 +74,7 @@ const projectionSchema = {
       || (record.preset !== undefined && (typeof record.preset !== 'object' || record.preset === null))
       || !Array.isArray(record.presetLibrary)
       || (record.lastRequest !== undefined && (typeof record.lastRequest !== 'object' || record.lastRequest === null))
+      || (record.promptRegex !== undefined && (typeof record.promptRegex !== 'object' || record.promptRegex === null))
       || !validSource) throw new Error('invalid agentRp projection')
     return value as AgentRpProjection
   },
@@ -98,6 +100,7 @@ interface AgentRpProjectionState {
   readonly presetState?: ActiveSessionPreset
   readonly presetLibrary: AgentRpProjection['presetLibrary']
   readonly lastRequest?: AgentRpProjection['lastRequest']
+  readonly promptRegex?: AgentRpProjection['promptRegex']
   readonly generations: Readonly<Record<string, GenerationStateRecord>>
   readonly currentReplySeq?: number
   readonly tavern?: TavernHelperState
@@ -203,6 +206,9 @@ function applySurface(
   event: SessionEvent,
 ): AgentRpProjectionState['surface'] {
   if (event.type !== 'user/message' && event.type !== 'assistant/message' && event.type !== 'tool/result') return surface
+  const message = event.type === 'user/message' ? event.data : event.data.message
+  if (event.type !== 'tool/result'
+    && typeof (message.source as unknown as Record<string, unknown>)[PROMPT_REGEX_SOURCE_MARKER] === 'object') return surface
   const text = surfaceText(event)
   const role = surfaceRole(event)
   const node = {
@@ -221,6 +227,16 @@ function applySurface(
     node,
     ...surface.slice(end + 1),
   ]
+}
+
+function promptRegexTrace(event: SessionEvent): AgentRpProjection['promptRegex'] | undefined {
+  const source = event.type === 'user/message'
+    ? event.data.source
+    : event.type === 'assistant/message' ? event.data.message.source : undefined
+  if (source === undefined) return undefined
+  return readPromptRegexSourceMarker(
+    (source as unknown as Record<string, unknown>)[PROMPT_REGEX_SOURCE_MARKER],
+  )?.trace
 }
 
 function worldInfoProjection(state: AgentRpProjectionState): AgentRpProjection['worldInfo'] {
@@ -512,6 +528,8 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
   apply(state, event) {
     const surface = applySurface(state.surface, event)
     const withSurface = surface === state.surface ? state : { ...state, surface }
+    const trace = promptRegexTrace(event)
+    if (trace !== undefined) return { ...withSurface, promptRegex: trace }
     if (event.type === 'command/run' && event.data.name === 'rp-persona') {
       return {
         ...withSurface,
@@ -940,6 +958,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
       ...(state.preset === undefined ? {} : { preset: state.preset }),
       presetLibrary: state.presetLibrary,
       ...(state.lastRequest === undefined ? {} : { lastRequest: state.lastRequest }),
+      ...(state.promptRegex === undefined ? {} : { promptRegex: state.promptRegex }),
       generations: Object.values(state.generations).map(group => ({
         groupId: group.groupId,
         anchorSeq: group.anchorSeq,
@@ -959,5 +978,5 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
       }),
     }
   },
-  stateVersion: 8,
+  stateVersion: 9,
 }

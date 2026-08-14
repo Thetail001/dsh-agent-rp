@@ -2439,6 +2439,7 @@ function RoleplayHeader({
           sessionId={sessionId}
           preset={projection.preset}
           lastRequest={projection.lastRequest}
+          promptRegex={projection.promptRegex}
           entries={projection.presetLibrary}
           loadModelCapabilities={loadModelCapabilities}
           onClose={() => { setPresetOpen(false) }}
@@ -3462,11 +3463,12 @@ function roleLabel(role: PresetPromptProjection['role']): string {
 }
 
 function PresetManagerDialog({
-  sessionId, preset, lastRequest, entries, loadModelCapabilities, onClose, onImport, onSave, onLibrary,
+  sessionId, preset, lastRequest, promptRegex, entries, loadModelCapabilities, onClose, onImport, onSave, onLibrary,
 }: {
   readonly sessionId: SessionId
   readonly preset: PresetProjection
   readonly lastRequest?: AgentRpProjection['lastRequest']
+  readonly promptRegex?: AgentRpProjection['promptRegex']
   readonly entries: AgentRpProjection['presetLibrary']
   readonly loadModelCapabilities: (sessionId: SessionId) => Promise<CurrentModelCapabilities>
   readonly onClose: () => void
@@ -3536,6 +3538,8 @@ function PresetManagerDialog({
   })
   const visibleRegex = regexScripts.filter(script => normalizedQuery === ''
     || script.scriptName.toLocaleLowerCase().includes(normalizedQuery))
+  const promptRegexByIndex = new Map(promptRegex?.scripts
+    .filter(script => script.source === 'preset').map(script => [script.index, script]))
   const attached = prompts.filter(prompt => prompt.attached)
   const enabledCount = attached.filter(prompt => prompt.enabled).length
   const editingPrompt = prompts.find(prompt => prompt.identifier === editingPromptId)
@@ -3835,7 +3839,24 @@ function PresetManagerDialog({
                 })}
               </section>
             })}
-            {section === 'regex' && visibleRegex.map(script => <div key={script.index} style={{
+            {section === 'regex' && promptRegex !== undefined && <div role="status" style={{
+              background: `color-mix(in srgb, ${color} 7%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 20%, transparent)`,
+              borderRadius: '10px', fontSize: '11px', lineHeight: 1.55, padding: '9px 11px',
+            }}>
+              上次生成检查了 {promptRegex.messageCount} 条对话，更新模型视图 {promptRegex.replacementCount} 条。这里只记录脚本名和结果
+            </div>}
+            {section === 'regex' && visibleRegex.map(script => {
+              const trace = promptRegexByIndex.get(script.index)
+              const traceLabel = script.markdownOnly && !script.promptOnly ? '仅用于显示'
+                : trace === undefined ? undefined : trace.outcome === 'applied'
+                ? `上次命中 ${trace.affectedMessages} 条`
+                : trace.outcome === 'no-match' ? '上次未命中'
+                : trace.outcome === 'disabled' ? '上次未启用'
+                : trace.outcome === 'display-only' ? '仅用于显示'
+                : trace.outcome === 'placement' ? '消息位置不匹配'
+                : trace.outcome === 'depth' ? '消息深度不匹配'
+                : '表达式无效'
+              return <div key={script.index} style={{
               alignItems: 'center', background: !script.disabled ? `color-mix(in srgb, ${color} 9%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
               border: `1px solid ${!script.disabled ? `color-mix(in srgb, ${color} 24%, transparent)` : 'var(--dsw-alias-border-l2, #34343a)'}`,
               borderRadius: '10px', display: 'grid', gap: '8px', gridTemplateColumns: 'minmax(0, 1fr) auto', minHeight: '52px', padding: '8px 9px 8px 12px',
@@ -3844,10 +3865,11 @@ function PresetManagerDialog({
                 <div style={{ fontSize: '13px', fontWeight: 560, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{script.scriptName}</div>
                 <div style={{ fontSize: '10px', marginTop: '3px', opacity: 0.42 }}>{[
                   script.markdownOnly ? '显示' : undefined,
-                  script.promptOnly ? '生成规则已保留' : undefined,
+                  script.promptOnly ? '生成时执行' : undefined,
                   script.placement.includes(1) ? '用户消息' : undefined,
                   script.placement.includes(2) ? '角色回复' : undefined,
                 ].filter(Boolean).join(' · ') || '普通处理'}</div>
+                {traceLabel !== undefined && <div style={{ color: trace?.outcome === 'invalid' ? '#d9a85f' : 'inherit', fontSize: '10px', marginTop: '3px', opacity: 0.58 }}>{traceLabel}</div>}
               </div>
               <button type="button" role="switch" aria-checked={!script.disabled} disabled={saving} onClick={() => { setRegexScripts(current => current.map(item => item.index === script.index ? { ...item, disabled: !item.disabled } : item)) }} style={{
                 background: !script.disabled ? color : 'var(--dsw-alias-bg-layer-2, #2b2b30)', border: 0, borderRadius: '999px',
@@ -3855,7 +3877,7 @@ function PresetManagerDialog({
               }}><span style={{
                 background: '#fff', borderRadius: '50%', display: 'block', height: '18px', transform: `translateX(${!script.disabled ? 17 : 0}px)`, transition: 'transform .14s ease', width: '18px',
               }} /></button>
-            </div>)}
+            </div>})}
             {((section === 'prompts' && visiblePromptSections.length === 0) || (section === 'regex' && visibleRegex.length === 0)) && <div style={{ fontSize: '13px', opacity: 0.52, padding: '32px 10px', textAlign: 'center' }}>没有匹配的{section === 'prompts' ? '模块' : '正则脚本'}</div>}
           </div>
         </div>

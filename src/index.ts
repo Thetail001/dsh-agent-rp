@@ -82,6 +82,7 @@ import type {} from '@deepseek-ai/dsh-session-projection'
 import { agentRpProjectionDefinition } from './projection.ts'
 import { readCurrentMvuState } from './mvu.ts'
 import { installMvuStreamCompletion } from './mvu-stream.ts'
+import { installPromptRegexStream } from './prompt-regex-stream.ts'
 import { assembleSillyTavernPreset } from './preset-prompt.ts'
 import { configurePresetFromCommand } from './preset-configuration.ts'
 import { PresetLibrary } from './preset-library.ts'
@@ -125,7 +126,7 @@ import { installRpDistributionBridgeHttp } from './rp-distribution-bridge-http.t
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
 export { Config }
-const CHARACTER_SERVICES = ['agents', 'apiProxy', 'attachments', 'commands', 'credentials', 'llm', 'systemPrompt', 'tools']
+export const inject = ['attachments', 'commands', 'credentials', 'llm', 'systemPrompt', 'tools']
 
 interface PromptAttachmentGateway {
   registerPromptAttachmentConsumer?(
@@ -458,7 +459,7 @@ export function installAgentRp(
   const agentsBySession = new Map<string, Agent>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
   const presetAfterHistoryByAgent = new WeakMap<Agent, string>()
-  const gateway = (ctx as Context & { apiProxy: PromptAttachmentGateway }).apiProxy
+  const gateway = ctx.get('apiProxy') as PromptAttachmentGateway | undefined
   const commands = (ctx as Context & { commands: HumanCommandGateway }).commands
   const presetLibrary = new PresetLibrary()
   const characterLibrary = new CharacterLibrary(options.characterLibraryRoot === undefined
@@ -479,7 +480,7 @@ export function installAgentRp(
   commands.register({
     name: 'rp-tavern-trigger',
     description: 'generate a roleplay reply after a Tavern script appends a user message',
-    input: { hint: '' },
+    input: { hint: '<no input>' },
     recordInput: false,
     handler: executeTavernTrigger,
   })
@@ -555,12 +556,12 @@ export function installAgentRp(
     recordInput: false,
     handler: invocation => executeWorldInfoLibraryCommand(worldInfoLibrary, invocation),
   })
-  const registerAttachmentConsumer = gateway.registerPromptAttachmentConsumer?.bind(gateway)
+  const registerAttachmentConsumer = gateway?.registerPromptAttachmentConsumer?.bind(gateway)
   if (registerAttachmentConsumer !== undefined) ctx.effect(() => registerAttachmentConsumer(
     'dsh-agent-rp',
     ({ agent, content }) => claimAgentRpPrompt(agentsByScope.get(agent) === agent, content),
   ), 'agent-rp: prompt attachment consumer')
-  const registerSessionImporter = gateway.registerPromptSessionImporter?.bind(gateway)
+  const registerSessionImporter = gateway?.registerPromptSessionImporter?.bind(gateway)
   if (registerSessionImporter !== undefined) ctx.effect(() => registerSessionImporter('dsh-agent-rp:sillytavern-migration', {
     recognize: ({ agent, content }) => isSillyTavernMigrationOffer(agentsByScope.get(agent) === agent, content),
     async import(input, signal) {
@@ -750,6 +751,7 @@ export function installAgentRp(
     agentsBySession.delete(String(agent.session.id))
     pendingMessagesByAgent.delete(agent)
   })
+  installPromptRegexStream(ctx, sessionId => agentsBySession.get(sessionId))
   installMvuStreamCompletion(ctx, sessionId => agentsBySession.get(sessionId))
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {
     if (agentsByScope.get(agent) !== agent) return
@@ -1076,7 +1078,5 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
     installBundledAgentRpPreset()
     return
   }
-  ctx.inject(CHARACTER_SERVICES, characterCtx => {
-    installAgentRp(characterCtx, resolved)
-  })
+  installAgentRp(ctx, resolved)
 }

@@ -5,6 +5,7 @@ import type { ImportedRegexScript } from './import/types.ts'
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
 import type { TavernHelperState } from './tavern-helper.ts'
+import type { PromptRegexTraceRecord } from './frontend-regex.ts'
 
 /** Current character identity and migration summary for one Roleplay Session. */
 export interface AgentRpProjection {
@@ -66,6 +67,8 @@ export interface AgentRpProjection {
     }[]
   }
   readonly frontend?: ImportedCharacterFrontend
+  /** Latest model-facing regex pass without expressions or message text. */
+  readonly promptRegex?: PromptRegexTraceRecord
   readonly mvu?: {
     readonly statData: JsonValue
     readonly updateCount: number
