@@ -19,6 +19,8 @@ export interface AgentRpProjection {
   readonly userName?: string
   readonly persona?: SessionPersonaSnapshot
   readonly cardVersion?: 1 | 2 | 3
+  /** Exact current character-card JSON retained for same-session script compatibility. */
+  readonly characterCardRaw?: JsonValue
   readonly avatarAttachmentId?: string
   readonly avatarLibraryId?: string
   readonly importedMessageCount: number

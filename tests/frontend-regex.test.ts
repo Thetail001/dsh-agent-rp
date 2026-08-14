@@ -376,6 +376,67 @@ test('round-trips browser-persisted Tavern extension settings and recovers corru
   assert.throws(() => writeTavernExtensionSettings(storage, []), /必须是对象/u)
 })
 
+test('exposes only the current lossless character card through SillyTavern context and getCharData', () => {
+  const characterCard = {
+    spec: 'chara_card_v2', spec_version: '2.0',
+    data: {
+      name: '白露', nickname: '露露', description: '钟表匠', personality: '沉静', scenario: '打烊前',
+      first_mes: '门还没锁。', mes_example: '<START>', alternate_greetings: ['今天来得很早。'],
+      system_prompt: '', post_history_instructions: '', creator_notes: '', tags: [], creator: 'fixture',
+      character_version: '1', extensions: { custom: { retained: true } },
+    },
+  }
+  const script = String.raw`
+const st = SillyTavern.getContext();
+const first = getCharData('current');
+first.description = 'sandbox copy';
+window.__currentCharacter = {
+  characterId: st.characterId,
+  thisChid: st.this_chid,
+  globalThisChid: this_chid,
+  characterCount: st.characters.length,
+  sameCharacters: st.characters === characters,
+  indexedName: st.characters[st.characterId].name,
+  current: getCharData('current'),
+  byName: getCharData('白露'),
+  byAvatar: getCharData('bailu.png'),
+  missing: getCharData('另一张卡'),
+  names: getCharacterNames(),
+  ids: getCharacterIds(),
+};
+`
+  const html = tavernScriptFrameSource({
+    id: 'current-card', name: '当前角色', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'current-card', scriptName: '当前角色', scriptInfo: '', buttons: [],
+    characterName: '露露', characterId: 'bailu.png', characterCard, chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const result = JSON.parse(JSON.stringify(context.__currentCharacter)) as Record<string, unknown>
+  assert.equal(result.characterId, 0)
+  assert.equal(result.thisChid, 0)
+  assert.equal(result.globalThisChid, 0)
+  assert.equal(result.characterCount, 1)
+  assert.equal(result.sameCharacters, true)
+  assert.equal(result.indexedName, '白露')
+  assert.equal((result.current as Record<string, unknown>).description, '钟表匠')
+  assert.equal(((result.current as { data: { extensions: { custom: { retained: boolean } } } })
+    .data.extensions.custom.retained), true)
+  assert.deepEqual(result.byName, result.current)
+  assert.deepEqual(result.byAvatar, result.current)
+  assert.equal(result.missing, null)
+  assert.deepEqual(result.names, ['白露'])
+  assert.deepEqual(result.ids, ['bailu.png'])
+})
+
 test('lets Tavern scripts replace the complete preset regex list', async () => {
   const script = String.raw`
 window.__regexMutation = replaceTavernRegexes([{

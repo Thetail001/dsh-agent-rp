@@ -62,6 +62,8 @@ const projectionSchema = {
       || (record.currentReplySeq !== undefined && (typeof record.currentReplySeq !== 'number'
         || !Number.isSafeInteger(record.currentReplySeq) || record.currentReplySeq < 0))
       || !validCardVersion
+      || (record.characterCardRaw !== undefined && (typeof record.characterCardRaw !== 'object'
+        || record.characterCardRaw === null || Array.isArray(record.characterCardRaw)))
       || (record.avatarAttachmentId !== undefined && typeof record.avatarAttachmentId !== 'string')
       || (record.avatarLibraryId !== undefined && typeof record.avatarLibraryId !== 'string')
       || typeof record.importedMessageCount !== 'number' || !Number.isSafeInteger(record.importedMessageCount)
@@ -135,6 +137,7 @@ function cardProjection(
       ...(result.userName === undefined ? {} : { userName: result.userName }),
       ...(previous.persona === undefined ? {} : { persona: previous.persona }),
       cardVersion: result.cardVersion,
+      characterCardRaw: card.raw,
       ...(result.transport === 'png' ? { avatarAttachmentId: result.sourceAttachmentId } : {}),
       ...(result.transport === 'charx' && result.libraryId !== undefined ? { avatarLibraryId: result.libraryId } : {}),
       importedMessageCount: previous.importedMessageCount,

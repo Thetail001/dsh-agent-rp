@@ -4883,6 +4883,7 @@ function tavernScriptSnapshot(
     buttons: script.buttons,
     characterName: projection.characterName,
     characterId: projection.tavern?.characterSourceId ?? projection.avatarLibraryId ?? projection.characterName,
+    ...(projection.characterCardRaw === undefined ? {} : { characterCard: projection.characterCardRaw }),
     chatId: String(sessionId),
     ...(projection.userName === undefined ? {} : { userName: projection.userName }),
     ...(projection.persona === undefined ? {} : { persona: projection.persona }),
