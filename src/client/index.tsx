@@ -3926,6 +3926,7 @@ function RoleplayStatusDialog({ characterName, source, onClose }: {
 }
 
 type RunTavernMutation = (sessionId: SessionId, request: TavernHelperMutationRequest) => Promise<void>
+type RunTavernTrigger = (sessionId: SessionId) => Promise<void>
 type RunPresetConfiguration = (sessionId: SessionId, request: PresetConfigurationRequest) => Promise<void>
 type RunTavernGeneration = (
   sessionId: SessionId,
@@ -4248,7 +4249,7 @@ function runtimeScriptButtons(value: unknown): readonly { readonly name: string;
 
 function TavernScriptRuntime({
   ctx, inputActions, onDisplayOverride, projection, runGeneration, runModelList, runMutation, runPresetConfiguration,
-  runPromptPreview, sessionId,
+  runPromptPreview, runTrigger, sessionId,
 }: {
   readonly ctx: Context
   readonly inputActions: ComposerDockProps['inputActions']
@@ -4259,6 +4260,7 @@ function TavernScriptRuntime({
   readonly runMutation: RunTavernMutation
   readonly runPresetConfiguration: RunPresetConfiguration
   readonly runPromptPreview: RunTavernPromptPreview
+  readonly runTrigger: RunTavernTrigger
   readonly sessionId: SessionId
 }) {
   const scripts = [
@@ -4768,7 +4770,7 @@ function TavernScriptRuntime({
           return
         }
         if (command?.kind === 'trigger') {
-          reject(new Error('当前尚不支持用 /trigger 单独唤醒角色；请使用 /send 内容 || /trigger'))
+          void runTrigger(sessionId).then(resolve, reject)
           return
         }
         const visibility = message.value.match(/^\/(hide|unhide)\s+(\d+)(?:-(\d+))?\s*$/iu)
@@ -4852,7 +4854,7 @@ function TavernScriptRuntime({
     window.addEventListener('message', bridge)
     return () => { window.removeEventListener('message', bridge) }
   }, [approvedCustomGenerations, approvedGenerations, approvedModels, frames, inputActions, onDisplayOverride, runGeneration, runModelList,
-    runMutation, runPresetConfiguration, runPromptPreview, sessionId])
+    runMutation, runPresetConfiguration, runPromptPreview, runTrigger, sessionId])
   if (scripts.length === 0) return null
   const failures = frames.flatMap(entry => {
     const error = entry.error ?? runtimeErrors.get(entry.script.id)
@@ -5038,6 +5040,7 @@ function roleplayComposerDockComponent(
   runTavernGeneration: RunTavernGeneration,
   runTavernPromptPreview: RunTavernPromptPreview,
   runTavernModelList: RunTavernModelList,
+  runTavernTrigger: RunTavernTrigger,
   runPresetConfiguration: RunPresetConfiguration,
 ): (props: ComposerDockProps) => JSX.Element | null {
   return function RoleplayComposerDock({
@@ -5192,6 +5195,12 @@ function roleplayComposerDockComponent(
       const command = parseTavernSlashCommand(message.value)
       if (command?.kind === 'set-input' && !command.trigger) {
         inputActions.setDraft(command.text)
+        return
+      }
+      if (command?.kind === 'trigger') {
+        void runTavernTrigger(sessionId).catch((reason: unknown) => {
+          ctx.logger.warn(`agent-rp: Tavern /trigger failed: ${String(reason)}`)
+        })
         return
       }
       if (command?.kind !== 'send' && command?.kind !== 'set-input') return
@@ -5386,7 +5395,8 @@ function roleplayComposerDockComponent(
   return <div ref={rootRef} data-agent-rp-status style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
     <TavernScriptRuntime ctx={ctx} inputActions={inputActions} onDisplayOverride={onDisplayOverride} projection={projection}
       runGeneration={runTavernGeneration} runModelList={runTavernModelList} runMutation={runTavernMutation}
-      runPresetConfiguration={runPresetConfiguration} runPromptPreview={runTavernPromptPreview} sessionId={sessionId} />
+      runPresetConfiguration={runPresetConfiguration} runPromptPreview={runTavernPromptPreview}
+      runTrigger={runTavernTrigger} sessionId={sessionId} />
     <button type="button" aria-label="生成聊天插图" title="生成聊天插图" onClick={() => { setDrawOpen(true) }} style={{
       alignItems: 'center', background: 'transparent', border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer',
       display: 'inline-flex', flex: '0 0 auto', font: 'inherit', fontSize: '11px', gap: '4px', opacity: .62, padding: '3px 7px',
@@ -5850,6 +5860,14 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok) throw new Error(response.error.message)
     if (!response.value.matched) throw new Error('当前 Host 未启用酒馆脚本变量桥')
   }
+  const runTavernTrigger: RunTavernTrigger = async sessionId => {
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const response = await session.command('/rp-tavern-trigger')
+    if (!response.ok) throw new Error(response.error.message)
+    if (!response.value.matched) throw new Error('当前 Host 未启用酒馆脚本生成桥')
+  }
   const runTavernGeneration: RunTavernGeneration = async (sessionId, request, signal) => {
     const response = await fetch(TAVERN_GENERATION_PATH, {
       method: 'POST',
@@ -5926,6 +5944,9 @@ export function apply(ctx: ClientContext): void {
     name: 'conversation.chat.commandview', key: 'rp-tavern-variables',
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-tavern-trigger',
+  }, () => null))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-character-library',
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
@@ -5963,7 +5984,8 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
   }, roleplayComposerDockComponent(
-    ctx, runImageGeneration, runTavernMutation, runTavernGeneration, runTavernPromptPreview, runTavernModelList, configurePreset,
+    ctx, runImageGeneration, runTavernMutation, runTavernGeneration, runTavernPromptPreview, runTavernModelList,
+    runTavernTrigger, configurePreset,
   )))
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock', id: 'agent-rp-sillytavern-import-hint', order: -10,

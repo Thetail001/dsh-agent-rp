@@ -235,6 +235,7 @@ test('mounts commands when public DSH omits prompt extension gateways', async (c
   installAgentRp(preset.ctx, resolveConfig({ mode: 'character' }), { characterLibraryRoot })
   assert.deepEqual(commands, [
     'rp-tavern-variables',
+    'rp-tavern-trigger',
     'rp-character-library',
     'rp-chat-import',
     'rp-persona',

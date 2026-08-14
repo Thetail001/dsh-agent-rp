@@ -4,6 +4,7 @@ import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { encodeGenerationState, parseGenerationRequest, readGenerationGroups } from '../src/generation.ts'
 import { CommandId } from '@deepseek-ai/dsh-commands'
+import { executeTavernTrigger } from '../src/tavern-trigger.ts'
 
 function appendAssistant(session: Session, turn: number, text: string, surfaceOp: 'append' | { op: 'replace'; start: number; end: number } = 'append') {
   const sourceEventSeqs = surfaceOp === 'append' ? [] : [...session.surface.nodes]
@@ -59,4 +60,43 @@ test('folds latest selectable reply group snapshots across replacement events', 
   assert.equal(group?.selectedVersionSeq, original.seq)
   assert.equal(group?.surfaceSeq, restored.seq)
   assert.deepEqual(session.deriveMessages().map(message => message.content[0]?.type === 'text' ? message.content[0].text : ''), ['第一版'])
+})
+
+test('triggers one reply after a Tavern script appends a user message', async () => {
+  const session = Session.create(SessionId('tavern-trigger'))
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '延续当前剧情' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  let triggerText: string | undefined
+  const agent = {
+    session,
+    status: 'idle',
+    inbox: { hasPending: false },
+    followup(message: ReturnType<typeof createUserMessage>) {
+      triggerText = message.content[0]?.type === 'text' ? message.content[0].text : undefined
+      appendAssistant(session, 2, '角色继续回应')
+    },
+    whenIdle: async () => {},
+    cancel: () => {},
+  }
+  const result = await executeTavernTrigger({
+    agent: agent as never, rawInput: '', signal: new AbortController().signal,
+  })
+
+  assert.equal(triggerText, 'Respond to the latest user-authored roleplay message. Output only the in-character response.')
+  assert.deepEqual(JSON.parse(result.text), { format: 0, assistantSeq: 1 })
+  assert.deepEqual(session.deriveMessages().map(message => message.content[0]?.type === 'text' ? message.content[0].text : ''), [
+    '延续当前剧情', '角色继续回应',
+  ])
+})
+
+test('refuses a bare Tavern trigger without a latest user message', async () => {
+  const session = Session.create(SessionId('tavern-trigger-without-user'))
+  appendAssistant(session, 1, '角色上一条回复')
+  await assert.rejects(executeTavernTrigger({
+    agent: {
+      session, status: 'idle', inbox: { hasPending: false }, followup: () => {}, whenIdle: async () => {}, cancel: () => {},
+    } as never,
+    rawInput: '', signal: new AbortController().signal,
+  }), /需要先添加一条用户消息/u)
 })

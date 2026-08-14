@@ -114,6 +114,7 @@ import { GeneratedImageLibrary } from './generated-image-library.ts'
 import { executeImageGenerationCommand } from './image-generation-command.ts'
 import { installImageGenerationHttp } from './image-generation-http.ts'
 import { executeTavernHelperMutation } from './tavern-helper-command.ts'
+import { executeTavernTrigger } from './tavern-trigger.ts'
 import { installTavernGenerationHttp } from './tavern-generation-http.ts'
 import { installTavernModelListHttp } from './tavern-model-list-http.ts'
 
@@ -470,6 +471,13 @@ export function installAgentRp(
     input: { hint: '<private Tavern Helper variable payload>' },
     recordInput: false,
     handler: executeTavernHelperMutation,
+  })
+  commands.register({
+    name: 'rp-tavern-trigger',
+    description: 'generate a roleplay reply after a Tavern script appends a user message',
+    input: { hint: '' },
+    recordInput: false,
+    handler: executeTavernTrigger,
   })
   commands.register({
     name: 'rp-character-library',
