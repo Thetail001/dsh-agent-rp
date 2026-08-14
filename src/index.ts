@@ -109,6 +109,7 @@ import { GeneratedImageLibrary } from './generated-image-library.ts'
 import { executeImageGenerationCommand } from './image-generation-command.ts'
 import { installImageGenerationHttp } from './image-generation-http.ts'
 import { executeTavernHelperMutation } from './tavern-helper-command.ts'
+import { installTavernGenerationHttp } from './tavern-generation-http.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -1009,7 +1010,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
     const generatedImageLibrary = new GeneratedImageLibrary()
     let mountedServer: AgentRpHttpServer | undefined
     const mountHost = (serviceName: 'httpServer' | 'webServer'): void => {
-      ctx.inject([serviceName, 'credentials'], webCtx => {
+      ctx.inject([serviceName, 'credentials', 'agents', 'llm', 'systemPrompt'], webCtx => {
         const server = webCtx.get(serviceName) as AgentRpHttpServer
         if (mountedServer !== undefined) return
         mountedServer = server
@@ -1024,6 +1025,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
         installImageGenerationHttp(webCtx, generatedImageLibrary, webCtx.credentials, server)
+        installTavernGenerationHttp(webCtx, server)
       })
     }
     mountHost('httpServer')

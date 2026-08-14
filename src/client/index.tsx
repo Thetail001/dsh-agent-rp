@@ -17,6 +17,11 @@ import type { AgentRpProjection } from '../projection-types.ts'
 import type { ImportedTavernHelperScript } from '../import/types.ts'
 import type { TavernHelperMutationRequest } from '../tavern-helper.ts'
 import {
+  TAVERN_GENERATION_PATH,
+  type TavernGenerationRequest,
+  type TavernGenerationResponse,
+} from '../tavern-generation-protocol.ts'
+import {
   BUILT_IN_TAVERN_SCRIPT_ORIGINS,
   resolveTavernScriptSource,
   tavernScriptFrameSource,
@@ -389,6 +394,7 @@ function useRoleplayExpression(sessionId: SessionId | undefined): RoleplayExpres
 
 const roleplayPresetPreferenceKey = 'dsh.agent-rp.preset'
 const tavernScriptOriginsKey = 'dsh.agent-rp.tavern-script-origins'
+const tavernScriptGenerationApprovalsKey = 'dsh.agent-rp.tavern-script-generation-approvals'
 
 function normalizedTavernScriptOrigin(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
@@ -415,6 +421,20 @@ function readApprovedTavernScriptOrigins(): ReadonlySet<string> {
 
 function writeApprovedTavernScriptOrigins(origins: ReadonlySet<string>): void {
   localStorage.setItem(tavernScriptOriginsKey, JSON.stringify([...origins].sort()))
+}
+
+function readApprovedTavernScriptGenerations(): ReadonlySet<string> {
+  try {
+    const value = JSON.parse(localStorage.getItem(tavernScriptGenerationApprovalsKey) ?? '[]') as unknown
+    if (!Array.isArray(value)) return new Set()
+    return new Set(value.filter((item): item is string => typeof item === 'string' && item.length <= 1_024))
+  } catch {
+    return new Set()
+  }
+}
+
+function writeApprovedTavernScriptGenerations(approvals: ReadonlySet<string>): void {
+  localStorage.setItem(tavernScriptGenerationApprovalsKey, JSON.stringify([...approvals].sort()))
 }
 
 function readRoleplayPresetPreference(): string {
@@ -3756,6 +3776,10 @@ function RoleplayStatusDialog({ characterName, source, onClose }: {
 }
 
 type RunTavernMutation = (sessionId: SessionId, request: TavernHelperMutationRequest) => Promise<void>
+type RunTavernGeneration = (
+  sessionId: SessionId,
+  request: Pick<TavernGenerationRequest, 'mode' | 'config'>,
+) => Promise<string>
 
 function tavernScriptSnapshot(
   projection: AgentRpProjection,
@@ -3783,14 +3807,19 @@ function tavernScriptSnapshot(
       message,
       script: state?.scripts[script.id] ?? script.data,
     },
-    messages: state?.messages ?? [],
+    messages: (state?.messages ?? []).map((entry, index, entries) => ({
+      ...entry,
+      data: index === entries.length - 1 ? message : {},
+      extra: {},
+    })),
   }
 }
 
-function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessionId }: {
+function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, runMutation, sessionId }: {
   readonly ctx: Context
   readonly inputActions: ComposerDockProps['inputActions']
   readonly projection: AgentRpProjection
+  readonly runGeneration: RunTavernGeneration
   readonly runMutation: RunTavernMutation
   readonly sessionId: SessionId
 }) {
@@ -3810,10 +3839,18 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessi
   const [readyScriptIds, setReadyScriptIds] = useState<ReadonlySet<string>>(() => new Set())
   const [runtimeErrors, setRuntimeErrors] = useState<ReadonlyMap<string, string>>(() => new Map())
   const [externalScriptRequests, setExternalScriptRequests] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const [approvedGenerations, setApprovedGenerations] = useState(readApprovedTavernScriptGenerations)
+  const [generationRequests, setGenerationRequests] = useState<ReadonlyMap<string, number>>(() => new Map())
   const [surfaceScriptIds, setSurfaceScriptIds] = useState<ReadonlySet<string>>(() => new Set())
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelScriptId, setPanelScriptId] = useState<string>()
   const frameRefs = useRef(new Map<string, HTMLIFrameElement>())
+  const generationQueue = useRef(new Map<string, {
+    readonly target: Window
+    readonly requestId: string
+    readonly mode: 'preset' | 'raw'
+    readonly config: Readonly<Record<string, unknown>>
+  }[]>())
   const projectionRef = useRef(projection)
   const mutationQueue = useRef(Promise.resolve())
   projectionRef.current = projection
@@ -3823,6 +3860,8 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessi
     setReadyScriptIds(new Set())
     setRuntimeErrors(new Map())
     setExternalScriptRequests(new Map())
+    generationQueue.current.clear()
+    setGenerationRequests(new Map())
     setSurfaceScriptIds(new Set())
     void Promise.all(scripts.map(async script => {
       try {
@@ -3853,6 +3892,26 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessi
     for (const frame of frameRefs.current.values()) {
       if (frame.contentWindow !== except) frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', ...message }, '*')
     }
+  }
+  const generationApprovalKey = (scriptId: string): string => [
+    projectionRef.current.tavern?.characterSourceId ?? 'unknown-character',
+    projectionRef.current.tavern?.presetSourceId ?? 'no-preset',
+    scriptId,
+  ].join('\u0000')
+  const executeGeneration = (
+    target: Window,
+    requestId: string,
+    mode: 'preset' | 'raw',
+    config: Readonly<Record<string, unknown>>,
+  ): void => {
+    void runGeneration(sessionId, { mode, config }).then(value => {
+      target.postMessage({ source: 'dsh-agent-rp-host', action: 'generation-result', requestId, ok: true, value }, '*')
+    }).catch((reason: unknown) => {
+      target.postMessage({
+        source: 'dsh-agent-rp-host', action: 'generation-result', requestId, ok: false,
+        error: reason instanceof Error ? reason.message : String(reason),
+      }, '*')
+    })
   }
   useEffect(() => {
     for (const entry of frames) {
@@ -3887,6 +3946,8 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessi
         readonly args?: unknown
         readonly origin?: unknown
         readonly visible?: unknown
+        readonly mode?: unknown
+        readonly config?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
@@ -3933,6 +3994,31 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessi
         }
         return
       }
+      if (message.action === 'generate' && typeof message.requestId === 'string'
+        && (message.mode === 'preset' || message.mode === 'raw')
+        && typeof message.config === 'object' && message.config !== null && !Array.isArray(message.config)) {
+        const target = event.source as Window
+        const request: {
+          readonly target: Window
+          readonly requestId: string
+          readonly mode: 'preset' | 'raw'
+          readonly config: Readonly<Record<string, unknown>>
+        } = {
+          target,
+          requestId: message.requestId,
+          mode: message.mode,
+          config: message.config as Readonly<Record<string, unknown>>,
+        }
+        if (approvedGenerations.has(generationApprovalKey(entry.script.id))) {
+          executeGeneration(target, request.requestId, request.mode, request.config)
+        } else {
+          const queued = generationQueue.current.get(entry.script.id) ?? []
+          queued.push(request)
+          generationQueue.current.set(entry.script.id, queued)
+          setGenerationRequests(current => new Map(current).set(entry.script.id, queued.length))
+        }
+        return
+      }
       if (message.action === 'event-emit' && typeof message.eventType === 'string' && Array.isArray(message.args)) {
         broadcast({ action: 'event', eventType: message.eventType, args: message.args }, event.source as Window)
         return
@@ -3973,7 +4059,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessi
     }
     window.addEventListener('message', bridge)
     return () => { window.removeEventListener('message', bridge) }
-  }, [frames, inputActions, runMutation, sessionId])
+  }, [approvedGenerations, frames, inputActions, runGeneration, runMutation, sessionId])
   if (scripts.length === 0) return null
   const failures = frames.flatMap(entry => {
     const error = entry.error ?? runtimeErrors.get(entry.script.id)
@@ -4076,6 +4162,27 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runMutation, sessi
         background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px',
         color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .78, padding: '3px 7px',
       }}>允许 {new URL(origin).hostname}</button>)}
+    {[...generationRequests].map(([scriptId, count]) => {
+      const script = scripts.find(entry => entry.id === scriptId)
+      return <button type="button" key={`generation:${scriptId}`}
+        title="允许这个隔离脚本使用当前 DSH 模型生成文本；生成会消耗模型额度" onClick={() => {
+          const next = new Set(approvedGenerations)
+          next.add(generationApprovalKey(scriptId))
+          writeApprovedTavernScriptGenerations(next)
+          setApprovedGenerations(next)
+          const queued = generationQueue.current.get(scriptId) ?? []
+          generationQueue.current.delete(scriptId)
+          setGenerationRequests(current => {
+            const remaining = new Map(current)
+            remaining.delete(scriptId)
+            return remaining
+          })
+          for (const request of queued) executeGeneration(request.target, request.requestId, request.mode, request.config)
+        }} style={{
+          background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px',
+          color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .78, padding: '3px 7px',
+        }}>允许 {script?.name || '脚本'} 调用模型{count > 1 ? ` (${count})` : ''}</button>
+    })}
     {(readyScriptIds.size < scripts.length || failures.length > 0) && <span
       title={failures.length === 0 ? '正在启动酒馆脚本' : failures.map(entry => `${entry.script.name}：${entry.error}`).join('\n')}
       style={{
@@ -4093,6 +4200,7 @@ function roleplayComposerDockComponent(
   ctx: Context,
   runImageGeneration: RunImageGeneration,
   runTavernMutation: RunTavernMutation,
+  runTavernGeneration: RunTavernGeneration,
 ): (props: ComposerDockProps) => JSX.Element | null {
   return function RoleplayComposerDock({
     inputActions, sessionId, useProjection, useSessions, useSession,
@@ -4417,7 +4525,7 @@ function roleplayComposerDockComponent(
   if (projection === undefined) return null
   return <div ref={rootRef} data-agent-rp-status style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
     <TavernScriptRuntime ctx={ctx} inputActions={inputActions} projection={projection}
-      runMutation={runTavernMutation} sessionId={sessionId} />
+      runGeneration={runTavernGeneration} runMutation={runTavernMutation} sessionId={sessionId} />
     <button type="button" aria-label="生成聊天插图" title="生成聊天插图" onClick={() => { setDrawOpen(true) }} style={{
       alignItems: 'center', background: 'transparent', border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer',
       display: 'inline-flex', flex: '0 0 auto', font: 'inherit', fontSize: '11px', gap: '4px', opacity: .62, padding: '3px 7px',
@@ -4881,6 +4989,24 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok) throw new Error(response.error.message)
     if (!response.value.matched) throw new Error('当前 Host 未启用酒馆脚本变量桥')
   }
+  const runTavernGeneration: RunTavernGeneration = async (sessionId, request) => {
+    const response = await fetch(TAVERN_GENERATION_PATH, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ format: 0, sessionId, ...request }),
+    })
+    const responseText = await response.text()
+    let value: Partial<TavernGenerationResponse> & { readonly error?: string }
+    try {
+      value = JSON.parse(responseText) as typeof value
+    } catch {
+      throw new Error(response.ok ? 'Host 返回了无法识别的脚本生成结果' : `酒馆脚本生成失败（${response.status}）`)
+    }
+    if (!response.ok || value.format !== 0 || typeof value.text !== 'string') {
+      throw new Error(value.error ?? `酒馆脚本生成失败（${response.status}）`)
+    }
+    return value.text
+  }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
   }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
@@ -4933,7 +5059,7 @@ export function apply(ctx: ClientContext): void {
   }, props => <GenerationTail {...props} runGeneration={runGeneration} runImageGeneration={runImageGeneration} />))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
-  }, roleplayComposerDockComponent(ctx, runImageGeneration, runTavernMutation)))
+  }, roleplayComposerDockComponent(ctx, runImageGeneration, runTavernMutation, runTavernGeneration)))
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock', id: 'agent-rp-sillytavern-import-hint', order: -10,
   }, importHintComponent(ctx, migrateSillyTavernDraft, listPresets)))
