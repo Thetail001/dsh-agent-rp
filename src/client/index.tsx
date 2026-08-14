@@ -34,8 +34,10 @@ import {
 import {
   advanceTavernTranscript,
   BUILT_IN_TAVERN_SCRIPT_ORIGINS,
+  readTavernExtensionSettings,
   resolveTavernScriptSource,
   tavernScriptFrameSource,
+  writeTavernExtensionSettings,
   type TavernTranscriptCursor,
   type TavernScriptSnapshot,
 } from './tavern-runtime.ts'
@@ -4885,6 +4887,13 @@ function tavernScriptSnapshot(
     ...(projection.userName === undefined ? {} : { userName: projection.userName }),
     ...(projection.persona === undefined ? {} : { persona: projection.persona }),
     ...(currentTavernPreset(projection) === undefined ? {} : { preset: currentTavernPreset(projection)! }),
+    extensionSettings: (() => {
+      try {
+        return readTavernExtensionSettings(window.localStorage)
+      } catch {
+        return {}
+      }
+    })(),
     approvedScriptOrigins,
     scopes: {
       global: state?.scopes.global ?? {},
@@ -5466,6 +5475,7 @@ function TavernScriptRuntime({
         readonly inputValue?: unknown
         readonly options?: unknown
         readonly level?: unknown
+        readonly settings?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
@@ -5535,6 +5545,24 @@ function TavernScriptRuntime({
         const origin = normalizedTavernScriptOrigin(message.origin)
         if (origin !== undefined && !approvedOrigins.has(origin)) {
           setExternalScriptRequests(current => new Map(current).set(entry.script.id, origin))
+        }
+        return
+      }
+      if (message.action === 'extension-settings-save') {
+        const target = event.source as Window
+        try {
+          const settings = writeTavernExtensionSettings(window.localStorage, message.settings)
+          broadcast({ action: 'extension-settings-sync', settings }, target)
+          if (typeof message.requestId === 'string') {
+            target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'settings-result', requestId: message.requestId, ok: true,
+            }, '*')
+          }
+        } catch (reason: unknown) {
+          const error = reason instanceof Error ? reason.message : String(reason)
+          target.postMessage(typeof message.requestId === 'string'
+            ? { source: 'dsh-agent-rp-host', action: 'settings-result', requestId: message.requestId, ok: false, error }
+            : { source: 'dsh-agent-rp-host', action: 'settings-error', error }, '*')
         }
         return
       }

@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import type { ImportedRegexScript } from '../src/import/types.ts'
-import { tavernScriptFrameSource, type TavernScriptSnapshot } from '../src/client/tavern-runtime.ts'
+import {
+  readTavernExtensionSettings,
+  TAVERN_EXTENSION_SETTINGS_KEY,
+  tavernScriptFrameSource,
+  writeTavernExtensionSettings,
+  type TavernScriptSnapshot,
+} from '../src/client/tavern-runtime.ts'
 import { parseTavernSlashCommand } from '../src/client/tavern-slash.ts'
 import {
   AI_OUTPUT_PLACEMENT,
@@ -108,6 +114,17 @@ function runtimeAcceptanceContext(preview: readonly unknown[]) {
             source: parent,
             data: {
               source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: true,
+            },
+          })
+        })
+        return
+      }
+      if (message.action === 'extension-settings-save' && typeof message.requestId === 'string') {
+        queueMicrotask(() => {
+          for (const listener of listeners.get('message') ?? []) listener({
+            source: parent,
+            data: {
+              source: 'dsh-agent-rp-host', action: 'settings-result', requestId: message.requestId, ok: true,
             },
           })
         })
@@ -285,6 +302,78 @@ toastr.success('已打开确认框');
     action: 'popup-result', requestId: '1', ok: true, value: 2,
   })
   assert.equal(await context.__popupResult, 2)
+})
+
+test('persists extension settings and exposes the lodash debounce used by public Tavern scripts', async () => {
+  const script = String.raw`
+const st = SillyTavern.getContext();
+const sameSettings = st.extensionSettings === extension_settings;
+st.extensionSettings.cardRefinery.theme = 'night';
+const calls = [];
+const saveDraft = st.libs.lodash.debounce(value => calls.push(value), 100);
+saveDraft('old');
+saveDraft('latest');
+const pendingBeforeFlush = saveDraft.pending();
+saveDraft.flush();
+saveDraft('cancelled');
+saveDraft.cancel();
+window.__tavernSettings = {
+  sameSettings,
+  clone: st.libs.lodash.cloneDeep(st.extensionSettings),
+  calls,
+  pendingBeforeFlush,
+  pendingAfterCancel: saveDraft.pending(),
+  save: builtin.saveSettings(),
+};
+`
+  const html = tavernScriptFrameSource({
+    id: 'settings', name: '扩展设置', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'settings', scriptName: '扩展设置', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    extensionSettings: { cardRefinery: { theme: 'light', autosave: true } },
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  await (context.__tavernSettings as { save: Promise<void> }).save
+  const result = JSON.parse(JSON.stringify(context.__tavernSettings)) as Record<string, unknown>
+  assert.equal(result.sameSettings, true)
+  assert.deepEqual(result.clone, { cardRefinery: { theme: 'night', autosave: true } })
+  assert.deepEqual(result.calls, ['latest'])
+  assert.equal(result.pendingBeforeFlush, true)
+  assert.equal(result.pendingAfterCancel, false)
+  const save = (context.posted as Record<string, unknown>[]).find(message => message.action === 'extension-settings-save')
+  assert.deepEqual(JSON.parse(JSON.stringify(save)), {
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'settings', action: 'extension-settings-save', requestId: '1',
+    settings: { cardRefinery: { theme: 'night', autosave: true } },
+  })
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'extension-settings-sync', settings: { shared: { revision: 2 } },
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(context.extension_settings)), { shared: { revision: 2 } })
+})
+
+test('round-trips browser-persisted Tavern extension settings and recovers corrupt data', () => {
+  const values = new Map<string, string>()
+  const storage = {
+    getItem(key: string) { return values.get(key) ?? null },
+    setItem(key: string, value: string) { values.set(key, value) },
+  }
+  assert.deepEqual(writeTavernExtensionSettings(storage, { sample: { enabled: true } }), {
+    sample: { enabled: true },
+  })
+  assert.deepEqual(readTavernExtensionSettings(storage), { sample: { enabled: true } })
+  assert.equal(values.get(TAVERN_EXTENSION_SETTINGS_KEY), '{"sample":{"enabled":true}}')
+  values.set(TAVERN_EXTENSION_SETTINGS_KEY, '{')
+  assert.deepEqual(readTavernExtensionSettings(storage), {})
+  assert.throws(() => writeTavernExtensionSettings(storage, []), /必须是对象/u)
 })
 
 test('lets Tavern scripts replace the complete preset regex list', async () => {
