@@ -31,12 +31,14 @@ function sendDate(time: number): string {
   return Number.isNaN(date.getTime()) ? new Date(0).toISOString() : date.toISOString()
 }
 
-function filename(characterName: string, sessionId: string): string {
-  const stem = `${characterName}-${sessionId}`
+function filename(characterName: string, exportedAt = new Date()): string {
+  const part = (value: number) => String(value).padStart(2, '0')
+  const timestamp = `${part(exportedAt.getMonth() + 1)}${part(exportedAt.getDate())}-${part(exportedAt.getHours())}${part(exportedAt.getMinutes())}`
+  const safeName = characterName
     .replace(/[<>:"/\\|?*\u0000-\u001f]/gu, '_')
     .replace(/[. ]+$/gu, '')
-    .slice(0, 220) || 'Agent-RP-对话'
-  return `${stem}.jsonl`
+    .slice(0, 210) || 'Agent-RP-对话'
+  return `${safeName}-${timestamp}.jsonl`
 }
 
 /** Export the current visible transcript and persistent reply alternatives without invoking a model. */
@@ -81,7 +83,7 @@ export function exportSillyTavernSessionChat(
     rows.push(row)
   }
   return {
-    filename: filename(options.characterName, options.sessionId),
+    filename: filename(options.characterName),
     source: `${rows.map(row => JSON.stringify(row)).join('\n')}\n`,
     messageCount: rows.length - 1,
   }
