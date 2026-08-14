@@ -57,6 +57,7 @@ import {
 } from '../frontend-regex.ts'
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
 import { parseTavernSlashCommand } from './tavern-slash.ts'
+import { executeTavernStorageRequest, type TavernStorageRequest } from './tavern-storage.ts'
 import {
   CHARACTER_LIBRARY_PATH,
   characterLibraryImageUrl,
@@ -5477,6 +5478,9 @@ function TavernScriptRuntime({
         readonly options?: unknown
         readonly level?: unknown
         readonly settings?: unknown
+        readonly namespace?: unknown
+        readonly operation?: unknown
+        readonly index?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
@@ -5565,6 +5569,31 @@ function TavernScriptRuntime({
             ? { source: 'dsh-agent-rp-host', action: 'settings-result', requestId: message.requestId, ok: false, error }
             : { source: 'dsh-agent-rp-host', action: 'settings-error', error }, '*')
         }
+        return
+      }
+      if (message.action === 'storage-request' && typeof message.requestId === 'string'
+        && typeof message.namespace === 'string'
+        && (message.operation === 'get' || message.operation === 'set' || message.operation === 'remove'
+          || message.operation === 'clear' || message.operation === 'keys' || message.operation === 'length'
+          || message.operation === 'key')) {
+        const target = event.source as Window
+        const request: TavernStorageRequest = {
+          operation: message.operation,
+          namespace: message.namespace,
+          ...(message.key === undefined ? {} : { key: String(message.key) }),
+          ...(message.value === undefined ? {} : { value: message.value }),
+          ...(message.index === undefined ? {} : { index: Number(message.index) }),
+        }
+        void executeTavernStorageRequest(request).then(value => {
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'storage-result', requestId: message.requestId, ok: true, value,
+          }, '*')
+        }).catch((reason: unknown) => {
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'storage-result', requestId: message.requestId, ok: false,
+            error: reason instanceof Error ? reason.message : String(reason),
+          }, '*')
+        })
         return
       }
       if (message.action === 'popup-request' && typeof message.requestId === 'string'

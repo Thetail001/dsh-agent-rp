@@ -94,6 +94,7 @@ class RuntimeElement {
 function runtimeAcceptanceContext(preview: readonly unknown[]) {
   const listeners = new Map<string, ((event: unknown) => void)[]>()
   const posted: Record<string, unknown>[] = []
+  const stored = new Map<string, unknown>()
   const parent = {
     postMessage(message: Record<string, unknown>) {
       posted.push(message)
@@ -125,6 +126,32 @@ function runtimeAcceptanceContext(preview: readonly unknown[]) {
             source: parent,
             data: {
               source: 'dsh-agent-rp-host', action: 'settings-result', requestId: message.requestId, ok: true,
+            },
+          })
+        })
+        return
+      }
+      if (message.action === 'storage-request' && typeof message.requestId === 'string'
+        && typeof message.namespace === 'string' && typeof message.operation === 'string') {
+        const prefix = `${message.namespace}\u0000`
+        const itemKey = `${prefix}${String(message.key ?? '')}`
+        let value: unknown
+        if (message.operation === 'get') value = stored.get(itemKey) ?? null
+        else if (message.operation === 'set') { stored.set(itemKey, message.value); value = message.value }
+        else if (message.operation === 'remove') stored.delete(itemKey)
+        else {
+          const keys = [...stored.keys()].filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length))
+          if (message.operation === 'clear') {
+            for (const key of keys) stored.delete(`${prefix}${key}`)
+          } else if (message.operation === 'keys') value = keys
+          else if (message.operation === 'length') value = keys.length
+          else if (message.operation === 'key') value = keys[Number(message.index)] ?? null
+        }
+        queueMicrotask(() => {
+          for (const listener of listeners.get('message') ?? []) listener({
+            source: parent,
+            data: {
+              source: 'dsh-agent-rp-host', action: 'storage-result', requestId: message.requestId, ok: true, value,
             },
           })
         })
@@ -402,6 +429,57 @@ window.__tavernSettings = {
     action: 'extension-settings-sync', settings: { shared: { revision: 2 } },
   })
   assert.deepEqual(JSON.parse(JSON.stringify(context.extension_settings)), { shared: { revision: 2 } })
+})
+
+test('bridges localforage data and isolated instances to Host-owned persistent storage', async () => {
+  const script = String.raw`
+window.__localforage = (async () => {
+  const storage = SillyTavern.libs.localforage;
+  const stored = await storage.setItem('session', { stage: 2, title: '钟楼' });
+  const loaded = await storage.getItem('session');
+  const custom = storage.createInstance({ name: 'card-refinery', storeName: 'sessions' });
+  await custom.setItem('draft', ['第一步', '第二步']);
+  const customKeys = await custom.keys();
+  const iterated = [];
+  await custom.iterate((value, key, iteration) => { iterated.push({ value, key, iteration }); });
+  const isolated = await storage.getItem('draft');
+  await storage.removeItem('session');
+  return {
+    stored, loaded, customKeys, iterated, isolated,
+    rootLength: await storage.length(),
+    customLength: await custom.length(),
+    firstCustomKey: await custom.key(0),
+  };
+})();
+`
+  const html = tavernScriptFrameSource({
+    id: 'localforage', name: '持久存储', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'localforage', scriptName: '持久存储', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  assert.deepEqual(JSON.parse(JSON.stringify(await context.__localforage)), {
+    stored: { stage: 2, title: '钟楼' },
+    loaded: { stage: 2, title: '钟楼' },
+    customKeys: ['draft'],
+    iterated: [{ value: ['第一步', '第二步'], key: 'draft', iteration: 1 }],
+    isolated: null,
+    rootLength: 0,
+    customLength: 1,
+    firstCustomKey: 'draft',
+  })
+  const requests = (context.posted as Record<string, unknown>[]).filter(message => message.action === 'storage-request')
+  assert.ok(requests.some(message => message.namespace === 'localforage\u0000keyvaluepairs'))
+  assert.ok(requests.some(message => message.namespace === 'card-refinery\u0000sessions'))
 })
 
 test('round-trips browser-persisted Tavern extension settings and recovers corrupt data', () => {
