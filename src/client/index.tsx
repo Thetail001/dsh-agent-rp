@@ -6,7 +6,7 @@ import type {
   ClientContext, SessionId, SessionSummary, WorkspaceView,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { IConversation, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { CommandRowProps, IConversation, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -61,8 +61,19 @@ import {
   DEFAULT_AGENT_RP_SETTINGS,
   allowsAgentRpEntry,
   normalizeAgentRpSettings,
-  type AgentRpSettings,
+  type AgentRpSettings, type ImageGenerationSettings,
 } from '../workspace-settings.ts'
+import {
+  AGENT_RP_IMAGE_PATH,
+  decodeImageGenerationRecord,
+  generatedImageAssetUrl,
+  generatedImageJobUrl,
+  parseImageGenerationRequest,
+  type GeneratedImageJob,
+  type ImageCredentialInfo,
+  type ImageGenerationMode,
+  type ImageGenerationRequest,
+} from '../image-generation-protocol.ts'
 
 interface WorkspaceListSource {
   readonly getSnapshot: () => { readonly items: readonly WorkspaceView[] }
@@ -120,6 +131,28 @@ function createWorkspaceSettingsSource(): WorkspaceSettingsSource {
       publish({ status: 'ready', value: decode(value) })
     },
   }
+}
+
+async function imageCredentialInfo(): Promise<ImageCredentialInfo> {
+  const response = await fetch(`${AGENT_RP_IMAGE_PATH}/credential`, { headers: { accept: 'application/json' } })
+  const value = await response.json() as { readonly error?: string; readonly credential?: ImageCredentialInfo }
+  if (!response.ok || value.credential === undefined) {
+    throw new Error(value.error ?? `图片密钥状态读取失败（${response.status}）`)
+  }
+  return value.credential
+}
+
+async function updateImageCredential(change: { readonly value: string } | { readonly clear: true }): Promise<ImageCredentialInfo> {
+  const response = await fetch(`${AGENT_RP_IMAGE_PATH}/credential`, {
+    method: 'PUT',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(change),
+  })
+  const value = await response.json() as { readonly error?: string; readonly credential?: ImageCredentialInfo }
+  if (!response.ok || value.credential === undefined) {
+    throw new Error(value.error ?? `图片密钥保存失败（${response.status}）`)
+  }
+  return value.credential
 }
 
 interface ImportHintProps {
@@ -1103,6 +1136,127 @@ interface WorkspaceSettingsSectionProps extends PropsRuntime<'settings.section'>
   readonly workspaceList: WorkspaceListSource
 }
 
+const settingsFieldStyle = {
+  background: 'var(--dsw-alias-bg-layer-1, #202024)',
+  border: '1px solid var(--dsw-alias-border-l2, #3d3d43)',
+  borderRadius: '8px', color: 'inherit', font: 'inherit', fontSize: '12px',
+  minWidth: 0, padding: '8px 9px', width: '100%',
+} as const
+
+function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
+  readonly settings: ImageGenerationSettings
+  readonly writable: boolean
+  readonly onSave: (settings: ImageGenerationSettings) => void
+}) {
+  const [draft, setDraft] = useState(settings)
+  const [credential, setCredential] = useState<ImageCredentialInfo>()
+  const [credentialValue, setCredentialValue] = useState('')
+  const [credentialBusy, setCredentialBusy] = useState(false)
+  const [error, setError] = useState<string>()
+  useEffect(() => { setDraft(settings) }, [settings])
+  useEffect(() => {
+    let active = true
+    void imageCredentialInfo().then(value => { if (active) setCredential(value) }, reason => {
+      if (active) setError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { active = false }
+  }, [])
+  const saveCredential = (change: { readonly value: string } | { readonly clear: true }): void => {
+    setCredentialBusy(true)
+    setError(undefined)
+    void updateImageCredential(change).then(value => {
+      setCredential(value)
+      setCredentialValue('')
+    }, reason => { setError(reason instanceof Error ? reason.message : String(reason)) })
+      .finally(() => { setCredentialBusy(false) })
+  }
+  const labelStyle = { display: 'grid', fontSize: '12px', gap: '6px', opacity: writable ? 1 : .62 } as const
+  return <section style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)', marginTop: '28px', paddingTop: '24px' }}>
+    <h3 style={{ fontSize: '15px', margin: 0 }}>聊天插图</h3>
+    <p style={{ fontSize: '12px', lineHeight: 1.6, margin: '7px 0 16px', opacity: .58 }}>
+      只在你点“绘图”后调用；图片保存在本机，不会作为图片输入送进角色模型
+    </p>
+    <label style={labelStyle}>图片服务
+      <select value={draft.provider} disabled={!writable} onChange={event => {
+        setDraft(current => ({ ...current, provider: event.target.value as ImageGenerationSettings['provider'] }))
+      }} style={settingsFieldStyle}>
+        <option value="openai">OpenAI Images / 兼容接口</option>
+        <option value="a1111">A1111 / Forge</option>
+      </select>
+    </label>
+    {draft.provider === 'openai' ? <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'minmax(0, 2fr) minmax(120px, 1fr)', marginTop: '12px' }}>
+      <label style={labelStyle}>接口地址
+        <input value={draft.openai.endpoint} disabled={!writable} onChange={event => {
+          setDraft(current => ({ ...current, openai: { ...current.openai, endpoint: event.target.value } }))
+        }} style={settingsFieldStyle} />
+      </label>
+      <label style={labelStyle}>模型
+        <input value={draft.openai.model} disabled={!writable} onChange={event => {
+          setDraft(current => ({ ...current, openai: { ...current.openai, model: event.target.value } }))
+        }} style={settingsFieldStyle} />
+      </label>
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>尺寸
+        <select value={draft.openai.size} disabled={!writable} onChange={event => {
+          setDraft(current => ({ ...current, openai: {
+            ...current.openai, size: event.target.value as ImageGenerationSettings['openai']['size'],
+          } }))
+        }} style={settingsFieldStyle}>
+          <option value="1024x1024">1024 × 1024</option>
+          <option value="1024x1536">1024 × 1536（竖图）</option>
+          <option value="1536x1024">1536 × 1024（横图）</option>
+        </select>
+      </label>
+    </div> : <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', marginTop: '12px' }}>
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>接口地址
+        <input value={draft.a1111.endpoint} disabled={!writable} onChange={event => {
+          setDraft(current => ({ ...current, a1111: { ...current.a1111, endpoint: event.target.value } }))
+        }} style={settingsFieldStyle} />
+      </label>
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>模型（留空使用 WebUI 当前模型）
+        <input value={draft.a1111.model} disabled={!writable} onChange={event => {
+          setDraft(current => ({ ...current, a1111: { ...current.a1111, model: event.target.value } }))
+        }} style={settingsFieldStyle} />
+      </label>
+      {([['宽度', 'width'], ['高度', 'height'], ['步数', 'steps'], ['CFG', 'cfgScale']] as const).map(([label, field]) => <label key={field} style={labelStyle}>{label}
+        <input type="number" value={draft.a1111[field]} disabled={!writable} onChange={event => {
+          const value = Number(event.target.value)
+          setDraft(current => ({ ...current, a1111: { ...current.a1111, [field]: value } }))
+        }} style={settingsFieldStyle} />
+      </label>)}
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>采样器
+        <input value={draft.a1111.sampler} disabled={!writable} onChange={event => {
+          setDraft(current => ({ ...current, a1111: { ...current.a1111, sampler: event.target.value } }))
+        }} style={settingsFieldStyle} />
+      </label>
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>默认负面提示词
+        <textarea value={draft.a1111.negativePrompt} disabled={!writable} rows={3} onChange={event => {
+          setDraft(current => ({ ...current, a1111: { ...current.a1111, negativePrompt: event.target.value } }))
+        }} style={{ ...settingsFieldStyle, resize: 'vertical' }} />
+      </label>
+    </div>}
+    <div style={{ alignItems: 'end', display: 'grid', gap: '9px', gridTemplateColumns: 'minmax(0, 1fr) auto', marginTop: '15px' }}>
+      <label style={labelStyle}>服务密钥
+        <input type="password" autoComplete="new-password" value={credentialValue}
+          placeholder={credential?.configured === true ? `已配置${credential.source === undefined ? '' : ` · ${credential.source}`}` : 'OpenAI 必填；A1111 可留空'}
+          disabled={credentialBusy || credential?.writable === false} onChange={event => { setCredentialValue(event.target.value) }}
+          style={settingsFieldStyle} />
+      </label>
+      <div style={{ display: 'flex', gap: '7px' }}>
+        {credential?.configured === true && <button type="button" disabled={credentialBusy || !credential.writable}
+          onClick={() => { saveCredential({ clear: true }) }} style={secondaryButtonStyle}>移除密钥</button>}
+        <button type="button" disabled={credentialBusy || credentialValue.trim() === '' || credential?.writable === false}
+          onClick={() => { saveCredential({ value: credentialValue }) }} style={secondaryButtonStyle}>
+          {credentialBusy ? '正在保存…' : credential?.configured === true ? '更换密钥' : '保存密钥'}
+        </button>
+      </div>
+    </div>
+    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '14px' }}>
+      <button type="button" disabled={!writable} onClick={() => { onSave(draft) }} style={primaryButtonStyle}>保存绘图设置</button>
+    </div>
+    {error !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', margin: '10px 0 0' }}>{error}</p>}
+  </section>
+}
+
 function WorkspaceSettingsSection({
   workspaceSettings,
   workspaceList,
@@ -1200,6 +1354,8 @@ function WorkspaceSettingsSection({
         尚未选择工作区，新的角色入口会暂时隐藏
       </p>}
     </div>}
+    <ImageGenerationSettingsPanel settings={settings.imageGeneration} writable={writable}
+      onSave={imageGeneration => { write({ ...settings, imageGeneration }) }} />
     {snapshot.status === 'loading' && <p role="status" style={{ fontSize: '12px', marginTop: '14px', opacity: .55 }}>正在读取设置…</p>}
     {snapshot.status === 'error' && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '14px' }}>{snapshot.error}</p>}
     {error !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '14px' }}>{error}</p>}
@@ -3195,6 +3351,181 @@ const presetManagerResponsiveStyle = `
 }
 `
 
+type RunImageGeneration = (
+  sessionId: SessionId,
+  request: Pick<ImageGenerationRequest, 'mode' | 'prompt'>,
+) => string
+
+const imageModeLabels: Record<ImageGenerationMode, string> = {
+  scene: '当前场景', portrait: '角色立绘', avatar: '角色头像', custom: '自定义描述',
+}
+
+function imagePrompt(mode: ImageGenerationMode, projection: AgentRpProjection, note: string): string {
+  const detail = [projection.description, projection.personality].map(value => value.trim()).filter(Boolean).join('\n').slice(0, 3_000)
+  const extra = note.trim()
+  if (mode === 'custom') return extra
+  const subject = `角色：${projection.characterName}${detail === '' ? '' : `\n角色设定：${detail}`}`
+  if (mode === 'scene') {
+    return `叙事插画\n${subject}\n场景：${projection.scenario.trim() || '延续当前对话中的场景'}${extra === '' ? '' : `\n补充：${extra}`}`.slice(0, 8_000)
+  }
+  if (mode === 'portrait') {
+    return `角色立绘，完整人物设计，清楚呈现服装与姿态\n${subject}${extra === '' ? '' : `\n补充：${extra}`}`.slice(0, 8_000)
+  }
+  return `角色头像，头肩构图，表情自然，面部清晰\n${subject}${extra === '' ? '' : `\n补充：${extra}`}`.slice(0, 8_000)
+}
+
+function ImageGenerationDialog({ projection, onClose, onGenerate }: {
+  readonly projection: AgentRpProjection
+  readonly onClose: () => void
+  readonly onGenerate: (request: Pick<ImageGenerationRequest, 'mode' | 'prompt'>) => void
+}) {
+  const [mode, setMode] = useState<ImageGenerationMode>('scene')
+  const [note, setNote] = useState('')
+  const prompt = imagePrompt(mode, projection, note)
+  return <div role="dialog" aria-modal="true" aria-label="生成聊天插图" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '20px', position: 'fixed', zIndex: 1000,
+  }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #111216)', border: '1px solid var(--dsw-alias-border-l2, #35373d)',
+      borderRadius: '14px', boxShadow: '0 20px 64px rgba(0,0,0,.45)', maxWidth: '620px', padding: '20px', width: 'min(94vw, 620px)',
+    }}>
+      <header style={{ alignItems: 'center', display: 'flex', gap: '12px' }}>
+        <div style={{ flex: 1 }}>
+          <h2 style={{ fontSize: '17px', margin: 0 }}>生成聊天插图</h2>
+          <p style={{ fontSize: '12px', margin: '5px 0 0', opacity: .55 }}>选择画什么，确认后任务会留在这段聊天里</p>
+        </div>
+        <button type="button" aria-label="关闭绘图" onClick={onClose} style={{
+          background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '21px', opacity: .6,
+        }}>×</button>
+      </header>
+      <div style={{ display: 'grid', gap: '8px', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', marginTop: '18px' }}>
+        {(Object.entries(imageModeLabels) as [ImageGenerationMode, string][]).map(([value, label]) => <button
+          key={value} type="button" onClick={() => { setMode(value); setNote('') }} style={{
+            background: value === mode ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
+            border: `1px solid ${value === mode ? `color-mix(in srgb, ${color} 45%, transparent)` : 'var(--dsw-alias-border-l2, #3d3d43)'}`,
+            borderRadius: '9px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '9px 10px',
+          }}>{label}</button>)}
+      </div>
+      <label style={{ display: 'grid', fontSize: '12px', gap: '7px', marginTop: '16px' }}>
+        {mode === 'custom' ? '画面描述' : '补充说明（可不填）'}
+        <textarea autoFocus value={note} maxLength={8_000} rows={5}
+          placeholder={mode === 'custom' ? '写下你想看到的画面…' : '例如：黄昏、暖色灯光、电影感构图'}
+          onChange={event => { setNote(event.target.value) }} style={{ ...settingsFieldStyle, lineHeight: 1.6, resize: 'vertical' }} />
+      </label>
+      <details style={{ fontSize: '11px', marginTop: '12px', opacity: .62 }}>
+        <summary style={{ cursor: 'pointer' }}>查看将发送给图片服务的提示词</summary>
+        <div style={{ lineHeight: 1.6, marginTop: '7px', maxHeight: '150px', overflow: 'auto', whiteSpace: 'pre-wrap' }}>{prompt}</div>
+      </details>
+      <footer style={{ display: 'flex', gap: '9px', justifyContent: 'flex-end', marginTop: '20px' }}>
+        <button type="button" onClick={onClose} style={secondaryButtonStyle}>取消</button>
+        <button type="button" disabled={prompt.trim() === ''} onClick={() => {
+          onGenerate({ mode, prompt })
+          onClose()
+        }} style={primaryButtonStyle}>开始绘图</button>
+      </footer>
+    </section>
+  </div>
+}
+
+function useGeneratedImageJob(jobId: string, settled: boolean): {
+  readonly job?: GeneratedImageJob
+  readonly error?: string
+  readonly refresh: () => void
+} {
+  const [revision, setRevision] = useState(0)
+  const [job, setJob] = useState<GeneratedImageJob>()
+  const [error, setError] = useState<string>()
+  useEffect(() => {
+    let active = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const load = async (): Promise<void> => {
+      try {
+        const response = await fetch(generatedImageJobUrl(jobId), { headers: { accept: 'application/json' } })
+        const value = await response.json() as { readonly error?: string; readonly job?: GeneratedImageJob }
+        if (!response.ok || value.job === undefined) throw new Error(value.error ?? `图片任务读取失败（${response.status}）`)
+        if (!active) return
+        setJob(value.job)
+        setError(undefined)
+        if (!['completed', 'failed', 'cancelled'].includes(value.job.status)) timer = setTimeout(() => { void load() }, 1_000)
+      } catch (reason: unknown) {
+        if (!active) return
+        const message = reason instanceof Error ? reason.message : String(reason)
+        if (settled) setError(message)
+        else timer = setTimeout(() => { void load() }, 700)
+      }
+    }
+    void load()
+    return () => { active = false; if (timer !== undefined) clearTimeout(timer) }
+  }, [jobId, revision, settled])
+  return {
+    ...(job === undefined ? {} : { job }),
+    ...(error === undefined ? {} : { error }),
+    refresh: () => { setRevision(value => value + 1) },
+  }
+}
+
+function ImageGenerationCommandCard({ node, sessionId, runImageGeneration }: CommandRowProps & {
+  readonly runImageGeneration: RunImageGeneration
+}) {
+  let request: ImageGenerationRequest | undefined
+  try {
+    request = node.args === null ? undefined : parseImageGenerationRequest(node.args)
+  } catch {
+    request = undefined
+  }
+  const record = decodeImageGenerationRecord(node.outcome?.text)
+  const jobId = request?.jobId ?? record?.jobId
+  if (jobId === undefined) return <div data-agent-rp-image-card style={{ fontSize: '12px', opacity: .62 }}>无法读取这条绘图记录</div>
+  const { job, error, refresh } = useGeneratedImageJob(jobId, node.outcome !== null)
+  const resolvedRequest = job?.request ?? request
+  const [promptOpen, setPromptOpen] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+  const status = job?.status ?? (node.outcome === null ? 'queued' : node.outcome.kind === 'error' ? 'failed' : 'running')
+  const failure = job?.error ?? (node.outcome?.kind === 'error' ? node.outcome.text : undefined) ?? error
+  const title = resolvedRequest === undefined ? '聊天插图' : imageModeLabels[resolvedRequest.mode]
+  const retry = (): void => {
+    if (resolvedRequest !== undefined) runImageGeneration(sessionId, { mode: resolvedRequest.mode, prompt: resolvedRequest.prompt })
+  }
+  return <article data-agent-rp-image-card style={{
+    background: 'color-mix(in srgb, var(--dsw-alias-bg-layer-1, #202126) 82%, transparent)',
+    border: '1px solid var(--dsw-alias-border-l2, #383a41)', borderRadius: '12px', maxWidth: '680px', overflow: 'hidden', width: '100%',
+  }}>
+    <header style={{ alignItems: 'center', display: 'flex', gap: '9px', padding: '10px 12px' }}>
+      <span aria-hidden="true" style={{ color, fontSize: '15px' }}>✦</span>
+      <strong style={{ fontSize: '12px', fontWeight: 620 }}>{title}</strong>
+      <span style={{ fontSize: '11px', marginLeft: 'auto', opacity: .52 }}>
+        {status === 'completed' ? '已完成' : status === 'failed' ? '生成失败' : status === 'cancelled' ? '已取消' : job?.phase ?? '正在排队'}
+      </span>
+    </header>
+    {(status === 'queued' || status === 'running') && <div style={{ background: 'rgba(127,127,127,.15)', height: '3px' }}>
+      <div style={{ background: color, height: '100%', transition: 'width .35s ease', width: `${Math.max(3, (job?.progress ?? 0.02) * 100)}%` }} />
+    </div>}
+    {status === 'completed' && <img src={generatedImageAssetUrl(jobId)} alt={title} loading="lazy" style={{
+      background: 'rgba(0,0,0,.2)', display: 'block', maxHeight: '720px', objectFit: 'contain', width: '100%',
+    }} />}
+    {(failure !== undefined || status === 'cancelled') && <div role={failure === undefined ? 'status' : 'alert'} style={{
+      color: failure === undefined ? 'inherit' : 'var(--dsw-alias-state-danger, #df6f7a)', fontSize: '12px', lineHeight: 1.55, padding: '4px 12px 10px',
+    }}>{failure ?? '这次绘图已取消'}</div>}
+    <footer style={{ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: '7px', padding: '9px 12px 11px' }}>
+      {resolvedRequest !== undefined && <button type="button" onClick={() => { setPromptOpen(value => !value) }} style={generationButtonStyle}>
+        {promptOpen ? '收起提示词' : '查看提示词'}
+      </button>}
+      {(status === 'queued' || status === 'running') && <button type="button" disabled={cancelling} onClick={() => {
+        setCancelling(true)
+        void fetch(`${generatedImageJobUrl(jobId)}/cancel`, { method: 'POST', headers: { accept: 'application/json' } })
+          .then(() => { refresh() }).finally(() => { setCancelling(false) })
+      }} style={generationButtonStyle}>{cancelling ? '正在取消…' : '取消'}</button>}
+      {(status === 'completed' || status === 'failed' || status === 'cancelled') && <button type="button" onClick={retry} style={generationButtonStyle}>重绘</button>}
+      {status === 'completed' && <a href={generatedImageAssetUrl(jobId, true)} download style={{ ...generationButtonStyle, textDecoration: 'none' }}>下载</a>}
+    </footer>
+    {promptOpen && resolvedRequest !== undefined && <div style={{
+      borderTop: '1px solid var(--dsw-alias-border-l2, #383a41)', fontSize: '11px', lineHeight: 1.6,
+      maxHeight: '180px', overflow: 'auto', padding: '10px 12px', whiteSpace: 'pre-wrap',
+    }}>{resolvedRequest.prompt}</div>}
+  </article>
+}
+
 function RoleplayStatusDialog({ characterName, source, onClose }: {
   readonly characterName: string
   readonly source: string
@@ -3226,7 +3557,7 @@ const chipStyle = {
   color: 'inherit', fontSize: '11px', opacity: 0.76, padding: '5px 9px',
 } as const
 
-function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps) => JSX.Element | null {
+function roleplayComposerDockComponent(ctx: Context, runImageGeneration: RunImageGeneration): (props: ComposerDockProps) => JSX.Element | null {
   return function RoleplayComposerDock({
     inputActions, sessionId, useProjection, useSessions, useSession,
   }: ComposerDockProps) {
@@ -3234,6 +3565,7 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
   const projection = roleplaySummary(summary, useProjection('agentRp'))
   const chat = useSession(state => state.chat)
   const viewMode = useRoleplayViewMode(sessionId)
+  const [drawOpen, setDrawOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const characterDetail = useCharacterDetail(projection?.avatarLibraryId)
   const backgroundChoice = useRoleplayBackground(sessionId)
@@ -3332,6 +3664,13 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
       })
       element.style.setProperty('display', 'none', 'important')
     }
+    const restoreTranscriptDetail = (element: HTMLElement): void => {
+      const previous = hiddenTranscriptDetails.get(element)
+      if (previous === undefined) return
+      if (previous.display === '') element.style.removeProperty('display')
+      else element.style.setProperty('display', previous.display, previous.priority)
+      hiddenTranscriptDetails.delete(element)
+    }
     const showLegacyConversationNotice = (item: HTMLElement): void => {
       if (item.dataset.agentRpLegacyConversation === 'true') return
       const notice = document.createElement('aside')
@@ -3409,10 +3748,14 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
       if (scroll === null || scroll === undefined) return
       if (viewMode === 'immersive') {
         for (const item of scroll.querySelectorAll<HTMLElement>(
-          '[data-chat-flow-kind="context"], [data-chat-flow-kind="tool-call"], [data-chat-flow-kind="command"], '
+          '[data-chat-flow-kind="context"], [data-chat-flow-kind="tool-call"], '
           + '[data-chat-flow-kind="manual-compaction"], [data-chat-flow-kind="compaction"], '
           + '[data-chat-flow-kind="model-retry"], [data-chat-flow-kind="unknown"]',
         )) hideTranscriptDetail(item)
+        for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="command"]')) {
+          if (item.querySelector('[data-agent-rp-image-card]') === null) hideTranscriptDetail(item)
+          else restoreTranscriptDetail(item)
+        }
         for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="turn-error"]')) {
           if (item.textContent?.includes('agent-rp/character-card-seed has invalid provenance')) {
             hideTranscriptDetail(item)
@@ -3534,13 +3877,16 @@ function roleplayComposerDockComponent(ctx: Context): (props: ComposerDockProps)
     }
   }, [chat, characterDetail, projection, viewMode])
   if (projection === undefined) return null
-  return <div ref={rootRef} data-agent-rp-status>
-    <RoleplayStatusLine
-      projection={summary?.title?.trim() && summary.title.trim() !== projection.characterName
-        ? { ...projection, characterName: summary.title.trim() }
-        : projection}
-      running={useSession(state => state.running)}
-    />
+  return <div ref={rootRef} data-agent-rp-status style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
+    <button type="button" aria-label="生成聊天插图" title="生成聊天插图" onClick={() => { setDrawOpen(true) }} style={{
+      alignItems: 'center', background: 'transparent', border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer',
+      display: 'inline-flex', flex: '0 0 auto', font: 'inherit', fontSize: '11px', gap: '4px', opacity: .62, padding: '3px 7px',
+    }}><span aria-hidden="true" style={{ color }}>✦</span>绘图</button>
+    <RoleplayStatusLine projection={summary?.title?.trim() && summary.title.trim() !== projection.characterName
+      ? { ...projection, characterName: summary.title.trim() }
+      : projection} running={useSession(state => state.running)} />
+    {drawOpen && <ImageGenerationDialog projection={projection} onClose={() => { setDrawOpen(false) }}
+      onGenerate={request => { runImageGeneration(sessionId, request) }} />}
   </div>
   }
 }
@@ -3973,6 +4319,20 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok) throw new Error(response.error.message)
     if (!response.value.matched) throw new Error('当前 Host 未启用回复版本控制')
   }
+  const runImageGeneration: RunImageGeneration = (sessionId, request) => {
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const jobId = `image-${crypto.randomUUID()}`
+    const payload: ImageGenerationRequest = { format: 0, jobId, ...request }
+    void session.command(`/rp-draw ${JSON.stringify(payload)}`).then(response => {
+      if (!response.ok) throw new Error(response.error.message)
+      if (!response.value.matched) throw new Error('当前 Host 未启用聊天绘图')
+    }).catch((reason: unknown) => {
+      ctx.logger.warn(`agent-rp: image command ${JSON.stringify(jobId)} failed: ${String(reason)}`)
+    })
+    return jobId
+  }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
   }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
@@ -4004,6 +4364,9 @@ export function apply(ctx: ClientContext): void {
     name: 'conversation.chat.commandview', key: 'rp-generation',
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-draw',
+  }, props => <ImageGenerationCommandCard {...props} runImageGeneration={runImageGeneration} />))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-world-info',
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
@@ -4019,7 +4382,7 @@ export function apply(ctx: ClientContext): void {
   }, props => <GenerationTail {...props} runGeneration={runGeneration} />))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
-  }, roleplayComposerDockComponent(ctx)))
+  }, roleplayComposerDockComponent(ctx, runImageGeneration)))
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock', id: 'agent-rp-sillytavern-import-hint', order: -10,
   }, importHintComponent(ctx, migrateSillyTavernDraft, listPresets)))

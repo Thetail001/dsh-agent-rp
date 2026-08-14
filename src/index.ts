@@ -3,6 +3,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands'
+import type {} from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
@@ -104,11 +105,14 @@ import { executeWorldInfoConfiguration, readSessionLorebookSources } from './wor
 import { WorldInfoLibrary } from './world-info-library.ts'
 import { executeWorldInfoLibraryCommand } from './world-info-library-command.ts'
 import { installWorldInfoLibraryHttp } from './world-info-library-http.ts'
+import { GeneratedImageLibrary } from './generated-image-library.ts'
+import { executeImageGenerationCommand } from './image-generation-command.ts'
+import { installImageGenerationHttp } from './image-generation-http.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
 export { Config }
-const CHARACTER_SERVICES = ['agents', 'apiProxy', 'attachments', 'commands', 'llm', 'systemPrompt', 'tools']
+const CHARACTER_SERVICES = ['agents', 'apiProxy', 'attachments', 'commands', 'credentials', 'llm', 'systemPrompt', 'tools']
 
 interface PromptAttachmentGateway {
   registerPromptAttachmentConsumer?(
@@ -449,6 +453,8 @@ export function installAgentRp(
     : { root: options.characterLibraryRoot })
   const chatLibrary = new SillyTavernChatLibrary()
   const worldInfoLibrary = new WorldInfoLibrary()
+  const generatedImageLibrary = new GeneratedImageLibrary()
+  const workspaceSettings = new WorkspaceSettingsStore()
 
   commands.register({
     name: 'rp-character-library',
@@ -489,6 +495,17 @@ export function installAgentRp(
     input: { hint: '<private reply-version payload>' },
     recordInput: false,
     handler: executeGenerationCommand,
+  })
+  commands.register({
+    name: 'rp-draw',
+    description: 'generate one roleplay image through the configured local provider',
+    input: { hint: '<private image-generation payload>' },
+    handler: invocation => executeImageGenerationCommand(
+      generatedImageLibrary,
+      workspaceSettings,
+      ctx.credentials,
+      invocation,
+    ),
   })
   commands.register({
     name: 'rp-world-info',
@@ -981,9 +998,10 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
     const chatLibrary = new SillyTavernChatLibrary()
     const worldInfoLibrary = new WorldInfoLibrary()
     const workspaceSettings = new WorkspaceSettingsStore()
+    const generatedImageLibrary = new GeneratedImageLibrary()
     let mountedServer: AgentRpHttpServer | undefined
     const mountHost = (serviceName: 'httpServer' | 'webServer'): void => {
-      ctx.inject([serviceName], webCtx => {
+      ctx.inject([serviceName, 'credentials'], webCtx => {
         const server = webCtx.get(serviceName) as AgentRpHttpServer
         if (mountedServer !== undefined) return
         mountedServer = server
@@ -997,6 +1015,7 @@ export function apply(ctx: Context, config: AgentRpConfig): void {
         installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, server)
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
+        installImageGenerationHttp(webCtx, generatedImageLibrary, webCtx.credentials, server)
       })
     }
     mountHost('httpServer')

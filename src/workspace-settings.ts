@@ -12,6 +12,29 @@ export const AGENT_RP_WORKSPACE_IDS_FIELD = 'workspaceIds'
 /** Supported workspace visibility modes. */
 export const AGENT_RP_WORKSPACE_MODES = ['all', 'selected'] as const
 
+/** Image providers available in the first local generation release. */
+export const AGENT_RP_IMAGE_PROVIDERS = ['openai', 'a1111'] as const
+
+/** Durable image provider settings; credentials are stored separately. */
+export interface ImageGenerationSettings {
+  readonly provider: typeof AGENT_RP_IMAGE_PROVIDERS[number]
+  readonly openai: {
+    readonly endpoint: string
+    readonly model: string
+    readonly size: '1024x1024' | '1024x1536' | '1536x1024'
+  }
+  readonly a1111: {
+    readonly endpoint: string
+    readonly model: string
+    readonly width: number
+    readonly height: number
+    readonly steps: number
+    readonly cfgScale: number
+    readonly sampler: string
+    readonly negativePrompt: string
+  }
+}
+
 /** Workspace visibility mode for new Agent RP entry points. */
 export type AgentRpWorkspaceMode = typeof AGENT_RP_WORKSPACE_MODES[number]
 
@@ -21,12 +44,97 @@ export interface AgentRpSettings {
   readonly workspaceMode: AgentRpWorkspaceMode
   /** Stable DSH workspace ids enabled by selected-workspace mode. */
   readonly workspaceIds: string[]
+  /** Provider and generation defaults for explicit roleplay image requests. */
+  readonly imageGeneration: ImageGenerationSettings
 }
 
 /** Default settings preserve the existing all-workspace behavior. */
 export const DEFAULT_AGENT_RP_SETTINGS: AgentRpSettings = {
   workspaceMode: 'all',
   workspaceIds: [],
+  imageGeneration: {
+    provider: 'openai',
+    openai: {
+      endpoint: 'https://api.openai.com/v1/images/generations',
+      model: 'gpt-image-1',
+      size: '1024x1024',
+    },
+    a1111: {
+      endpoint: 'http://127.0.0.1:7860',
+      model: '',
+      width: 768,
+      height: 1024,
+      steps: 28,
+      cfgScale: 7,
+      sampler: 'DPM++ 2M Karras',
+      negativePrompt: '',
+    },
+  },
+}
+
+function text(value: unknown, fallback: string, max: number, label: string): string {
+  if (value === undefined) return fallback
+  if (typeof value !== 'string' || value.length > max) throw new Error(`${label}无效`)
+  return value.trim()
+}
+
+function endpoint(value: unknown, fallback: string, label: string): string {
+  const candidate = text(value, fallback, 2_000, label)
+  let parsed: URL
+  try {
+    parsed = new URL(candidate)
+  } catch {
+    throw new Error(`${label}无效`)
+  }
+  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+    || parsed.username !== '' || parsed.password !== '' || parsed.hash !== '') throw new Error(`${label}无效`)
+  return candidate
+}
+
+function integer(value: unknown, fallback: number, min: number, max: number, label: string): number {
+  const candidate = value === undefined ? fallback : value
+  if (!Number.isSafeInteger(candidate) || Number(candidate) < min || Number(candidate) > max) throw new Error(`${label}无效`)
+  return Number(candidate)
+}
+
+function finite(value: unknown, fallback: number, min: number, max: number, label: string): number {
+  const candidate = value === undefined ? fallback : value
+  if (typeof candidate !== 'number' || !Number.isFinite(candidate) || candidate < min || candidate > max) {
+    throw new Error(`${label}无效`)
+  }
+  return candidate
+}
+
+/** Normalize image settings while accepting pre-image-generation settings files. */
+export function normalizeImageGenerationSettings(value: unknown): ImageGenerationSettings {
+  if (value === undefined) return structuredClone(DEFAULT_AGENT_RP_SETTINGS.imageGeneration)
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Agent RP 图片设置不是对象')
+  const record = value as Record<string, unknown>
+  if (record.provider !== 'openai' && record.provider !== 'a1111') throw new Error('Agent RP 图片提供方无效')
+  const openai = typeof record.openai === 'object' && record.openai !== null && !Array.isArray(record.openai)
+    ? record.openai as Record<string, unknown> : {}
+  const a1111 = typeof record.a1111 === 'object' && record.a1111 !== null && !Array.isArray(record.a1111)
+    ? record.a1111 as Record<string, unknown> : {}
+  const size = openai.size ?? DEFAULT_AGENT_RP_SETTINGS.imageGeneration.openai.size
+  if (size !== '1024x1024' && size !== '1024x1536' && size !== '1536x1024') throw new Error('OpenAI 图片尺寸无效')
+  return {
+    provider: record.provider,
+    openai: {
+      endpoint: endpoint(openai.endpoint, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.openai.endpoint, 'OpenAI 图片服务地址'),
+      model: text(openai.model, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.openai.model, 200, 'OpenAI 图片模型'),
+      size,
+    },
+    a1111: {
+      endpoint: endpoint(a1111.endpoint, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.a1111.endpoint, 'A1111 图片服务地址'),
+      model: text(a1111.model, '', 500, 'A1111 模型'),
+      width: integer(a1111.width, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.a1111.width, 256, 2_048, 'A1111 宽度'),
+      height: integer(a1111.height, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.a1111.height, 256, 2_048, 'A1111 高度'),
+      steps: integer(a1111.steps, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.a1111.steps, 1, 150, 'A1111 步数'),
+      cfgScale: finite(a1111.cfgScale, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.a1111.cfgScale, 0, 30, 'A1111 CFG'),
+      sampler: text(a1111.sampler, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.a1111.sampler, 300, 'A1111 采样器'),
+      negativePrompt: text(a1111.negativePrompt, '', 8_000, 'A1111 负面提示词'),
+    },
+  }
 }
 
 /**
@@ -46,7 +154,11 @@ export function normalizeAgentRpSettings(value: unknown): AgentRpSettings {
       || id.trim() !== id || id === '' || id.length > 256)) {
     throw new Error('Agent RP 工作区设置字段无效')
   }
-  return { workspaceMode, workspaceIds: [...new Set(workspaceIds as string[])] }
+  return {
+    workspaceMode,
+    workspaceIds: [...new Set(workspaceIds as string[])],
+    imageGeneration: normalizeImageGenerationSettings(record.imageGeneration),
+  }
 }
 
 /**
@@ -56,7 +168,7 @@ export function normalizeAgentRpSettings(value: unknown): AgentRpSettings {
  * @returns whether the entry point should be visible.
  */
 export function allowsAgentRpEntry(
-  settings: AgentRpSettings | undefined,
+  settings: Pick<AgentRpSettings, 'workspaceMode' | 'workspaceIds'> | undefined,
   workspaceId: string | undefined,
 ): boolean {
   const resolved = settings ?? DEFAULT_AGENT_RP_SETTINGS

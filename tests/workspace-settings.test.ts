@@ -3,7 +3,7 @@ import test from 'node:test'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { allowsAgentRpEntry, normalizeAgentRpSettings } from '../src/workspace-settings.ts'
+import { DEFAULT_AGENT_RP_SETTINGS, allowsAgentRpEntry, normalizeAgentRpSettings } from '../src/workspace-settings.ts'
 import { WorkspaceSettingsStore } from '../src/workspace-settings-store.ts'
 
 test('workspace entry defaults to every workspace while settings load', () => {
@@ -31,7 +31,7 @@ test('selected-workspace mode hides entry points from ungrouped sessions', () =>
 test('normalizes duplicate workspace ids and rejects malformed settings', () => {
   assert.deepEqual(normalizeAgentRpSettings({
     workspaceMode: 'selected', workspaceIds: ['workspace-a', 'workspace-a'],
-  }), { workspaceMode: 'selected', workspaceIds: ['workspace-a'] })
+  }), { ...DEFAULT_AGENT_RP_SETTINGS, workspaceMode: 'selected', workspaceIds: ['workspace-a'] })
   assert.throws(() => normalizeAgentRpSettings({ workspaceMode: 'selected', workspaceIds: [1] }))
 })
 
@@ -40,12 +40,12 @@ test('persists workspace settings outside the DSH settings allowlist', (t) => {
   t.after(() => { rmSync(root, { recursive: true, force: true }) })
   const path = join(root, 'settings.json')
   const store = new WorkspaceSettingsStore({ path })
-  assert.deepEqual(store.get(), { workspaceMode: 'all', workspaceIds: [] })
+  assert.deepEqual(store.get(), DEFAULT_AGENT_RP_SETTINGS)
   assert.deepEqual(store.set({ workspaceMode: 'selected', workspaceIds: ['workspace-a'] }), {
-    workspaceMode: 'selected', workspaceIds: ['workspace-a'],
+    ...DEFAULT_AGENT_RP_SETTINGS, workspaceMode: 'selected', workspaceIds: ['workspace-a'],
   })
   assert.deepEqual(new WorkspaceSettingsStore({ path }).get(), {
-    workspaceMode: 'selected', workspaceIds: ['workspace-a'],
+    ...DEFAULT_AGENT_RP_SETTINGS, workspaceMode: 'selected', workspaceIds: ['workspace-a'],
   })
   assert.match(readFileSync(path, 'utf8'), /"format": 0/u)
 })
