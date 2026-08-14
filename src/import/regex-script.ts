@@ -29,6 +29,17 @@ function optionalFiniteNumber(value: JsonValue | undefined, path: string): numbe
   return value
 }
 
+function optionalSubstituteRegex(value: JsonValue | undefined, path: string): number | undefined {
+  if (value === undefined) return undefined
+  const normalized = typeof value === 'number'
+    ? value
+    : typeof value === 'string' || typeof value === 'boolean' || value === null
+      ? Number(value)
+      : Number.NaN
+  if (!Number.isFinite(normalized)) throw new Error(`${path} must be a finite numeric value`)
+  return normalized
+}
+
 function stringArray(value: JsonValue | undefined, path: string): string[] {
   if (value === undefined) return []
   if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) {
@@ -64,7 +75,7 @@ export function parseRegexScript(value: JsonValue, path: string): ImportedRegexS
     markdownOnly: optionalBoolean(script.markdownOnly, `${path}.markdownOnly`) ?? false,
     promptOnly: optionalBoolean(script.promptOnly, `${path}.promptOnly`) ?? false,
     runOnEdit: optionalBoolean(script.runOnEdit, `${path}.runOnEdit`) ?? false,
-    substituteRegex: optionalFiniteNumber(script.substituteRegex, `${path}.substituteRegex`) ?? 0,
+    substituteRegex: optionalSubstituteRegex(script.substituteRegex, `${path}.substituteRegex`) ?? 0,
     minDepth: nullableFiniteNumber(script.minDepth, `${path}.minDepth`),
     maxDepth: nullableFiniteNumber(script.maxDepth, `${path}.maxDepth`),
   }

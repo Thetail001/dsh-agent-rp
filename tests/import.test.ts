@@ -116,6 +116,28 @@ test('imports the complete Tavern Helper script tree and initial variables', () 
   }])
 })
 
+test('accepts regex substitution modes serialized with SillyTavern numeric coercion', () => {
+  const script = {
+    scriptName: '显示规则', findRegex: '/old/gu', replaceString: 'new', trimStrings: [], placement: [2],
+    disabled: false, markdownOnly: true, promptOnly: false, runOnEdit: false, minDepth: null, maxDepth: null,
+  }
+  const card = parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: v2Data({
+      extensions: {
+        regex_scripts: [
+          { ...script, substituteRegex: '2' },
+          { ...script, scriptName: '旧式开关', substituteRegex: false },
+          { ...script, scriptName: '空值', substituteRegex: null },
+        ],
+      },
+    }),
+  }))
+
+  assert.deepEqual(card.frontend.regexScripts.map(item => item.substituteRegex), [2, 0, 0])
+})
+
 test('imports V2 lorebook and activates constant, primary, and selective entries', () => {
   const raw = {
     spec: 'chara_card_v2',

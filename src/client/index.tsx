@@ -889,8 +889,8 @@ function hideWhileMounted(elements: readonly (HTMLElement | null | undefined)[])
 }
 
 function roleplaySummary(summary: SessionSummary | undefined, projection: AgentRpProjection | undefined) {
-  if (projection !== undefined) return projection
   if (summary?.agentPreset !== 'agent-rp') return undefined
+  if (projection !== undefined) return projection
   return {
     characterName: summary.displayTitle,
     description: '',
