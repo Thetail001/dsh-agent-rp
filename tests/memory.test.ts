@@ -80,7 +80,8 @@ test('persists one normalized memory and exposes it to the next prompt snapshot'
   assert.deepEqual(validateJsonSchemaValue(valueSchemaSpecToJsonSchema(MEMORY_VALUE_SCHEMA), record), [])
   assert.deepEqual(readAgentRpMemoryHistory(session.events).active, [record])
   assert.match(renderMemoryContext(session.events), /用户喝咖啡时不加糖/u)
-  assert.match(renderMemoryContext(session.events), new RegExp(`来源事件：#${sourceEventSeq}`, 'u'))
+  assert.match(renderMemoryContext(session.events), new RegExp(`\\[memory-${sourceEventSeq} \\| preference \\|`, 'u'))
+  assert.doesNotMatch(renderMemoryContext(session.events), /来源事件/u)
 })
 
 test('keeps correction history while only the replacement remains active', () => {
@@ -158,7 +159,7 @@ test('lets the user correct and forget active memory without invoking the model'
   const forgotten = readAgentRpMemoryHistory(agent.session.events)
   assert.equal(forgotten.all.length, 2)
   assert.deepEqual(forgotten.active, [])
-  assert.equal(renderMemoryContext(agent.session.events), '当前没有已记录的持久记忆。')
+  assert.equal(renderMemoryContext(agent.session.events), '')
 })
 
 test('lets the user add normalized memory without invoking the model', () => {

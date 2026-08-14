@@ -26,11 +26,13 @@ test('makes the top-level Agent the character and permits concise silence', () =
   assert.match(prompt, /先调用 remember/u)
   assert.match(prompt, /同一主题发生变化/u)
   assert.match(prompt, /不存在的共同经历/u)
+  assert.match(prompt, /不主动说“我记得”/u)
+  assert.match(prompt, /默认通过回答、称呼或行动自然体现/u)
   assert.doesNotMatch(prompt, /狼人|主持人|子代理/u)
 })
 
-test('renders an explicit empty memory snapshot', () => {
-  assert.equal(renderMemoryContext([]), '当前没有已记录的持久记忆。')
+test('omits memory context when no durable memory exists', () => {
+  assert.equal(renderMemoryContext([]), '')
 })
 
 test('continues an imported chat identity without the deployment default persona', () => {
