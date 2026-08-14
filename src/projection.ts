@@ -947,9 +947,9 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
       ...(state.tavern === undefined ? {} : {
         tavern: {
           ...state.tavern,
-          messages: state.surface.flatMap(({ text, role }) => text === undefined || role === undefined
+          messages: state.surface.flatMap(({ seq, text, role }) => text === undefined || role === undefined
             ? []
-            : [{ messageId: 0, role, text }]).map((message, messageId) => ({ ...message, messageId })),
+            : [{ messageId: 0, seq, role, text }]).map((message, messageId) => ({ ...message, messageId })),
         },
       }),
     }

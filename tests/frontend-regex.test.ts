@@ -40,12 +40,16 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
     worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
     messages: [],
+    displayRegexScripts: [base],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
   assert.notEqual(source, undefined)
   assert.doesNotThrow(() => { Function(source!) })
   assert.match(source!, /window\.replaceScriptButtons=/u)
   assert.match(source!, /window\.updateScriptButtonsWith=/u)
+  assert.match(source!, /window\.formatAsDisplayedMessage=/u)
+  assert.match(source!, /window\.retrieveDisplayedMessage=/u)
+  assert.match(source!, /window\.refreshOneMessage=/u)
 })
 
 test('runs preset scripts before character scripts for the selected view', () => {

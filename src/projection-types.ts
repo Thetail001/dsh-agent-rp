@@ -75,6 +75,7 @@ export interface AgentRpProjection {
   readonly tavern?: TavernHelperState & {
     readonly messages: readonly {
       readonly messageId: number
+      readonly seq: number
       readonly role: 'user' | 'assistant'
       readonly text: string
     }[]

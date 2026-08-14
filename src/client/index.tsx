@@ -12,7 +12,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import { createRoot, type Root } from 'react-dom/client'
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
 import type { ImportedTavernHelperScript } from '../import/types.ts'
 import type { TavernHelperMutationRequest, TavernWorldbookEntry } from '../tavern-helper.ts'
@@ -3960,6 +3960,10 @@ function tavernScriptSnapshot(
       data: index === entries.length - 1 ? message : {},
       extra: {},
     })),
+    displayRegexScripts: [
+      ...(projection.preset?.regexScripts ?? []),
+      ...(projection.frontend?.regexScripts ?? []),
+    ],
   }
 }
 
@@ -3978,9 +3982,10 @@ function runtimeScriptButtons(value: unknown): readonly { readonly name: string;
   return buttons
 }
 
-function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, runMutation, sessionId }: {
+function TavernScriptRuntime({ ctx, inputActions, onDisplayOverride, projection, runGeneration, runMutation, sessionId }: {
   readonly ctx: Context
   readonly inputActions: ComposerDockProps['inputActions']
+  readonly onDisplayOverride: (scriptId: string, messageId: number, value: string) => void
   readonly projection: AgentRpProjection
   readonly runGeneration: RunTavernGeneration
   readonly runMutation: RunTavernMutation
@@ -4054,6 +4059,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
     frame.contentWindow?.postMessage({
       source: 'dsh-agent-rp-host', action: 'variables-sync',
       scopes: snapshot.scopes, messages: snapshot.messages,
+      displayRegexScripts: snapshot.displayRegexScripts,
       worldbooks: snapshot.worldbooks, worldbookBindings: snapshot.worldbookBindings,
     }, '*')
   }
@@ -4119,6 +4125,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
         readonly config?: unknown
         readonly request?: unknown
         readonly buttons?: unknown
+        readonly messageId?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
@@ -4152,6 +4159,14 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
       if (message.action === 'script-buttons') {
         const buttons = runtimeScriptButtons(message.buttons)
         if (buttons !== undefined) setRuntimeButtons(current => new Map(current).set(entry.script.id, buttons))
+        return
+      }
+      if (message.action === 'display-override' && Number.isSafeInteger(message.messageId)
+        && typeof message.value === 'string' && message.value.length <= 2 * 1024 * 1024) {
+        const messageId = message.messageId as number
+        if (messageId >= 0 && messageId < (projectionRef.current.tavern?.messages.length ?? 0)) {
+          onDisplayOverride(entry.script.id, messageId, message.value)
+        }
         return
       }
       if (message.action === 'surface' && typeof message.visible === 'boolean') {
@@ -4250,7 +4265,7 @@ function TavernScriptRuntime({ ctx, inputActions, projection, runGeneration, run
     }
     window.addEventListener('message', bridge)
     return () => { window.removeEventListener('message', bridge) }
-  }, [approvedGenerations, frames, inputActions, runGeneration, runMutation, sessionId])
+  }, [approvedGenerations, frames, inputActions, onDisplayOverride, runGeneration, runMutation, sessionId])
   if (scripts.length === 0) return null
   const failures = frames.flatMap(entry => {
     const error = entry.error ?? runtimeErrors.get(entry.script.id)
@@ -4401,12 +4416,18 @@ function roleplayComposerDockComponent(
   const chat = useSession(state => state.chat)
   const viewMode = useRoleplayViewMode(sessionId)
   const [drawOpen, setDrawOpen] = useState(false)
+  const [displayOverrides, setDisplayOverrides] = useState<ReadonlyMap<number, string>>(() => new Map())
   const rootRef = useRef<HTMLDivElement | null>(null)
   const characterDetail = useCharacterDetail(projection?.avatarLibraryId)
   const backgroundChoice = useRoleplayBackground(sessionId)
   const background = selectedBackground(characterDetail, backgroundChoice)
   const displayName = projection === undefined ? undefined : roleplayDisplayName(summary, projection)
   const placeholder = displayName === undefined ? undefined : `和${displayName}说点什么…`
+  const transcriptSignature = projection?.tavern?.messages.map(message => `${message.seq}\u0000${message.text}`).join('\u0001')
+  const onDisplayOverride = useCallback((_scriptId: string, messageId: number, value: string): void => {
+    setDisplayOverrides(current => new Map(current).set(messageId, value))
+  }, [])
+  useEffect(() => { setDisplayOverrides(new Map()) }, [sessionId, transcriptSignature])
   useLayoutEffect(() => {
     const scroll = rootRef.current?.closest<HTMLElement>('[data-conversation-scroll]')
     if (scroll == null || background === undefined || projection?.avatarLibraryId === undefined || viewMode !== 'immersive') return
@@ -4488,6 +4509,7 @@ function roleplayComposerDockComponent(
     const frontend = projection.frontend
     const hasDisplayRules = viewMode === 'immersive' && frontend !== undefined
       && frontend.regexScripts.length + (projection.preset?.regexScripts.length ?? 0) > 0
+    const messageIdBySeq = new Map(projection.tavern?.messages.map(message => [message.seq, message.messageId]))
     const mounted = new Map<HTMLElement, Root>()
     const hiddenTranscriptDetails = new Map<HTMLElement, { readonly display: string; readonly priority: string }>()
     const legacyConversationNotices = new Set<HTMLElement>()
@@ -4623,6 +4645,16 @@ function roleplayComposerDockComponent(
           item.dataset.agentRpSetupCollapsed = 'true'
         }
       }
+      for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="user"]')) {
+        const key = item.dataset.chatFlowKey
+        const node = key === undefined ? undefined : chat.nodes.get(key)
+        if (node?.kind !== 'user') continue
+        const messageId = messageIdBySeq.get((node.data as { readonly seq: number }).seq)
+        const override = messageId === undefined ? undefined : displayOverrides.get(messageId)
+        const original = item.firstElementChild as HTMLElement | null
+        if (override === undefined || original === null) continue
+        mountRenderedDisplay(item, original, [{ kind: 'html', source: override }])
+      }
       for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="assistant-step"]')) {
         const key = item.dataset.chatFlowKey
         if (key === undefined) continue
@@ -4633,13 +4665,20 @@ function roleplayComposerDockComponent(
         const generation = finalSeq === undefined
           ? undefined
           : projection.generations.find(group => group.assistantSeqs.includes(finalSeq))
+        const selected = generation?.versions.find(version => version.seq === generation.selectedVersionSeq)
+        const messageId = (selected === undefined ? undefined : messageIdBySeq.get(selected.seq))
+          ?? (finalSeq === undefined ? undefined : messageIdBySeq.get(finalSeq))
+        const override = messageId === undefined ? undefined : displayOverrides.get(messageId)
+        const original = item.firstElementChild as HTMLElement | null
+        if (override !== undefined && original !== null) {
+          mountRenderedDisplay(item, original, [{ kind: 'html', source: override }])
+          continue
+        }
         if (viewMode === 'immersive' && generation !== undefined) {
-          const original = item.firstElementChild as HTMLElement | null
           if (finalSeq !== generation.anchorSeq) {
             hideTranscriptDetail(item)
             continue
           }
-          const selected = generation.versions.find(version => version.seq === generation.selectedVersionSeq)
           if (selected !== undefined && original !== null) {
             const rendered = renderCharacterDisplay(selected.text.replaceAll(statusPlaceholder, ''), {
               name: projection.characterName,
@@ -4669,7 +4708,6 @@ function roleplayComposerDockComponent(
         if (rendered === raw) continue
         const segments = splitCharacterDisplay(rendered)
         if (!segments.some(segment => segment.kind === 'html')) continue
-        const original = item.firstElementChild as HTMLElement | null
         if (original === null) continue
         mountRenderedDisplay(item, original, segments)
       }
@@ -4712,10 +4750,10 @@ function roleplayComposerDockComponent(
         delete item.dataset.agentRpSetupCollapsed
       }
     }
-  }, [chat, characterDetail, projection, viewMode])
+  }, [chat, characterDetail, displayOverrides, projection, viewMode])
   if (projection === undefined) return null
   return <div ref={rootRef} data-agent-rp-status style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
-    <TavernScriptRuntime ctx={ctx} inputActions={inputActions} projection={projection}
+    <TavernScriptRuntime ctx={ctx} inputActions={inputActions} onDisplayOverride={onDisplayOverride} projection={projection}
       runGeneration={runTavernGeneration} runMutation={runTavernMutation} sessionId={sessionId} />
     <button type="button" aria-label="生成聊天插图" title="生成聊天插图" onClick={() => { setDrawOpen(true) }} style={{
       alignItems: 'center', background: 'transparent', border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer',
