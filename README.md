@@ -70,6 +70,22 @@ dsh-agent-rp --port 3080
 
 要迁移旧聊天，可在角色会话中附加一份 SillyTavern JSONL；将对应角色卡和 JSONL 放在同一条消息中，可以一次迁移角色身份与历史记录。导入会创建新的角色对话，不会修改源文件或来源会话。
 
+## 外部生图工具与 Comfy Cloud MCP
+
+角色 Agent 可以发现 DSH 已经配置的外部工具；Agent RP 不绑定某个生图服务，而是提供固定工具指导区和 `publish_roleplay_image` 发布工具。外部 MCP 负责生成和轮询；捆绑预设只为 Agent RP 启用受 DSH 沙箱与审批控制的 `pwsh`，用于执行 MCP 已经准备好的下载命令。发布工具只接受同一回合内工具直接返回的标准图片，或当前 Session 工作区中已经下载完成的本地图片，并把图片绑定到该回合的最终角色回复。
+
+在 DSH WebUI 的“设置 → Agent RP → Agent 工具与生图策略”中可以控制总开关、框架工具说明、Agent RP 图片发布、三档自动生图策略，以及增删自定义 MCP 工具提示词。设置保存后会从下一次模型请求开始生效，当前角色会话无需重启。默认已经提供 Comfy Cloud Saved Workflow 模板，流程是：
+
+1. 用 `get_saved_workflow` 读取 `image_z_image_turbo` 实际暴露的 `customizable_inputs`；找不到时再用 `list_saved_workflows` 取得精确文件名。
+2. 只覆盖工具明确暴露的输入，再调用 `run_saved_workflow`；不猜参数名、节点 ID 或 slot。
+3. 按工具真实返回值调用 `wait_for_job` 和 `get_output`。
+4. `get_output` 返回下载命令时，使用可用的终端工具原样执行，不改写临时签名 URL。
+5. 将命令实际下载出的工作区文件路径传给 `publish_roleplay_image`。
+
+Comfy Cloud 的远程 MCP 地址是 `https://cloud.comfy.org/mcp`。默认工作流是 `image_z_image_turbo`；工作流输入始终以 MCP 当时暴露的 schema 为准，不确定时保留工作流默认值。认证与工具语义以[官方 MCP 文档](https://docs.comfy.org/agent-tools/mcp)为准。
+
+页面中的总开关控制整个固定指导区和 Agent RP 发布工具；“框架工具说明”控制记忆/导入等内置说明；“Agent RP 图片发布”控制 `publish_roleplay_image`；自动生图策略可禁止、交由 Agent 判断，或要求每个普通 RP 回合尝试一次。自定义条目始终追加在角色卡或导入预设之后，因此不会被导入的系统提示覆盖。部署者仍可在 `preset/agent.cordis.yml` 中提供 `toolGuidance` 的启动默认值，但 WebUI 保存的设置是运行时配置来源。
+
 ## 目前的范围
 
 这个里程碑聚焦单角色 RP、SillyTavern 迁移与轻前端卡片。群聊、多人互动和重前端/独立前端尚未纳入当前兼容范围。可执行卡片 HTML 会在没有同源权限的沙箱 iframe 中运行；Tavern Helper 脚本只能加载内置或玩家明确批准来源的 HTTPS 模块，不能直接访问 Host 页面、文件或进程；EJS 在独立 QuickJS/WASM 运行时中执行，不会获得 Host 的文件、网络、进程或模块接口。

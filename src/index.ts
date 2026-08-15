@@ -77,6 +77,13 @@ import {
   renderSessionLorebooks,
   substituteCardMacros,
 } from './prompt.ts'
+import { withToolGuidance } from './tool-guidance.ts'
+import {
+  PUBLISHED_ROLEPLAY_IMAGE_VALUE_SCHEMA,
+  PUBLISH_ROLEPLAY_IMAGE_TOOL,
+  preparePublishedRoleplayImage,
+  type PublishedRoleplayImageMeta,
+} from './roleplay-image.ts'
 import { createEjsWorldInfoBooks, EjsTemplateEngine, type EjsTemplateContext } from './ejs-template.ts'
 import { installBundledAgentRpPreset } from './preset.ts'
 import type {} from '@deepseek-ai/dsh-session-projection'
@@ -475,6 +482,7 @@ export function installAgentRp(
   options: {
     readonly characterLibraryRoot?: string
     readonly ejsTemplateEngine?: EjsTemplateEngine
+    readonly workspaceSettingsPath?: string
   } = {},
 ): void {
   const agentsByScope = new WeakMap<ScopeKey, Agent>()
@@ -491,7 +499,11 @@ export function installAgentRp(
   const chatLibrary = new SillyTavernChatLibrary()
   const worldInfoLibrary = new WorldInfoLibrary()
   const generatedImageLibrary = new GeneratedImageLibrary()
-  const workspaceSettings = new WorkspaceSettingsStore()
+  const workspaceSettings = new WorkspaceSettingsStore(options.workspaceSettingsPath === undefined
+    ? {}
+    : { path: options.workspaceSettingsPath })
+  const currentToolGuidance = () => workspaceSettings.get().toolGuidance
+  const guidedPersona = (persona: string): string => withToolGuidance(persona, currentToolGuidance())
 
   commands.register({
     name: 'rp-tavern-variables',
@@ -698,7 +710,7 @@ export function installAgentRp(
       const pendingMessages = agent === undefined ? [] : pendingMessagesByAgent.get(agent) ?? []
       if (agent !== undefined) pendingMessagesByAgent.delete(agent)
       const active = importedCharacter(agentsByScope, scope)
-      if (agent === undefined) return renderCharacterPrompt(config)
+      if (agent === undefined) return guidedPersona(renderCharacterPrompt(config))
       const tavern = readTavernHelperState(agent.session.events)
       const injectedScanText = tavernInjectedScanText(tavern)
       const sources = readActiveSessionLorebookSources(agent)
@@ -742,13 +754,13 @@ export function installAgentRp(
           tokenBudget: worldInfoTokenBudget(worldInfoConfiguration),
         }))
         if (importedChat !== undefined) {
-          return [
+          return guidedPersona([
             ...standaloneLore.beforeCharacter,
             renderImportedChatPrompt(importedChat.characterName, identity.userName, identity.persona?.description),
             ...standaloneLore.afterCharacter,
-          ].join('\n\n')
+          ].join('\n\n'))
         }
-        return renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter)
+        return guidedPersona(renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter))
       }
       const importedCard = cardFromImportMeta(active.meta)
       const cardLorebook = configuredSources.find(value => value.source.source === 'character')?.configured
@@ -794,11 +806,11 @@ export function installAgentRp(
         })
         presetAfterHistoryByAgent.set(agent, assembled.afterHistory)
         presetInChatByAgent.set(agent, assembled.inChat)
-        return assembled.system
+        return guidedPersona(assembled.system)
       }
       presetAfterHistoryByAgent.delete(agent)
       presetInChatByAgent.delete(agent)
-      return renderImportedCharacterPrompt(
+      return guidedPersona(renderImportedCharacterPrompt(
         card,
         [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
         [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
@@ -806,7 +818,7 @@ export function installAgentRp(
         mvu?.statData,
         persona?.description,
         templateOptions,
-      )
+      ))
     },
     complete: true,
   })
@@ -880,6 +892,53 @@ export function installAgentRp(
   })
   ctx.systemPrompt.context({ name: 'sandbox:policy', order: 0, text: '' })
   ctx.systemPrompt.context({ name: 'approval:policy', order: 0, text: '' })
+  ctx.tools.register(defineTool({
+    name: PUBLISH_ROLEPLAY_IMAGE_TOOL,
+    description: 'Publish image output beside this turn\'s final Agent RP reply. Omit path only when an earlier tool in this same turn returned a native image attachment. If an image service returned a URL or download command, first use an available shell/download tool to save it inside the Session workspace, then pass the resulting local path. This tool never downloads URLs.',
+    parameters: {
+      path: {
+        type: 'string',
+        description: 'Optional local image path inside the current Session workspace. Never pass a URL, data URI, or guessed path.',
+      },
+      caption: {
+        type: 'string',
+        description: 'Optional short in-character caption displayed with the image.',
+      },
+    },
+    output: {
+      schema: PUBLISHED_ROLEPLAY_IMAGE_VALUE_SCHEMA,
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Published ${value.images.length} roleplay image${value.images.length === 1 ? '' : 's'} for the final reply.`,
+      }],
+      presentationMeta: (_args, value) => {
+        const meta = { format: 0, ...value } as unknown as PublishedRoleplayImageMeta
+        return meta as unknown as import('@deepseek-ai/dsh-session').JsonValue
+      },
+    },
+    async execute(args, exec) {
+      if (exec.agent === undefined) throw new Error(`${PUBLISH_ROLEPLAY_IMAGE_TOOL} requires an Agent Session`)
+      if (exec.parent !== undefined) {
+        throw new Error(`${PUBLISH_ROLEPLAY_IMAGE_TOOL} must be called directly by the character Agent`)
+      }
+      const guidance = currentToolGuidance()
+      if (!guidance.enabled || !guidance.includeAgentRp || guidance.imageMode === 'never') {
+        throw new Error(`${PUBLISH_ROLEPLAY_IMAGE_TOOL} is disabled by the current Agent RP settings`)
+      }
+      return preparePublishedRoleplayImage(ctx.attachments, exec.agent, String(exec.callId), args, exec.signal)
+    },
+    presentCall: args => ({
+      card: 'generic',
+      title: '发布角色插图',
+      kind: 'other',
+      ...(args.caption === undefined ? {} : { rawInput: args.caption }),
+    }),
+    presentResult: (_args, result) => ({
+      card: 'generic',
+      title: result.isError ? '角色插图发布失败' : '角色插图已发布',
+    }),
+    isConcurrencySafe: () => false,
+  }))
   ctx.tools.register(defineTool({
     name: 'remember',
     description: 'Persist one confirmed fact, promise, preference, relationship change, or shared event for later turns in this Session. Do not repeat information already covered. When this topic already exists, use supersedes with its active memory id instead of adding another record.',

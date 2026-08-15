@@ -34,7 +34,9 @@ test('installs one idempotent managed preset', (context) => {
 
   assert.equal(installBundledAgentRpPreset({ presetRoot: root, sourceDir: SOURCE }), 'created')
   assert.equal(installBundledAgentRpPreset({ presetRoot: root, sourceDir: SOURCE }), 'unchanged')
-  assert.match(readFileSync(join(root, 'agent-rp', 'agent.cordis.yml'), 'utf8'), /mode: character/u)
+  const agentConfig = readFileSync(join(root, 'agent-rp', 'agent.cordis.yml'), 'utf8')
+  assert.match(agentConfig, /mode: character/u)
+  assert.match(agentConfig, /@deepseek-ai\/dsh-tool-pwsh/u)
   assert.match(readFileSync(join(root, 'agent-rp', 'preset.yml'), 'utf8'), /角色会话/u)
 })
 
@@ -219,9 +221,15 @@ test('mounts commands when public DSH omits prompt extension gateways', async (c
   await root.plugin(AgentRegistry)
   const preset = createScope(root, {})
   const commands: string[] = []
+  const tools: string[] = []
   const commandInputs = new Map<string, { readonly hint: string } | undefined>()
   root.provide('systemPrompt' as never, { section: () => () => {}, context: () => () => {} } as never)
-  root.provide('tools' as never, { register: () => () => {} } as never)
+  root.provide('tools' as never, {
+    register(definition: { readonly name: string }) {
+      tools.push(definition.name)
+      return () => {}
+    },
+  } as never)
   root.provide('commands' as never, {
     register(definition: { readonly name: string; readonly input?: { readonly hint: string } }) {
       if (definition.input !== undefined) assert.notEqual(definition.input.hint.trim(), '')
@@ -250,6 +258,7 @@ test('mounts commands when public DSH omits prompt extension gateways', async (c
     'rp-world-info-import',
   ])
   assert.equal(commandInputs.get('rp-tavern-trigger'), undefined)
+  assert.ok(tools.includes('publish_roleplay_image'))
 
   context.after(async () => {
     await preset.dispose()

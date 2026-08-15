@@ -42,6 +42,7 @@ import {
   type TavernHelperState,
 } from './tavern-helper.ts'
 import { PROMPT_REGEX_SOURCE_MARKER, readPromptRegexSourceMarker } from './frontend-regex.ts'
+import { parsePublishedRoleplayImageMeta, PUBLISH_ROLEPLAY_IMAGE_TOOL } from './roleplay-image.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -61,6 +62,7 @@ const projectionSchema = {
       || (record.userName !== undefined && typeof record.userName !== 'string')
       || (record.persona !== undefined && (typeof record.persona !== 'object' || record.persona === null))
       || !Array.isArray(record.generations)
+      || !Array.isArray(record.publishedImages)
       || (record.currentReplySeq !== undefined && (typeof record.currentReplySeq !== 'number'
         || !Number.isSafeInteger(record.currentReplySeq) || record.currentReplySeq < 0))
       || !validCardVersion
@@ -84,10 +86,16 @@ const projectionSchema = {
   },
 }
 
-type ImportCall = 'character-card' | 'world-info' | 'preset'
+type TrackedCall = 'character-card' | 'world-info' | 'preset' | 'roleplay-image'
+
+interface PendingPublishedImage {
+  readonly turn: number
+  readonly publishResultSeq: number
+  readonly meta: NonNullable<ReturnType<typeof parsePublishedRoleplayImageMeta>>
+}
 
 interface AgentRpProjectionState {
-  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'worldInfo' | 'presetLibrary' | 'lastRequest' | 'generations'>
+  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'worldInfo' | 'presetLibrary' | 'lastRequest' | 'generations' | 'publishedImages'>
   readonly cardWorldInfoCount: number
   readonly cardLorebook?: SessionLorebookSource
   readonly standaloneWorldInfos: Readonly<Record<string, SessionLorebookSource>>
@@ -97,7 +105,7 @@ interface AgentRpProjectionState {
     readonly text?: string
     readonly role?: 'user' | 'assistant'
   }[]
-  readonly calls: Readonly<Record<string, ImportCall>>
+  readonly calls: Readonly<Record<string, TrackedCall>>
   readonly personaCommands: Readonly<Record<string, number>>
   readonly mvu?: AgentRpProjection['mvu']
   readonly preset?: AgentRpProjection['preset']
@@ -107,6 +115,9 @@ interface AgentRpProjectionState {
   readonly promptRegex?: AgentRpProjection['promptRegex']
   readonly generations: Readonly<Record<string, GenerationStateRecord>>
   readonly currentReplySeq?: number
+  readonly publishedImages: AgentRpProjection['publishedImages']
+  readonly pendingPublishedImages: readonly PendingPublishedImage[]
+  readonly replySeqByTurn: Readonly<Record<string, number>>
   readonly tavern?: TavernHelperState
 }
 
@@ -554,9 +565,9 @@ function presetProjection(
 }
 
 function withoutCall(
-  calls: Readonly<Record<string, ImportCall>>,
+  calls: Readonly<Record<string, TrackedCall>>,
   callId: string,
-): Readonly<Record<string, ImportCall>> {
+): Readonly<Record<string, TrackedCall>> {
   return Object.fromEntries(Object.entries(calls).filter(([id]) => id !== callId))
 }
 
@@ -577,6 +588,9 @@ export function createAgentRpProjectionDefinition(
     personaCommands: {},
     presetLibrary: [],
     generations: {},
+    publishedImages: [],
+    pendingPublishedImages: [],
+    replySeqByTurn: {},
   }),
   apply(state, event) {
     const surface = applySurface(state.surface, event)
@@ -907,7 +921,11 @@ export function createAgentRpProjectionDefinition(
       const text = event.data.message.content
         .flatMap(block => block.type === 'text' ? [block.text] : [])
         .join('\n')
-      const nextState = text.trim() === '' ? withSurface : { ...withSurface, currentReplySeq: event.seq }
+      const nextState = text.trim() === '' ? withSurface : {
+        ...withSurface,
+        currentReplySeq: event.seq,
+        replySeqByTurn: { ...withSurface.replySeqByTurn, [String(event.data.turn)]: event.seq },
+      }
       if (withSurface.mvu === undefined || !/<UpdateVariable(?:variable)?>/iu.test(text)) return nextState
       try {
         const update = applyMvuReply(withSurface.mvu.statData, text)
@@ -928,11 +946,39 @@ export function createAgentRpProjectionDefinition(
         }
       }
     }
+    if (event.type === 'turn/end') {
+      const turn = String(event.data.turn)
+      const replySeq = withSurface.replySeqByTurn[turn]
+      const pending = withSurface.pendingPublishedImages.filter(image => image.turn === event.data.turn)
+      const pendingPublishedImages = withSurface.pendingPublishedImages.filter(image => image.turn !== event.data.turn)
+      const { [turn]: _completedTurn, ...replySeqByTurn } = withSurface.replySeqByTurn
+      if (replySeq === undefined || pending.length === 0) {
+        return { ...withSurface, pendingPublishedImages, replySeqByTurn }
+      }
+      return {
+        ...withSurface,
+        pendingPublishedImages,
+        replySeqByTurn,
+        publishedImages: [
+          ...withSurface.publishedImages,
+          ...pending.map(image => ({
+            id: `published-roleplay-image-${image.publishResultSeq}`,
+            replySeq,
+            publishResultSeq: image.publishResultSeq,
+            sourceEventSeq: image.meta.sourceEventSeq,
+            ...(image.meta.sourceCallId === undefined ? {} : { sourceCallId: image.meta.sourceCallId }),
+            images: image.meta.images,
+            ...(image.meta.caption === undefined ? {} : { caption: image.meta.caption }),
+          })),
+        ],
+      }
+    }
     if (event.type === 'tool/call') {
       const kind = event.data.name === 'import_character_card'
         ? 'character-card'
         : event.data.name === 'import_world_info' ? 'world-info'
-          : event.data.name === 'import_sillytavern_preset' ? 'preset' : undefined
+          : event.data.name === 'import_sillytavern_preset' ? 'preset'
+            : event.data.name === PUBLISH_ROLEPLAY_IMAGE_TOOL ? 'roleplay-image' : undefined
       return kind === undefined
         ? withSurface
         : { ...withSurface, calls: { ...withSurface.calls, [String(event.data.callId)]: kind } }
@@ -944,6 +990,22 @@ export function createAgentRpProjectionDefinition(
     if (kind === undefined) return withSurface
     const calls = withoutCall(withSurface.calls, callId)
     if (toolFailed(event)) return { ...withSurface, calls }
+    if (kind === 'roleplay-image') {
+      const meta = parsePublishedRoleplayImageMeta(event.data.meta)
+      if (meta === undefined || meta.sourceEventSeq >= event.seq
+        || withSurface.publishedImages.some(image => image.sourceEventSeq === meta.sourceEventSeq)
+        || withSurface.pendingPublishedImages.some(image => image.meta.sourceEventSeq === meta.sourceEventSeq)) {
+        return { ...withSurface, calls }
+      }
+      return {
+        ...withSurface,
+        calls,
+        pendingPublishedImages: [
+          ...withSurface.pendingPublishedImages,
+          { turn: event.data.turn, publishResultSeq: event.seq, meta },
+        ],
+      }
+    }
     if (kind === 'character-card') {
       const meta = parseCharacterMeta(event.data.meta)
       if (meta === undefined) return { ...withSurface, calls }
@@ -1019,6 +1081,7 @@ export function createAgentRpProjectionDefinition(
         assistantSeqs: group.assistantSeqs,
         versions: group.versions,
       })),
+      publishedImages: state.publishedImages,
       ...(state.currentReplySeq === undefined ? {} : { currentReplySeq: state.currentReplySeq }),
       ...(state.tavern === undefined ? {} : {
         tavern: {
@@ -1031,7 +1094,7 @@ export function createAgentRpProjectionDefinition(
       }),
     }
   },
-  stateVersion: 9,
+  stateVersion: 10,
   }
 }
 

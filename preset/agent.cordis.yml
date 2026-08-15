@@ -2,3 +2,10 @@
   name: '@dsh-external/dsh-agent-rp'
   config:
     mode: character
+    toolGuidance:
+      enabled: true
+      includeFramework: true
+      includeAgentRp: true
+      imageMode: auto
+- id: agent-rp-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'

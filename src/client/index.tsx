@@ -346,6 +346,7 @@ type GenerationTailProps = TurnTailOwnerProps & {
   readonly rewriteTurn: (sessionId: SessionId, turn: number, draft: string) => Promise<void>
   readonly continueFromTurn: (sessionId: SessionId, atSeq: number) => Promise<void>
   readonly runImageGeneration: RunImageGeneration
+  readonly loadPublishedImage: (attachmentId: string) => Promise<string | undefined>
   readonly useProjection: PropsRuntime<'conversation.composer.dock'>['useProjection']
   readonly useSession: PropsRuntime<'conversation.composer.dock'>['useSession']
 }
@@ -643,6 +644,7 @@ function CharacterDisplay({ compilation, statData, characterName, character, pre
 }) {
   const compiled = useMemo(() => compileCardFrames(compilation, {
     origin: window.location.origin,
+    textColor: getComputedStyle(document.body).color,
     ...(statData === undefined ? {} : { statData }),
     ...(character === undefined ? {} : { character }),
   }), [character, compilation, statData])
@@ -801,8 +803,74 @@ function RewriteTurnDialog({ initialText, busy, error, onClose, onRewrite }: {
   </div>
 }
 
+function PublishedRoleplayImageAsset({ attachment, alt, load }: {
+  readonly attachment: ImageAttachmentRef
+  readonly alt: string
+  readonly load: GenerationTailProps['loadPublishedImage']
+}) {
+  const [src, setSrc] = useState<string>()
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    let active = true
+    let objectUrl: string | undefined
+    setSrc(undefined)
+    setFailed(false)
+    void load(String(attachment.attachmentId)).then(url => {
+      if (!active) {
+        if (url?.startsWith('blob:') === true) URL.revokeObjectURL(url)
+        return
+      }
+      if (url === undefined) {
+        setFailed(true)
+        return
+      }
+      objectUrl = url
+      setSrc(url)
+    }, () => {
+      if (active) setFailed(true)
+    })
+    return () => {
+      active = false
+      if (objectUrl?.startsWith('blob:') === true) URL.revokeObjectURL(objectUrl)
+    }
+  }, [attachment.attachmentId, load])
+  if (failed) return <div role="alert" style={{ fontSize: '12px', opacity: .62, padding: '18px' }}>图片附件读取失败</div>
+  if (src === undefined) return <div role="status" style={{ fontSize: '12px', opacity: .55, padding: '18px' }}>正在载入插图…</div>
+  return <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+    <img src={src} alt={alt} loading="lazy" style={{
+      background: 'rgba(0,0,0,.2)', display: 'block', maxHeight: '720px', objectFit: 'contain', width: '100%',
+    }} />
+    <a href={src} download={attachment.name ?? 'roleplay-image'} style={{
+      ...generationButtonStyle, alignSelf: 'flex-start', margin: '9px 12px 11px', textDecoration: 'none',
+    }}>下载</a>
+  </div>
+}
+
+function PublishedRoleplayImageCard({ publication, load }: {
+  readonly publication: AgentRpProjection['publishedImages'][number]
+  readonly load: GenerationTailProps['loadPublishedImage']
+}) {
+  const title = publication.caption?.trim() || '角色插图'
+  return <article data-agent-rp-published-image style={{
+    background: 'color-mix(in srgb, var(--dsw-alias-bg-layer-1, #202126) 82%, transparent)',
+    border: '1px solid var(--dsw-alias-border-l2, #383a41)', borderRadius: '12px',
+    margin: '8px 0', maxWidth: '680px', overflow: 'hidden', width: '100%',
+  }}>
+    <header style={{ alignItems: 'center', display: 'flex', gap: '9px', padding: '10px 12px' }}>
+      <span aria-hidden="true" style={{ color, fontSize: '15px' }}>✦</span>
+      <strong style={{ fontSize: '12px', fontWeight: 620 }}>{title}</strong>
+    </header>
+    <div style={{ display: 'grid', gap: '1px', gridTemplateColumns: publication.images.length > 1 ? 'repeat(2, minmax(0, 1fr))' : '1fr' }}>
+      {publication.images.map((attachment, index) => <PublishedRoleplayImageAsset
+        key={String(attachment.attachmentId)} attachment={attachment}
+        alt={publication.caption ?? `角色插图 ${index + 1}`} load={load}
+      />)}
+    </div>
+  </article>
+}
+
 function GenerationTail({
-  matched, runGeneration, rewriteTurn, continueFromTurn, runImageGeneration,
+  matched, runGeneration, rewriteTurn, continueFromTurn, runImageGeneration, loadPublishedImage,
   sessionId, turn, useProjection, useSession,
 }: GenerationTailProps) {
   const projection = useProjection('agentRp') as AgentRpProjection | undefined
@@ -827,6 +895,8 @@ function GenerationTail({
   const [rewriteOpen, setRewriteOpen] = useState(false)
   const group = projection?.generations.find(candidate => candidate.anchorSeq === matched.replySeq)
   if (projection === undefined) return null
+  const selectedReplySeq = group?.selectedVersionSeq ?? matched.replySeq
+  const publishedImages = projection.publishedImages.filter(image => image.replySeq === selectedReplySeq)
   const currentReply = projection.currentReplySeq === matched.replySeq
   const sceneNote = replySceneNote(replyText)
   const selectedIndex = group?.versions.findIndex(version => version.seq === group.selectedVersionSeq) ?? 0
@@ -842,7 +912,11 @@ function GenerationTail({
     )
   }
   const disabled = running || busy !== undefined
-  return <div data-agent-rp-generation-tail style={{
+  return <>
+    {publishedImages.map(publication => <PublishedRoleplayImageCard
+      key={publication.id} publication={publication} load={loadPublishedImage}
+    />)}
+    <div data-agent-rp-generation-tail style={{
     alignItems: 'center', background: 'color-mix(in srgb, currentColor 4%, transparent)',
     border: '1px solid color-mix(in srgb, currentColor 10%, transparent)', borderRadius: '9px',
     display: 'flex', flexWrap: 'wrap', gap: '2px', marginRight: 'auto', padding: '3px',
@@ -898,7 +972,8 @@ function GenerationTail({
           },
         )
       }} />}
-  </div>
+    </div>
+  </>
 }
 
 const generationButtonStyle = {
@@ -969,6 +1044,7 @@ function roleplaySummary(summary: SessionSummary | undefined, projection: AgentR
     worldInfo: { revision: 0, activeCount: 0, tokenBudget: 4_096, approximateTokens: 0, budgetExcludedCount: 0, books: [] },
     presetLibrary: [],
     generations: [],
+    publishedImages: [],
     source: 'preset' as const,
   }
 }
@@ -1825,6 +1901,183 @@ const settingsFieldStyle = {
   minWidth: 0, padding: '8px 9px', width: '100%',
 } as const
 
+type ToolGuidanceDraft = {
+  enabled: boolean
+  includeFramework: boolean
+  includeAgentRp: boolean
+  imageMode: AgentRpSettings['toolGuidance']['imageMode']
+  custom: Array<{ id: string; enabled: boolean; text: string }>
+}
+
+function copyToolGuidance(value: AgentRpSettings['toolGuidance']): ToolGuidanceDraft {
+  return {
+    enabled: value.enabled,
+    includeFramework: value.includeFramework,
+    includeAgentRp: value.includeAgentRp,
+    imageMode: value.imageMode,
+    custom: value.custom.map(entry => ({ ...entry })),
+  }
+}
+
+function nextToolGuidanceId(entries: readonly { readonly id: string }[]): string {
+  const ids = new Set(entries.map(entry => entry.id.trim().toLowerCase()))
+  let suffix = 1
+  while (ids.has(`custom-${suffix}`)) suffix += 1
+  return `custom-${suffix}`
+}
+
+function ToolGuidanceSettingsPanel({ settings, writable, onSave }: {
+  readonly settings: AgentRpSettings
+  readonly writable: boolean
+  readonly onSave: (settings: AgentRpSettings) => void
+}) {
+  const [draft, setDraft] = useState<ToolGuidanceDraft>(() => copyToolGuidance(settings.toolGuidance))
+  useEffect(() => { setDraft(copyToolGuidance(settings.toolGuidance)) }, [settings.toolGuidance])
+  const dirty = JSON.stringify(draft) !== JSON.stringify(settings.toolGuidance)
+  const normalizedIds = draft.custom.map(entry => entry.id.trim())
+  const validationError = draft.custom.some(entry => entry.id.trim() === '')
+    ? '自定义条目的 ID 不能为空'
+    : draft.custom.some(entry => entry.text.trim() === '')
+      ? '自定义提示词不能为空'
+      : new Set(normalizedIds).size !== normalizedIds.length
+        ? '自定义条目的 ID 不能重复'
+        : undefined
+  const checkboxStyle = {
+    alignItems: 'flex-start', cursor: writable ? 'pointer' : 'default', display: 'flex', fontSize: '12px',
+    gap: '9px', lineHeight: 1.5,
+  } as const
+  const save = (): void => {
+    if (validationError !== undefined) return
+    onSave({
+      ...settings,
+      toolGuidance: {
+        ...draft,
+        custom: draft.custom.map(entry => ({ ...entry, id: entry.id.trim(), text: entry.text.trim() })),
+      },
+    })
+  }
+  return <section style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)', marginTop: '28px', paddingTop: '24px' }}>
+    <h3 style={{ fontSize: '15px', margin: 0 }}>Agent 工具与生图策略</h3>
+    <p style={{ fontSize: '12px', lineHeight: 1.65, margin: '7px 0 16px', opacity: .58 }}>
+      固定注入在角色卡或导入预设之后。保存后从下一次模型请求开始生效，当前会话无需重启。
+    </p>
+    <div style={{
+      background: 'var(--dsw-alias-bg-layer-1, #202024)',
+      border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '11px',
+      display: 'grid', gap: '13px', padding: '14px',
+    }}>
+      <label style={checkboxStyle}>
+        <input type="checkbox" checked={draft.enabled} disabled={!writable} onChange={event => {
+          setDraft(current => ({ ...current, enabled: event.target.checked }))
+        }} />
+        <span><strong style={{ display: 'block', fontWeight: 600 }}>启用固定工具指导</strong>
+          <span style={{ display: 'block', fontSize: '11px', marginTop: '2px', opacity: .58 }}>
+            关闭后不注入本区域，并禁止 Agent RP 的图片发布工具；DSH 其他工具仍按其原配置存在。
+          </span>
+        </span>
+      </label>
+      <label style={checkboxStyle}>
+        <input type="checkbox" checked={draft.includeFramework} disabled={!writable} onChange={event => {
+          setDraft(current => ({ ...current, includeFramework: event.target.checked }))
+        }} />
+        <span><strong style={{ display: 'block', fontWeight: 600 }}>注入框架工具说明</strong>
+          <span style={{ display: 'block', fontSize: '11px', marginTop: '2px', opacity: .58 }}>
+            指导 Agent 使用记忆、角色导入等框架能力；这里只控制提示词，不注销这些工具。
+          </span>
+        </span>
+      </label>
+      <label style={checkboxStyle}>
+        <input type="checkbox" checked={draft.includeAgentRp} disabled={!writable} onChange={event => {
+          setDraft(current => ({ ...current, includeAgentRp: event.target.checked }))
+        }} />
+        <span><strong style={{ display: 'block', fontWeight: 600 }}>启用 Agent RP 图片发布</strong>
+          <span style={{ display: 'block', fontSize: '11px', marginTop: '2px', opacity: .58 }}>
+            注入 publish_roleplay_image 的使用说明，并允许它把本地图片插到本轮角色回复中。
+          </span>
+        </span>
+      </label>
+      <label style={{ display: 'grid', fontSize: '12px', gap: '6px' }}>自动生图策略
+        <select value={draft.imageMode} disabled={!writable} onChange={event => {
+          setDraft(current => ({
+            ...current,
+            imageMode: event.target.value as AgentRpSettings['toolGuidance']['imageMode'],
+          }))
+        }} style={settingsFieldStyle}>
+          <option value="never">禁止生图</option>
+          <option value="auto">Agent 自行判断</option>
+          <option value="always">每个普通 RP 回合尝试生图</option>
+        </select>
+      </label>
+    </div>
+    <div style={{ alignItems: 'center', display: 'flex', gap: '10px', justifyContent: 'space-between', margin: '19px 0 9px' }}>
+      <div>
+        <h4 style={{ fontSize: '13px', margin: 0 }}>自定义工具提示词</h4>
+        <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '4px 0 0', opacity: .55 }}>
+          用于告诉 Agent 应调用哪个已配置的 MCP 工具以及如何衔接图片发布。
+        </p>
+      </div>
+      <button type="button" disabled={!writable || draft.custom.length >= 32} onClick={() => {
+        setDraft(current => ({
+          ...current,
+          custom: [...current.custom, { id: nextToolGuidanceId(current.custom), enabled: true, text: '' }],
+        }))
+      }} style={secondaryButtonStyle}>添加条目</button>
+    </div>
+    <div style={{ display: 'grid', gap: '10px' }}>
+      {draft.custom.length === 0 && <p style={{
+        border: '1px dashed var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '10px',
+        fontSize: '12px', margin: 0, opacity: .55, padding: '16px', textAlign: 'center',
+      }}>没有自定义工具提示词</p>}
+      {draft.custom.map((entry, index) => <div key={index} style={{
+        border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '10px', padding: '12px',
+      }}>
+        <div style={{ alignItems: 'end', display: 'grid', gap: '9px', gridTemplateColumns: 'auto minmax(0, 1fr) auto' }}>
+          <label style={{ ...checkboxStyle, alignItems: 'center', paddingBottom: '8px' }}>
+            <input type="checkbox" checked={entry.enabled} disabled={!writable} aria-label={`启用自定义提示词 ${index + 1}`}
+              onChange={event => {
+                setDraft(current => ({ ...current, custom: current.custom.map((item, itemIndex) => itemIndex === index
+                  ? { ...item, enabled: event.target.checked } : item) }))
+              }} />启用
+          </label>
+          <label style={{ display: 'grid', fontSize: '11px', gap: '5px' }}>条目 ID
+            <input value={entry.id} maxLength={80} disabled={!writable} placeholder="例如 comfy-cloud-saved-workflow"
+              aria-label={`自定义提示词 ${index + 1} ID`} onChange={event => {
+                setDraft(current => ({ ...current, custom: current.custom.map((item, itemIndex) => itemIndex === index
+                  ? { ...item, id: event.target.value } : item) }))
+              }} style={settingsFieldStyle} />
+          </label>
+          <button type="button" disabled={!writable} aria-label={`删除自定义提示词 ${index + 1}`} onClick={() => {
+            setDraft(current => ({ ...current, custom: current.custom.filter((_item, itemIndex) => itemIndex !== index) }))
+          }} style={secondaryButtonStyle}>删除</button>
+        </div>
+        <label style={{ display: 'grid', fontSize: '11px', gap: '5px', marginTop: '10px' }}>提示词内容
+          <textarea value={entry.text} maxLength={12_000} rows={8} disabled={!writable} spellCheck={false}
+            aria-label={`自定义提示词 ${index + 1} 内容`} onChange={event => {
+              setDraft(current => ({ ...current, custom: current.custom.map((item, itemIndex) => itemIndex === index
+                ? { ...item, text: event.target.value } : item) }))
+            }} style={{ ...settingsFieldStyle, lineHeight: 1.55, resize: 'vertical' }} />
+        </label>
+      </div>)}
+    </div>
+    <p style={{ fontSize: '11px', lineHeight: 1.6, margin: '10px 0 0', opacity: .55 }}>
+      默认已预制 Comfy Cloud 的 image_z_image_turbo 流程；参数必须以工具当时暴露的 schema 为准。
+    </p>
+    {validationError !== undefined && <p role="alert" style={{
+      color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', margin: '10px 0 0',
+    }}>{validationError}</p>}
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'flex-end', marginTop: '14px' }}>
+      <button type="button" disabled={!writable} onClick={() => {
+        setDraft(copyToolGuidance(DEFAULT_AGENT_RP_SETTINGS.toolGuidance))
+      }} style={secondaryButtonStyle}>恢复默认模板</button>
+      {dirty && <button type="button" disabled={!writable} onClick={() => {
+        setDraft(copyToolGuidance(settings.toolGuidance))
+      }} style={secondaryButtonStyle}>撤销未保存修改</button>}
+      <button type="button" disabled={!writable || !dirty || validationError !== undefined}
+        onClick={save} style={primaryButtonStyle}>保存工具设置</button>
+    </div>
+  </section>
+}
+
 function nextImageProfileName(profiles: readonly ImageGenerationProfile[], provider: ImageGenerationSettings['provider']): string {
   const base = provider === 'openai' ? 'OpenAI 配置' : provider === 'novelai' ? 'NovelAI 配置'
     : provider === 'a1111' ? 'A1111 配置' : 'ComfyUI 配置'
@@ -2259,6 +2512,7 @@ function WorkspaceSettingsSection({
         尚未选择工作区，新的角色入口会暂时隐藏
       </p>}
     </div>}
+    <ToolGuidanceSettingsPanel settings={settings} writable={writable} onSave={write} />
     <ImageGenerationSettingsPanel settings={settings} writable={writable} onSave={write} />
     {snapshot.status === 'loading' && <p role="status" style={{ fontSize: '12px', marginTop: '14px', opacity: .55 }}>正在读取设置…</p>}
     {snapshot.status === 'error' && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '14px' }}>{snapshot.error}</p>}
@@ -2519,6 +2773,7 @@ function RoleplayHeader({
     ? undefined
     : compileCardFrameDocument(statusHtml, {
         origin: window.location.origin,
+        textColor: getComputedStyle(document.body).color,
         statData: projection.mvu.statData,
         ...(characterDetail === undefined ? {} : { character: characterDetail }),
       })
@@ -7714,7 +7969,7 @@ export function apply(ctx: ClientContext): void {
       return closing === null || closing === undefined ? null : { replySeq: closing.finalNode.seq }
     },
   }, props => <GenerationTail {...props} runGeneration={runGeneration} rewriteTurn={rewriteTurn}
-    continueFromTurn={continueFromTurn} runImageGeneration={runImageGeneration} />))
+    continueFromTurn={continueFromTurn} runImageGeneration={runImageGeneration} loadPublishedImage={loadAvatar} />))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
   }, roleplayComposerDockComponent(

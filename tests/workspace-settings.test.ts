@@ -35,6 +35,42 @@ test('normalizes duplicate workspace ids and rejects malformed settings', () => 
   assert.throws(() => normalizeAgentRpSettings({ workspaceMode: 'selected', workspaceIds: [1] }))
 })
 
+test('adds default Comfy Cloud tool guidance to older settings documents', () => {
+  const settings = normalizeAgentRpSettings({ workspaceMode: 'all', workspaceIds: [] })
+  assert.equal(settings.toolGuidance.enabled, true)
+  assert.equal(settings.toolGuidance.imageMode, 'auto')
+  assert.equal(settings.toolGuidance.custom[0]?.id, 'comfy-cloud-saved-workflow')
+  assert.match(settings.toolGuidance.custom[0]?.text ?? '', /run_saved_workflow/u)
+})
+
+test('normalizes editable tool guidance and rejects ambiguous entries', () => {
+  const settings = normalizeAgentRpSettings({
+    workspaceMode: 'all',
+    workspaceIds: [],
+    toolGuidance: {
+      enabled: true,
+      includeFramework: false,
+      includeAgentRp: true,
+      imageMode: 'always',
+      custom: [{ id: ' local-comfy ', enabled: true, text: ' use_image_tool ' }],
+    },
+  })
+  assert.deepEqual(settings.toolGuidance, {
+    enabled: true,
+    includeFramework: false,
+    includeAgentRp: true,
+    imageMode: 'always',
+    custom: [{ id: 'local-comfy', enabled: true, text: 'use_image_tool' }],
+  })
+  assert.throws(() => normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [],
+    toolGuidance: { custom: [{ id: 'duplicate', text: 'one' }, { id: 'duplicate', text: 'two' }] },
+  }), /unique/u)
+  assert.throws(() => normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [], toolGuidance: { imageMode: 'sometimes' },
+  }), /imageMode/u)
+})
+
 test('adopts existing single image settings as the default profile', () => {
   const imageGeneration = {
     ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,
@@ -136,4 +172,23 @@ test('persists workspace settings outside the DSH settings allowlist', (t) => {
     ...DEFAULT_AGENT_RP_SETTINGS, workspaceMode: 'selected', workspaceIds: ['workspace-a'],
   })
   assert.match(readFileSync(path, 'utf8'), /"format": 0/u)
+})
+
+test('persists WebUI tool guidance for the character runtime', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-rp-tool-guidance-settings-'))
+  t.after(() => { rmSync(root, { recursive: true, force: true }) })
+  const path = join(root, 'settings.json')
+  const store = new WorkspaceSettingsStore({ path })
+  const saved = store.set({
+    ...DEFAULT_AGENT_RP_SETTINGS,
+    toolGuidance: {
+      enabled: true,
+      includeFramework: true,
+      includeAgentRp: true,
+      imageMode: 'never',
+      custom: [{ id: 'mcp-image', enabled: true, text: 'Call the configured MCP image tool.' }],
+    },
+  })
+  assert.equal(saved.toolGuidance.imageMode, 'never')
+  assert.deepEqual(new WorkspaceSettingsStore({ path }).get().toolGuidance, saved.toolGuidance)
 })

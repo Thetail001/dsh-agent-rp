@@ -1,6 +1,11 @@
 /** Workspace preferences for new Agent RP entry points. */
 
 import type { ImageGenerationProvider } from './image-generation-protocol.ts'
+import {
+  DEFAULT_TOOL_GUIDANCE,
+  normalizeToolGuidanceConfig,
+  type ResolvedToolGuidanceConfig,
+} from './config.ts'
 
 /** Same-origin Host route for Agent RP workspace preferences. */
 export const AGENT_RP_WORKSPACE_SETTINGS_PATH = '/api/agent-rp/settings'
@@ -81,6 +86,8 @@ export interface AgentRpSettings {
   readonly activeImageProfileId: string
   /** Reusable image provider configurations; credentials remain in the Host credential store. */
   readonly imageProfiles: ImageGenerationProfile[]
+  /** Prompt behavior and Agent RP publication controls edited by the WebUI. */
+  readonly toolGuidance: ResolvedToolGuidanceConfig
 }
 
 const DEFAULT_IMAGE_PROFILE_ID = 'default'
@@ -136,6 +143,10 @@ export const DEFAULT_AGENT_RP_SETTINGS: AgentRpSettings = {
     name: '默认配置',
     settings: DEFAULT_IMAGE_GENERATION_SETTINGS,
   }],
+  toolGuidance: {
+    ...DEFAULT_TOOL_GUIDANCE,
+    custom: DEFAULT_TOOL_GUIDANCE.custom.map(entry => ({ ...entry })),
+  },
 }
 
 function text(value: unknown, fallback: string, max: number, label: string): string {
@@ -265,6 +276,7 @@ export function normalizeAgentRpSettings(value: unknown): AgentRpSettings {
     throw new Error('Agent RP 工作区设置字段无效')
   }
   const imageGeneration = normalizeImageGenerationSettings(record.imageGeneration)
+  const toolGuidance = normalizeToolGuidanceConfig(record.toolGuidance)
   let imageProfiles: ImageGenerationProfile[]
   let activeImageProfileId: string
   if (record.imageProfiles === undefined) {
@@ -304,6 +316,7 @@ export function normalizeAgentRpSettings(value: unknown): AgentRpSettings {
     imageGeneration: activeImageGeneration,
     activeImageProfileId,
     imageProfiles,
+    toolGuidance,
   }
 }
 

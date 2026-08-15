@@ -27,6 +27,7 @@ export interface CompiledCardFrames {
 /** Inputs that vary with the active Session and local browser origin. */
 export interface CardFrameCompileOptions {
   readonly origin: string
+  readonly textColor?: string
   readonly statData?: JsonValue
   readonly character?: CharacterLibraryDetail
 }
@@ -85,7 +86,8 @@ function cardFrameSource(source: string, options: CardFrameCompileOptions): stri
     ...(options.character?.displayExtensions.filter(extension => extension.enabled)
       .flatMap(extension => extension.remoteImageOrigins) ?? []),
   ])].map(origin => origin.replace(/["'<>\s]/gu, '')).filter(Boolean).join(' ')
-  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigins}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<script>${mvuFrameRuntime(options.statData)}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}addEventListener('message',function(event){var message=event.data;if(message&&message.source==='dsh-agent-rp-host'&&message.action==='request-resize')requestAnimationFrame(__dshReportSize)});addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>`
+  const textColor = (options.textColor ?? 'rgb(242, 238, 232)').replace(/[<>&"']/gu, '')
+  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigins}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<style>body{color:${textColor}}</style><script>${mvuFrameRuntime(options.statData)}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var viewport=Math.max(0,window.innerHeight||0);var overflow=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);var contentBottom=0;if(body){for(var child of body.children){if(child.hidden||child.tagName==='SCRIPT'||child.tagName==='STYLE'||getComputedStyle(child).position==='fixed')continue;var rect=child.getBoundingClientRect();contentBottom=Math.max(contentBottom,rect.bottom+window.scrollY)}var marginBottom=parseFloat(getComputedStyle(body).marginBottom);if(Number.isFinite(marginBottom))contentBottom+=marginBottom}var value=Math.max(contentBottom,overflow>viewport+1?overflow:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}addEventListener('message',function(event){var message=event.data;if(message&&message.source==='dsh-agent-rp-host'&&message.action==='request-resize')requestAnimationFrame(__dshReportSize)});addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>`
   if (/<head(?:\s|>)/iu.test(adapted)) return adapted.replace(/<head([^>]*)>/iu, `<head$1>${head}`)
   if (/<html(?:\s|>)/iu.test(adapted)) return adapted.replace(/<html([^>]*)>/iu, `<html$1><head>${head}</head>`)
   return `<!doctype html><html><head>${head}</head><body>${adapted}</body></html>`
@@ -101,8 +103,15 @@ function inlineCardFrameSource(source: string, options: CardFrameCompileOptions)
   readonly diagnostics: readonly CardDisplayDiagnostic[]
 } {
   const legacy = normalizeLegacyCardHtml(source)
-  const markdown = marked.parse(legacy.source, { async: false, breaks: true, gfm: true }) as string
-  const sanitized = DOMPurify.sanitize(markdown, {
+  let markup = legacy.source
+  if (!/^\s*</u.test(markup)) {
+    try {
+      markup = marked.parse(markup, { async: false, breaks: true, gfm: true }) as string
+    } catch {
+      // Sanitization and iframe isolation still run on the original source.
+    }
+  }
+  const sanitized = DOMPurify.sanitize(markup, {
     ADD_TAGS: ['style'],
     FORBID_ATTR: ['srcdoc'],
     FORBID_TAGS: ['base', 'embed', 'form', 'iframe', 'link', 'meta', 'object', 'script'],
