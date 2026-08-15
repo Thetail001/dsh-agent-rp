@@ -2,7 +2,7 @@
 
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
-import { parseCharacterCardJson } from './import/character-card.ts'
+import { parseCharacterCardValue } from './import/character-card.ts'
 import { decodeCharacterLibraryLaunch, type CharacterImportMeta, type CharacterLibraryLaunchRecord } from './import/session-character.ts'
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import { parseWorldInfoImportMeta, type WorldInfoImportMeta } from './import/session-world-info.ts'
@@ -22,7 +22,7 @@ import { parseSessionPersona } from './session-persona.ts'
 import { decodeGenerationState, type GenerationStateRecord } from './generation.ts'
 import { inspectLorebooks } from './import/lorebook.ts'
 import { EjsTemplateEngine } from './ejs-template.ts'
-import type { ImportedWorldInfo } from './import/types.ts'
+import type { ImportedCharacterCard, ImportedWorldInfo } from './import/types.ts'
 import {
   configuredLorebook,
   decodeWorldInfoConfiguration,
@@ -126,8 +126,8 @@ function jsonObject(value: JsonValue | undefined): Record<string, JsonValue> | u
 function cardProjection(
   previous: AgentRpProjectionState['character'],
   meta: CharacterImportMeta,
+  card: ImportedCharacterCard,
 ): { readonly character: AgentRpProjectionState['character']; readonly lorebookEntries: number } {
-  const card = parseCharacterCardJson(JSON.stringify(meta.raw))
   const result = meta.result
   return {
     character: {
@@ -164,8 +164,7 @@ function mvuAfterTavernMutation(
   }
 }
 
-function cardLorebookSource(meta: CharacterImportMeta): SessionLorebookSource | undefined {
-  const card = parseCharacterCardJson(JSON.stringify(meta.raw))
+function cardLorebookSource(meta: CharacterImportMeta, card: ImportedCharacterCard): SessionLorebookSource | undefined {
   if (card.lorebook === undefined) return undefined
   return {
     id: `character:${meta.result.sourceAttachmentId}`,
@@ -714,10 +713,10 @@ export function createAgentRpProjectionDefinition(
           },
         }
         if (launch === undefined) return withChat
-        const projected = cardProjection(withChat.character, launch.meta)
+        const card = parseCharacterCardValue(launch.meta.raw)
+        const projected = cardProjection(withChat.character, launch.meta, card)
         const { avatarAttachmentId: _avatarAttachmentId, ...libraryCharacter } = projected.character
-        const card = parseCharacterCardJson(JSON.stringify(launch.meta.raw))
-        const cardLorebook = cardLorebookSource(launch.meta)
+        const cardLorebook = cardLorebookSource(launch.meta, card)
         const { cardLorebook: _previousLorebook, ...withoutCardLorebook } = withChat
         return {
           ...withoutCardLorebook,
@@ -734,12 +733,12 @@ export function createAgentRpProjectionDefinition(
       }
     }
     if (event.type === 'agent-rp/character-card-seed') {
-      const projected = cardProjection(withSurface.character, event.data.meta)
+      const card = parseCharacterCardValue(event.data.meta.raw)
+      const projected = cardProjection(withSurface.character, event.data.meta, card)
       const libraryId = 'characterLibraryId' in event.data.source
         ? event.data.source.characterLibraryId
         : undefined
-      const card = parseCharacterCardJson(JSON.stringify(event.data.meta.raw))
-      const cardLorebook = cardLorebookSource(event.data.meta)
+      const cardLorebook = cardLorebookSource(event.data.meta, card)
       const { cardLorebook: _previousLorebook, ...withoutCardLorebook } = withSurface
       return {
         ...withoutCardLorebook,
@@ -760,10 +759,10 @@ export function createAgentRpProjectionDefinition(
         return withSurface
       }
       if (launch !== undefined) {
-        const projected = cardProjection(withSurface.character, launch.meta)
+        const card = parseCharacterCardValue(launch.meta.raw)
+        const projected = cardProjection(withSurface.character, launch.meta, card)
         const { avatarAttachmentId: _avatarAttachmentId, ...libraryCharacter } = projected.character
-        const card = parseCharacterCardJson(JSON.stringify(launch.meta.raw))
-        const cardLorebook = cardLorebookSource(launch.meta)
+        const cardLorebook = cardLorebookSource(launch.meta, card)
         const { cardLorebook: _previousLorebook, ...withoutCardLorebook } = withSurface
         return {
           ...withoutCardLorebook,
@@ -939,9 +938,9 @@ export function createAgentRpProjectionDefinition(
     if (kind === 'character-card') {
       const meta = parseCharacterMeta(event.data.meta)
       if (meta === undefined) return { ...withSurface, calls }
-      const projected = cardProjection(withSurface.character, meta)
-      const card = parseCharacterCardJson(JSON.stringify(meta.raw))
-      const cardLorebook = cardLorebookSource(meta)
+      const card = parseCharacterCardValue(meta.raw)
+      const projected = cardProjection(withSurface.character, meta, card)
+      const cardLorebook = cardLorebookSource(meta, card)
       const { cardLorebook: _previousLorebook, ...withoutCardLorebook } = withSurface
       return {
         ...withoutCardLorebook,

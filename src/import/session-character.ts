@@ -2,7 +2,7 @@
 
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
-import { parseCharacterCardJson } from './character-card.ts'
+import { parseCharacterCardValue } from './character-card.ts'
 import { CHARACTER_IMPORT_DEGRADATIONS } from './types.ts'
 import type { CharacterCardPngPayload, CharacterImportDegradation, ImportedCharacterCard } from './types.ts'
 import type { SessionPersonaSnapshot } from '../persona-library-protocol.ts'
@@ -74,7 +74,7 @@ export interface CharacterLibraryLaunchRecord {
 
 /** Reconstruct the normalized active card from its preserved JSON. */
 export function cardFromImportMeta(meta: CharacterImportMeta): ImportedCharacterCard {
-  return parseCharacterCardJson(JSON.stringify(meta.raw))
+  return parseCharacterCardValue(meta.raw)
 }
 
 function jsonObject(value: JsonValue | undefined, label: string): Record<string, JsonValue> {
@@ -213,7 +213,7 @@ function sourceAttachments(events: readonly SessionEvent[], sourceEventSeq: numb
 function validateImport(events: readonly SessionEvent[], resultEvent: SessionEvent<'tool/result'>): ActiveSessionCharacter {
   const meta = parseCharacterImportMeta(resultEvent.data.meta)
   const result = meta.result
-  const card = parseCharacterCardJson(JSON.stringify(meta.raw))
+  const card = parseCharacterCardValue(meta.raw)
   const call = resultEvent.sourceEventSeqs?.length === 1 ? events[resultEvent.sourceEventSeqs[0]!] : undefined
   if (call?.type !== 'tool/call' || call.data.name !== 'import_character_card'
     || call.seq >= resultEvent.seq
@@ -272,7 +272,7 @@ export function readActiveSessionCharacter(events: readonly SessionEvent[]): Act
     if (event.type === 'agent-rp/character-card-seed') {
       const meta = parseCharacterImportMeta(event.data.meta as unknown as JsonValue)
       const result = meta.result
-      const card = parseCharacterCardJson(JSON.stringify(meta.raw))
+      const card = parseCharacterCardValue(meta.raw)
       const expectedGreeting = [card.firstMessage, ...card.alternateGreetings][result.greetingIndex]
       const libraryId = 'characterLibraryId' in event.data.source
         ? event.data.source.characterLibraryId
@@ -307,7 +307,7 @@ export function readActiveSessionCharacter(events: readonly SessionEvent[]): Act
           || source.seq >= event.seq || String(source.data.commandId) !== String(event.data.commandId)) {
           throw new Error('角色库启动结果没有对应的命令来源')
         }
-        const card = parseCharacterCardJson(JSON.stringify(launch.meta.raw))
+        const card = parseCharacterCardValue(launch.meta.raw)
         const expectedGreeting = [card.firstMessage, ...card.alternateGreetings][launch.meta.result.greetingIndex]
         if (launch.meta.result.name !== card.name || launch.meta.result.cardVersion !== card.version
           || launch.meta.result.selectedGreeting !== expectedGreeting

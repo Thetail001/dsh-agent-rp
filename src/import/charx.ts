@@ -1,11 +1,11 @@
 /** Bounded Character Card V3 CHARX archive parsing. */
 
 import { unzipSync, type UnzipFileInfo } from 'fflate'
-import { parseCharacterCardJsonBytes } from './character-card.ts'
+import { MAX_CHARACTER_CARD_FILE_BYTES, parseCharacterCardJsonBytes } from './character-card.ts'
 import type { ImportedCharacterCard } from './types.ts'
 
 /** Largest compressed CHARX file accepted by the importer. */
-export const MAX_CHARX_BYTES = 64 * 1024 * 1024
+export const MAX_CHARX_BYTES = MAX_CHARACTER_CARD_FILE_BYTES
 /** Largest total uncompressed payload accepted from one CHARX archive. */
 export const MAX_CHARX_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
 /** Largest entry count accepted from one CHARX archive. */

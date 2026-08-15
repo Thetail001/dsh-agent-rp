@@ -140,13 +140,12 @@ export function prepareAgentRpSession(
     if (resolved.detail.archived) throw new Error('请先恢复这个角色，再开始对话')
     const selectedGreeting = resolved.detail.greetings[request.greetingIndex]
     if (selectedGreeting === undefined) throw new Error(`角色卡没有第 ${request.greetingIndex + 1} 条开场白`)
-    const asset = characters.asset(request.characterId)
     const source = libraryAttachment(
       request.characterId,
       resolved.transport.transport,
-      asset.data.byteLength,
-      asset.originalFilename,
-      asset.mediaType,
+      resolved.source.bytes,
+      resolved.source.originalFilename,
+      resolved.source.mediaType,
     )
     const userName = request.persona?.name
     const characterSeed = createCharacterCardSessionSeed(
@@ -175,13 +174,12 @@ export function prepareAgentRpSession(
   }
   const character = characters.resolve(request.characterId)
   if (character.detail.archived) throw new Error('请先恢复这个角色，再迁移聊天记录')
-  const asset = characters.asset(request.characterId)
   const source = libraryAttachment(
     request.characterId,
     character.transport.transport,
-    asset.data.byteLength,
-    asset.originalFilename,
-    asset.mediaType,
+    character.source.bytes,
+    character.source.originalFilename,
+    character.source.mediaType,
   )
   const migrationSeed = createSillyTavernMigrationSeed(
       character.card,

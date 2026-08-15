@@ -3,7 +3,7 @@
 import { Buffer } from 'node:buffer'
 import extractChunks from 'png-chunks-extract'
 import { decode as decodeTextChunk } from 'png-chunk-text'
-import { MAX_CHARACTER_CARD_JSON_BYTES } from './character-card.ts'
+import { assertCharacterCardJsonSize } from './character-card.ts'
 import type { CharacterCardPngPayload } from './types.ts'
 
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
@@ -32,9 +32,7 @@ function decodeBase64(value: string, keyword: string): string {
     throw new Error(`${keyword} PNG metadata is not canonical base64`)
   }
   const bytes = Buffer.from(value, 'base64')
-  if (bytes.byteLength > MAX_CHARACTER_CARD_JSON_BYTES) {
-    throw new Error(`decoded ${keyword} card exceeds ${MAX_CHARACTER_CARD_JSON_BYTES} bytes`)
-  }
+  assertCharacterCardJsonSize(bytes.byteLength)
   if (bytes.toString('base64') !== value) throw new Error(`${keyword} PNG metadata is not canonical base64`)
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes)

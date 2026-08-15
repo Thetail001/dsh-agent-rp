@@ -76,6 +76,8 @@ dsh-agent-rp --port 3080
 
 更具体的格式支持与降级方式见 [SillyTavern 兼容说明](docs/sillytavern-compatibility.md)。
 
+需要比较大型卡片改动时，可运行不含社区卡片内容的 [合成兼容基准](docs/compatibility-benchmark.md)。
+
 ## 反馈与贡献
 
 如果一张卡片的纯文本部分、世界书、预设或轻前端在 DSH 中表现不对，欢迎提交 Issue。请说明卡片格式、预期表现、实际表现与最小复现步骤；不要上传无权公开的角色卡、私有社区内容、Token 或完整 Session Log。

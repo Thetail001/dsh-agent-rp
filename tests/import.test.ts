@@ -4,7 +4,11 @@ import { Buffer } from 'node:buffer'
 import { readFileSync } from 'node:fs'
 import { deflateSync } from 'node:zlib'
 import { encode as encodeTextChunk } from 'png-chunk-text'
-import { parseCharacterCardJson, parseCharacterCardJsonBytes } from '../src/import/character-card.ts'
+import {
+  MAX_CHARACTER_CARD_JSON_BYTES,
+  parseCharacterCardJson,
+  parseCharacterCardJsonBytes,
+} from '../src/import/character-card.ts'
 import { activateLorebook } from '../src/import/lorebook.ts'
 import { readCharacterCardPng } from '../src/import/png.ts'
 
@@ -326,6 +330,10 @@ test('imports standalone UTF-8 JSON bytes and rejects invalid encoding', () => {
 
   assert.equal(parseCharacterCardJsonBytes(Buffer.from(`\uFEFF${json}`, 'utf8')).name, '白露')
   assert.throws(() => parseCharacterCardJsonBytes(Uint8Array.from([0xc3, 0x28])), /valid UTF-8/u)
+  assert.throws(
+    () => parseCharacterCardJsonBytes(new Uint8Array(MAX_CHARACTER_CARD_JSON_BYTES + 1)),
+    /角色卡定义内容过大.*8 MiB/u,
+  )
 })
 
 test('keeps the manual standalone JSON card fixture importable', () => {

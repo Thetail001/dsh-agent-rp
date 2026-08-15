@@ -6,7 +6,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { CharacterLibrary } from './character-library.ts'
 import { CHARACTER_LIBRARY_PATH } from './character-library-protocol.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
-import { MAX_CHARX_BYTES } from './import/charx.ts'
+import { MAX_CHARACTER_CARD_FILE_BYTES } from './import/character-card.ts'
 
 function trustedBrowserRequest(request: IncomingMessage, sandboxedImage: boolean): boolean {
   const host = request.headers.host
@@ -41,13 +41,13 @@ function fail(response: ServerResponse, status: number, message: string): void {
 
 async function readUpload(request: IncomingMessage): Promise<Uint8Array> {
   const declared = Number(request.headers['content-length'])
-  if (Number.isFinite(declared) && declared > MAX_CHARX_BYTES) throw new Error('角色卡文件过大')
+  if (Number.isFinite(declared) && declared > MAX_CHARACTER_CARD_FILE_BYTES) throw new Error('角色卡文件过大')
   const chunks: Buffer[] = []
   let bytes = 0
   for await (const chunk of request) {
     const data = Buffer.from(chunk as Uint8Array)
     bytes += data.byteLength
-    if (bytes > MAX_CHARX_BYTES) throw new Error('角色卡文件过大')
+    if (bytes > MAX_CHARACTER_CARD_FILE_BYTES) throw new Error('角色卡文件过大')
     chunks.push(data)
   }
   if (bytes === 0) throw new Error('角色卡文件为空')

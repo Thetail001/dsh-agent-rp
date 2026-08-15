@@ -28,7 +28,7 @@ import {
 } from './memory.ts'
 import { executeAgentRpMemoryCommand } from './memory-command.ts'
 import { installAgentRpMemoryHttp } from './memory-http.ts'
-import { parseCharacterCardJson, parseCharacterCardJsonBytes } from './import/character-card.ts'
+import { parseCharacterCardJson, parseCharacterCardJsonBytes, parseCharacterCardValue } from './import/character-card.ts'
 import { parseCharx } from './import/charx.ts'
 import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
 import { readCharacterCardPng } from './import/png.ts'
@@ -978,7 +978,7 @@ export function installAgentRp(
             ? '角色卡没有开场白；直接以新角色自然回应。'
             : `立即以新角色发送这段开场白，不解释导入过程：\n${substituteCardMacros(
               value.selectedGreeting,
-              parseCharacterCardJson(JSON.stringify(value.raw)),
+              parseCharacterCardValue(value.raw),
               value.userName,
             )}`,
           value.degradations.length === 0 ? '未发现需要降级的能力。' : `未启用：${value.degradations.join('、')}`,

@@ -39,6 +39,7 @@ test('keeps one exact reusable Character Card asset with selectable greetings', 
   }).outcome, 'existing')
 
   assert.equal(duplicate.id, first.id)
+  assert.equal(JSON.parse(readFileSync(join(root, `${first.id}.meta.json`), 'utf8')).index.format, 0)
   assert.deepEqual(library.list(), [{
     id: first.id,
     name: '白露',

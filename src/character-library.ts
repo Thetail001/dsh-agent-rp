@@ -8,17 +8,18 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { CharacterImportTransport } from './import/session-character.ts'
-import type { ImportedCharacterCard, ImportedRegexScript } from './import/types.ts'
-import { parseCharacterCardJson, parseCharacterCardJsonBytes } from './import/character-card.ts'
+import type { ImportedCharacterCard, ImportedRegexScript, TavernHelperImportSummary } from './import/types.ts'
+import { parseCharacterCardJson, parseCharacterCardJsonBytes, parseCharacterCardValue } from './import/character-card.ts'
 import { parseRegexScript } from './import/regex-script.ts'
 import { readCharacterCardPng } from './import/png.ts'
-import { charxAvatar, charxImageAssets, parseCharx } from './import/charx.ts'
+import { charxImageAssets, parseCharx } from './import/charx.ts'
 import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay, summarizeCharacterRegexScript } from './frontend-regex.ts'
 import type {
   CharacterLibraryDetail, CharacterLibraryDisplayExtension, CharacterLibraryImage, CharacterLibraryImportResult,
@@ -42,6 +43,20 @@ interface StoredCharacterMetadata {
   readonly createdAt: number
   readonly updatedAt: number
   readonly archivedAt?: number
+  readonly index?: StoredCharacterIndex
+}
+
+interface StoredCharacterIndex {
+  readonly format: 0
+  readonly name: string
+  readonly displayName: string
+  readonly cardVersion: 1 | 2 | 3
+  readonly greetingCount: number
+  readonly worldInfoCount: number
+  readonly regexScriptCount: number
+  readonly avatarAvailable: boolean
+  readonly imageAssetCount: number
+  readonly tavernHelper?: TavernHelperImportSummary
 }
 
 interface StoredTextReplacement {
@@ -106,6 +121,11 @@ export interface ResolvedCharacterLibraryEntry {
   readonly detail: CharacterLibraryDetail
   readonly card: ImportedCharacterCard
   readonly transport: CharacterImportTransport
+  readonly source: {
+    readonly bytes: number
+    readonly originalFilename: string
+    readonly mediaType: string
+  }
 }
 
 export interface CharacterLibraryAvatar {
@@ -120,6 +140,52 @@ export interface CharacterLibraryImageAsset extends CharacterLibraryImage {
 function object(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${label} must be an object`)
   return value as Record<string, unknown>
+}
+
+function nonNegativeInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new Error(`${label} must be a non-negative integer`)
+  return value
+}
+
+function parseTavernHelperSummary(value: unknown): TavernHelperImportSummary | undefined {
+  if (value === undefined) return undefined
+  const summary = object(value, 'character library index Tavern Helper summary')
+  if (summary.format !== 'object' && summary.format !== 'entries') {
+    throw new Error('character library index Tavern Helper format is invalid')
+  }
+  const expectedScriptCount = summary.expectedScriptCount === undefined
+    ? undefined
+    : nonNegativeInteger(summary.expectedScriptCount, 'character library index expected script count')
+  return {
+    format: summary.format,
+    scriptCount: nonNegativeInteger(summary.scriptCount, 'character library index script count'),
+    enabledScriptCount: nonNegativeInteger(summary.enabledScriptCount, 'character library index enabled script count'),
+    variableCount: nonNegativeInteger(summary.variableCount, 'character library index variable count'),
+    ignoredFieldCount: nonNegativeInteger(summary.ignoredFieldCount, 'character library index ignored field count'),
+    ...(expectedScriptCount === undefined ? {} : { expectedScriptCount }),
+  }
+}
+
+function parseStoredIndex(value: unknown): StoredCharacterIndex {
+  const index = object(value, 'character library index')
+  if (index.format !== 0 || typeof index.name !== 'string' || typeof index.displayName !== 'string'
+    || (index.cardVersion !== 1 && index.cardVersion !== 2 && index.cardVersion !== 3)
+    || typeof index.avatarAvailable !== 'boolean') {
+    throw new Error('character library index has invalid fields')
+  }
+  const tavernHelper = parseTavernHelperSummary(index.tavernHelper)
+  return {
+    format: 0,
+    name: index.name,
+    displayName: index.displayName,
+    cardVersion: index.cardVersion,
+    greetingCount: nonNegativeInteger(index.greetingCount, 'character library index greeting count'),
+    worldInfoCount: nonNegativeInteger(index.worldInfoCount, 'character library index World Info count'),
+    regexScriptCount: nonNegativeInteger(index.regexScriptCount, 'character library index regex count'),
+    avatarAvailable: index.avatarAvailable,
+    imageAssetCount: nonNegativeInteger(index.imageAssetCount, 'character library index image count'),
+    ...(tavernHelper === undefined ? {} : { tavernHelper }),
+  }
 }
 
 function parseMetadata(value: unknown): StoredCharacterMetadata {
@@ -137,7 +203,8 @@ function parseMetadata(value: unknown): StoredCharacterMetadata {
       && (typeof meta.archivedAt !== 'number' || !Number.isSafeInteger(meta.archivedAt) || meta.archivedAt < 0))) {
     throw new Error('character library metadata has invalid fields')
   }
-  return meta as unknown as StoredCharacterMetadata
+  const index = meta.index === undefined ? undefined : parseStoredIndex(meta.index)
+  return { ...(meta as unknown as StoredCharacterMetadata), ...(index === undefined ? {} : { index }) }
 }
 
 function safeHttpsOrigin(value: string, label: string): string {
@@ -258,6 +325,8 @@ function scriptJson(script: ImportedRegexScript): Record<string, unknown> {
 }
 
 function applyOverlay(card: ImportedCharacterCard, overlay: StoredCharacterOverlay): ImportedCharacterCard {
+  const enabled = overlay.displayExtensions.filter(extension => extension.enabled)
+  if (overlay.textReplacements.length === 0 && enabled.length === 0) return card
   let raw: unknown = structuredClone(card.raw)
   for (const replacement of overlay.textReplacements) {
     const state = { matches: 0 }
@@ -266,7 +335,6 @@ function applyOverlay(card: ImportedCharacterCard, overlay: StoredCharacterOverl
       throw new Error('character library local text correction no longer matches its source')
     }
   }
-  const enabled = overlay.displayExtensions.filter(extension => extension.enabled)
   if (enabled.length > 0) {
     const data = cardData(raw)
     const extensions = data.extensions === undefined ? {} : object(data.extensions, 'character card overlay extensions')
@@ -281,7 +349,7 @@ function applyOverlay(card: ImportedCharacterCard, overlay: StoredCharacterOverl
     ]
     data.extensions = extensions
   }
-  return parseCharacterCardJson(JSON.stringify(raw))
+  return parseCharacterCardValue(raw as JsonValue)
 }
 
 function safeFilename(value: string | undefined, transport: 'png' | 'json' | 'charx'): string {
@@ -308,6 +376,41 @@ function summary(
     avatarAvailable,
     imageAssetCount,
     ...(card.frontend.tavernHelper === undefined ? {} : { tavernHelper: card.frontend.tavernHelper }),
+    archived: meta.archivedAt !== undefined,
+    transport: meta.transport,
+    importedAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
+  }
+}
+
+function storedIndex(value: CharacterLibrarySummary): StoredCharacterIndex {
+  return {
+    format: 0,
+    name: value.name,
+    displayName: value.displayName,
+    cardVersion: value.cardVersion,
+    greetingCount: value.greetingCount,
+    worldInfoCount: value.worldInfoCount,
+    regexScriptCount: value.regexScriptCount,
+    avatarAvailable: value.avatarAvailable,
+    imageAssetCount: value.imageAssetCount,
+    ...(value.tavernHelper === undefined ? {} : { tavernHelper: value.tavernHelper }),
+  }
+}
+
+function indexedSummary(meta: StoredCharacterMetadata, index: StoredCharacterIndex): CharacterLibrarySummary {
+  return {
+    id: meta.id,
+    name: index.name,
+    displayName: index.displayName,
+    originalFilename: meta.originalFilename,
+    cardVersion: index.cardVersion,
+    greetingCount: index.greetingCount,
+    worldInfoCount: index.worldInfoCount,
+    regexScriptCount: index.regexScriptCount,
+    avatarAvailable: index.avatarAvailable,
+    imageAssetCount: index.imageAssetCount,
+    ...(index.tavernHelper === undefined ? {} : { tavernHelper: index.tavernHelper }),
     archived: meta.archivedAt !== undefined,
     transport: meta.transport,
     importedAt: meta.createdAt,
@@ -392,7 +495,7 @@ export class CharacterLibrary {
     const entry = this.readId(id)
     const parsed = this.parseStored(entry.meta, entry.data)
     const worldInfo = worldInfoDetail(parsed.card)
-    return {
+    const detail: CharacterLibraryDetail = {
       ...summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length),
       mediaType: entry.meta.mediaType,
       ...greetingDetail(parsed.card),
@@ -404,6 +507,8 @@ export class CharacterLibrary {
       localCorrectionCount: parsed.overlay.textReplacements.reduce((total, replacement) =>
         total + replacement.expectedMatches, 0),
     }
+    this.rememberIndex(entry.meta, detail)
+    return detail
   }
 
   /** Resolve one reusable card for a model-free Session launch. */
@@ -428,15 +533,25 @@ export class CharacterLibrary {
       transport: entry.meta.transport === 'png'
         ? { transport: 'png', metadataKeyword: entry.meta.metadataKeyword! }
         : { transport: entry.meta.transport },
+      source: {
+        bytes: entry.data.byteLength,
+        originalFilename: entry.meta.originalFilename,
+        mediaType: entry.meta.mediaType,
+      },
     }
   }
 
   /** Load the original immutable asset by opaque id. */
   asset(id: string): CharacterLibraryAsset {
     const entry = this.readId(id)
-    const parsed = this.parseStored(entry.meta, entry.data)
+    let cardSummary = entry.meta.index === undefined ? undefined : indexedSummary(entry.meta, entry.meta.index)
+    if (cardSummary === undefined) {
+      const parsed = this.parseStored(entry.meta, entry.data)
+      cardSummary = summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length)
+      this.rememberIndex(entry.meta, cardSummary)
+    }
     return {
-      summary: summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length),
+      summary: cardSummary,
       originalFilename: entry.meta.originalFilename,
       mediaType: entry.meta.mediaType,
       data: entry.data,
@@ -685,6 +800,12 @@ export class CharacterLibrary {
     }
   }
 
+  private rememberIndex(meta: StoredCharacterMetadata, value: CharacterLibrarySummary): void {
+    const index = storedIndex(value)
+    if (JSON.stringify(meta.index) === JSON.stringify(index)) return
+    this.writeMetadata({ ...meta, index })
+  }
+
   private readOverlay(id: string): StoredCharacterOverlay {
     const path = this.overlayPath(id)
     if (!existsSync(path)) return emptyOverlay()
@@ -721,8 +842,10 @@ export class CharacterLibrary {
     }
     if (meta.transport === 'charx') {
       const charx = parseCharx(data)
-      const avatar = charxAvatar(charx)
-      const images = charxImageAssets(charx).map(image => ({
+      const charxImages = charxImageAssets(charx)
+      const icons = charxImages.filter(image => image.type === 'icon')
+      const avatar = icons.find(image => image.name.trim().toLocaleLowerCase() === 'main') ?? icons[0]
+      const images = charxImages.map(image => ({
         index: image.index,
         type: image.type,
         name: image.name,
@@ -764,12 +887,14 @@ export class CharacterLibrary {
   }
 
   private readEntry(metaPath: string): { readonly summary: CharacterLibrarySummary } {
-    let id: string
+    let meta: StoredCharacterMetadata
     try {
-      id = parseMetadata(JSON.parse(readFileSync(metaPath, 'utf8'))).id
+      meta = parseMetadata(JSON.parse(readFileSync(metaPath, 'utf8')))
     } catch (error: unknown) {
       throw new Error(`无法读取角色库文件 ${JSON.stringify(metaPath)}`, { cause: error })
     }
-    return { summary: this.asset(id).summary }
+    const asset = statSync(this.assetPath(meta))
+    if (!asset.isFile() || asset.size !== meta.bytes) throw new Error('character library asset byte count changed')
+    return { summary: meta.index === undefined ? this.get(meta.id) : indexedSummary(meta, meta.index) }
   }
 }

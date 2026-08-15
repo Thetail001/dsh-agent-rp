@@ -14,11 +14,78 @@ import { parseRegexScript } from './regex-script.ts'
 import { parseTavernHelperScripts, tavernHelperExtension, tavernHelperVariables } from './tavern-helper.ts'
 import { isLiteralRegexPattern } from './lorebook.ts'
 
-/** Maximum decoded JSON accepted from one card transport. */
-export const MAX_CHARACTER_CARD_JSON_BYTES = 2 * 1024 * 1024
+/** Maximum decoded card definition accepted independently from transport media. */
+export const MAX_CHARACTER_CARD_JSON_BYTES = 8 * 1024 * 1024
+
+/** Maximum complete PNG, JSON, or CHARX transport accepted by the local library. */
+export const MAX_CHARACTER_CARD_FILE_BYTES = 64 * 1024 * 1024
+
+function characterCardSizeError(): Error {
+  return new Error(`角色卡定义内容过大（最多 ${MAX_CHARACTER_CARD_JSON_BYTES / (1024 * 1024)} MiB；PNG/CHARX 图片不计入）`)
+}
+
+/** Reject an oversized decoded card definition before UTF-8 or JSON allocation. */
+export function assertCharacterCardJsonSize(bytes: number): void {
+  if (bytes > MAX_CHARACTER_CARD_JSON_BYTES) throw characterCardSizeError()
+}
+
+function jsonStringBytes(value: string): number {
+  let bytes = 2
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code === 0x22 || code === 0x5c || code === 0x08 || code === 0x09
+      || code === 0x0a || code === 0x0c || code === 0x0d) {
+      bytes += 2
+    } else if (code < 0x20) {
+      bytes += 6
+    } else if (code < 0x80) {
+      bytes += 1
+    } else if (code < 0x800) {
+      bytes += 2
+    } else if (code >= 0xd800 && code <= 0xdbff
+      && index + 1 < value.length && value.charCodeAt(index + 1) >= 0xdc00
+      && value.charCodeAt(index + 1) <= 0xdfff) {
+      bytes += 4
+      index += 1
+    } else if (code >= 0xd800 && code <= 0xdfff) {
+      bytes += 6
+    } else {
+      bytes += 3
+    }
+    if (bytes > MAX_CHARACTER_CARD_JSON_BYTES) throw characterCardSizeError()
+  }
+  return bytes
+}
+
+function assertCharacterCardValueSize(value: JsonValue): void {
+  let bytes = 0
+  const add = (amount: number): void => {
+    bytes += amount
+    if (bytes > MAX_CHARACTER_CARD_JSON_BYTES) throw characterCardSizeError()
+  }
+  const visit = (item: JsonValue): void => {
+    if (item === null) return add(4)
+    if (typeof item === 'string') return add(jsonStringBytes(item))
+    if (typeof item === 'number') return add(Buffer.byteLength(JSON.stringify(item) ?? 'null', 'utf8'))
+    if (typeof item === 'boolean') return add(item ? 4 : 5)
+    if (Array.isArray(item)) {
+      add(2 + Math.max(0, item.length - 1))
+      for (const child of item) visit(child)
+      return
+    }
+    const entries = Object.entries(item)
+    add(2 + Math.max(0, entries.length - 1))
+    for (const [key, child] of entries) {
+      add(jsonStringBytes(key) + 1)
+      visit(child)
+    }
+  }
+  visit(value)
+}
 
 /** Decode one standalone Character Card JSON file without replacement characters. */
 export function parseCharacterCardJsonBytes(data: Uint8Array): ImportedCharacterCard {
+  assertCharacterCardJsonSize(data.byteLength)
   let json: string
   try {
     json = new TextDecoder('utf-8', { fatal: true }).decode(data).replace(/^\uFEFF/u, '')
@@ -243,9 +310,7 @@ function degradationSet(
  * @returns a normalized runtime card plus its exact parsed JSON value.
  */
 export function parseCharacterCardJson(json: string): ImportedCharacterCard {
-  if (Buffer.byteLength(json, 'utf8') > MAX_CHARACTER_CARD_JSON_BYTES) {
-    throw new Error(`character card JSON exceeds ${MAX_CHARACTER_CARD_JSON_BYTES} bytes`)
-  }
+  assertCharacterCardJsonSize(Buffer.byteLength(json, 'utf8'))
   let parsed: unknown
   try {
     parsed = JSON.parse(json)
@@ -254,6 +319,20 @@ export function parseCharacterCardJson(json: string): ImportedCharacterCard {
   }
   const raw = snapshotJsonValue(parsed) as JsonValue | undefined
   if (raw === undefined) throw new Error('character card must contain lossless JSON')
+  return normalizeCharacterCardValue(raw)
+}
+
+/**
+ * Validate one already-decoded JSON value without serializing and parsing it again.
+ * @param raw - Lossless JSON value from a trusted JSON or durable Session decoder.
+ * @returns a normalized runtime card retaining the supplied JSON value.
+ */
+export function parseCharacterCardValue(raw: JsonValue): ImportedCharacterCard {
+  assertCharacterCardValueSize(raw)
+  return normalizeCharacterCardValue(raw)
+}
+
+function normalizeCharacterCardValue(raw: JsonValue): ImportedCharacterCard {
   const root = object(raw, 'character card')
   const { version, specVersion, data } = cardVersion(root)
   validateVersionFields(data, version)
