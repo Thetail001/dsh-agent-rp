@@ -1175,6 +1175,9 @@ test('keeps author media fields available to prompts but out of the visible gree
   const source = '<角色图片>角色名<img>external.png</img></角色图片>\n正文'
   assert.equal(renderCharacterDisplay(source, character, AI_OUTPUT_PLACEMENT, 0), '\n正文')
   assert.equal(renderCharacterPromptView(source, character, AI_OUTPUT_PLACEMENT, 0), source)
+  const display = [{ ...base, findRegex: '/<角色图片>[\\s\\S]*?<\\/角色图片>/gu', replaceString: '<div>external.png</div>' }]
+  const withoutCardScripts = { ...character, frontend: { ...character.frontend, regexScripts: [] } }
+  assert.equal(renderCharacterDisplay(source, withoutCardScripts, AI_OUTPUT_PLACEMENT, 0, undefined, display), '<div></div>\n正文')
 })
 
 test('runs ordinary message scripts before view-specific scripts', () => {

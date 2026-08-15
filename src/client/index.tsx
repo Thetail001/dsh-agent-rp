@@ -731,10 +731,9 @@ function CharacterDisplay({ segments, statData, characterName, character, previe
 
 function compactCharacterDisplayText(value: string): string {
   const segments = splitCharacterDisplay(value)
-  const text = segments.filter(segment => segment.kind !== 'html').map(segment => {
-    const source = segment.kind === 'markdown'
-      ? marked.parse(segment.text, { async: false, breaks: true, gfm: true }) as string
-      : segment.source
+  const text = segments.filter((segment): segment is Extract<CharacterDisplaySegment, { readonly kind: 'markdown' }> =>
+    segment.kind === 'markdown').map(segment => {
+    const source = marked.parse(segment.text, { async: false, breaks: true, gfm: true }) as string
     const document = new DOMParser().parseFromString(source, 'text/html')
     document.querySelectorAll('style,script,noscript,template,svg').forEach(element => { element.remove() })
     document.querySelectorAll('br').forEach(element => { element.replaceWith('\n') })
@@ -744,7 +743,7 @@ function compactCharacterDisplayText(value: string): string {
     return document.body.textContent ?? ''
   }).join('\n')
   const summary = text.split(/\r?\n/gu).map(line => line.replace(/[\t ]+/gu, ' ').trim()).filter(Boolean).join(' · ')
-  return summary === '' && segments.some(segment => segment.kind === 'html') ? '轻前端开场，展开查看' : summary
+  return summary === '' && segments.some(segment => segment.kind !== 'markdown') ? '轻前端开场，展开查看' : summary
 }
 
 function DisclosureChevron({ expanded, size = 15 }: { readonly expanded: boolean; readonly size?: number }) {

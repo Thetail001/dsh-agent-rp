@@ -404,8 +404,32 @@ function runScripts(
   }, normalized)
 }
 
-function stripDisplayOnlyCharacterMediaFields(value: string): string {
-  return value.replace(/<角色图片(?:\s[^<>]*?)?>[\s\S]*?<\/角色图片\s*>/giu, '')
+function removeVisibleTextToken(value: string, token: string): string {
+  if (token === '') return value
+  let result = ''
+  let cursor = 0
+  let index = value.indexOf(token)
+  while (index >= 0) {
+    result += value.slice(cursor, index)
+    const lower = value.toLocaleLowerCase()
+    const insideTag = value.lastIndexOf('<', index) > value.lastIndexOf('>', index)
+    const insideRawElement = ['script', 'style', 'template'].some(tag =>
+      lower.lastIndexOf(`<${tag}`, index) > lower.lastIndexOf(`</${tag}`, index))
+    if (insideTag || insideRawElement) result += token
+    cursor = index + token.length
+    index = value.indexOf(token, cursor)
+  }
+  return result + value.slice(cursor)
+}
+
+function stripDisplayOnlyCharacterMediaFields(value: string, raw: string): string {
+  const fields = [...raw.matchAll(/<角色图片(?:\s[^<>]*?)?>[\s\S]*?<\/角色图片\s*>/giu)].map(match => match[0])
+  const filenames = fields.flatMap(field => [...field.matchAll(
+    /<img(?:\s[^<>]*?)?>([^<>]*?\.(?:avif|gif|jpe?g|png|webp))<\/img\s*>/giu,
+  )].map(match => match[1]?.trim() ?? '').filter(Boolean))
+  let visible = value.replace(/<角色图片(?:\s[^<>]*?)?>[\s\S]*?<\/角色图片\s*>/giu, '')
+  for (const filename of new Set(filenames)) visible = removeVisibleTextToken(visible, filename)
+  return visible
 }
 
 /** Apply character display-only scripts without executing their HTML. */
@@ -417,7 +441,10 @@ export function renderCharacterDisplay(
   userName?: string,
   presetScripts?: readonly ImportedRegexScript[],
 ): string {
-  return stripDisplayOnlyCharacterMediaFields(runScripts(raw, card, placement, 'display', depth, userName, presetScripts))
+  return stripDisplayOnlyCharacterMediaFields(
+    runScripts(raw, card, placement, 'display', depth, userName, presetScripts),
+    raw,
+  )
 }
 
 /** Apply character prompt-only scripts before model context leaves the roleplay boundary. */
