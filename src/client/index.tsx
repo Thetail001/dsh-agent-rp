@@ -14,7 +14,7 @@ import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { createRoot, type Root } from 'react-dom/client'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
 import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/types.ts'
 import { parseTavernHelperScripts } from '../import/tavern-helper.ts'
@@ -727,6 +727,18 @@ function CharacterDisplay({ segments, statData, characterName, character, previe
           }}
         />)}
   </div>
+}
+
+function compactCharacterDisplayText(value: string): string {
+  const text = splitCharacterDisplay(value).map(segment => {
+    const source = segment.kind === 'markdown'
+      ? marked.parse(segment.text, { async: false, breaks: true, gfm: true }) as string
+      : segment.source
+    const document = new DOMParser().parseFromString(source, 'text/html')
+    document.querySelectorAll('style,script,noscript,template,svg').forEach(element => { element.remove() })
+    return document.body.textContent ?? ''
+  }).join(' ')
+  return text.replace(/\s+/gu, ' ').trim()
 }
 
 function replySceneNote(value: string): string {
@@ -3006,12 +3018,12 @@ function CharacterLibraryDialog({
   ) => Promise<void>
 }) {
   const narrow = useNarrowCharacterLibrary()
-  const startsInCurrentSession = currentCharacterName === ''
   const [collection, setCollection] = useState<CharacterLibraryCollection>('active')
   const [characterQuery, setCharacterQuery] = useState('')
   const [entries, setEntries] = useState<readonly CharacterLibrarySummary[]>()
   const [selected, setSelected] = useState<CharacterLibraryDetail>()
   const [greetingIndex, setGreetingIndex] = useState(0)
+  const [expandedGreetingIndex, setExpandedGreetingIndex] = useState<number | undefined>(0)
   const { entries: presets, error: presetError, presetId, selectPreset } = usePresetPreference(listPresets)
   const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
   const [personaId, setPersonaId] = useState('')
@@ -3037,6 +3049,7 @@ function CharacterLibraryDialog({
     selectionRequestRef.current += 1
     setEntries(undefined)
     setSelected(undefined)
+    setExpandedGreetingIndex(undefined)
     setError(undefined)
     void listCharacters(collection).then(value => {
       if (!current) return
@@ -3051,6 +3064,7 @@ function CharacterLibraryDialog({
         if (!current || selectionRequestRef.current !== request) return
         setSelected(detail)
         setGreetingIndex(0)
+        setExpandedGreetingIndex(0)
         setLoadingId(undefined)
       }, readError => {
         if (!current || selectionRequestRef.current !== request) return
@@ -3088,6 +3102,7 @@ function CharacterLibraryDialog({
       if (selectionRequestRef.current !== request) return
       setSelected(detail)
       setGreetingIndex(0)
+      setExpandedGreetingIndex(0)
       setLoadingId(undefined)
     }, readError => {
       if (selectionRequestRef.current !== request) return
@@ -3108,6 +3123,7 @@ function CharacterLibraryDialog({
         .some(text => text.toLocaleLowerCase().includes(normalizedQuery)))
       if (next === undefined) {
         setSelected(undefined)
+        setExpandedGreetingIndex(undefined)
         setLoadingId(undefined)
         setUpdating(false)
         setActionNotice(`${archived ? '已移入收纳箱' : '已移回角色库'}「${displayName}」`)
@@ -3117,6 +3133,7 @@ function CharacterLibraryDialog({
       return readCharacter(next.id).then(detail => {
         setSelected(detail)
         setGreetingIndex(0)
+        setExpandedGreetingIndex(0)
         setLoadingId(undefined)
         setUpdating(false)
         setActionNotice(`${archived ? '已移入收纳箱' : '已移回角色库'}「${displayName}」`)
@@ -3139,6 +3156,7 @@ function CharacterLibraryDialog({
       setEntries(value)
       setSelected(entry)
       setGreetingIndex(0)
+      setExpandedGreetingIndex(0)
       setLoadingId(undefined)
       setImporting(false)
       const notice = outcome === 'created' ? `已加入角色库「${entry.displayName}」`
@@ -3157,6 +3175,8 @@ function CharacterLibraryDialog({
   const duplicateNames = new Set((entries ?? [])
     .filter((entry, index, all) => all.findIndex(candidate => candidate.displayName === entry.displayName) !== index)
     .map(entry => entry.displayName))
+  const greetingSummaries = useMemo(() => selected?.greetings.map((greeting, index) =>
+    compactCharacterDisplayText(selected.renderedGreetings[index] ?? greeting)) ?? [], [selected])
   return <div className="agent-rp-character-library-overlay" data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="角色库" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.52)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: 'clamp(8px, 3vw, 24px)', position: 'fixed', zIndex: 1001,
@@ -3177,7 +3197,7 @@ function CharacterLibraryDialog({
         <div style={{ display: 'flex', flexDirection: 'column', padding: narrow ? '14px 14px 10px' : '22px 20px 14px' }}>
           <h2 style={{ fontSize: '18px', margin: 0 }}>角色库</h2>
           <div role="tablist" aria-label="角色库分区" style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '9px', display: 'grid', gap: '3px', gridTemplateColumns: '1fr 1fr', marginTop: '12px', padding: '3px' }}>
-            {([['active', '角色'], ['archived', '收纳箱']] as const).map(([value, label]) => <button
+            {([['active', '角色卡'], ['archived', '收纳箱']] as const).map(([value, label]) => <button
               key={value} type="button" role="tab" aria-selected={collection === value}
               onClick={() => { setCollection(value); setCharacterQuery('') }} style={{
                 background: collection === value ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
@@ -3197,6 +3217,7 @@ function CharacterLibraryDialog({
               if (next === undefined) {
                 selectionRequestRef.current += 1
                 setSelected(undefined)
+                setExpandedGreetingIndex(undefined)
                 setLoadingId(undefined)
               } else if (selected === undefined || !matches(selected)) {
                 choose(next)
@@ -3246,8 +3267,11 @@ function CharacterLibraryDialog({
               borderRadius: '10px', color: 'inherit', cursor: 'pointer', display: 'flex', font: 'inherit', gap: '10px', padding: '9px', textAlign: 'left',
             }}>
             <CharacterLibraryAvatar entry={entry} />
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: '13px', fontWeight: 620, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div title={entry.displayName} style={{
+                display: '-webkit-box', fontSize: '13px', fontWeight: 620, lineHeight: 1.35,
+                overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2,
+              }}>
                 {entry.displayName}{loadingId === entry.id ? ' · 读取中' : ''}
               </div>
               <div style={{ fontSize: '11px', marginTop: '5px', opacity: .5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -3263,10 +3287,7 @@ function CharacterLibraryDialog({
         <header style={{ alignItems: 'center', display: 'flex', padding: '18px 20px 12px' }}>
           {selected !== undefined && <CharacterLibraryAvatar entry={selected} size={42} />}
           <div style={{ marginLeft: selected === undefined ? 0 : '11px', minWidth: 0 }}>
-            <div style={{ fontSize: '12px', opacity: .5 }}>
-              {startsInCurrentSession ? '设置新的角色对话' : '开始一段新的角色对话'}
-            </div>
-            <strong style={{ display: 'block', fontSize: '17px', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected?.displayName ?? '选择角色'}</strong>
+            <strong style={{ display: 'block', fontSize: '17px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected?.displayName ?? '选择角色'}</strong>
             {selected !== undefined && <span title={selected.originalFilename} style={{ display: 'block', fontSize: '11px', marginTop: '3px', opacity: .46, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected.originalFilename}</span>}
           </div>
           {selected !== undefined && <button type="button" disabled={updating} onClick={updateArchiveState} style={{
@@ -3308,7 +3329,8 @@ function CharacterLibraryDialog({
               borderRadius: '10px', fontSize: '11px', lineHeight: 1.55, margin: '4px 0 12px', padding: '9px 11px',
             }}>
               <strong style={{ display: 'block', fontSize: '12px', marginBottom: '2px' }}>世界书 · {selected.worldInfoCount} 条</strong>
-              <span style={{ opacity: .58 }}>已随角色卡载入；兼容条目会在开聊后按常驻或关键词自动参与提示词</span>
+              <span style={{ display: 'block', opacity: .58 }}>兼容条目会在开聊后按常驻或关键词自动参与提示词</span>
+              <span style={{ display: 'block', marginTop: '2px', opacity: .58 }}>开聊后可在会话顶部的「世界书」查看与调整；改动只属于该会话，不会重写原卡</span>
             </div>}
             {selected.tavernHelper !== undefined && <div style={{
               background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
@@ -3328,24 +3350,34 @@ function CharacterLibraryDialog({
             <div style={{ display: 'grid', gap: '8px' }}>
               {selected.greetings.map((greeting, index) => {
                 const active = greetingIndex === index
+                const expanded = expandedGreetingIndex === index
+                const summary = greetingSummaries[index] ?? ''
                 return <div key={index} style={{
                   background: greetingIndex === index ? `color-mix(in srgb, ${color} 13%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
                   border: greetingIndex === index ? `1px solid color-mix(in srgb, ${color} 38%, transparent)` : '1px solid var(--dsw-alias-border-l2, #39393c)',
                   borderRadius: '10px', color: 'inherit', overflow: 'hidden',
                 }}>
-                  <button type="button" aria-pressed={active} onClick={() => { setGreetingIndex(index) }} style={{
+                  <button type="button" aria-expanded={expanded} aria-pressed={active} onClick={() => {
+                    if (active) {
+                      setExpandedGreetingIndex(current => current === index ? undefined : index)
+                      return
+                    }
+                    setGreetingIndex(index)
+                    setExpandedGreetingIndex(index)
+                  }} style={{
                     background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', display: 'block',
                     font: 'inherit', lineHeight: 1.6, padding: '10px 12px', textAlign: 'left', width: '100%',
                   }}>
-                    <span style={{ display: 'block', fontSize: '11px', fontWeight: 620, opacity: .5 }}>
-                      {index === 0 ? '默认开场' : `备选开场 ${index}`}{active ? ' · 已选择' : ''}
+                    <span style={{ alignItems: 'center', display: 'flex', fontSize: '11px', fontWeight: 620, gap: '8px', justifyContent: 'space-between', opacity: .5 }}>
+                      <span>{index === 0 ? '默认开场' : `备选开场 ${index}`}{active ? ' · 已选择' : ''}</span>
+                      <span aria-hidden="true" style={{ flex: 'none', fontWeight: 400 }}>{expanded ? '收起⌃' : '展开⌄'}</span>
                     </span>
-                    {!active && <span style={{
+                    {!expanded && <span style={{
                       display: '-webkit-box', fontSize: '13px', marginTop: '4px', overflow: 'hidden',
-                      WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, whiteSpace: 'pre-wrap',
-                    }}>{greeting.trim() === '' ? '无开场白' : greeting}</span>}
+                      WebkitBoxOrient: 'vertical', WebkitLineClamp: 2,
+                    }}>{summary === '' ? '无开场白' : summary}</span>}
                   </button>
-                  {active && <div style={{
+                  {expanded && <div style={{
                     borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', padding: '10px 12px',
                   }}>
                     {greeting.trim() === '' ? <span style={{ fontSize: '13px', opacity: .58 }}>无开场白</span>
