@@ -104,6 +104,63 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
           json(response, 200, { format: 0, ...result })
           return
         }
+        if (request.method === 'POST' && parts.length === 3 && parts[0] !== undefined
+          && parts[1] === 'display-extensions' && parts[2] === 'import') {
+          const url = new URL(request.url ?? '/', 'http://agent-rp.local')
+          const filename = url.searchParams.get('filename')?.trim()
+          if (filename === undefined || filename === '') {
+            fail(response, 400, '显示扩展文件名缺失')
+            return
+          }
+          let approvedImageOrigins: unknown
+          try {
+            approvedImageOrigins = JSON.parse(url.searchParams.get('approvedOrigins') ?? '[]')
+          } catch {
+            fail(response, 400, '外部图片授权无效')
+            return
+          }
+          if (!Array.isArray(approvedImageOrigins)
+            || approvedImageOrigins.some(origin => typeof origin !== 'string')) {
+            fail(response, 400, '外部图片授权无效')
+            return
+          }
+          const entry = library.importDisplayExtension(parts[0], {
+            data: await readUpload(request),
+            filename,
+            approvedImageOrigins,
+          })
+          json(response, 200, { format: 0, entry })
+          return
+        }
+        if (request.method === 'POST' && parts.length === 4 && parts[0] !== undefined
+          && parts[1] === 'display-extensions' && parts[2] !== undefined
+          && (parts[3] === 'enable' || parts[3] === 'disable' || parts[3] === 'remove')) {
+          const entry = parts[3] === 'remove'
+            ? library.removeDisplayExtension(parts[0], parts[2])
+            : library.setDisplayExtensionEnabled(parts[0], parts[2], parts[3] === 'enable')
+          json(response, 200, { format: 0, entry })
+          return
+        }
+        if (request.method === 'POST' && parts.length === 2 && parts[0] !== undefined
+          && parts[1] === 'text-replacements') {
+          const body = await readUpload(request)
+          let value: unknown
+          try {
+            value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body))
+          } catch {
+            fail(response, 400, '本地文字修正不是有效 JSON')
+            return
+          }
+          if (typeof value !== 'object' || value === null || Array.isArray(value)
+            || typeof (value as { readonly from?: unknown }).from !== 'string'
+            || typeof (value as { readonly to?: unknown }).to !== 'string') {
+            fail(response, 400, '本地文字修正字段无效')
+            return
+          }
+          const replacement = value as { readonly from: string; readonly to: string }
+          json(response, 200, { format: 0, entry: library.replaceText(parts[0], replacement.from, replacement.to) })
+          return
+        }
         if (request.method === 'POST' && parts.length === 2 && parts[0] !== undefined
           && (parts[1] === 'archive' || parts[1] === 'restore')) {
           const entry = parts[1] === 'archive' ? library.archive(parts[0]) : library.restore(parts[0])

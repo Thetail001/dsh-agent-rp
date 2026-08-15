@@ -681,8 +681,12 @@ function cardFrameSource(
   const adapted = assets.reduce((html, asset) => asset.sourceUri === '' ? html : html.replaceAll(asset.sourceUri, asset.url), source)
     .replaceAll('window.parent?.document ?? window.document', 'window.document')
   const assetJson = JSON.stringify(assets).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
-  const allowedImageOrigin = window.location.origin.replace(/["'<>\s]/gu, '')
-  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigin}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<script>${mvuFrameRuntime(statData)}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>`
+  const allowedImageOrigins = [...new Set([
+    window.location.origin,
+    ...(character?.displayExtensions.filter(extension => extension.enabled)
+      .flatMap(extension => extension.remoteImageOrigins) ?? []),
+  ])].map(origin => origin.replace(/["'<>\s]/gu, '')).filter(Boolean).join(' ')
+  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigins}; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<script>${mvuFrameRuntime(statData)}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>`
   if (/<head(?:\s|>)/iu.test(adapted)) return adapted.replace(/<head([^>]*)>/iu, `<head$1>${head}`)
   if (/<html(?:\s|>)/iu.test(adapted)) return adapted.replace(/<html([^>]*)>/iu, `<html$1><head>${head}</head>`)
   return `<!doctype html><html><head>${head}</head><body>${adapted}</body></html>`
@@ -1149,6 +1153,172 @@ function CharacterAssetsSection({ detail, sessionId }: {
         </button>)}
       </div>
     </>}
+  </section>
+}
+
+interface PendingDisplayExtension {
+  readonly file: File
+  readonly scriptName: string
+  readonly imageOrigins: readonly string[]
+}
+
+function inspectDisplayExtension(file: File): Promise<PendingDisplayExtension> {
+  if (file.size === 0 || file.size > 256 * 1024) return Promise.reject(new Error('显示扩展文件为空或过大'))
+  return file.text().then(source => {
+    let value: unknown
+    try {
+      value = JSON.parse(source.replace(/^\uFEFF/u, ''))
+    } catch (error) {
+      throw new Error('显示扩展不是有效 JSON', { cause: error })
+    }
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('显示扩展必须是一个正则对象')
+    const record = value as Record<string, unknown>
+    if (typeof record.scriptName !== 'string' || record.scriptName.trim() === ''
+      || typeof record.replaceString !== 'string' || record.markdownOnly !== true || record.promptOnly === true
+      || !Array.isArray(record.placement) || !record.placement.includes(AI_OUTPUT_PLACEMENT)) {
+      throw new Error('这里只接受作用于 AI 消息的纯显示正则')
+    }
+    const origins = new Set<string>()
+    const pattern = /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/giu
+    for (const match of record.replaceString.matchAll(pattern)) {
+      const sourceUrl = match[1] ?? match[2] ?? match[3]
+      if (sourceUrl === undefined || !/^https:\/\//iu.test(sourceUrl)) continue
+      origins.add(new URL(sourceUrl).origin)
+    }
+    return { file, scriptName: record.scriptName.trim(), imageOrigins: [...origins].sort() }
+  })
+}
+
+async function updateCharacterDisplayExtension(
+  characterId: string,
+  extensionId: string,
+  operation: 'enable' | 'disable' | 'remove',
+): Promise<CharacterLibraryDetail> {
+  const response = await fetch(`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(characterId)}/display-extensions/${encodeURIComponent(extensionId)}/${operation}`, {
+    method: 'POST', headers: { accept: 'application/json' },
+  })
+  const value = await response.json() as { readonly error?: string; readonly entry?: CharacterLibraryDetail }
+  if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `显示扩展更新失败（${response.status}）`)
+  return value.entry
+}
+
+async function uploadCharacterDisplayExtension(
+  characterId: string,
+  pending: PendingDisplayExtension,
+): Promise<CharacterLibraryDetail> {
+  const query = new URLSearchParams({
+    filename: pending.file.name,
+    approvedOrigins: JSON.stringify(pending.imageOrigins),
+  })
+  const response = await fetch(`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(characterId)}/display-extensions/import?${query}`, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': pending.file.type || 'application/json' },
+    body: pending.file,
+  })
+  const value = await response.json() as { readonly error?: string; readonly entry?: CharacterLibraryDetail }
+  if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `显示扩展导入失败（${response.status}）`)
+  return value.entry
+}
+
+function CharacterDisplayExtensionsSection({ detail, onChange, onNotice, onError }: {
+  readonly detail: CharacterLibraryDetail
+  readonly onChange: (detail: CharacterLibraryDetail) => void
+  readonly onNotice: (message: string) => void
+  readonly onError: (message: string) => void
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const [pending, setPending] = useState<PendingDisplayExtension>()
+  const [working, setWorking] = useState(false)
+  useEffect(() => { setPending(undefined); setWorking(false) }, [detail.id])
+  const install = (value: PendingDisplayExtension): void => {
+    setWorking(true)
+    void uploadCharacterDisplayExtension(detail.id, value).then(entry => {
+      onChange(entry)
+      onNotice(`已启用显示扩展「${value.scriptName}」`)
+      setPending(undefined)
+      setWorking(false)
+    }, reason => {
+      setWorking(false)
+      onError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }
+  const select = (file: File): void => {
+    onError('')
+    void inspectDisplayExtension(file).then(value => {
+      if (value.imageOrigins.length === 0) install(value)
+      else setPending(value)
+    }, reason => { onError(reason instanceof Error ? reason.message : String(reason)) })
+  }
+  const mutate = (extensionId: string, operation: 'enable' | 'disable' | 'remove'): void => {
+    setWorking(true)
+    void updateCharacterDisplayExtension(detail.id, extensionId, operation).then(entry => {
+      onChange(entry)
+      onNotice(operation === 'remove' ? '已移除显示扩展' : operation === 'enable' ? '已启用显示扩展' : '已停用显示扩展')
+      setWorking(false)
+    }, reason => {
+      setWorking(false)
+      onError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }
+  return <section style={{
+    background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+    borderRadius: '10px', margin: '4px 0 14px', padding: '10px 11px',
+  }}>
+    <div style={{ alignItems: 'center', display: 'flex', gap: '10px' }}>
+      <div style={{ minWidth: 0 }}>
+        <strong style={{ display: 'block', fontSize: '12px' }}>显示扩展</strong>
+        <span style={{ display: 'block', fontSize: '10px', marginTop: '2px', opacity: .5 }}>作者另发的酒馆正则，只改变界面显示</span>
+      </div>
+      <input ref={inputRef} type="file" accept=".json,application/json" hidden onChange={event => {
+        const file = event.target.files?.[0]
+        event.target.value = ''
+        if (file !== undefined) select(file)
+      }} />
+      <button type="button" disabled={working} onClick={() => { inputRef.current?.click() }} style={{
+        background: 'transparent', border: `1px solid color-mix(in srgb, ${color} 42%, transparent)`, borderRadius: '7px',
+        color, cursor: working ? 'wait' : 'pointer', font: 'inherit', fontSize: '11px', marginLeft: 'auto', padding: '5px 8px', whiteSpace: 'nowrap',
+      }}>＋ 添加</button>
+    </div>
+    {detail.displayExtensions.length === 0 && pending === undefined && <div style={{ fontSize: '11px', lineHeight: 1.55, marginTop: '8px', opacity: .52 }}>
+      暂无附加显示规则
+    </div>}
+    {detail.displayExtensions.map(extension => <div key={extension.id} style={{
+      alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '8px', marginTop: '9px', paddingTop: '9px',
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: '11px', fontWeight: 620, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {extension.scriptName}{extension.enabled ? '' : ' · 已停用'}
+        </div>
+        <div style={{ fontSize: '10px', lineHeight: 1.5, marginTop: '2px', opacity: .5 }}>
+          {extension.remoteImageOrigins.length === 0 ? '本地显示'
+            : `外部图片 · ${extension.remoteImageOrigins.map(origin => new URL(origin).hostname).join('、')}`}
+          {extension.replacedCardRegexNames.length === 0 ? '' : ` · 已修复旧规则 ${extension.replacedCardRegexNames.join('、')}`}
+        </div>
+      </div>
+      <button type="button" disabled={working} onClick={() => { mutate(extension.id, extension.enabled ? 'disable' : 'enable') }} style={{
+        background: 'transparent', border: 0, color, cursor: working ? 'wait' : 'pointer', font: 'inherit', fontSize: '10px', padding: '3px',
+      }}>{extension.enabled ? '停用' : '启用'}</button>
+      <button type="button" disabled={working} onClick={() => { mutate(extension.id, 'remove') }} style={{
+        background: 'transparent', border: 0, color: 'inherit', cursor: working ? 'wait' : 'pointer', font: 'inherit', fontSize: '10px', opacity: .5, padding: '3px',
+      }}>移除</button>
+    </div>)}
+    {pending !== undefined && <div style={{
+      background: 'color-mix(in srgb, #d6a24d 9%, transparent)', border: '1px solid color-mix(in srgb, #d6a24d 35%, transparent)',
+      borderRadius: '8px', fontSize: '11px', lineHeight: 1.55, marginTop: '9px', padding: '9px 10px',
+    }}>
+      <strong style={{ display: 'block' }}>{pending.scriptName} 需要加载外部图片</strong>
+      <span style={{ display: 'block', marginTop: '2px', opacity: .68 }}>
+        {pending.imageOrigins.map(origin => new URL(origin).hostname).join('、')} 会在显示图片时看到你的网络地址。授权只属于这张角色卡。
+      </span>
+      <div style={{ display: 'flex', gap: '10px', marginTop: '7px' }}>
+        <button type="button" disabled={working} onClick={() => { install(pending) }} style={{
+          background: color, border: 0, borderRadius: '7px', color: '#fff', cursor: working ? 'wait' : 'pointer', font: 'inherit', fontSize: '11px', padding: '5px 9px',
+        }}>{working ? '正在添加…' : '允许并添加'}</button>
+        <button type="button" disabled={working} onClick={() => { setPending(undefined) }} style={{
+          background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .6, padding: '5px 2px',
+        }}>取消</button>
+      </div>
+    </div>}
   </section>
 }
 
@@ -3404,6 +3574,18 @@ function CharacterLibraryDialog({
             }}>
               原卡仍保留但当前不执行：{selected.degradations.map(characterDegradationLabel).join('、')}
             </div>}
+            {selected.localCorrectionCount > 0 && <div style={{
+              borderLeft: `2px solid color-mix(in srgb, ${color} 62%, transparent)`, fontSize: '11px', lineHeight: 1.55,
+              margin: '4px 0 12px', opacity: .62, padding: '2px 0 2px 10px',
+            }}>
+              本机已修正 {selected.localCorrectionCount} 处原文笔误；原始角色卡文件没有改动
+            </div>}
+            <CharacterDisplayExtensionsSection
+              detail={selected}
+              onChange={entry => { setSelected(entry) }}
+              onNotice={message => { setActionNotice(message); setError(undefined) }}
+              onError={message => { setError(message === '' ? undefined : message) }}
+            />
             <CharacterAssetsSection detail={selected} />
             <label style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '8px 0 8px', opacity: .65 }}>选择开场</label>
             <div style={{ display: 'grid', gap: '8px' }}>

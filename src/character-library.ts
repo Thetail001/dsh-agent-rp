@@ -12,19 +12,24 @@ import {
 } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
+import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { CharacterImportTransport } from './import/session-character.ts'
-import type { ImportedCharacterCard } from './import/types.ts'
+import type { ImportedCharacterCard, ImportedRegexScript } from './import/types.ts'
 import { parseCharacterCardJson, parseCharacterCardJsonBytes } from './import/character-card.ts'
+import { parseRegexScript } from './import/regex-script.ts'
 import { readCharacterCardPng } from './import/png.ts'
 import { charxAvatar, charxImageAssets, parseCharx } from './import/charx.ts'
 import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay } from './frontend-regex.ts'
 import type {
-  CharacterLibraryDetail, CharacterLibraryImage, CharacterLibraryImportResult, CharacterLibrarySummary,
-  CharacterLibraryWorldInfo,
+  CharacterLibraryDetail, CharacterLibraryDisplayExtension, CharacterLibraryImage, CharacterLibraryImportResult,
+  CharacterLibrarySummary, CharacterLibraryWorldInfo,
 } from './character-library-protocol.ts'
 
 const META_SUFFIX = '.meta.json'
+const OVERLAY_SUFFIX = '.overlay.json'
 const ID_PATTERN = /^card-[a-f0-9]{32}$/u
+const DISPLAY_EXTENSION_ID_PATTERN = /^display-[a-f0-9]{32}$/u
+const MAX_DISPLAY_EXTENSION_BYTES = 256 * 1024
 
 interface StoredCharacterMetadata {
   readonly format: 0
@@ -37,6 +42,35 @@ interface StoredCharacterMetadata {
   readonly createdAt: number
   readonly updatedAt: number
   readonly archivedAt?: number
+}
+
+interface StoredTextReplacement {
+  readonly from: string
+  readonly to: string
+  readonly expectedMatches: number
+}
+
+interface StoredDisplayExtension {
+  readonly id: string
+  readonly originalFilename: string
+  readonly importedAt: number
+  readonly enabled: boolean
+  readonly remoteImageOrigins: readonly string[]
+  readonly replacedCardRegexIndices: readonly number[]
+  readonly script: ImportedRegexScript
+}
+
+interface StoredCharacterOverlay {
+  readonly format: 0
+  readonly textReplacements: readonly StoredTextReplacement[]
+  readonly displayExtensions: readonly StoredDisplayExtension[]
+}
+
+/** Browser-selected standalone SillyTavern display regex. */
+export interface CharacterDisplayExtensionImport {
+  readonly data: Uint8Array
+  readonly filename: string
+  readonly approvedImageOrigins: readonly string[]
 }
 
 /** Original validated card submitted to the reusable library. */
@@ -106,6 +140,150 @@ function parseMetadata(value: unknown): StoredCharacterMetadata {
   return meta as unknown as StoredCharacterMetadata
 }
 
+function safeHttpsOrigin(value: string, label: string): string {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch (error) {
+    throw new Error(`${label} must be an HTTPS origin`, { cause: error })
+  }
+  const hostname = url.hostname.toLocaleLowerCase()
+  if (url.protocol !== 'https:' || url.origin !== value || url.username !== '' || url.password !== ''
+    || (url.port !== '' && url.port !== '443') || hostname === 'localhost' || hostname.endsWith('.localhost')
+    || hostname.endsWith('.local') || !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/u.test(hostname)) {
+    throw new Error(`${label} must be a public HTTPS origin`)
+  }
+  return url.origin
+}
+
+function parseOverlay(value: unknown): StoredCharacterOverlay {
+  const record = object(value, 'character library overlay')
+  if (record.format !== 0 || !Array.isArray(record.textReplacements) || !Array.isArray(record.displayExtensions)) {
+    throw new Error('character library overlay has invalid fields')
+  }
+  const textReplacements = record.textReplacements.map((item, index) => {
+    const replacement = object(item, `character library overlay text replacement ${index + 1}`)
+    if (typeof replacement.from !== 'string' || replacement.from === '' || typeof replacement.to !== 'string'
+      || typeof replacement.expectedMatches !== 'number' || !Number.isSafeInteger(replacement.expectedMatches)
+      || replacement.expectedMatches < 1) {
+      throw new Error('character library overlay has an invalid text replacement')
+    }
+    return replacement as unknown as StoredTextReplacement
+  })
+  const displayExtensions = record.displayExtensions.map((item, index) => {
+    const extension = object(item, `character library display extension ${index + 1}`)
+    if (typeof extension.id !== 'string' || !DISPLAY_EXTENSION_ID_PATTERN.test(extension.id)
+      || typeof extension.originalFilename !== 'string' || extension.originalFilename.trim() === ''
+      || typeof extension.importedAt !== 'number' || !Number.isSafeInteger(extension.importedAt) || extension.importedAt < 0
+      || typeof extension.enabled !== 'boolean' || !Array.isArray(extension.remoteImageOrigins)
+      || extension.remoteImageOrigins.some(origin => typeof origin !== 'string')
+      || !Array.isArray(extension.replacedCardRegexIndices)
+      || extension.replacedCardRegexIndices.some(candidate => typeof candidate !== 'number'
+        || !Number.isSafeInteger(candidate) || candidate < 0)) {
+      throw new Error('character library overlay has an invalid display extension')
+    }
+    const remoteImageOrigins = extension.remoteImageOrigins.map((origin, originIndex) =>
+      safeHttpsOrigin(origin as string, `display extension origin ${originIndex + 1}`))
+    const script = parseRegexScript(extension.script as JsonValue, `displayExtensions[${index}].script`)
+    return {
+      id: extension.id,
+      originalFilename: extension.originalFilename,
+      importedAt: extension.importedAt,
+      enabled: extension.enabled,
+      remoteImageOrigins,
+      replacedCardRegexIndices: [...extension.replacedCardRegexIndices] as number[],
+      script,
+    }
+  })
+  return { format: 0, textReplacements, displayExtensions }
+}
+
+function emptyOverlay(): StoredCharacterOverlay {
+  return { format: 0, textReplacements: [], displayExtensions: [] }
+}
+
+function imageOrigins(script: ImportedRegexScript): readonly string[] {
+  const origins = new Set<string>()
+  const pattern = /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/giu
+  for (const match of script.replaceString.matchAll(pattern)) {
+    const source = match[1] ?? match[2] ?? match[3]
+    if (source === undefined || !/^https:\/\//iu.test(source)) continue
+    const url = new URL(source)
+    origins.add(safeHttpsOrigin(url.origin, 'display extension image origin'))
+  }
+  return [...origins].sort()
+}
+
+function sameMalformedPattern(left: ImportedRegexScript, right: ImportedRegexScript): boolean {
+  return !left.findRegex.startsWith('/') && right.findRegex === `/${left.findRegex}`
+    && left.replaceString === right.replaceString
+    && JSON.stringify(left.placement) === JSON.stringify(right.placement)
+    && left.markdownOnly === right.markdownOnly && left.promptOnly === right.promptOnly
+}
+
+function replaceStrings(value: unknown, replacement: StoredTextReplacement, state: { matches: number }): unknown {
+  if (typeof value === 'string') {
+    const matches = value.split(replacement.from).length - 1
+    state.matches += matches
+    return matches === 0 ? value : value.replaceAll(replacement.from, replacement.to)
+  }
+  if (Array.isArray(value)) return value.map(item => replaceStrings(item, replacement, state))
+  if (value === null || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replaceStrings(item, replacement, state)]))
+}
+
+function cardData(raw: unknown): Record<string, unknown> {
+  const root = object(raw, 'character card overlay source')
+  return root.spec === 'chara_card_v2' || root.spec === 'chara_card_v3'
+    ? object(root.data, 'character card overlay data')
+    : root
+}
+
+function scriptJson(script: ImportedRegexScript): Record<string, unknown> {
+  return {
+    ...(script.id === undefined ? {} : { id: script.id }),
+    scriptName: script.scriptName,
+    findRegex: script.findRegex,
+    replaceString: script.replaceString,
+    trimStrings: [...script.trimStrings],
+    placement: [...script.placement],
+    disabled: script.disabled,
+    markdownOnly: script.markdownOnly,
+    promptOnly: script.promptOnly,
+    runOnEdit: script.runOnEdit,
+    substituteRegex: script.substituteRegex,
+    minDepth: script.minDepth,
+    maxDepth: script.maxDepth,
+  }
+}
+
+function applyOverlay(card: ImportedCharacterCard, overlay: StoredCharacterOverlay): ImportedCharacterCard {
+  let raw: unknown = structuredClone(card.raw)
+  for (const replacement of overlay.textReplacements) {
+    const state = { matches: 0 }
+    raw = replaceStrings(raw, replacement, state)
+    if (state.matches !== replacement.expectedMatches) {
+      throw new Error('character library local text correction no longer matches its source')
+    }
+  }
+  const enabled = overlay.displayExtensions.filter(extension => extension.enabled)
+  if (enabled.length > 0) {
+    const data = cardData(raw)
+    const extensions = data.extensions === undefined ? {} : object(data.extensions, 'character card overlay extensions')
+    const stored = extensions.regex_scripts
+    const original = stored === undefined ? [] : Array.isArray(stored) ? stored : (() => {
+      throw new Error('character card overlay regex scripts must be an array')
+    })()
+    const replaced = new Set(enabled.flatMap(extension => extension.replacedCardRegexIndices))
+    extensions.regex_scripts = [
+      ...original.filter((_script, index) => !replaced.has(index)),
+      ...enabled.map(extension => scriptJson(extension.script)),
+    ]
+    data.extensions = extensions
+  }
+  return parseCharacterCardJson(JSON.stringify(raw))
+}
+
 function safeFilename(value: string | undefined, transport: 'png' | 'json' | 'charx'): string {
   const fallback = `character.${transport}`
   const name = basename(value?.trim() || fallback).trim()
@@ -166,6 +344,23 @@ function worldInfoDetail(card: ImportedCharacterCard): CharacterLibraryWorldInfo
   }
 }
 
+function displayExtensionDetail(
+  overlay: StoredCharacterOverlay,
+  sourceCard: ImportedCharacterCard,
+): readonly CharacterLibraryDisplayExtension[] {
+  return overlay.displayExtensions.map(extension => ({
+    id: extension.id,
+    scriptName: extension.script.scriptName,
+    originalFilename: extension.originalFilename,
+    enabled: extension.enabled,
+    remoteImageOrigins: extension.remoteImageOrigins,
+    replacedCardRegexNames: extension.replacedCardRegexIndices.flatMap(index => {
+      const name = sourceCard.frontend.regexScripts[index]?.scriptName
+      return name === undefined ? [] : [name]
+    }),
+  }))
+}
+
 /** Small content-addressed card library; the original PNG, JSON, or CHARX remains exportable. */
 export class CharacterLibrary {
   readonly root: string
@@ -196,6 +391,9 @@ export class CharacterLibrary {
       imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
       ...(worldInfo === undefined ? {} : { worldInfo }),
       degradations: parsed.card.degradations,
+      displayExtensions: displayExtensionDetail(parsed.overlay, parsed.sourceCard),
+      localCorrectionCount: parsed.overlay.textReplacements.reduce((total, replacement) =>
+        total + replacement.expectedMatches, 0),
     }
   }
 
@@ -212,6 +410,9 @@ export class CharacterLibrary {
         imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
         ...(worldInfo === undefined ? {} : { worldInfo }),
         degradations: parsed.card.degradations,
+        displayExtensions: displayExtensionDetail(parsed.overlay, parsed.sourceCard),
+        localCorrectionCount: parsed.overlay.textReplacements.reduce((total, replacement) =>
+          total + replacement.expectedMatches, 0),
       },
       card: parsed.card,
       transport: entry.meta.transport === 'png'
@@ -332,6 +533,102 @@ export class CharacterLibrary {
     throw new Error('请选择 PNG、JSON 或 CHARX 角色卡')
   }
 
+  /** Attach one display-only SillyTavern regex without modifying the original card bytes. */
+  importDisplayExtension(id: string, input: CharacterDisplayExtensionImport): CharacterLibraryDetail {
+    if (input.data.byteLength === 0 || input.data.byteLength > MAX_DISPLAY_EXTENSION_BYTES) {
+      throw new Error('显示扩展文件为空或过大')
+    }
+    let json: string
+    try {
+      json = new TextDecoder('utf-8', { fatal: true }).decode(input.data).replace(/^\uFEFF/u, '')
+    } catch (error) {
+      throw new Error('显示扩展必须是 UTF-8 JSON', { cause: error })
+    }
+    let value: unknown
+    try {
+      value = JSON.parse(json)
+    } catch (error) {
+      throw new Error('显示扩展不是有效 JSON', { cause: error })
+    }
+    const script = parseRegexScript(value as JsonValue, 'display extension')
+    if (!script.markdownOnly || script.promptOnly || !script.placement.includes(AI_OUTPUT_PLACEMENT)) {
+      throw new Error('这里只接受作用于 AI 消息的纯显示正则')
+    }
+    const requiredOrigins = imageOrigins(script)
+    const approvedOrigins = [...new Set(input.approvedImageOrigins.map((origin, index) =>
+      safeHttpsOrigin(origin, `approved image origin ${index + 1}`)))].sort()
+    if (JSON.stringify(requiredOrigins) !== JSON.stringify(approvedOrigins)) {
+      throw new Error(requiredOrigins.length === 0 ? '显示扩展不需要外部图片授权' : '请先确认显示扩展使用的外部图片域名')
+    }
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    const digest = createHash('sha256').update(input.data).digest('hex')
+    const extensionId = `display-${digest.slice(0, 32)}`
+    const existing = parsed.overlay.displayExtensions.find(extension => extension.id === extensionId)
+    if (existing !== undefined) {
+      if (!existing.enabled) this.setDisplayExtensionEnabled(id, extensionId, true)
+      return this.get(id)
+    }
+    const replacedCardRegexIndices = parsed.sourceCard.frontend.regexScripts.flatMap((candidate, index) =>
+      sameMalformedPattern(candidate, script) ? [index] : [])
+    this.writeOverlay(id, {
+      ...parsed.overlay,
+      displayExtensions: [...parsed.overlay.displayExtensions, {
+        id: extensionId,
+        originalFilename: safeFilename(input.filename, 'json'),
+        importedAt: Date.now(),
+        enabled: true,
+        remoteImageOrigins: requiredOrigins,
+        replacedCardRegexIndices,
+        script,
+      }],
+    })
+    return this.get(id)
+  }
+
+  /** Enable or pause one local display extension. */
+  setDisplayExtensionEnabled(id: string, extensionId: string, enabled: boolean): CharacterLibraryDetail {
+    if (!DISPLAY_EXTENSION_ID_PATTERN.test(extensionId)) throw new Error('显示扩展 id 无效')
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    if (!parsed.overlay.displayExtensions.some(extension => extension.id === extensionId)) {
+      throw new Error('角色卡没有这个显示扩展')
+    }
+    this.writeOverlay(id, {
+      ...parsed.overlay,
+      displayExtensions: parsed.overlay.displayExtensions.map(extension => extension.id === extensionId
+        ? { ...extension, enabled }
+        : extension),
+    })
+    return this.get(id)
+  }
+
+  /** Remove one local display extension while keeping the original card unchanged. */
+  removeDisplayExtension(id: string, extensionId: string): CharacterLibraryDetail {
+    if (!DISPLAY_EXTENSION_ID_PATTERN.test(extensionId)) throw new Error('显示扩展 id 无效')
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    const displayExtensions = parsed.overlay.displayExtensions.filter(extension => extension.id !== extensionId)
+    if (displayExtensions.length === parsed.overlay.displayExtensions.length) throw new Error('角色卡没有这个显示扩展')
+    this.writeOverlay(id, { ...parsed.overlay, displayExtensions })
+    return this.get(id)
+  }
+
+  /** Apply one exact local wording correction without rewriting the imported card asset. */
+  replaceText(id: string, from: string, to: string): CharacterLibraryDetail {
+    if (from === '' || from === to || from.length > 2_000 || to.length > 2_000) throw new Error('本地文字修正无效')
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    const state = { matches: 0 }
+    replaceStrings(parsed.card.raw, { from, to, expectedMatches: 1 }, state)
+    if (state.matches < 1) throw new Error('没有找到需要修正的文字')
+    this.writeOverlay(id, {
+      ...parsed.overlay,
+      textReplacements: [...parsed.overlay.textReplacements, { from, to, expectedMatches: state.matches }],
+    })
+    return this.get(id)
+  }
+
   /** Hide one reusable card from the everyday collection without touching its original asset. */
   archive(id: string): CharacterLibraryDetail {
     const entry = this.readId(id)
@@ -359,6 +656,11 @@ export class CharacterLibrary {
     return join(this.root, `${id}${META_SUFFIX}`)
   }
 
+  private overlayPath(id: string): string {
+    this.assertId(id)
+    return join(this.root, `${id}${OVERLAY_SUFFIX}`)
+  }
+
   private assetPath(meta: StoredCharacterMetadata): string {
     return join(this.root, `${meta.id}.${meta.transport}`)
   }
@@ -373,12 +675,40 @@ export class CharacterLibrary {
     }
   }
 
+  private readOverlay(id: string): StoredCharacterOverlay {
+    const path = this.overlayPath(id)
+    if (!existsSync(path)) return emptyOverlay()
+    try {
+      return parseOverlay(JSON.parse(readFileSync(path, 'utf8')))
+    } catch (error: unknown) {
+      throw new Error(`无法读取角色库本地调整 ${JSON.stringify(path)}`, { cause: error })
+    }
+  }
+
+  private writeOverlay(id: string, overlay: StoredCharacterOverlay): void {
+    mkdirSync(this.root, { recursive: true, mode: 0o700 })
+    const path = this.overlayPath(id)
+    const staging = join(this.root, `.${id}.${process.pid}.${randomUUID()}.overlay.tmp`)
+    try {
+      writeFileSync(staging, `${JSON.stringify(overlay, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+      renameSync(staging, path)
+    } finally {
+      rmSync(staging, { force: true })
+    }
+  }
+
   private parseStored(meta: StoredCharacterMetadata, data: Uint8Array): {
     readonly card: ImportedCharacterCard
+    readonly sourceCard: ImportedCharacterCard
+    readonly overlay: StoredCharacterOverlay
     readonly avatar?: CharacterLibraryAvatar
     readonly images: readonly CharacterLibraryImageAsset[]
   } {
-    if (meta.transport === 'json') return { card: parseCharacterCardJsonBytes(data), images: [] }
+    const overlay = this.readOverlay(meta.id)
+    if (meta.transport === 'json') {
+      const sourceCard = parseCharacterCardJsonBytes(data)
+      return { card: applyOverlay(sourceCard, overlay), sourceCard, overlay, images: [] }
+    }
     if (meta.transport === 'charx') {
       const charx = parseCharx(data)
       const avatar = charxAvatar(charx)
@@ -391,14 +721,20 @@ export class CharacterLibrary {
         data: image.data,
       }))
       return {
-        card: charx.card,
+        card: applyOverlay(charx.card, overlay),
+        sourceCard: charx.card,
+        overlay,
         images,
         ...(avatar === undefined ? {} : { avatar: { mediaType: avatar.mediaType, data: avatar.data } }),
       }
     }
     const payload = readCharacterCardPng(data)
     if (payload.keyword !== meta.metadataKeyword) throw new Error('character library PNG metadata keyword changed')
-    return { card: parseCharacterCardJson(payload.json), avatar: { mediaType: 'image/png', data }, images: [] }
+    const sourceCard = parseCharacterCardJson(payload.json)
+    return {
+      card: applyOverlay(sourceCard, overlay), sourceCard, overlay,
+      avatar: { mediaType: 'image/png', data }, images: [],
+    }
   }
 
   private readId(id: string): { readonly meta: StoredCharacterMetadata; readonly data: Uint8Array } {

@@ -40,6 +40,18 @@ export interface CharacterLibraryWorldInfo {
   readonly entries: readonly CharacterLibraryWorldInfoEntry[]
 }
 
+/** One user-installed display-only rule attached to a local Character Card copy. */
+export interface CharacterLibraryDisplayExtension {
+  readonly id: string
+  readonly scriptName: string
+  readonly originalFilename: string
+  readonly enabled: boolean
+  /** HTTPS origins explicitly approved for image loading by this extension. */
+  readonly remoteImageOrigins: readonly string[]
+  /** Card-owned rules superseded by an exact malformed-pattern repair. */
+  readonly replacedCardRegexNames: readonly string[]
+}
+
 /** One compact reusable Character Card shown in the library. */
 export interface CharacterLibrarySummary {
   readonly id: string
@@ -68,6 +80,10 @@ export interface CharacterLibraryDetail extends CharacterLibrarySummary {
   /** Original embedded entries; edits belong to a launched Session overlay. */
   readonly worldInfo?: CharacterLibraryWorldInfo
   readonly degradations: readonly CharacterImportDegradation[]
+  /** Display-only extensions stored beside, rather than inside, the original card asset. */
+  readonly displayExtensions: readonly CharacterLibraryDisplayExtension[]
+  /** Exact local text corrections applied without rewriting the imported asset. */
+  readonly localCorrectionCount: number
 }
 
 /** What changed when one local card file was added to the library. */

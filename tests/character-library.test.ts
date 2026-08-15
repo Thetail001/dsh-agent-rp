@@ -182,3 +182,54 @@ test('keeps the original CHARX archive reusable', (context) => {
   assert.equal(library.image(imported.id, 3), undefined)
   assert.deepEqual(library.asset(imported.id).data, archive)
 })
+
+test('keeps local wording fixes and standalone display regexes beside the original card', (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-character-overlay-'))
+  context.after(() => { rmSync(root, { recursive: true, force: true }) })
+  const raw = JSON.parse(readFileSync('tests/fixtures/manual-character-card.json', 'utf8')) as Record<string, unknown>
+  const cardData = raw.data as Record<string, unknown>
+  cardData.first_mes = '<角色图片><img>角色图image.png</img></角色图片>\n门还没锁。'
+  const extensions = cardData.extensions as Record<string, unknown>
+  const replacement = '<center><img src=https://cdn.example.com/$1 width=50% /></center>'
+  extensions.regex_scripts = [{
+    scriptName: '旧图片规则',
+    findRegex: '<(?:illustration|img)>.*[^A-Za-z0-9\\.\\s<\\/>]+(.*?)<\\/(?:illustration|img)>/g',
+    replaceString: replacement,
+    trimStrings: [], placement: [2], disabled: false, markdownOnly: true, promptOnly: false,
+    runOnEdit: true, substituteRegex: 0, minDepth: null, maxDepth: null,
+  }]
+  const data = new TextEncoder().encode(JSON.stringify(raw))
+  const library = new CharacterLibrary({ root })
+  const imported = library.importFile({ data, filename: 'overlay.json', mediaType: 'application/json' })
+
+  const corrected = library.replaceText(imported.id, '门还没锁', '门已经打开')
+  assert.equal(corrected.localCorrectionCount, 1)
+  assert.match(corrected.greetings[0]!, /门已经打开/u)
+  assert.deepEqual(library.asset(imported.id).data, data)
+
+  const extension = new TextEncoder().encode(JSON.stringify({
+    scriptName: '插图 DLC',
+    findRegex: '/<(?:illustration|img)>.*[^A-Za-z0-9\\.\\s<\\/>]+(.*?)<\\/(?:illustration|img)>/g',
+    replaceString: replacement,
+    trimStrings: [], placement: [2], disabled: false, markdownOnly: true, promptOnly: false,
+    runOnEdit: true,
+  }))
+  assert.throws(() => library.importDisplayExtension(imported.id, {
+    data: extension, filename: '插图.json', approvedImageOrigins: [],
+  }), /确认.*外部图片域名/u)
+  const extended = library.importDisplayExtension(imported.id, {
+    data: extension, filename: '插图.json', approvedImageOrigins: ['https://cdn.example.com'],
+  })
+  assert.equal(extended.displayExtensions.length, 1)
+  assert.deepEqual(extended.displayExtensions[0]?.remoteImageOrigins, ['https://cdn.example.com'])
+  assert.deepEqual(extended.displayExtensions[0]?.replacedCardRegexNames, ['旧图片规则'])
+  assert.match(extended.renderedGreetings[0]!, /<img src=https:\/\/cdn\.example\.com\/image\.png/u)
+  assert.doesNotMatch(extended.renderedGreetings[0]!, /角色图片/u)
+  assert.deepEqual(library.asset(imported.id).data, data)
+
+  const extensionId = extended.displayExtensions[0]!.id
+  assert.equal(library.setDisplayExtensionEnabled(imported.id, extensionId, false).displayExtensions[0]?.enabled, false)
+  assert.equal(library.setDisplayExtensionEnabled(imported.id, extensionId, true).displayExtensions[0]?.enabled, true)
+  assert.equal(library.removeDisplayExtension(imported.id, extensionId).displayExtensions.length, 0)
+  assert.deepEqual(library.asset(imported.id).data, data)
+})

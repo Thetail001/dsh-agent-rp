@@ -427,7 +427,8 @@ function stripDisplayOnlyCharacterMediaFields(value: string, raw: string): strin
   const filenames = fields.flatMap(field => [...field.matchAll(
     /<img(?:\s[^<>]*?)?>([^<>]*?\.(?:avif|gif|jpe?g|png|webp))<\/img\s*>/giu,
   )].map(match => match[1]?.trim() ?? '').filter(Boolean))
-  let visible = value.replace(/<角色图片(?:\s[^<>]*?)?>[\s\S]*?<\/角色图片\s*>/giu, '')
+  let visible = value.replace(/<角色图片(?:\s[^<>]*?)?>([\s\S]*?)<\/角色图片\s*>/giu, (_field, content: string) =>
+    /<img\b[^>]*\bsrc\s*=/iu.test(content) ? content : '')
   for (const filename of new Set(filenames)) visible = removeVisibleTextToken(visible, filename)
   return visible
 }
