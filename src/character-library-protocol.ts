@@ -41,6 +41,14 @@ export interface CharacterLibraryWorldInfo {
   readonly entries: readonly CharacterLibraryWorldInfoEntry[]
 }
 
+/** One bounded slice of a Character Card's read-only World Info. */
+export interface CharacterLibraryWorldInfoPage {
+  readonly name?: string
+  readonly offset: number
+  readonly total: number
+  readonly entries: readonly CharacterLibraryWorldInfoEntry[]
+}
+
 /** One user-installed display-only rule attached to a local Character Card copy. */
 export interface CharacterLibraryDisplayExtension {
   readonly id: string
@@ -79,6 +87,10 @@ export interface CharacterLibraryDetail extends CharacterLibrarySummary {
   /** Card-owned display rules applied for inert picker previews. */
   readonly renderedGreetings: readonly string[]
   readonly imageAssets: readonly CharacterLibraryImage[]
+  /** Public HTTPS origins referenced by card-owned images or application resources. */
+  readonly remoteResourceOrigins: readonly string[]
+  /** Card-owned resource origins explicitly approved by the local player. */
+  readonly approvedRemoteResourceOrigins: readonly string[]
   /** Original embedded entries; edits belong to a launched Session overlay. */
   readonly worldInfo?: CharacterLibraryWorldInfo
   readonly degradations: readonly CharacterImportDegradation[]

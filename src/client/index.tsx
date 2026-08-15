@@ -51,6 +51,7 @@ import {
   presetLibraryOptionLabel,
   type PresetLibraryImportResponse,
   type PresetLibraryListResponse,
+  type PresetLibraryRenameResponse,
   type PresetLibrarySummary,
 } from '../preset-library-http-protocol.ts'
 import {
@@ -69,6 +70,7 @@ import {
   type CharacterLibraryDetail,
   type CharacterLibraryImportResult,
   type CharacterLibrarySummary,
+  type CharacterLibraryWorldInfoPage,
 } from '../character-library-protocol.ts'
 import {
   PERSONA_LIBRARY_PATH,
@@ -297,6 +299,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly loadAvatar: (attachmentId: string) => Promise<string | undefined>
   readonly renameSession: (sessionId: SessionId, title: string) => Promise<void>
   readonly configurePreset: (sessionId: SessionId, request: PresetConfigurationRequest) => Promise<void>
+  readonly importPresetFile: (file: File) => Promise<PresetLibrarySummary>
   readonly importPreset: (sessionId: SessionId, file: File) => Promise<void>
   readonly managePresetLibrary: (sessionId: SessionId, request: PresetLibraryRequest) => Promise<void>
   readonly configureWorldInfo: (sessionId: SessionId, request: WorldInfoConfigurationRequest) => Promise<void>
@@ -541,6 +544,17 @@ function writeRoleplayPresetPreference(presetId: string): void {
   localStorage.setItem(roleplayPresetPreferenceKey, presetId)
 }
 
+async function renamePresetLibraryEntry(id: string, name: string): Promise<PresetLibrarySummary> {
+  const response = await fetch(`${PRESET_LIBRARY_PATH}?id=${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  const value = await response.json() as Partial<PresetLibraryRenameResponse> & { readonly error?: string }
+  if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `预设改名失败（${response.status}）`)
+  return value.entry
+}
+
 function usePresetPreference(
   listPresets: HeaderProps['listPresets'],
   enabled = true,
@@ -549,6 +563,8 @@ function usePresetPreference(
   readonly error?: string
   readonly presetId: string
   readonly selectPreset: (presetId: string) => void
+  readonly selectImportedPreset: (entry: PresetLibrarySummary) => void
+  readonly renamePreset: (id: string, name: string) => Promise<PresetLibrarySummary>
 } {
   const [entries, setEntries] = useState<readonly PresetLibrarySummary[]>()
   const [error, setError] = useState<string>()
@@ -585,6 +601,16 @@ function usePresetPreference(
       writeRoleplayPresetPreference(value)
       setPresetId(value)
     },
+    selectImportedPreset(entry) {
+      setEntries(current => [entry, ...(current ?? []).filter(candidate => candidate.id !== entry.id)])
+      writeRoleplayPresetPreference(entry.id)
+      setPresetId(entry.id)
+    },
+    async renamePreset(id, name) {
+      const entry = await renamePresetLibraryEntry(id, name)
+      setEntries(current => (current ?? []).map(candidate => candidate.id === id ? entry : candidate))
+      return entry
+    },
   }
 }
 
@@ -602,18 +628,66 @@ async function fetchCharacterDetail(id: string): Promise<CharacterLibraryDetail>
   return value.entry
 }
 
+const characterLibraryChangedEvent = 'agent-rp:character-library-changed'
+
+async function updateCharacterRemoteResource(
+  id: string,
+  origin: string,
+  approved: boolean,
+): Promise<CharacterLibraryDetail> {
+  const operation = approved ? 'approve' : 'revoke'
+  const response = await fetch(
+    `${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(id)}/remote-resources/${operation}?origin=${encodeURIComponent(origin)}`,
+    { method: 'POST', headers: { accept: 'application/json' } },
+  )
+  const value = await response.json() as {
+    readonly error?: string
+    readonly format?: 0
+    readonly entry?: CharacterLibraryDetail
+  }
+  if (!response.ok || value.entry === undefined) {
+    throw new Error(value.error ?? `外部资源授权失败（${response.status}）`)
+  }
+  window.dispatchEvent(new CustomEvent(characterLibraryChangedEvent, { detail: { id } }))
+  return value.entry
+}
+
+const characterWorldInfoPageSize = 40
+
+async function fetchCharacterWorldInfoPage(id: string, offset: number): Promise<CharacterLibraryWorldInfoPage> {
+  const query = new URLSearchParams({ offset: String(offset), limit: String(characterWorldInfoPageSize) })
+  const response = await fetch(`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(id)}/world-info?${query}`, {
+    headers: { accept: 'application/json' },
+  })
+  const value = await response.json() as {
+    readonly error?: string
+    readonly format?: 0
+    readonly page?: CharacterLibraryWorldInfoPage
+  }
+  if (!response.ok || value.format !== 0 || value.page === undefined) {
+    throw new Error(value.error ?? `角色世界书读取失败（${response.status}）`)
+  }
+  return value.page
+}
+
 function useCharacterDetail(libraryId: string | undefined): CharacterLibraryDetail | undefined {
   const [detail, setDetail] = useState<CharacterLibraryDetail>()
   useEffect(() => {
     let current = true
-    setDetail(undefined)
     if (libraryId === undefined) return () => { current = false }
-    void fetchCharacterDetail(libraryId).then(value => {
+    const load = (): void => { void fetchCharacterDetail(libraryId).then(value => {
       if (current) setDetail(value)
     }, () => {
       if (current) setDetail(undefined)
-    })
-    return () => { current = false }
+    }) }
+    setDetail(undefined)
+    load()
+    const changed = (event: Event): void => {
+      const id = (event as CustomEvent<{ readonly id?: unknown }>).detail?.id
+      if (id === libraryId) load()
+    }
+    window.addEventListener(characterLibraryChangedEvent, changed)
+    return () => { current = false; window.removeEventListener(characterLibraryChangedEvent, changed) }
   }, [libraryId])
   return detail
 }
@@ -635,6 +709,36 @@ function selectedBackground(
 
 const cardFrameRevealFallbackMs = 250
 
+function BlockedCardResources({ character, origins }: {
+  readonly character: CharacterLibraryDetail
+  readonly origins: readonly string[]
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+  return <div role="note" style={{
+    background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+    borderRadius: '10px', fontSize: '12px', lineHeight: 1.55, padding: '12px 14px',
+  }}>
+    <strong style={{ display: 'block', fontSize: '13px' }}>外部界面尚未加载</strong>
+    <span style={{ display: 'block', marginTop: '3px', opacity: .56 }}>
+      这段开场需要从 {origins.map(origin => new URL(origin).hostname).join('、')} 读取资源；确认后仍只在隔离页面中运行
+    </span>
+    <button type="button" disabled={busy} onClick={() => {
+      setBusy(true)
+      setError(undefined)
+      void (async () => {
+        for (const origin of origins) await updateCharacterRemoteResource(character.id, origin, true)
+      })().then(() => {
+        setBusy(false)
+      }, reason => {
+        setBusy(false)
+        setError(reason instanceof Error ? reason.message : String(reason))
+      })
+    }} style={{ ...miniButtonStyle, marginTop: '9px' }}>{busy ? '正在确认…' : '允许这些来源并加载'}</button>
+    {error !== undefined && <span role="alert" style={{ color: '#e88989', display: 'block', marginTop: '6px' }}>{error}</span>}
+  </div>
+}
+
 function CharacterDisplay({ compilation, statData, characterName, character, preview = false }: {
   readonly compilation: CompiledCharacterDisplay
   readonly statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined
@@ -650,9 +754,28 @@ function CharacterDisplay({ compilation, statData, characterName, character, pre
   }), [character, compilation, statData])
   return <div data-agent-rp-character-display data-agent-rp-display-diagnostics={cardFrameDiagnosticSummary(compiled.diagnostics)}
     style={{ display: 'grid', gap: '10px', minWidth: 0 }}>
-    {compiled.segments.map((segment, index) => segment.kind === 'markdown'
-      ? <MarkdownText key={index} text={segment.text} />
-      : <iframe
+    {compiled.segments.map((segment, index) => {
+      if (segment.kind === 'markdown') return <MarkdownText key={index} text={segment.text} />
+      if (preview && segment.interactive) return <div key={index} role="note" style={{
+            alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #202024)',
+            border: '1px solid var(--dsw-alias-border-l2, #39393c)', borderRadius: '10px',
+            display: 'flex', gap: '11px', minHeight: '92px', padding: '15px 16px',
+          }}>
+            <span aria-hidden="true" style={{ fontSize: '20px', opacity: .7 }}>◇</span>
+            <span style={{ minWidth: 0 }}>
+              <strong style={{ display: 'block', fontSize: '13px' }}>交互式开场</strong>
+              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.55, marginTop: '4px', opacity: .56 }}>
+                这段内容需要脚本或外部界面，开始新对话后再启动；角色库不会在后台运行它
+              </span>
+            </span>
+          </div>
+      if (!preview && character !== undefined) {
+        const approved = new Set(character.approvedRemoteResourceOrigins)
+        const blocked = segment.remoteOrigins.filter(origin =>
+          character.remoteResourceOrigins.includes(origin) && !approved.has(origin))
+        if (blocked.length > 0) return <BlockedCardResources key={index} character={character} origins={blocked} />
+      }
+      return <iframe
           key={index}
           title={`${characterName}的轻前端界面 ${index + 1}`}
           data-agent-rp-frame
@@ -671,7 +794,8 @@ function CharacterDisplay({ compilation, statData, characterName, character, pre
             height: preview ? 'min(52vh, 480px)' : '72px', maxWidth: '100%',
             visibility: preview ? 'visible' : 'hidden', width: '100%',
           }}
-        />)}
+        />
+    })}
   </div>
 }
 
@@ -689,7 +813,9 @@ function compactCharacterDisplayText(value: string): string {
     return document.body.textContent ?? ''
   }).join('\n')
   const summary = text.split(/\r?\n/gu).map(line => line.replace(/[\t ]+/gu, ' ').trim()).filter(Boolean).join(' · ')
-  return summary === '' && segments.some(segment => segment.kind !== 'markdown') ? '轻前端开场，展开查看' : summary
+  const hasFrontend = segments.some(segment => segment.kind !== 'markdown')
+  if (!hasFrontend) return summary
+  return summary === '' ? '包含轻前端界面，展开预览' : `${summary} · 包含轻前端界面`
 }
 
 function DisclosureChevron({ expanded, size = 15 }: { readonly expanded: boolean; readonly size?: number }) {
@@ -710,13 +836,37 @@ function SelectChevron() {
 
 function CharacterWorldInfoSection({ detail }: { readonly detail: CharacterLibraryDetail }) {
   const [open, setOpen] = useState(false)
-  const worldInfo = detail.worldInfo
-  if (worldInfo === undefined || worldInfo.entries.length === 0) return null
+  const [entries, setEntries] = useState(detail.worldInfo?.entries ?? [])
+  const [total, setTotal] = useState(detail.worldInfo?.entries.length ?? detail.worldInfoCount)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string>()
+  const loadingRef = useRef(false)
+  if (detail.worldInfoCount === 0) return null
+  const loadMore = (): void => {
+    if (loadingRef.current || entries.length >= total) return
+    loadingRef.current = true
+    setLoading(true)
+    setError(undefined)
+    void fetchCharacterWorldInfoPage(detail.id, entries.length).then(page => {
+      setEntries(current => [...current, ...page.entries])
+      setTotal(page.total)
+      loadingRef.current = false
+      setLoading(false)
+    }, reason => {
+      loadingRef.current = false
+      setLoading(false)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }
   return <section style={{
     background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
     borderRadius: '10px', margin: '4px 0 12px', overflow: 'hidden',
   }}>
-    <button type="button" aria-expanded={open} onClick={() => { setOpen(value => !value) }} title="查看角色卡内置世界书" style={{
+    <button type="button" aria-expanded={open} onClick={() => {
+      const next = !open
+      setOpen(next)
+      if (next && entries.length === 0) loadMore()
+    }} title="查看角色卡内置世界书" style={{
       alignItems: 'center', background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer',
       display: 'flex', font: 'inherit', gap: '9px', padding: '10px 11px', textAlign: 'left', width: '100%',
     }}>
@@ -724,12 +874,12 @@ function CharacterWorldInfoSection({ detail }: { readonly detail: CharacterLibra
       <span style={{
         background: `color-mix(in srgb, ${color} 14%, transparent)`, borderRadius: '999px',
         color, fontSize: '10px', padding: '2px 7px',
-      }}>{worldInfo.entries.length} 条</span>
+      }}>{detail.worldInfoCount} 条</span>
       <span style={{ fontSize: '10px', marginLeft: 'auto', opacity: .46 }}>原卡 · 只读</span>
       <DisclosureChevron expanded={open} />
     </button>
     {open && <div style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'grid', gap: '6px', padding: '8px' }}>
-      {worldInfo.entries.map((entry, index) => {
+      {entries.map((entry, index) => {
         const title = entry.name?.trim() || entry.comment?.trim() || `条目 ${index + 1}`
         const activation = !entry.enabled ? '已停用' : entry.constant ? '常驻'
           : entry.keys.length === 0 ? '无关键词' : `${entry.useRegex ? '正则' : '关键词'} · ${entry.keys.length}`
@@ -749,6 +899,14 @@ function CharacterWorldInfoSection({ detail }: { readonly detail: CharacterLibra
           </div>
         </details>
       })}
+      {loading && <div role="status" style={{ fontSize: '11px', opacity: .52, padding: '10px', textAlign: 'center' }}>正在读取世界书…</div>}
+      {error !== undefined && <div role="alert" style={{ alignItems: 'center', color: '#e88989', display: 'flex', fontSize: '11px', gap: '8px', justifyContent: 'center', padding: '8px' }}>
+        <span>{error}</span>
+        <button type="button" onClick={loadMore} style={miniButtonStyle}>重试</button>
+      </div>}
+      {!loading && error === undefined && entries.length < total && <button type="button" onClick={loadMore} style={{
+        ...secondaryButtonStyle, justifySelf: 'center', margin: '4px 0 2px', minWidth: '150px',
+      }}>继续显示（{entries.length}/{total}）</button>}
     </div>}
   </section>
 }
@@ -1115,6 +1273,52 @@ function DetailSection({ title, text }: { readonly title: string; readonly text:
   return <section style={{ marginTop: '18px' }}>
     <h3 style={{ fontSize: '12px', fontWeight: 600, margin: '0 0 7px', opacity: 0.56 }}>{title}</h3>
     <p style={{ fontSize: '13px', lineHeight: 1.7, margin: 0, whiteSpace: 'pre-wrap' }}>{text}</p>
+  </section>
+}
+
+function CharacterRemoteResourcesSection({ detail, onChange }: {
+  readonly detail: CharacterLibraryDetail
+  readonly onChange?: (detail: CharacterLibraryDetail) => void
+}) {
+  const [workingOrigin, setWorkingOrigin] = useState<string>()
+  const [error, setError] = useState<string>()
+  if (detail.remoteResourceOrigins.length === 0) return null
+  const approved = new Set(detail.approvedRemoteResourceOrigins)
+  return <section style={{
+    background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+    borderRadius: '10px', margin: '12px 0', overflow: 'hidden',
+  }}>
+    <div style={{ padding: '10px 11px 8px' }}>
+      <strong style={{ display: 'block', fontSize: '12px' }}>外部资源</strong>
+      <span style={{ display: 'block', fontSize: '10px', lineHeight: 1.5, marginTop: '3px', opacity: .5 }}>
+        卡片引用了远程图片或界面文件；只允许你确认过的来源，并始终在隔离页面中运行
+      </span>
+    </div>
+    {detail.remoteResourceOrigins.map(origin => {
+      const enabled = approved.has(origin)
+      return <div key={origin} style={{
+        alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)',
+        display: 'flex', gap: '9px', padding: '8px 11px',
+      }}>
+        <span title={origin} style={{ fontSize: '11px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {new URL(origin).hostname}
+        </span>
+        <button type="button" disabled={workingOrigin !== undefined} onClick={() => {
+          setWorkingOrigin(origin)
+          setError(undefined)
+          void updateCharacterRemoteResource(detail.id, origin, !enabled).then(value => {
+            setWorkingOrigin(undefined)
+            onChange?.(value)
+          }, reason => {
+            setWorkingOrigin(undefined)
+            setError(reason instanceof Error ? reason.message : String(reason))
+          })
+        }} style={{ ...miniButtonStyle, marginLeft: 'auto' }}>
+          {workingOrigin === origin ? '处理中…' : enabled ? '停止加载' : '允许加载'}
+        </button>
+      </div>
+    })}
+    {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '11px', padding: '0 11px 9px' }}>{error}</div>}
   </section>
 }
 
@@ -1802,6 +2006,7 @@ type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick
   | 'migrateRpDistributionChat'
   | 'startCharacterSession'
   | 'listPresets'
+  | 'importPresetFile'
   | 'listPersonas'
   | 'savePersona'
   | 'deletePersona'
@@ -1814,7 +2019,7 @@ function BlankRoleplayLauncher({
   session, sessionId,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, migrateRpDistributionChat,
   startCharacterSession,
-  listPresets, listPersonas, savePersona, deletePersona,
+  listPresets, importPresetFile, listPersonas, savePersona, deletePersona,
   workspaceSettings, workspaceList,
 }: BlankRoleplayLauncherProps) {
   const [libraryOpen, setLibraryOpen] = useState(false)
@@ -1856,6 +2061,7 @@ function BlankRoleplayLauncher({
         sessionId, character, greetingIndex, persona, presetId,
       )}
       listPresets={listPresets}
+      importPresetFile={importPresetFile}
       listPersonas={listPersonas}
       savePersona={savePersona}
       deletePersona={deletePersona}
@@ -2687,7 +2893,7 @@ function RpDistributionBridgeSection({
 }
 
 function RoleplayHeader({
-  sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
+  sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPresetFile, importPreset, managePresetLibrary,
   configureWorldInfo, importWorldInfo,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, migrateRpDistributionChat,
   startCharacterSession, exportChat,
@@ -2948,6 +3154,7 @@ function RoleplayHeader({
         {projection.persona !== undefined && <DetailSection title={`Persona · ${projection.persona.name}`} text={
           projection.persona.description || '没有额外人物设定'
         } />}
+        {characterDetail !== undefined && <CharacterRemoteResourcesSection detail={characterDetail} />}
         {characterDetail !== undefined && <CharacterAssetsSection detail={characterDetail} sessionId={sessionId} />}
         {projection.preset !== undefined && <DetailSection title="运行预设" text={[
           `${projection.preset.promptCount} 个提示模块，当前启用 ${projection.preset.enabledCount} 个`,
@@ -2990,6 +3197,7 @@ function RoleplayHeader({
         sessionId, character, greetingIndex, persona, presetId, memory,
       )}
       listPresets={listPresets}
+      importPresetFile={importPresetFile}
       listPersonas={listPersonas}
       savePersona={savePersona}
       deletePersona={deletePersona}
@@ -3231,6 +3439,9 @@ function worldInfoReason(entry: WorldInfoEntryProjection): { readonly title: str
               : '模板执行失败，已只跳过这一条',
     }
     case 'regex-unsupported': return { title: '暂不执行', detail: '该条目使用正则关键词；当前只执行确定性的文字匹配' }
+    case 'regex-invalid': return { title: '表达式无效', detail: '该条目的正则关键词无法解析，已跳过且不会影响其他条目' }
+    case 'regex-execution-limit': return { title: '已安全中止', detail: '该条目的正则匹配超过执行上限，已在隔离环境中停止' }
+    case 'regex-resource-limit': return { title: '超过安全上限', detail: '该条目的正则输入或累计评估量超过本轮上限' }
     case 'primary-unmatched': return { title: '等待关键词', detail: entry.keys.length === 0 ? '没有可用于激活的主关键词' : '当前已发送的对话没有命中主关键词' }
     case 'secondary-unmatched': return { title: '次要条件未满足', detail: '主关键词已经出现，但次要关键词规则尚未满足' }
     case 'budget-excluded': return { title: '超出预算', detail: '条目已匹配，但本书的 token 预算优先保留了其他条目' }
@@ -3432,7 +3643,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
             {(entry.useRegex || entry.hasDecorators || book.recursiveScanning || book.degradations.length > 0) && <details style={{ fontSize: '12px', lineHeight: 1.65, marginTop: '17px', opacity: .68 }}>
               <summary style={{ cursor: 'pointer' }}>兼容性信息</summary>
               <div style={{ marginTop: '7px' }}>{[
-                entry.useRegex ? '正则关键词已保留，当前不执行' : '',
+                entry.useRegex ? '正则关键词在受限 QuickJS 环境中执行' : '',
                 entry.hasDecorators ? '装饰器已保留，当前不执行' : '',
                 book.recursiveScanning ? '递归扫描已保留，当前不执行' : '',
                 ...book.degradations,
@@ -3571,7 +3782,7 @@ function characterDegradationLabel(value: CharacterLibraryDetail['degradations']
 
 function CharacterLibraryDialog({
   currentCharacterName, currentCharacterId, listCharacters, readCharacter, setCharacterArchived, importCharacterFile,
-  listPresets, listPersonas, savePersona, deletePersona, onClose, onStart,
+  listPresets, importPresetFile, listPersonas, savePersona, deletePersona, onClose, onStart,
 }: {
   readonly currentCharacterName: string
   readonly currentCharacterId?: string
@@ -3580,6 +3791,7 @@ function CharacterLibraryDialog({
   readonly setCharacterArchived: HeaderProps['setCharacterArchived']
   readonly importCharacterFile: HeaderProps['importCharacterFile']
   readonly listPresets: HeaderProps['listPresets']
+  readonly importPresetFile: HeaderProps['importPresetFile']
   readonly listPersonas: HeaderProps['listPersonas']
   readonly savePersona: HeaderProps['savePersona']
   readonly deletePersona: HeaderProps['deletePersona']
@@ -3596,7 +3808,9 @@ function CharacterLibraryDialog({
   const [selected, setSelected] = useState<CharacterLibraryDetail>()
   const [greetingIndex, setGreetingIndex] = useState(0)
   const [expandedGreetingIndex, setExpandedGreetingIndex] = useState<number | undefined>(0)
-  const { entries: presets, error: presetError, presetId, selectPreset } = usePresetPreference(listPresets)
+  const {
+    entries: presets, error: presetError, presetId, selectPreset, selectImportedPreset, renamePreset,
+  } = usePresetPreference(listPresets)
   const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
   const [personaId, setPersonaId] = useState('')
   const [editingPersona, setEditingPersona] = useState(false)
@@ -3611,10 +3825,13 @@ function CharacterLibraryDialog({
   const [starting, setStarting] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [importingPreset, setImportingPreset] = useState(false)
+  const [renamingPreset, setRenamingPreset] = useState(false)
   const [draggingFile, setDraggingFile] = useState(false)
   const [actionNotice, setActionNotice] = useState<string>()
   const [error, setError] = useState<string>()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const presetInputRef = useRef<HTMLInputElement | null>(null)
   const selectionRequestRef = useRef(0)
   useEffect(() => {
     let current = true
@@ -3737,6 +3954,19 @@ function CharacterLibraryDialog({
       setActionNotice(`${notice}${entry.tavernHelper === undefined ? '' : ` · Tavern Helper：${tavernHelperSummaryText(entry.tavernHelper)}`}`)
     }).catch(importError => {
       setImporting(false)
+      setError(importError instanceof Error ? importError.message : String(importError))
+    })
+  }
+  const importPresetSelection = (file: File): void => {
+    setImportingPreset(true)
+    setError(undefined)
+    setActionNotice(undefined)
+    void importPresetFile(file).then(entry => {
+      selectImportedPreset(entry)
+      setImportingPreset(false)
+      setActionNotice(`已导入并选中预设「${entry.name}」`)
+    }, importError => {
+      setImportingPreset(false)
       setError(importError instanceof Error ? importError.message : String(importError))
     })
   }
@@ -3910,7 +4140,7 @@ function CharacterLibraryDialog({
               borderLeft: '2px solid color-mix(in srgb, #d6a24d 70%, transparent)', fontSize: '11px', lineHeight: 1.55,
               margin: '4px 0 12px', opacity: .62, padding: '2px 0 2px 10px',
             }}>
-              原卡仍保留但当前不执行：{selected.degradations.map(characterDegradationLabel).join('、')}
+              兼容提醒 · 尚未执行（原卡内容已保留）：{selected.degradations.map(characterDegradationLabel).join('、')}
             </div>}
             {selected.localCorrectionCount > 0 && <div style={{
               borderLeft: `2px solid color-mix(in srgb, ${color} 62%, transparent)`, fontSize: '11px', lineHeight: 1.55,
@@ -3924,6 +4154,7 @@ function CharacterLibraryDialog({
               onNotice={message => { setActionNotice(message); setError(undefined) }}
               onError={message => { setError(message === '' ? undefined : message) }}
             />
+            <CharacterRemoteResourcesSection detail={selected} onChange={entry => { setSelected(entry) }} />
             <CharacterAssetsSection detail={selected} />
             <label style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '8px 0 8px', opacity: .65 }}>选择开场</label>
             <div style={{ display: 'grid', gap: '8px' }}>
@@ -3973,7 +4204,36 @@ function CharacterLibraryDialog({
                 </div>
               })}
             </div>
-            <label htmlFor="agent-rp-session-preset" style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '20px 0 8px', opacity: .65 }}>对话预设</label>
+            <div style={{ alignItems: 'center', display: 'flex', margin: '20px 0 8px' }}>
+              <label htmlFor="agent-rp-session-preset" style={{ fontSize: '12px', fontWeight: 620, opacity: .65 }}>对话预设</label>
+              <input ref={presetInputRef} type="file" accept=".json,application/json" hidden onChange={event => {
+                const file = event.currentTarget.files?.[0]
+                event.currentTarget.value = ''
+                if (file !== undefined) importPresetSelection(file)
+              }} />
+              <button type="button" disabled={importingPreset} onClick={() => { presetInputRef.current?.click() }} style={{
+                background: 'transparent', border: 0, color, cursor: importingPreset ? 'wait' : 'pointer',
+                font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: 0,
+              }}>{importingPreset ? '正在导入…' : '导入预设'}</button>
+              {presetId !== '' && <button type="button" disabled={renamingPreset} onClick={() => {
+                const preset = presets?.find(entry => entry.id === presetId)
+                if (preset === undefined) return
+                const name = window.prompt('预设名称', preset.name)?.trim()
+                if (name === undefined || name === '' || name === preset.name) return
+                setRenamingPreset(true)
+                setError(undefined)
+                void renamePreset(preset.id, name).then(entry => {
+                  setRenamingPreset(false)
+                  setActionNotice(`预设已改名为「${entry.name}」`)
+                }, reason => {
+                  setRenamingPreset(false)
+                  setError(reason instanceof Error ? reason.message : String(reason))
+                })
+              }} style={{
+                background: 'transparent', border: 0, color, cursor: renamingPreset ? 'wait' : 'pointer',
+                font: 'inherit', fontSize: '12px', marginLeft: '12px', padding: 0,
+              }}>{renamingPreset ? '正在改名…' : '改名'}</button>}
+            </div>
             <div style={{ position: 'relative' }}>
               <select id="agent-rp-session-preset" value={presetId} onChange={event => { selectPreset(event.target.value) }} style={{
                 appearance: 'none', background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
@@ -3990,12 +4250,12 @@ function CharacterLibraryDialog({
                 : presets === undefined
                 ? '正在读取预设…'
                 : presets.length === 0
-                  ? '预设库暂无内容，可在角色会话的预设设置中导入'
+                  ? '预设库暂无内容，可在这里导入社区推荐的预设 JSON'
                   : (() => {
                       const preset = presets.find(entry => entry.id === presetId)
                       return preset === undefined
                         ? '新会话不会启用酒馆预设'
-                        : `${preset.enabledCount}/${preset.promptCount} 项启用${preset.regexScriptCount === 0 ? '' : ` · ${preset.regexScriptCount} 条正则`}`
+                        : `${preset.enabledCount}/${preset.promptCount} 项启用${preset.regexScriptCount === 0 ? '' : ` · ${preset.regexScriptCount} 条正则`} · 开聊后可在「会话设置 → 预设」调整开关`
                     })()}
             </div>
             <div style={{ alignItems: 'center', display: 'flex', margin: '20px 0 7px' }}>
@@ -4125,7 +4385,7 @@ function CharacterLibraryDialog({
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '9px',
             color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '8px 13px',
           }}>取消</button>
-          <button type="button" disabled={collection === 'archived' || selected === undefined || starting} onClick={() => {
+          <button type="button" disabled={collection === 'archived' || selected === undefined || starting || importingPreset} onClick={() => {
             if (selected === undefined) return
             setStarting(true)
             setError(undefined)
@@ -4154,6 +4414,7 @@ type PresetPromptProjection = PresetProjection['prompts'][number]
 type PresetLibraryEntry = AgentRpProjection['presetLibrary'][number]
 type PresetLibraryRequest = { readonly operation: 'list' }
   | { readonly operation: 'select' | 'delete'; readonly id: string }
+  | { readonly operation: 'rename'; readonly id: string; readonly name: string }
   | { readonly operation: 'save'; readonly name: string }
 
 function roleLabel(role: PresetPromptProjection['role']): string {
@@ -4936,11 +5197,12 @@ function PresetImportDialog({ entries, onClose, onImport, onLibrary }: {
   </div>
 }
 
-function PresetLibraryRow({ entry, active = false, busy = false, onSelect, onDelete }: {
+function PresetLibraryRow({ entry, active = false, busy = false, onSelect, onRename, onDelete }: {
   readonly entry: PresetLibraryEntry
   readonly active?: boolean
   readonly busy?: boolean
   readonly onSelect: () => void
+  readonly onRename?: () => void
   readonly onDelete?: () => void
 }) {
   return <div style={{
@@ -4958,6 +5220,7 @@ function PresetLibraryRow({ entry, active = false, busy = false, onSelect, onDel
       </div>}
     </div>
     <button type="button" disabled={busy || active} onClick={onSelect} style={{ ...miniButtonStyle, marginLeft: 'auto' }}>{active ? '已选' : '使用'}</button>
+    {onRename !== undefined && <button type="button" disabled={busy} onClick={onRename} style={miniButtonStyle}>改名</button>}
     {onDelete !== undefined && <button type="button" disabled={busy} onClick={onDelete} style={miniButtonStyle}>删除</button>}
   </div>
 }
@@ -4989,6 +5252,15 @@ function PresetLibraryDialog({ entries, activeId, onClose, onAction }: {
           setError(undefined)
           void onAction({ operation: 'select', id: entry.id }).catch((reason: unknown) => {
             setError(reason instanceof Error ? reason.message : '预设选择失败')
+            setBusy(false)
+          })
+        }} onRename={() => {
+          const name = window.prompt('预设名称', entry.name)?.trim()
+          if (name === undefined || name === '' || name === entry.name) return
+          setBusy(true)
+          setError(undefined)
+          void onAction({ operation: 'rename', id: entry.id, name }).then(() => { setBusy(false) }, (reason: unknown) => {
+            setError(reason instanceof Error ? reason.message : '改名失败')
             setBusy(false)
           })
         }} onDelete={() => {
@@ -6975,6 +7247,7 @@ function roleplayComposerDockComponent(
         activeCharacterDetail?.id,
         activeCharacterDetail?.imageAssets,
         activeCharacterDetail?.displayExtensions.filter(extension => extension.enabled),
+        activeCharacterDetail?.approvedRemoteResourceOrigins,
       ])
       const existingMount = existing === null ? undefined : mounted.get(existing)
       if (existing !== null && existingMount !== undefined) {
@@ -7701,7 +7974,7 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok) throw new Error(response.error.message)
     if (!response.value.matched) throw new Error('当前 Host 未启用身份管理')
   }
-  const importPreset = async (sessionId: SessionId, file: File): Promise<void> => {
+  const importPresetFile = async (file: File): Promise<PresetLibrarySummary> => {
     if (!/\.json$/iu.test(file.name)) throw new Error('请选择 SillyTavern 预设 JSON 文件')
     const response = await fetch(`${PRESET_LIBRARY_PATH}?filename=${encodeURIComponent(file.name)}`, {
       method: 'POST',
@@ -7710,7 +7983,14 @@ export function apply(ctx: ClientContext): void {
     })
     const value = await response.json() as Partial<PresetLibraryImportResponse> & { readonly error?: string }
     if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `预设导入失败（${response.status}）`)
-    await managePresetLibrary(sessionId, { operation: 'select', id: value.entry.id })
+    const entries = await listPresets()
+    const entry = entries.find(candidate => candidate.id === value.entry?.id)
+    if (entry === undefined) throw new Error('预设已导入，但预设库没有返回对应条目')
+    return entry
+  }
+  const importPreset = async (sessionId: SessionId, file: File): Promise<void> => {
+    const entry = await importPresetFile(file)
+    await managePresetLibrary(sessionId, { operation: 'select', id: entry.id })
   }
   const configurePreset = async (sessionId: SessionId, request: PresetConfigurationRequest): Promise<void> => {
     const scope = ctx.sessions.scope(sessionId)
@@ -7907,7 +8187,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} migrateRpDistributionChat={migrateRpDistributionChat} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} migrateRpDistributionChat={migrateRpDistributionChat} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -7924,7 +8204,7 @@ export function apply(ctx: ClientContext): void {
     probe={probeRpDistribution} transfer={transferRpDistribution} receive={receiveRpDistribution} />))
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left', id: 'agent-rp-blank-launcher', order: -100,
-  }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} migrateRpDistributionChat={migrateRpDistributionChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} migrateRpDistributionChat={migrateRpDistributionChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} importPresetFile={importPresetFile} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-tavern-variables',
   }, () => null))

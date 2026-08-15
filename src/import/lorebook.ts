@@ -20,6 +20,9 @@ export type LorebookActivationReason =
   | 'template-unsupported'
   | 'template-error'
   | 'regex-unsupported'
+  | 'regex-invalid'
+  | 'regex-execution-limit'
+  | 'regex-resource-limit'
   | 'primary-unmatched'
   | 'secondary-unmatched'
   | 'budget-excluded'
@@ -47,6 +50,33 @@ export interface InspectedLorebook extends ActiveLorebook {
 export interface LorebookActivationOptions {
   readonly renderTemplate?: (template: string, target?: EjsTemplateTarget) => EjsTemplateResult
   readonly worldInfoBookId?: string
+  /** Isolated regular-expression runtime created once for each inspection pass. */
+  readonly regexEngine?: LorebookRegexEngine
+}
+
+/** Stable result from one bounded regular-expression batch. */
+export type LorebookRegexMatchResult =
+  | { readonly ok: true; readonly matchedKeys: readonly string[] }
+  | { readonly ok: false; readonly kind: 'invalid' | 'execution-limit' | 'resource-limit' }
+
+/** One disposable matcher scoped to a single World Info inspection pass. */
+export interface LorebookRegexMatcher {
+  match(keys: readonly string[], text: string, caseSensitive: boolean): LorebookRegexMatchResult
+  dispose(): void
+}
+
+/** Factory backed by an isolated runtime rather than the Host JavaScript engine. */
+export interface LorebookRegexEngine {
+  createRegexMatcher(): LorebookRegexMatcher
+}
+
+function createRegexMatcher(options: LorebookActivationOptions): LorebookRegexMatcher | undefined {
+  try {
+    return options.regexEngine?.createRegexMatcher()
+  } catch {
+    // Runtime initialization failure degrades complex keys to the existing literal-only path.
+    return undefined
+  }
 }
 
 /** One book participating in a shared Session-level World Info budget. */
@@ -117,11 +147,35 @@ function literalRegexMatches(
   return keys.filter(key => includesKey(text, key, entry.caseSensitive, false))
 }
 
+type RegexMatchDecision =
+  | { readonly ok: true; readonly matchedKeys: readonly string[] }
+  | { readonly ok: false; readonly reason: Extract<LorebookActivationReason,
+    'regex-unsupported' | 'regex-invalid' | 'regex-execution-limit' | 'regex-resource-limit'> }
+
+function regexMatches(
+  keys: readonly string[],
+  text: string,
+  entry: ImportedLorebookEntry,
+  matcher: LorebookRegexMatcher | undefined,
+): RegexMatchDecision {
+  if (matcher === undefined) {
+    const matchedKeys = literalRegexMatches(keys, text, entry)
+    return matchedKeys === undefined
+      ? { ok: false, reason: 'regex-unsupported' }
+      : { ok: true, matchedKeys }
+  }
+  const result = matcher.match(keys, text, entry.caseSensitive)
+  if (result.ok) return { ok: true, matchedKeys: result.matchedKeys }
+  return { ok: false, reason: result.kind === 'invalid' ? 'regex-invalid'
+    : result.kind === 'execution-limit' ? 'regex-execution-limit' : 'regex-resource-limit' }
+}
+
 function candidate(
   entry: ImportedLorebookEntry,
   messages: readonly string[],
   bookDepth: number | undefined,
   options: LorebookActivationOptions,
+  regexMatcher?: LorebookRegexMatcher,
 ): CandidateDecision {
   const decision = (
     candidate: boolean,
@@ -142,12 +196,35 @@ function candidate(
     const depth = entry.scanDepth ?? bookDepth ?? messages.length
     const text = depth === 0 ? '' : messages.slice(-Math.max(0, Math.trunc(depth))).join('\n')
     if (entry.useRegex) {
-      const matchedKeys = literalRegexMatches(entry.keys, text, entry)
-      activation = matchedKeys === undefined
-        ? decision(false, 'regex-unsupported')
-        : matchedKeys.length === 0
-          ? decision(false, 'primary-unmatched', matchedKeys)
-          : decision(true, 'active-keyword', matchedKeys)
+      const primary = regexMatches(entry.keys, text, entry, regexMatcher)
+      if (!primary.ok) {
+        activation = decision(false, primary.reason)
+      } else if (primary.matchedKeys.length === 0) {
+        const matchedKeys = primary.matchedKeys
+        activation = decision(false, 'primary-unmatched', matchedKeys)
+      } else {
+        const matchedKeys = primary.matchedKeys
+        const secondary = regexMatches(entry.secondaryKeys, text, entry, regexMatcher)
+        if (!secondary.ok) {
+          activation = decision(false, secondary.reason, matchedKeys)
+        } else if (!entry.selective || entry.secondaryKeys.length === 0) {
+          const matchedSecondaryKeys = secondary.matchedKeys
+          activation = decision(true, 'active-keyword', matchedKeys, matchedSecondaryKeys)
+        } else {
+          const matchedSecondaryKeys = secondary.matchedKeys
+          const matches = entry.secondaryKeys.map(key => matchedSecondaryKeys.includes(key))
+          const secondaryMatches = entry.secondaryLogic === 'and-any' ? matches.some(Boolean)
+            : entry.secondaryLogic === 'and-all' ? matches.every(Boolean)
+              : entry.secondaryLogic === 'not-any' ? matches.every(match => !match)
+                : matches.some(match => !match)
+          activation = decision(
+            secondaryMatches,
+            secondaryMatches ? 'active-keyword' : 'secondary-unmatched',
+            matchedKeys,
+            matchedSecondaryKeys,
+          )
+        }
+      }
     } else {
       const matchedKeys = keywordMatches(entry.keys, text, entry)
       if (matchedKeys.length === 0) {
@@ -249,10 +326,24 @@ export function inspectLorebook(
   messages: readonly string[],
   options: LorebookActivationOptions = {},
 ): InspectedLorebook {
+  const matcher = createRegexMatcher(options)
+  try {
+    return inspectLorebookWithMatcher(book, messages, options, matcher)
+  } finally {
+    matcher?.dispose()
+  }
+}
+
+function inspectLorebookWithMatcher(
+  book: ImportedLorebook,
+  messages: readonly string[],
+  options: LorebookActivationOptions,
+  matcher: LorebookRegexMatcher | undefined,
+): InspectedLorebook {
   const decisions = book.entries.map((entry, index) => ({
     index,
     entry,
-    decision: candidate(entry, messages, book.scanDepth, options),
+    decision: candidate(entry, messages, book.scanDepth, options, matcher),
   }))
   const candidates = decisions.filter(value => value.decision.candidate)
   const included = new Set(budgeted(book, candidates.map(({ index, entry, decision }) => ({
@@ -287,10 +378,21 @@ export function inspectLorebooks(
   messages: readonly string[],
   options: LorebookActivationOptions & { readonly tokenBudget?: number } = {},
 ): InspectedLorebookCollection {
-  const inspected = books.map(book => ({
-    id: book.id,
-    inspected: inspectLorebook(book.lorebook, messages, { ...options, worldInfoBookId: book.id }),
-  }))
+  const matcher = createRegexMatcher(options)
+  let inspected: { readonly id: string; readonly inspected: InspectedLorebook }[]
+  try {
+    inspected = books.map(book => ({
+      id: book.id,
+      inspected: inspectLorebookWithMatcher(
+        book.lorebook,
+        messages,
+        { ...options, worldInfoBookId: book.id },
+        matcher,
+      ),
+    }))
+  } finally {
+    matcher?.dispose()
+  }
   const candidates = inspected.flatMap((book, bookIndex) => book.inspected.entries.flatMap(decision => {
     if (!decision.active) return []
     const entry = books[bookIndex]!.lorebook.entries[decision.index]!

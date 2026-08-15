@@ -101,7 +101,6 @@ function parseEntry(
   }
   const displayName = optionalString(entry.comment, `${path}.comment`)
   const supportedPosition = position === 0 || position === 1
-  if (useRegex) degradations.add('entry-regex')
   if (decorated) degradations.add('entry-decorators')
   if (!supportedPosition) degradations.add('entry-unsupported-position')
   if (usesProbability) degradations.add('entry-probability')

@@ -9,6 +9,7 @@ type LibraryRequest =
   | { readonly operation: 'list' }
   | { readonly operation: 'select'; readonly id: string }
   | { readonly operation: 'save'; readonly name: string }
+  | { readonly operation: 'rename'; readonly id: string; readonly name: string }
   | { readonly operation: 'delete'; readonly id: string }
 
 function object(value: unknown): Record<string, unknown> {
@@ -31,6 +32,9 @@ export function parsePresetLibraryRequest(source: string): LibraryRequest {
   }
   if (request.operation === 'save' && typeof request.name === 'string') {
     return { operation: 'save', name: request.name }
+  }
+  if (request.operation === 'rename' && typeof request.id === 'string' && typeof request.name === 'string') {
+    return { operation: 'rename', id: request.id, name: request.name }
   }
   throw new Error('预设库请求包含未知操作或无效字段')
 }
@@ -66,6 +70,8 @@ export function executePresetLibraryCommand(
     library.save(request.name, active.preset)
   } else if (request.operation === 'delete') {
     library.delete(request.id)
+  } else if (request.operation === 'rename') {
+    library.rename(request.id, request.name)
   }
   return {
     kind: 'success',

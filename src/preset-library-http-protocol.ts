@@ -28,6 +28,12 @@ export interface PresetLibraryImportResponse {
   readonly entry: { readonly id: string }
 }
 
+/** Updated summary returned after renaming one local preset. */
+export interface PresetLibraryRenameResponse {
+  readonly format: 0
+  readonly entry: PresetLibrarySummary
+}
+
 /** Disambiguate same-name presets without exposing prompt or script contents. */
 export function presetLibraryOptionLabel(
   entry: PresetLibrarySummary,

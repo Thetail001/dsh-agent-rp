@@ -18,6 +18,8 @@ This reference defines what the Agent RP importer preserves and what it executes
 
 Card `system_prompt` replaces the fallback identity instruction when non-empty and supports `{{original}}`. `post_history_instructions` is appended after the Agent RP behavioral contract. `{{char}}`, `<char>`, and `<bot>` resolve to the V3 nickname when present, otherwise the card name.
 
+Display-regex output containing a complete HTML document runs in the isolated light-frontend frame even when a card labels its Markdown fence as `text` instead of `html`; ordinary fenced markup examples remain inert. Collapsed greeting choices do not expose frontend source and create the preview frame only after expansion. Character-library World Info bodies are fetched in bounded pages only after the read-only section opens, so selecting a card does not transfer or mount every embedded entry.
+
 ## Character lorebooks
 
 Enabled entries support constant activation, literal primary keys, selective secondary keys, case sensitivity, scan depth, insertion order, `before_char` and `after_char` placement, priority, and token budget. Each active entry enters the prompt once.
@@ -30,7 +32,7 @@ SillyTavern World Info JSON with a top-level `entries` object or array is accept
 
 Regular-expression keys, decorators, probability, vector matching, timed effects, recursive controls, character-field matching, and advanced insertion positions remain preserved but inert. The importer does not execute a partially supported entry when its unsupported fields would change whether or where it activates.
 
-V3 regex keys, recursive scanning, and decorated content are retained but never executed. The import result lists each disabled capability. Each source book keeps its own cap, then every active book shares a player-adjustable Session budget (4096 tokens by default); priority decides which matched entries survive that final cap. `ignoreBudget` can bypass a source-book cap but not the Session safety cap. Token budgeting uses a deterministic local estimate; it does not claim byte-for-byte parity with a SillyTavern model tokenizer.
+V3 entries marked for regex matching still activate when every key is equivalent to a literal substring lookup. Keys that require an actual regular-expression engine, recursive scanning, and decorated content are retained but never executed. The import result lists each disabled capability. Each source book keeps its own cap, then every active book shares a player-adjustable Session budget (4096 tokens by default); priority decides which matched entries survive that final cap. `ignoreBudget` can bypass a source-book cap but not the Session safety cap. Token budgeting uses a deterministic local estimate; it does not claim byte-for-byte parity with a SillyTavern model tokenizer.
 
 ## Tavern Helper scripts and MVU
 

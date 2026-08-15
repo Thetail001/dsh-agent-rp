@@ -215,6 +215,28 @@ export class PresetLibrary {
     rmSync(path)
   }
 
+  /** Change the library-facing name without altering any existing Session copy. */
+  rename(id: string, name: string): PresetLibraryEntry {
+    this.assertId(id)
+    const path = join(this.root, `${id}${FILE_SUFFIX}`)
+    if (!existsSync(path)) throw new Error(`预设库中没有 ${JSON.stringify(id)}`)
+    const entry = this.readFile(path)
+    const document = record(JSON.parse(readFileSync(path, 'utf8')), 'preset library file') as StoredPreset
+    const meta = metadata(document.dsh_agent_rp_library)
+    const nextName = normalizedName(name)
+    const staging = join(this.root, `.${id}.${process.pid}.${randomUUID()}.tmp`)
+    try {
+      writeFileSync(staging, storedDocument(id, nextName, entry.preset, meta.createdAt, Date.now()), {
+        encoding: 'utf8', mode: 0o600,
+      })
+      renameSync(staging, path)
+    } catch (error: unknown) {
+      rmSync(staging, { force: true })
+      throw error
+    }
+    return this.readFile(path)
+  }
+
   private assertId(id: string): void {
     if (!/^[a-z0-9-]{8,80}$/u.test(id)) throw new Error('预设库 id 无效')
   }

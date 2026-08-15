@@ -141,6 +141,18 @@ test('returns safe Tavern Helper and degradation diagnostics with library entrie
       enabled: true, constant: false, selective: false, useRegex: false,
     }],
   })
+  assert.deepEqual(library.worldInfoPage(imported.entry.id, 0, 1), {
+    name: '海城',
+    offset: 0,
+    total: 1,
+    entries: [{
+      sourceId: '7', name: '钟楼', keys: ['午夜'], secondaryKeys: [], content: '钟楼每天午夜停摆。',
+      enabled: true, constant: false, selective: false, useRegex: false,
+    }],
+  })
+  assert.deepEqual(library.worldInfoPage(imported.entry.id, 1, 1)?.entries, [])
+  assert.equal(library.overview(imported.entry.id).worldInfo, undefined)
+  assert.equal(library.overview(imported.entry.id).worldInfoCount, 1)
   assert.deepEqual(library.list()[0]?.tavernHelper, imported.entry.tavernHelper)
   assert.equal(JSON.stringify(imported.entry).includes('secret script'), false)
   assert.equal(JSON.stringify(imported.entry).includes('not exposed'), false)
@@ -218,6 +230,16 @@ test('keeps local wording fixes and standalone display regexes beside the origin
   const data = new TextEncoder().encode(JSON.stringify(raw))
   const library = new CharacterLibrary({ root })
   const imported = library.importFile({ data, filename: 'overlay.json', mediaType: 'application/json' })
+  assert.deepEqual(imported.remoteResourceOrigins, ['https://cdn.example.com'])
+  assert.deepEqual(imported.approvedRemoteResourceOrigins, [])
+
+  const approved = library.setRemoteResourceOriginApproved(imported.id, 'https://cdn.example.com', true)
+  assert.deepEqual(approved.approvedRemoteResourceOrigins, ['https://cdn.example.com'])
+  assert.deepEqual(library.get(imported.id).approvedRemoteResourceOrigins, ['https://cdn.example.com'])
+  assert.deepEqual(library.setRemoteResourceOriginApproved(imported.id, 'https://cdn.example.com', false)
+    .approvedRemoteResourceOrigins, [])
+  assert.throws(() => library.setRemoteResourceOriginApproved(imported.id, 'https://other.example.com', true),
+    /没有引用/u)
 
   const corrected = library.replaceText(imported.id, '门还没锁', '门已经打开')
   assert.equal(corrected.localCorrectionCount, 1)

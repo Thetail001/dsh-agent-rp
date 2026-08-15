@@ -15,7 +15,9 @@ import { basename, join, resolve } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { CharacterImportTransport } from './import/session-character.ts'
-import type { ImportedCharacterCard, ImportedRegexScript, TavernHelperImportSummary } from './import/types.ts'
+import type {
+  ImportedCharacterCard, ImportedLorebookEntry, ImportedRegexScript, TavernHelperImportSummary,
+} from './import/types.ts'
 import { parseCharacterCardJson, parseCharacterCardJsonBytes, parseCharacterCardValue } from './import/character-card.ts'
 import { parseRegexScript } from './import/regex-script.ts'
 import { readCharacterCardPng } from './import/png.ts'
@@ -23,7 +25,7 @@ import { charxAvatar, charxImageAssets, parseCharx, readCharxImageAsset } from '
 import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay, summarizeCharacterRegexScript } from './frontend-regex.ts'
 import type {
   CharacterLibraryDetail, CharacterLibraryDisplayExtension, CharacterLibraryImage, CharacterLibraryImportResult,
-  CharacterLibrarySummary, CharacterLibraryWorldInfo,
+  CharacterLibrarySummary, CharacterLibraryWorldInfo, CharacterLibraryWorldInfoEntry, CharacterLibraryWorldInfoPage,
 } from './character-library-protocol.ts'
 
 const META_SUFFIX = '.meta.json'
@@ -79,6 +81,7 @@ interface StoredCharacterOverlay {
   readonly format: 0
   readonly textReplacements: readonly StoredTextReplacement[]
   readonly displayExtensions: readonly StoredDisplayExtension[]
+  readonly approvedRemoteResourceOrigins: readonly string[]
 }
 
 /** Browser-selected standalone SillyTavern display regex. */
@@ -135,6 +138,15 @@ export interface CharacterLibraryAvatar {
 
 export interface CharacterLibraryImageAsset extends CharacterLibraryImage {
   readonly data: Uint8Array
+}
+
+interface ParsedStoredCharacter {
+  readonly card: ImportedCharacterCard
+  readonly sourceCard: ImportedCharacterCard
+  readonly overlay: StoredCharacterOverlay
+  readonly avatarAvailable: boolean
+  readonly avatar?: CharacterLibraryAvatar
+  readonly images: readonly CharacterLibraryImage[]
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -262,23 +274,58 @@ function parseOverlay(value: unknown): StoredCharacterOverlay {
       script,
     }
   })
-  return { format: 0, textReplacements, displayExtensions }
+  if (record.approvedRemoteResourceOrigins !== undefined && !Array.isArray(record.approvedRemoteResourceOrigins)) {
+    throw new Error('character library overlay has invalid resource origins')
+  }
+  const approvedRemoteResourceOrigins = (record.approvedRemoteResourceOrigins ?? []).map((origin, index) => {
+    if (typeof origin !== 'string') throw new Error('character library overlay has an invalid resource origin')
+    return safeHttpsOrigin(origin, `approved card resource origin ${index + 1}`)
+  })
+  return { format: 0, textReplacements, displayExtensions, approvedRemoteResourceOrigins }
 }
 
 function emptyOverlay(): StoredCharacterOverlay {
-  return { format: 0, textReplacements: [], displayExtensions: [] }
+  return { format: 0, textReplacements: [], displayExtensions: [], approvedRemoteResourceOrigins: [] }
+}
+
+function remoteResourceOrigins(source: string): readonly string[] {
+  const origins = new Set<string>()
+  const patterns = [
+    /<(?:img|script|source|video|audio)\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/giu,
+    /<link\b[^>]*\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/giu,
+    /\bfetch\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
+  ]
+  for (const pattern of patterns) for (const match of source.matchAll(pattern)) {
+    const resource = match[1] ?? match[2] ?? match[3]
+    if (resource === undefined || !/^https:\/\//iu.test(resource)) continue
+    try {
+      origins.add(safeHttpsOrigin(new URL(resource).origin, 'card resource origin'))
+    } catch {
+      // URL-like card text is not an executable resource declaration.
+    }
+  }
+  for (const match of source.matchAll(/https:\/\/[^\s"'<>`\\)]+/giu)) {
+    const resource = match[0].replace(/[),.;]+$/u, '')
+    try {
+      origins.add(safeHttpsOrigin(new URL(resource).origin, 'card resource origin'))
+    } catch {
+      // URL-like card text is not an executable resource declaration.
+    }
+  }
+  return [...origins].sort()
 }
 
 function imageOrigins(script: ImportedRegexScript): readonly string[] {
-  const origins = new Set<string>()
-  const pattern = /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/giu
-  for (const match of script.replaceString.matchAll(pattern)) {
-    const source = match[1] ?? match[2] ?? match[3]
-    if (source === undefined || !/^https:\/\//iu.test(source)) continue
-    const url = new URL(source)
-    origins.add(safeHttpsOrigin(url.origin, 'display extension image origin'))
-  }
-  return [...origins].sort()
+  return remoteResourceOrigins(script.replaceString)
+}
+
+function cardRemoteResourceOrigins(card: ImportedCharacterCard): readonly string[] {
+  const greetings = [card.firstMessage, ...card.alternateGreetings]
+    .map(greeting => renderCharacterDisplay(greeting, card, AI_OUTPUT_PLACEMENT, 0))
+  return [...new Set([
+    ...card.frontend.regexScripts.flatMap(script => remoteResourceOrigins(script.replaceString)),
+    ...greetings.flatMap(remoteResourceOrigins),
+  ])].sort()
 }
 
 function sameMalformedPattern(left: ImportedRegexScript, right: ImportedRegexScript): boolean {
@@ -436,22 +483,26 @@ function regexScriptDetail(card: ImportedCharacterCard): CharacterLibraryDetail[
   }))
 }
 
+function worldInfoEntryDetail(entry: ImportedLorebookEntry): CharacterLibraryWorldInfoEntry {
+  return {
+    sourceId: entry.sourceId,
+    ...(entry.name === undefined ? {} : { name: entry.name }),
+    ...(entry.comment === undefined ? {} : { comment: entry.comment }),
+    keys: entry.keys,
+    secondaryKeys: entry.secondaryKeys,
+    content: entry.content,
+    enabled: entry.enabled,
+    constant: entry.constant,
+    selective: entry.selective,
+    useRegex: entry.useRegex,
+  }
+}
+
 function worldInfoDetail(card: ImportedCharacterCard): CharacterLibraryWorldInfo | undefined {
   if (card.lorebook === undefined) return undefined
   return {
     ...(card.lorebook.name === undefined ? {} : { name: card.lorebook.name }),
-    entries: card.lorebook.entries.map(entry => ({
-      sourceId: entry.sourceId,
-      ...(entry.name === undefined ? {} : { name: entry.name }),
-      ...(entry.comment === undefined ? {} : { comment: entry.comment }),
-      keys: entry.keys,
-      secondaryKeys: entry.secondaryKeys,
-      content: entry.content,
-      enabled: entry.enabled,
-      constant: entry.constant,
-      selective: entry.selective,
-      useRegex: entry.useRegex,
-    })),
+    entries: card.lorebook.entries.map(worldInfoEntryDetail),
   }
 }
 
@@ -470,6 +521,30 @@ function displayExtensionDetail(
       return name === undefined ? [] : [name]
     }),
   }))
+}
+
+function characterDetail(
+  meta: StoredCharacterMetadata,
+  parsed: ParsedStoredCharacter,
+  includeWorldInfo: boolean,
+): CharacterLibraryDetail {
+  const worldInfo = includeWorldInfo ? worldInfoDetail(parsed.card) : undefined
+  const declaredRemoteOrigins = cardRemoteResourceOrigins(parsed.card)
+  return {
+    ...summary(meta, parsed.card, parsed.avatarAvailable, parsed.images.length),
+    mediaType: meta.mediaType,
+    ...greetingDetail(parsed.card),
+    imageAssets: parsed.images,
+    remoteResourceOrigins: declaredRemoteOrigins,
+    approvedRemoteResourceOrigins: parsed.overlay.approvedRemoteResourceOrigins
+      .filter(origin => declaredRemoteOrigins.includes(origin)),
+    ...(worldInfo === undefined ? {} : { worldInfo }),
+    degradations: parsed.card.degradations,
+    regexScripts: regexScriptDetail(parsed.card),
+    displayExtensions: displayExtensionDetail(parsed.overlay, parsed.sourceCard),
+    localCorrectionCount: parsed.overlay.textReplacements.reduce((total, replacement) =>
+      total + replacement.expectedMatches, 0),
+  }
 }
 
 /** Small content-addressed card library; the original PNG, JSON, or CHARX remains exportable. */
@@ -494,41 +569,41 @@ export class CharacterLibrary {
   get(id: string): CharacterLibraryDetail {
     const entry = this.readId(id)
     const parsed = this.parseStored(entry.meta, entry.data)
-    const worldInfo = worldInfoDetail(parsed.card)
-    const detail: CharacterLibraryDetail = {
-      ...summary(entry.meta, parsed.card, parsed.avatarAvailable, parsed.images.length),
-      mediaType: entry.meta.mediaType,
-      ...greetingDetail(parsed.card),
-      imageAssets: parsed.images,
-      ...(worldInfo === undefined ? {} : { worldInfo }),
-      degradations: parsed.card.degradations,
-      regexScripts: regexScriptDetail(parsed.card),
-      displayExtensions: displayExtensionDetail(parsed.overlay, parsed.sourceCard),
-      localCorrectionCount: parsed.overlay.textReplacements.reduce((total, replacement) =>
-        total + replacement.expectedMatches, 0),
-    }
+    const detail = characterDetail(entry.meta, parsed, true)
     this.rememberIndex(entry.meta, detail)
     return detail
+  }
+
+  /** Load greetings and frontend metadata without materializing World Info entry bodies. */
+  overview(id: string): CharacterLibraryDetail {
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    const detail = characterDetail(entry.meta, parsed, false)
+    this.rememberIndex(entry.meta, detail)
+    return detail
+  }
+
+  /** Load one bounded read-only World Info page without returning the rest to the browser. */
+  worldInfoPage(id: string, offset: number, limit: number): CharacterLibraryWorldInfoPage | undefined {
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('invalid World Info offset')
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('invalid World Info limit')
+    const entry = this.readId(id)
+    const card = this.parseStored(entry.meta, entry.data).card
+    if (card.lorebook === undefined) return undefined
+    return {
+      ...(card.lorebook.name === undefined ? {} : { name: card.lorebook.name }),
+      offset,
+      total: card.lorebook.entries.length,
+      entries: card.lorebook.entries.slice(offset, offset + limit).map(worldInfoEntryDetail),
+    }
   }
 
   /** Resolve one reusable card for a model-free Session launch. */
   resolve(id: string): ResolvedCharacterLibraryEntry {
     const entry = this.readId(id)
     const parsed = this.parseStored(entry.meta, entry.data)
-    const worldInfo = worldInfoDetail(parsed.card)
     return {
-      detail: {
-        ...summary(entry.meta, parsed.card, parsed.avatarAvailable, parsed.images.length),
-        mediaType: entry.meta.mediaType,
-        ...greetingDetail(parsed.card),
-        imageAssets: parsed.images,
-        ...(worldInfo === undefined ? {} : { worldInfo }),
-        degradations: parsed.card.degradations,
-        regexScripts: regexScriptDetail(parsed.card),
-        displayExtensions: displayExtensionDetail(parsed.overlay, parsed.sourceCard),
-        localCorrectionCount: parsed.overlay.textReplacements.reduce((total, replacement) =>
-          total + replacement.expectedMatches, 0),
-      },
+      detail: characterDetail(entry.meta, parsed, true),
       card: parsed.card,
       transport: entry.meta.transport === 'png'
         ? { transport: 'png', metadataKeyword: entry.meta.metadataKeyword! }
@@ -757,6 +832,24 @@ export class CharacterLibrary {
     return this.get(id)
   }
 
+  /** Allow or revoke one card-declared public HTTPS resource origin. */
+  setRemoteResourceOriginApproved(id: string, origin: string, approved: boolean): CharacterLibraryDetail {
+    const normalized = safeHttpsOrigin(origin, 'card resource origin')
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    if (!cardRemoteResourceOrigins(parsed.card).includes(normalized)) {
+      throw new Error('角色卡没有引用这个外部资源来源')
+    }
+    const origins = new Set(parsed.overlay.approvedRemoteResourceOrigins)
+    if (approved) origins.add(normalized)
+    else origins.delete(normalized)
+    this.writeOverlay(id, {
+      ...parsed.overlay,
+      approvedRemoteResourceOrigins: [...origins].sort(),
+    })
+    return this.get(id)
+  }
+
   /** Apply one exact local wording correction without rewriting the imported card asset. */
   replaceText(id: string, from: string, to: string): CharacterLibraryDetail {
     if (from === '' || from === to || from.length > 2_000 || to.length > 2_000) throw new Error('本地文字修正无效')
@@ -846,14 +939,7 @@ export class CharacterLibrary {
     }
   }
 
-  private parseStored(meta: StoredCharacterMetadata, data: Uint8Array): {
-    readonly card: ImportedCharacterCard
-    readonly sourceCard: ImportedCharacterCard
-    readonly overlay: StoredCharacterOverlay
-    readonly avatarAvailable: boolean
-    readonly avatar?: CharacterLibraryAvatar
-    readonly images: readonly CharacterLibraryImage[]
-  } {
+  private parseStored(meta: StoredCharacterMetadata, data: Uint8Array): ParsedStoredCharacter {
     const overlay = this.readOverlay(meta.id)
     if (meta.transport === 'json') {
       const sourceCard = parseCharacterCardJsonBytes(data)

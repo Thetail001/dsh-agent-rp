@@ -152,6 +152,9 @@ export function normalizeSillyTavernMarkdown(value: string): string {
 }
 
 function isFrontendDocument(info: string, source: string): boolean {
+  const completeDocument = /<!doctype\s+html\b|<html(?:\s|>)/iu.test(source)
+    && /<\/html\s*>/iu.test(source)
+  if (completeDocument) return true
   const language = info.trim().split(/\s+/u)[0]?.toLowerCase()
   if (language !== undefined && language !== '') return language === 'html'
   return /<!doctype\s+html\b|<html(?:\s|>)|<head(?:\s|>)|<body(?:\s|>)/iu.test(source)

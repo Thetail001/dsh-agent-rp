@@ -468,7 +468,10 @@ function ejsVariableScopes(state: TavernHelperState | undefined): NonNullable<Ej
 }
 
 function ejsLorebookOptions(engine: EjsTemplateEngine | undefined, context: EjsTemplateContext) {
-  return engine === undefined ? {} : { renderTemplate: engine.createRenderer(context) }
+  return engine === undefined ? {} : {
+    regexEngine: engine,
+    renderTemplate: engine.createRenderer(context),
+  }
 }
 
 /**

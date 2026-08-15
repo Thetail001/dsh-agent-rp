@@ -12,7 +12,6 @@ import type {
 } from './types.ts'
 import { parseRegexScript } from './regex-script.ts'
 import { parseTavernHelperScripts, tavernHelperExtension, tavernHelperVariables } from './tavern-helper.ts'
-import { isLiteralRegexPattern } from './lorebook.ts'
 
 /** Maximum decoded card definition accepted independently from transport media. */
 export const MAX_CHARACTER_CARD_JSON_BYTES = 8 * 1024 * 1024
@@ -298,8 +297,6 @@ function degradationSet(
   }
   if ((stringArray(data.group_only_greetings, 'data.group_only_greetings')).length > 0) result.add('group-greetings')
   if (lorebook?.recursiveScanning === true) result.add('lorebook-recursion')
-  if (lorebook?.entries.some(entry => entry.useRegex && !entry.constant
-    && entry.keys.some(key => !isLiteralRegexPattern(key))) === true) result.add('lorebook-regex')
   if (lorebook?.entries.some(entry => entry.hasDecorators) === true) result.add('lorebook-decorators')
   return [...result].sort()
 }

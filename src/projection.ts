@@ -194,7 +194,7 @@ function standaloneLorebookSource(meta: WorldInfoImportMeta): SessionLorebookSou
     name: meta.result.name,
     source: 'standalone',
     lorebook: parsed.lorebook,
-    degradations: meta.result.degradations,
+    degradations: meta.result.degradations.filter(value => value !== 'entry-regex'),
   }
 }
 
@@ -268,6 +268,7 @@ function worldInfoProjection(
     : [{ role: node.role, content: node.text }])
   const configuredSources = sources.map(source => ({ source, configured: configuredLorebook(source, state.worldInfoConfiguration) }))
   const templateOptions = ejsTemplateEngine === undefined ? {} : {
+    regexEngine: ejsTemplateEngine,
     renderTemplate: ejsTemplateEngine.createRenderer({
       characterName: state.character.characterName,
       userName: state.character.persona?.name ?? state.character.userName ?? '用户',
