@@ -69,6 +69,7 @@ import {
   type CharacterLibraryDetail,
   type CharacterLibraryImportResult,
   type CharacterLibrarySummary,
+  type CharacterLibraryWorldInfoPage,
 } from '../character-library-protocol.ts'
 import {
   PERSONA_LIBRARY_PATH,
@@ -297,6 +298,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly loadAvatar: (attachmentId: string) => Promise<string | undefined>
   readonly renameSession: (sessionId: SessionId, title: string) => Promise<void>
   readonly configurePreset: (sessionId: SessionId, request: PresetConfigurationRequest) => Promise<void>
+  readonly importPresetFile: (file: File) => Promise<PresetLibrarySummary>
   readonly importPreset: (sessionId: SessionId, file: File) => Promise<void>
   readonly managePresetLibrary: (sessionId: SessionId, request: PresetLibraryRequest) => Promise<void>
   readonly configureWorldInfo: (sessionId: SessionId, request: WorldInfoConfigurationRequest) => Promise<void>
@@ -548,6 +550,7 @@ function usePresetPreference(
   readonly error?: string
   readonly presetId: string
   readonly selectPreset: (presetId: string) => void
+  readonly selectImportedPreset: (entry: PresetLibrarySummary) => void
 } {
   const [entries, setEntries] = useState<readonly PresetLibrarySummary[]>()
   const [error, setError] = useState<string>()
@@ -584,6 +587,11 @@ function usePresetPreference(
       writeRoleplayPresetPreference(value)
       setPresetId(value)
     },
+    selectImportedPreset(entry) {
+      setEntries(current => [entry, ...(current ?? []).filter(candidate => candidate.id !== entry.id)])
+      writeRoleplayPresetPreference(entry.id)
+      setPresetId(entry.id)
+    },
   }
 }
 
@@ -599,6 +607,24 @@ async function fetchCharacterDetail(id: string): Promise<CharacterLibraryDetail>
     `/${encodeURIComponent(id)}`,
   )
   return value.entry
+}
+
+const characterWorldInfoPageSize = 40
+
+async function fetchCharacterWorldInfoPage(id: string, offset: number): Promise<CharacterLibraryWorldInfoPage> {
+  const query = new URLSearchParams({ offset: String(offset), limit: String(characterWorldInfoPageSize) })
+  const response = await fetch(`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(id)}/world-info?${query}`, {
+    headers: { accept: 'application/json' },
+  })
+  const value = await response.json() as {
+    readonly error?: string
+    readonly format?: 0
+    readonly page?: CharacterLibraryWorldInfoPage
+  }
+  if (!response.ok || value.format !== 0 || value.page === undefined) {
+    throw new Error(value.error ?? `角色世界书读取失败（${response.status}）`)
+  }
+  return value.page
 }
 
 function useCharacterDetail(libraryId: string | undefined): CharacterLibraryDetail | undefined {
@@ -687,7 +713,9 @@ function compactCharacterDisplayText(value: string): string {
     return document.body.textContent ?? ''
   }).join('\n')
   const summary = text.split(/\r?\n/gu).map(line => line.replace(/[\t ]+/gu, ' ').trim()).filter(Boolean).join(' · ')
-  return summary === '' && segments.some(segment => segment.kind !== 'markdown') ? '轻前端开场，展开查看' : summary
+  const hasFrontend = segments.some(segment => segment.kind !== 'markdown')
+  if (!hasFrontend) return summary
+  return summary === '' ? '包含轻前端界面，展开预览' : `${summary} · 包含轻前端界面`
 }
 
 function DisclosureChevron({ expanded, size = 15 }: { readonly expanded: boolean; readonly size?: number }) {
@@ -708,13 +736,37 @@ function SelectChevron() {
 
 function CharacterWorldInfoSection({ detail }: { readonly detail: CharacterLibraryDetail }) {
   const [open, setOpen] = useState(false)
-  const worldInfo = detail.worldInfo
-  if (worldInfo === undefined || worldInfo.entries.length === 0) return null
+  const [entries, setEntries] = useState(detail.worldInfo?.entries ?? [])
+  const [total, setTotal] = useState(detail.worldInfo?.entries.length ?? detail.worldInfoCount)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string>()
+  const loadingRef = useRef(false)
+  if (detail.worldInfoCount === 0) return null
+  const loadMore = (): void => {
+    if (loadingRef.current || entries.length >= total) return
+    loadingRef.current = true
+    setLoading(true)
+    setError(undefined)
+    void fetchCharacterWorldInfoPage(detail.id, entries.length).then(page => {
+      setEntries(current => [...current, ...page.entries])
+      setTotal(page.total)
+      loadingRef.current = false
+      setLoading(false)
+    }, reason => {
+      loadingRef.current = false
+      setLoading(false)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }
   return <section style={{
     background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
     borderRadius: '10px', margin: '4px 0 12px', overflow: 'hidden',
   }}>
-    <button type="button" aria-expanded={open} onClick={() => { setOpen(value => !value) }} title="查看角色卡内置世界书" style={{
+    <button type="button" aria-expanded={open} onClick={() => {
+      const next = !open
+      setOpen(next)
+      if (next && entries.length === 0) loadMore()
+    }} title="查看角色卡内置世界书" style={{
       alignItems: 'center', background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer',
       display: 'flex', font: 'inherit', gap: '9px', padding: '10px 11px', textAlign: 'left', width: '100%',
     }}>
@@ -722,12 +774,12 @@ function CharacterWorldInfoSection({ detail }: { readonly detail: CharacterLibra
       <span style={{
         background: `color-mix(in srgb, ${color} 14%, transparent)`, borderRadius: '999px',
         color, fontSize: '10px', padding: '2px 7px',
-      }}>{worldInfo.entries.length} 条</span>
+      }}>{detail.worldInfoCount} 条</span>
       <span style={{ fontSize: '10px', marginLeft: 'auto', opacity: .46 }}>原卡 · 只读</span>
       <DisclosureChevron expanded={open} />
     </button>
     {open && <div style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'grid', gap: '6px', padding: '8px' }}>
-      {worldInfo.entries.map((entry, index) => {
+      {entries.map((entry, index) => {
         const title = entry.name?.trim() || entry.comment?.trim() || `条目 ${index + 1}`
         const activation = !entry.enabled ? '已停用' : entry.constant ? '常驻'
           : entry.keys.length === 0 ? '无关键词' : `${entry.useRegex ? '正则' : '关键词'} · ${entry.keys.length}`
@@ -747,6 +799,14 @@ function CharacterWorldInfoSection({ detail }: { readonly detail: CharacterLibra
           </div>
         </details>
       })}
+      {loading && <div role="status" style={{ fontSize: '11px', opacity: .52, padding: '10px', textAlign: 'center' }}>正在读取世界书…</div>}
+      {error !== undefined && <div role="alert" style={{ alignItems: 'center', color: '#e88989', display: 'flex', fontSize: '11px', gap: '8px', justifyContent: 'center', padding: '8px' }}>
+        <span>{error}</span>
+        <button type="button" onClick={loadMore} style={miniButtonStyle}>重试</button>
+      </div>}
+      {!loading && error === undefined && entries.length < total && <button type="button" onClick={loadMore} style={{
+        ...secondaryButtonStyle, justifySelf: 'center', margin: '4px 0 2px', minWidth: '150px',
+      }}>继续显示（{entries.length}/{total}）</button>}
     </div>}
   </section>
 }
@@ -1726,6 +1786,7 @@ type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick
   | 'migrateRpDistributionChat'
   | 'startCharacterSession'
   | 'listPresets'
+  | 'importPresetFile'
   | 'listPersonas'
   | 'savePersona'
   | 'deletePersona'
@@ -1738,7 +1799,7 @@ function BlankRoleplayLauncher({
   session, sessionId,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, migrateRpDistributionChat,
   startCharacterSession,
-  listPresets, listPersonas, savePersona, deletePersona,
+  listPresets, importPresetFile, listPersonas, savePersona, deletePersona,
   workspaceSettings, workspaceList,
 }: BlankRoleplayLauncherProps) {
   const [libraryOpen, setLibraryOpen] = useState(false)
@@ -1780,6 +1841,7 @@ function BlankRoleplayLauncher({
         sessionId, character, greetingIndex, persona, presetId,
       )}
       listPresets={listPresets}
+      importPresetFile={importPresetFile}
       listPersonas={listPersonas}
       savePersona={savePersona}
       deletePersona={deletePersona}
@@ -2433,7 +2495,7 @@ function RpDistributionBridgeSection({
 }
 
 function RoleplayHeader({
-  sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPreset, managePresetLibrary,
+  sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPresetFile, importPreset, managePresetLibrary,
   configureWorldInfo, importWorldInfo,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, migrateRpDistributionChat,
   startCharacterSession, exportChat,
@@ -2735,6 +2797,7 @@ function RoleplayHeader({
         sessionId, character, greetingIndex, persona, presetId, memory,
       )}
       listPresets={listPresets}
+      importPresetFile={importPresetFile}
       listPersonas={listPersonas}
       savePersona={savePersona}
       deletePersona={deletePersona}
@@ -3316,7 +3379,7 @@ function characterDegradationLabel(value: CharacterLibraryDetail['degradations']
 
 function CharacterLibraryDialog({
   currentCharacterName, currentCharacterId, listCharacters, readCharacter, setCharacterArchived, importCharacterFile,
-  listPresets, listPersonas, savePersona, deletePersona, onClose, onStart,
+  listPresets, importPresetFile, listPersonas, savePersona, deletePersona, onClose, onStart,
 }: {
   readonly currentCharacterName: string
   readonly currentCharacterId?: string
@@ -3325,6 +3388,7 @@ function CharacterLibraryDialog({
   readonly setCharacterArchived: HeaderProps['setCharacterArchived']
   readonly importCharacterFile: HeaderProps['importCharacterFile']
   readonly listPresets: HeaderProps['listPresets']
+  readonly importPresetFile: HeaderProps['importPresetFile']
   readonly listPersonas: HeaderProps['listPersonas']
   readonly savePersona: HeaderProps['savePersona']
   readonly deletePersona: HeaderProps['deletePersona']
@@ -3341,7 +3405,9 @@ function CharacterLibraryDialog({
   const [selected, setSelected] = useState<CharacterLibraryDetail>()
   const [greetingIndex, setGreetingIndex] = useState(0)
   const [expandedGreetingIndex, setExpandedGreetingIndex] = useState<number | undefined>(0)
-  const { entries: presets, error: presetError, presetId, selectPreset } = usePresetPreference(listPresets)
+  const {
+    entries: presets, error: presetError, presetId, selectPreset, selectImportedPreset,
+  } = usePresetPreference(listPresets)
   const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
   const [personaId, setPersonaId] = useState('')
   const [editingPersona, setEditingPersona] = useState(false)
@@ -3356,10 +3422,12 @@ function CharacterLibraryDialog({
   const [starting, setStarting] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [importingPreset, setImportingPreset] = useState(false)
   const [draggingFile, setDraggingFile] = useState(false)
   const [actionNotice, setActionNotice] = useState<string>()
   const [error, setError] = useState<string>()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const presetInputRef = useRef<HTMLInputElement | null>(null)
   const selectionRequestRef = useRef(0)
   useEffect(() => {
     let current = true
@@ -3482,6 +3550,19 @@ function CharacterLibraryDialog({
       setActionNotice(`${notice}${entry.tavernHelper === undefined ? '' : ` · Tavern Helper：${tavernHelperSummaryText(entry.tavernHelper)}`}`)
     }).catch(importError => {
       setImporting(false)
+      setError(importError instanceof Error ? importError.message : String(importError))
+    })
+  }
+  const importPresetSelection = (file: File): void => {
+    setImportingPreset(true)
+    setError(undefined)
+    setActionNotice(undefined)
+    void importPresetFile(file).then(entry => {
+      selectImportedPreset(entry)
+      setImportingPreset(false)
+      setActionNotice(`已导入并选中预设「${entry.name}」`)
+    }, importError => {
+      setImportingPreset(false)
       setError(importError instanceof Error ? importError.message : String(importError))
     })
   }
@@ -3655,7 +3736,7 @@ function CharacterLibraryDialog({
               borderLeft: '2px solid color-mix(in srgb, #d6a24d 70%, transparent)', fontSize: '11px', lineHeight: 1.55,
               margin: '4px 0 12px', opacity: .62, padding: '2px 0 2px 10px',
             }}>
-              原卡仍保留但当前不执行：{selected.degradations.map(characterDegradationLabel).join('、')}
+              兼容提醒 · 尚未执行（原卡内容已保留）：{selected.degradations.map(characterDegradationLabel).join('、')}
             </div>}
             {selected.localCorrectionCount > 0 && <div style={{
               borderLeft: `2px solid color-mix(in srgb, ${color} 62%, transparent)`, fontSize: '11px', lineHeight: 1.55,
@@ -3718,7 +3799,18 @@ function CharacterLibraryDialog({
                 </div>
               })}
             </div>
-            <label htmlFor="agent-rp-session-preset" style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '20px 0 8px', opacity: .65 }}>对话预设</label>
+            <div style={{ alignItems: 'center', display: 'flex', margin: '20px 0 8px' }}>
+              <label htmlFor="agent-rp-session-preset" style={{ fontSize: '12px', fontWeight: 620, opacity: .65 }}>对话预设</label>
+              <input ref={presetInputRef} type="file" accept=".json,application/json" hidden onChange={event => {
+                const file = event.currentTarget.files?.[0]
+                event.currentTarget.value = ''
+                if (file !== undefined) importPresetSelection(file)
+              }} />
+              <button type="button" disabled={importingPreset} onClick={() => { presetInputRef.current?.click() }} style={{
+                background: 'transparent', border: 0, color, cursor: importingPreset ? 'wait' : 'pointer',
+                font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: 0,
+              }}>{importingPreset ? '正在导入…' : '导入预设'}</button>
+            </div>
             <div style={{ position: 'relative' }}>
               <select id="agent-rp-session-preset" value={presetId} onChange={event => { selectPreset(event.target.value) }} style={{
                 appearance: 'none', background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
@@ -3735,7 +3827,7 @@ function CharacterLibraryDialog({
                 : presets === undefined
                 ? '正在读取预设…'
                 : presets.length === 0
-                  ? '预设库暂无内容，可在角色会话的预设设置中导入'
+                  ? '预设库暂无内容，可在这里导入社区推荐的预设 JSON'
                   : (() => {
                       const preset = presets.find(entry => entry.id === presetId)
                       return preset === undefined
@@ -3870,7 +3962,7 @@ function CharacterLibraryDialog({
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '9px',
             color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '8px 13px',
           }}>取消</button>
-          <button type="button" disabled={collection === 'archived' || selected === undefined || starting} onClick={() => {
+          <button type="button" disabled={collection === 'archived' || selected === undefined || starting || importingPreset} onClick={() => {
             if (selected === undefined) return
             setStarting(true)
             setError(undefined)
@@ -7446,7 +7538,7 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok) throw new Error(response.error.message)
     if (!response.value.matched) throw new Error('当前 Host 未启用身份管理')
   }
-  const importPreset = async (sessionId: SessionId, file: File): Promise<void> => {
+  const importPresetFile = async (file: File): Promise<PresetLibrarySummary> => {
     if (!/\.json$/iu.test(file.name)) throw new Error('请选择 SillyTavern 预设 JSON 文件')
     const response = await fetch(`${PRESET_LIBRARY_PATH}?filename=${encodeURIComponent(file.name)}`, {
       method: 'POST',
@@ -7455,7 +7547,14 @@ export function apply(ctx: ClientContext): void {
     })
     const value = await response.json() as Partial<PresetLibraryImportResponse> & { readonly error?: string }
     if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `预设导入失败（${response.status}）`)
-    await managePresetLibrary(sessionId, { operation: 'select', id: value.entry.id })
+    const entries = await listPresets()
+    const entry = entries.find(candidate => candidate.id === value.entry?.id)
+    if (entry === undefined) throw new Error('预设已导入，但预设库没有返回对应条目')
+    return entry
+  }
+  const importPreset = async (sessionId: SessionId, file: File): Promise<void> => {
+    const entry = await importPresetFile(file)
+    await managePresetLibrary(sessionId, { operation: 'select', id: entry.id })
   }
   const configurePreset = async (sessionId: SessionId, request: PresetConfigurationRequest): Promise<void> => {
     const scope = ctx.sessions.scope(sessionId)
@@ -7652,7 +7751,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} migrateRpDistributionChat={migrateRpDistributionChat} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
+  }, props => <RoleplayHeader {...props} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChat} migrateRpDistributionChat={migrateRpDistributionChat} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -7669,7 +7768,7 @@ export function apply(ctx: ClientContext): void {
     probe={probeRpDistribution} transfer={transferRpDistribution} receive={receiveRpDistribution} />))
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left', id: 'agent-rp-blank-launcher', order: -100,
-  }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} migrateRpDistributionChat={migrateRpDistributionChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  }, props => <BlankRoleplayLauncher {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} migrateRpDistributionChat={migrateRpDistributionChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} importPresetFile={importPresetFile} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-tavern-variables',
   }, () => null))

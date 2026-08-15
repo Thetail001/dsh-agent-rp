@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { CharacterLibrary } from './character-library.ts'
-import { CHARACTER_LIBRARY_PATH } from './character-library-protocol.ts'
+import { CHARACTER_LIBRARY_PATH, type CharacterLibraryDetail } from './character-library-protocol.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
 import { MAX_CHARACTER_CARD_FILE_BYTES } from './import/character-card.ts'
 
@@ -37,6 +37,12 @@ function json(response: ServerResponse, status: number, value: unknown): void {
 
 function fail(response: ServerResponse, status: number, message: string): void {
   json(response, status, { error: message })
+}
+
+function browserDetail(entry: CharacterLibraryDetail): CharacterLibraryDetail {
+  const { worldInfo, ...overview } = entry
+  void worldInfo
+  return overview
 }
 
 async function readUpload(request: IncomingMessage): Promise<Uint8Array> {
@@ -86,7 +92,7 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
           return
         }
         if (request.method === 'GET' && parts.length === 1 && parts[0] !== undefined) {
-          json(response, 200, { format: 0, entry: library.get(parts[0]) })
+          json(response, 200, { format: 0, entry: library.overview(parts[0]) })
           return
         }
         if (request.method === 'POST' && parts.length === 1 && parts[0] === 'import') {
@@ -101,7 +107,7 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
             filename,
             ...(request.headers['content-type'] === undefined ? {} : { mediaType: request.headers['content-type'] }),
           })
-          json(response, 200, { format: 0, ...result })
+          json(response, 200, { format: 0, ...result, entry: browserDetail(result.entry) })
           return
         }
         if (request.method === 'POST' && parts.length === 3 && parts[0] !== undefined
@@ -129,7 +135,7 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
             filename,
             approvedImageOrigins,
           })
-          json(response, 200, { format: 0, entry })
+          json(response, 200, { format: 0, entry: browserDetail(entry) })
           return
         }
         if (request.method === 'POST' && parts.length === 4 && parts[0] !== undefined
@@ -138,7 +144,7 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
           const entry = parts[3] === 'remove'
             ? library.removeDisplayExtension(parts[0], parts[2])
             : library.setDisplayExtensionEnabled(parts[0], parts[2], parts[3] === 'enable')
-          json(response, 200, { format: 0, entry })
+          json(response, 200, { format: 0, entry: browserDetail(entry) })
           return
         }
         if (request.method === 'POST' && parts.length === 2 && parts[0] !== undefined
@@ -158,13 +164,33 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
             return
           }
           const replacement = value as { readonly from: string; readonly to: string }
-          json(response, 200, { format: 0, entry: library.replaceText(parts[0], replacement.from, replacement.to) })
+          json(response, 200, {
+            format: 0,
+            entry: browserDetail(library.replaceText(parts[0], replacement.from, replacement.to)),
+          })
           return
         }
         if (request.method === 'POST' && parts.length === 2 && parts[0] !== undefined
           && (parts[1] === 'archive' || parts[1] === 'restore')) {
           const entry = parts[1] === 'archive' ? library.archive(parts[0]) : library.restore(parts[0])
-          json(response, 200, { format: 0, entry })
+          json(response, 200, { format: 0, entry: browserDetail(entry) })
+          return
+        }
+        if (request.method === 'GET' && parts.length === 2 && parts[0] !== undefined && parts[1] === 'world-info') {
+          const url = new URL(request.url ?? '/', 'http://agent-rp.local')
+          const offset = Number(url.searchParams.get('offset') ?? '0')
+          const limit = Number(url.searchParams.get('limit') ?? '40')
+          if (!Number.isSafeInteger(offset) || offset < 0
+            || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+            fail(response, 400, 'invalid World Info page')
+            return
+          }
+          const page = library.worldInfoPage(parts[0], offset, limit)
+          if (page === undefined) {
+            fail(response, 404, 'World Info not found')
+            return
+          }
+          json(response, 200, { format: 0, page })
           return
         }
         if (request.method === 'GET' && parts.length === 2 && parts[0] !== undefined && parts[1] === 'asset') {

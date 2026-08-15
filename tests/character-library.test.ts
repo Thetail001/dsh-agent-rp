@@ -141,6 +141,18 @@ test('returns safe Tavern Helper and degradation diagnostics with library entrie
       enabled: true, constant: false, selective: false, useRegex: false,
     }],
   })
+  assert.deepEqual(library.worldInfoPage(imported.entry.id, 0, 1), {
+    name: '海城',
+    offset: 0,
+    total: 1,
+    entries: [{
+      sourceId: '7', name: '钟楼', keys: ['午夜'], secondaryKeys: [], content: '钟楼每天午夜停摆。',
+      enabled: true, constant: false, selective: false, useRegex: false,
+    }],
+  })
+  assert.deepEqual(library.worldInfoPage(imported.entry.id, 1, 1)?.entries, [])
+  assert.equal(library.overview(imported.entry.id).worldInfo, undefined)
+  assert.equal(library.overview(imported.entry.id).worldInfoCount, 1)
   assert.deepEqual(library.list()[0]?.tavernHelper, imported.entry.tavernHelper)
   assert.equal(JSON.stringify(imported.entry).includes('secret script'), false)
   assert.equal(JSON.stringify(imported.entry).includes('not exposed'), false)

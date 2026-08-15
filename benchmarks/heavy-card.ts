@@ -214,6 +214,12 @@ try {
   const detailCold = await measure(options.repeats, () => {
     sink += new CharacterLibrary({ root }).get(id).greetings.length
   })
+  const overviewCold = await measure(options.repeats, () => {
+    sink += new CharacterLibrary({ root }).overview(id).greetings.length
+  })
+  const worldInfoPageCold = await measure(options.repeats, () => {
+    sink += new CharacterLibrary({ root }).worldInfoPage(id, 0, 40)?.entries.length ?? 0
+  })
   const resolveCold = await measure(options.repeats, () => {
     sink += new CharacterLibrary({ root }).resolve(id).card.assets?.length ?? 0
   })
@@ -288,6 +294,8 @@ try {
       importCard,
       listCold,
       detailCold,
+      overviewCold,
+      worldInfoPageCold,
       resolveCold,
       assetCold,
       display,

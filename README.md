@@ -10,7 +10,7 @@
 - 保存角色到可视化角色库，收起或恢复角色，不影响已有对话。
 - 选择默认或备选开场，并为玩家选择可复用 Persona。
 - 导入 SillyTavern JSONL 聊天记录，或与对应角色卡一起迁移。
-- 使用角色世界书，直接导入独立 World Info 与 SillyTavern Chat Completion 预设。
+- 使用角色世界书，并在开聊表单直接导入社区推荐的 SillyTavern Chat Completion 预设；独立 World Info 也可导入会话。
 - 在隔离的 QuickJS 环境中运行世界书、角色提示和预设里的同步 EJS 模板；单条模板失败不会中断会话。
 - 在隔离脚本环境中运行兼容的 Tavern Helper 脚本、显示正则、轻量 HTML 界面与 MVU 状态。
 - 重写、续写和切换回复版本，并保留明确的长期记忆。

@@ -57,3 +57,26 @@ test('distinguishes fenced frontend documents from inline HTML in source order',
     { code: 'inline-html', count: 1 },
   ])
 })
+
+test('recognizes a complete frontend document mislabeled as fenced text', () => {
+  const source = [
+    '```text',
+    '<!doctype html><html><head><style>body{margin:0}</style></head><body>panel</body></html>',
+    '```',
+  ].join('\n')
+  const compiled = compileCharacterDisplay(source)
+
+  assert.deepEqual(compiled.segments, [{
+    kind: 'html',
+    source: '<!doctype html><html><head><style>body{margin:0}</style></head><body>panel</body></html>\n',
+  }])
+  assert.deepEqual(compiled.diagnostics, [{ code: 'frontend-document', count: 1 }])
+})
+
+test('keeps an ordinary HTML snippet in a fenced text sample inert', () => {
+  const source = '```text\n<div>example markup</div>\n```'
+  const compiled = compileCharacterDisplay(source)
+
+  assert.deepEqual(compiled.segments, [{ kind: 'markdown', text: source }])
+  assert.deepEqual(compiled.diagnostics, [])
+})

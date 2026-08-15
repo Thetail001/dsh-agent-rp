@@ -15,7 +15,9 @@ import { basename, join, resolve } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { CharacterImportTransport } from './import/session-character.ts'
-import type { ImportedCharacterCard, ImportedRegexScript, TavernHelperImportSummary } from './import/types.ts'
+import type {
+  ImportedCharacterCard, ImportedLorebookEntry, ImportedRegexScript, TavernHelperImportSummary,
+} from './import/types.ts'
 import { parseCharacterCardJson, parseCharacterCardJsonBytes, parseCharacterCardValue } from './import/character-card.ts'
 import { parseRegexScript } from './import/regex-script.ts'
 import { readCharacterCardPng } from './import/png.ts'
@@ -23,7 +25,7 @@ import { charxAvatar, charxImageAssets, parseCharx, readCharxImageAsset } from '
 import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay, summarizeCharacterRegexScript } from './frontend-regex.ts'
 import type {
   CharacterLibraryDetail, CharacterLibraryDisplayExtension, CharacterLibraryImage, CharacterLibraryImportResult,
-  CharacterLibrarySummary, CharacterLibraryWorldInfo,
+  CharacterLibrarySummary, CharacterLibraryWorldInfo, CharacterLibraryWorldInfoEntry, CharacterLibraryWorldInfoPage,
 } from './character-library-protocol.ts'
 
 const META_SUFFIX = '.meta.json'
@@ -135,6 +137,15 @@ export interface CharacterLibraryAvatar {
 
 export interface CharacterLibraryImageAsset extends CharacterLibraryImage {
   readonly data: Uint8Array
+}
+
+interface ParsedStoredCharacter {
+  readonly card: ImportedCharacterCard
+  readonly sourceCard: ImportedCharacterCard
+  readonly overlay: StoredCharacterOverlay
+  readonly avatarAvailable: boolean
+  readonly avatar?: CharacterLibraryAvatar
+  readonly images: readonly CharacterLibraryImage[]
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -436,22 +447,26 @@ function regexScriptDetail(card: ImportedCharacterCard): CharacterLibraryDetail[
   }))
 }
 
+function worldInfoEntryDetail(entry: ImportedLorebookEntry): CharacterLibraryWorldInfoEntry {
+  return {
+    sourceId: entry.sourceId,
+    ...(entry.name === undefined ? {} : { name: entry.name }),
+    ...(entry.comment === undefined ? {} : { comment: entry.comment }),
+    keys: entry.keys,
+    secondaryKeys: entry.secondaryKeys,
+    content: entry.content,
+    enabled: entry.enabled,
+    constant: entry.constant,
+    selective: entry.selective,
+    useRegex: entry.useRegex,
+  }
+}
+
 function worldInfoDetail(card: ImportedCharacterCard): CharacterLibraryWorldInfo | undefined {
   if (card.lorebook === undefined) return undefined
   return {
     ...(card.lorebook.name === undefined ? {} : { name: card.lorebook.name }),
-    entries: card.lorebook.entries.map(entry => ({
-      sourceId: entry.sourceId,
-      ...(entry.name === undefined ? {} : { name: entry.name }),
-      ...(entry.comment === undefined ? {} : { comment: entry.comment }),
-      keys: entry.keys,
-      secondaryKeys: entry.secondaryKeys,
-      content: entry.content,
-      enabled: entry.enabled,
-      constant: entry.constant,
-      selective: entry.selective,
-      useRegex: entry.useRegex,
-    })),
+    entries: card.lorebook.entries.map(worldInfoEntryDetail),
   }
 }
 
@@ -470,6 +485,26 @@ function displayExtensionDetail(
       return name === undefined ? [] : [name]
     }),
   }))
+}
+
+function characterDetail(
+  meta: StoredCharacterMetadata,
+  parsed: ParsedStoredCharacter,
+  includeWorldInfo: boolean,
+): CharacterLibraryDetail {
+  const worldInfo = includeWorldInfo ? worldInfoDetail(parsed.card) : undefined
+  return {
+    ...summary(meta, parsed.card, parsed.avatarAvailable, parsed.images.length),
+    mediaType: meta.mediaType,
+    ...greetingDetail(parsed.card),
+    imageAssets: parsed.images,
+    ...(worldInfo === undefined ? {} : { worldInfo }),
+    degradations: parsed.card.degradations,
+    regexScripts: regexScriptDetail(parsed.card),
+    displayExtensions: displayExtensionDetail(parsed.overlay, parsed.sourceCard),
+    localCorrectionCount: parsed.overlay.textReplacements.reduce((total, replacement) =>
+      total + replacement.expectedMatches, 0),
+  }
 }
 
 /** Small content-addressed card library; the original PNG, JSON, or CHARX remains exportable. */
@@ -494,41 +529,41 @@ export class CharacterLibrary {
   get(id: string): CharacterLibraryDetail {
     const entry = this.readId(id)
     const parsed = this.parseStored(entry.meta, entry.data)
-    const worldInfo = worldInfoDetail(parsed.card)
-    const detail: CharacterLibraryDetail = {
-      ...summary(entry.meta, parsed.card, parsed.avatarAvailable, parsed.images.length),
-      mediaType: entry.meta.mediaType,
-      ...greetingDetail(parsed.card),
-      imageAssets: parsed.images,
-      ...(worldInfo === undefined ? {} : { worldInfo }),
-      degradations: parsed.card.degradations,
-      regexScripts: regexScriptDetail(parsed.card),
-      displayExtensions: displayExtensionDetail(parsed.overlay, parsed.sourceCard),
-      localCorrectionCount: parsed.overlay.textReplacements.reduce((total, replacement) =>
-        total + replacement.expectedMatches, 0),
-    }
+    const detail = characterDetail(entry.meta, parsed, true)
     this.rememberIndex(entry.meta, detail)
     return detail
+  }
+
+  /** Load greetings and frontend metadata without materializing World Info entry bodies. */
+  overview(id: string): CharacterLibraryDetail {
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    const detail = characterDetail(entry.meta, parsed, false)
+    this.rememberIndex(entry.meta, detail)
+    return detail
+  }
+
+  /** Load one bounded read-only World Info page without returning the rest to the browser. */
+  worldInfoPage(id: string, offset: number, limit: number): CharacterLibraryWorldInfoPage | undefined {
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('invalid World Info offset')
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('invalid World Info limit')
+    const entry = this.readId(id)
+    const card = this.parseStored(entry.meta, entry.data).card
+    if (card.lorebook === undefined) return undefined
+    return {
+      ...(card.lorebook.name === undefined ? {} : { name: card.lorebook.name }),
+      offset,
+      total: card.lorebook.entries.length,
+      entries: card.lorebook.entries.slice(offset, offset + limit).map(worldInfoEntryDetail),
+    }
   }
 
   /** Resolve one reusable card for a model-free Session launch. */
   resolve(id: string): ResolvedCharacterLibraryEntry {
     const entry = this.readId(id)
     const parsed = this.parseStored(entry.meta, entry.data)
-    const worldInfo = worldInfoDetail(parsed.card)
     return {
-      detail: {
-        ...summary(entry.meta, parsed.card, parsed.avatarAvailable, parsed.images.length),
-        mediaType: entry.meta.mediaType,
-        ...greetingDetail(parsed.card),
-        imageAssets: parsed.images,
-        ...(worldInfo === undefined ? {} : { worldInfo }),
-        degradations: parsed.card.degradations,
-        regexScripts: regexScriptDetail(parsed.card),
-        displayExtensions: displayExtensionDetail(parsed.overlay, parsed.sourceCard),
-        localCorrectionCount: parsed.overlay.textReplacements.reduce((total, replacement) =>
-          total + replacement.expectedMatches, 0),
-      },
+      detail: characterDetail(entry.meta, parsed, true),
       card: parsed.card,
       transport: entry.meta.transport === 'png'
         ? { transport: 'png', metadataKeyword: entry.meta.metadataKeyword! }
@@ -846,14 +881,7 @@ export class CharacterLibrary {
     }
   }
 
-  private parseStored(meta: StoredCharacterMetadata, data: Uint8Array): {
-    readonly card: ImportedCharacterCard
-    readonly sourceCard: ImportedCharacterCard
-    readonly overlay: StoredCharacterOverlay
-    readonly avatarAvailable: boolean
-    readonly avatar?: CharacterLibraryAvatar
-    readonly images: readonly CharacterLibraryImage[]
-  } {
+  private parseStored(meta: StoredCharacterMetadata, data: Uint8Array): ParsedStoredCharacter {
     const overlay = this.readOverlay(meta.id)
     if (meta.transport === 'json') {
       const sourceCard = parseCharacterCardJsonBytes(data)

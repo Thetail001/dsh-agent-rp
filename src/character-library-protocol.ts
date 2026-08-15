@@ -41,6 +41,14 @@ export interface CharacterLibraryWorldInfo {
   readonly entries: readonly CharacterLibraryWorldInfoEntry[]
 }
 
+/** One bounded slice of a Character Card's read-only World Info. */
+export interface CharacterLibraryWorldInfoPage {
+  readonly name?: string
+  readonly offset: number
+  readonly total: number
+  readonly entries: readonly CharacterLibraryWorldInfoEntry[]
+}
+
 /** One user-installed display-only rule attached to a local Character Card copy. */
 export interface CharacterLibraryDisplayExtension {
   readonly id: string
