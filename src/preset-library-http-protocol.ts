@@ -1,5 +1,7 @@
 /** Browser-safe values for model-free preset library access. */
 
+import type { TavernHelperImportSummary } from './import/types.ts'
+
 /** Same-origin endpoint served by the Agent RP Host plugin. */
 export const PRESET_LIBRARY_PATH = '/api/agent-rp/presets'
 
@@ -10,6 +12,7 @@ export interface PresetLibrarySummary {
   readonly promptCount: number
   readonly enabledCount: number
   readonly regexScriptCount: number
+  readonly tavernHelper?: TavernHelperImportSummary
   readonly updatedAt: number
 }
 

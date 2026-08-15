@@ -126,6 +126,7 @@ function summary(
     worldInfoCount: card.lorebook?.entries.length ?? 0,
     avatarAvailable,
     imageAssetCount,
+    ...(card.frontend.tavernHelper === undefined ? {} : { tavernHelper: card.frontend.tavernHelper }),
     archived: meta.archivedAt !== undefined,
     transport: meta.transport,
     importedAt: meta.createdAt,
@@ -160,6 +161,7 @@ export class CharacterLibrary {
       mediaType: entry.meta.mediaType,
       greetings: [parsed.card.firstMessage, ...parsed.card.alternateGreetings],
       imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
+      degradations: parsed.card.degradations,
     }
   }
 
@@ -173,6 +175,7 @@ export class CharacterLibrary {
         mediaType: entry.meta.mediaType,
         greetings: [parsed.card.firstMessage, ...parsed.card.alternateGreetings],
         imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
+        degradations: parsed.card.degradations,
       },
       card: parsed.card,
       transport: entry.meta.transport === 'png'

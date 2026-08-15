@@ -84,6 +84,42 @@ test('stores reusable presets outside settings and returns detached session defa
   assert.equal(library.get(imported.id).preset.order.find(item => item.identifier === 'style')?.enabled, false)
 })
 
+test('retains Tavern Helper source diagnostics after a preset library round trip', (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-rp-preset-library-helper-'))
+  context.after(() => { rmSync(root, { recursive: true, force: true }) })
+  const library = new PresetLibrary({ root })
+  const imported = library.import(parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [{ identifier: 'main', name: '主提示', role: 'system', content: '默认正文' }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: 'main', enabled: true }] }],
+    extensions: { tavern_helper: [
+      ['scripts', [{ id: 'on', name: '启用', content: 'secret', enabled: true },
+        { id: 'off', name: '关闭', content: 'secret', enabled: false }]],
+      ['variables', { privateValue: 'not exposed' }],
+      ['legacy_ui', true],
+    ] },
+  }), '条目预设.json'))
+
+  assert.deepEqual(imported.tavernHelper, {
+    format: 'entries', scriptCount: 2, enabledScriptCount: 1, variableCount: 1, ignoredFieldCount: 1,
+  })
+  assert.deepEqual(library.list()[0]?.tavernHelper, imported.tavernHelper)
+  assert.deepEqual(library.get(imported.id).preset.extensionCompatibility, {
+    tavernHelperScriptCount: 2,
+    enabledTavernHelperScriptCount: 1,
+    tavernHelperFormat: 'entries',
+    tavernHelperVariableCount: 1,
+    tavernHelperIgnoredFieldCount: 1,
+  })
+  const agent = { session: Session.create(SessionId('helper-diagnostics')) } as Agent
+  invoke(agent, library, { operation: 'select', id: imported.id })
+  assert.deepEqual(projected(agent).preset?.extensionStatus, [{
+    name: 'Tavern Helper 脚本',
+    detail: '条目数组 · 1/2 个脚本接管 · 1 个变量 · 1 个扩展字段未接管',
+    state: 'active',
+  }])
+  assert.deepEqual(projected(agent).presetLibrary[0]?.tavernHelper, imported.tavernHelper)
+})
+
 test('selects, saves, lists, and deletes library presets without mutating an active snapshot', (context) => {
   const root = mkdtempSync(join(tmpdir(), 'agent-rp-preset-library-command-'))
   context.after(() => { rmSync(root, { recursive: true, force: true }) })

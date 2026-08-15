@@ -55,12 +55,22 @@ export interface ImportedTavernHelperScript {
   readonly data: Readonly<Record<string, JsonValue>>
 }
 
+/** Source encoding and non-sensitive counts retained from one Tavern Helper extension. */
+export interface TavernHelperImportSummary {
+  readonly format: 'object' | 'entries'
+  readonly scriptCount: number
+  readonly enabledScriptCount: number
+  readonly variableCount: number
+  readonly ignoredFieldCount: number
+}
+
 /** Character-owned lightweight frontend resources preserved at import. */
 export interface ImportedCharacterFrontend {
   readonly regexScripts: readonly ImportedRegexScript[]
   readonly tavernHelperScriptNames: readonly string[]
   readonly tavernHelperScripts: readonly ImportedTavernHelperScript[]
   readonly tavernHelperVariables: Readonly<Record<string, JsonValue>>
+  readonly tavernHelper?: TavernHelperImportSummary
 }
 
 /** One Character Card V3 asset declaration retained independently of its transport. */

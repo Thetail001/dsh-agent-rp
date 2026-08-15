@@ -18,6 +18,7 @@ import {
   type ImportedSillyTavernPreset,
   type SillyTavernPresetExtensionCompatibility,
 } from './import/sillytavern-preset.ts'
+import type { TavernHelperImportSummary } from './import/types.ts'
 
 const FILE_SUFFIX = '.json'
 
@@ -28,6 +29,7 @@ export interface PresetLibrarySummary {
   readonly promptCount: number
   readonly enabledCount: number
   readonly regexScriptCount: number
+  readonly tavernHelper?: TavernHelperImportSummary
   readonly updatedAt: number
 }
 
@@ -77,11 +79,28 @@ function metadata(value: unknown): StoredMetadata {
 function validateExtensionCompatibility(value: unknown): void {
   const compatibility = record(value, 'preset extension compatibility')
   const booleans = ['macroNestEnabled', 'chatSquashEnabled', 'regexBindingEnabled', 'regexBindingMatchesPresetScripts']
-  const counts = ['tavernHelperScriptCount', 'enabledTavernHelperScriptCount']
+  const counts = [
+    'tavernHelperScriptCount', 'enabledTavernHelperScriptCount', 'tavernHelperVariableCount', 'tavernHelperIgnoredFieldCount',
+  ]
   if (booleans.some(key => compatibility[key] !== undefined && typeof compatibility[key] !== 'boolean')
     || counts.some(key => compatibility[key] !== undefined
-      && (typeof compatibility[key] !== 'number' || !Number.isSafeInteger(compatibility[key]) || compatibility[key] < 0))) {
+      && (typeof compatibility[key] !== 'number' || !Number.isSafeInteger(compatibility[key]) || compatibility[key] < 0))
+    || (compatibility.tavernHelperFormat !== undefined
+      && compatibility.tavernHelperFormat !== 'object' && compatibility.tavernHelperFormat !== 'entries')) {
     throw new Error('preset extension compatibility has invalid fields')
+  }
+}
+
+function tavernHelperSummary(preset: ImportedSillyTavernPreset): TavernHelperImportSummary | undefined {
+  const compatibility = preset.extensionCompatibility
+  if (compatibility?.tavernHelperFormat === undefined) return undefined
+  const scripts = preset.tavernHelperScripts ?? []
+  return {
+    format: compatibility.tavernHelperFormat,
+    scriptCount: scripts.length,
+    enabledScriptCount: scripts.filter(script => script.enabled).length,
+    variableCount: compatibility.tavernHelperVariableCount ?? Object.keys(preset.tavernHelperVariables ?? {}).length,
+    ignoredFieldCount: compatibility.tavernHelperIgnoredFieldCount ?? 0,
   }
 }
 
@@ -94,12 +113,14 @@ function normalizedName(value: string): string {
 
 function summary(id: string, name: string, preset: ImportedSillyTavernPreset, updatedAt: number): PresetLibrarySummary {
   const enabled = new Set(preset.order.filter(item => item.enabled).map(item => item.identifier))
+  const helper = tavernHelperSummary(preset)
   return {
     id,
     name,
     promptCount: preset.prompts.length,
     enabledCount: preset.prompts.filter(item => enabled.has(item.identifier)).length,
     regexScriptCount: preset.regexScripts.length,
+    ...(helper === undefined ? {} : { tavernHelper: helper }),
     updatedAt,
   }
 }

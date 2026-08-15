@@ -3,6 +3,13 @@
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { ImportedTavernHelperScript } from './types.ts'
 
+/** Normalized Tavern Helper extension plus facts about its source encoding. */
+export interface NormalizedTavernHelperExtension {
+  readonly value: Record<string, unknown>
+  readonly format: 'object' | 'entries'
+  readonly ignoredFieldCount: number
+}
+
 function object(value: unknown, path: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`${path} must be an object`)
@@ -11,16 +18,25 @@ function object(value: unknown, path: string): Record<string, unknown> {
 }
 
 /** Normalize Tavern Helper's object and JSON-serialized entry-list formats. */
-export function tavernHelperExtension(value: unknown, path: string): Record<string, unknown> {
-  if (!Array.isArray(value)) return object(value, path)
+export function tavernHelperExtension(value: unknown, path: string): NormalizedTavernHelperExtension {
+  if (!Array.isArray(value)) {
+    const normalized = object(value, path)
+    return {
+      value: normalized,
+      format: 'object',
+      ignoredFieldCount: Object.keys(normalized).filter(key => key !== 'scripts' && key !== 'variables').length,
+    }
+  }
   const result: Record<string, unknown> = {}
+  let ignoredFieldCount = 0
   for (const [index, entry] of value.entries()) {
     if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string') {
       throw new Error(`${path}[${index}] must be a [key, value] entry`)
     }
     if (entry[0] === 'scripts' || entry[0] === 'variables') result[entry[0]] = entry[1]
+    else ignoredFieldCount += 1
   }
-  return result
+  return { value: result, format: 'entries', ignoredFieldCount }
 }
 
 /** Preserve one JSON object used as a Tavern Helper variable namespace. */

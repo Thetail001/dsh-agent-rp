@@ -65,6 +65,7 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
       },
       tavern_helper: {
         variables: { presetTheme: 'fox' },
+        legacy_ui: { theme: 'old' },
         scripts: [
           { id: 'preset-on', name: '预设脚本', content: 'eventOn("app_ready", () => {})', enabled: true, data: { runs: 1 } },
           { id: 'preset-off', name: '关闭脚本', content: '', enabled: false },
@@ -97,6 +98,9 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
     regexBindingMatchesPresetScripts: true,
     tavernHelperScriptCount: 2,
     enabledTavernHelperScriptCount: 1,
+    tavernHelperFormat: 'object',
+    tavernHelperVariableCount: 1,
+    tavernHelperIgnoredFieldCount: 1,
   })
   assert.equal(preset.regexScripts.length, 40)
   assert.equal(preset.regexScripts.filter(script => !script.disabled).length, 22)
@@ -133,6 +137,7 @@ test('imports Tavern Helper preset extensions serialized as key-value entries', 
       tavern_helper: [
         ['scripts', [{ id: 'entry-script', name: '条目脚本', content: 'eventOn("app_ready", run)', enabled: true }]],
         ['variables', { presetTheme: 'entry-list' }],
+        ['legacy_ui', { theme: 'old' }],
       ],
     },
   }), 'entry-list.json')
@@ -142,5 +147,8 @@ test('imports Tavern Helper preset extensions serialized as key-value entries', 
   assert.deepEqual(preset.extensionCompatibility, {
     tavernHelperScriptCount: 1,
     enabledTavernHelperScriptCount: 1,
+    tavernHelperFormat: 'entries',
+    tavernHelperVariableCount: 1,
+    tavernHelperIgnoredFieldCount: 1,
   })
 })

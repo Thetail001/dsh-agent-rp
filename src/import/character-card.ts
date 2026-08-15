@@ -81,15 +81,23 @@ function parseFrontend(data: JsonObject): ImportedCharacterFrontend {
   const helper = extensions?.tavern_helper
   const parsedHelper = helper === undefined ? undefined : tavernHelperExtension(helper, 'data.extensions.tavern_helper')
   const helperScripts = parsedHelper === undefined ? [] : (() => {
-    if (parsedHelper.scripts === undefined) return []
-    if (!Array.isArray(parsedHelper.scripts)) throw new Error('data.extensions.tavern_helper.scripts must be an array')
-    return parseTavernHelperScripts(parsedHelper.scripts, 'data.extensions.tavern_helper.scripts')
+    if (parsedHelper.value.scripts === undefined) return []
+    if (!Array.isArray(parsedHelper.value.scripts)) throw new Error('data.extensions.tavern_helper.scripts must be an array')
+    return parseTavernHelperScripts(parsedHelper.value.scripts, 'data.extensions.tavern_helper.scripts')
   })()
+  const helperVariables = tavernHelperVariables(parsedHelper?.value.variables)
   return {
     regexScripts,
     tavernHelperScriptNames: helperScripts.filter(script => script.enabled).map(script => script.name),
     tavernHelperScripts: helperScripts,
-    tavernHelperVariables: tavernHelperVariables(parsedHelper?.variables),
+    tavernHelperVariables: helperVariables,
+    ...(parsedHelper === undefined ? {} : { tavernHelper: {
+      format: parsedHelper.format,
+      scriptCount: helperScripts.length,
+      enabledScriptCount: helperScripts.filter(script => script.enabled).length,
+      variableCount: Object.keys(helperVariables).length,
+      ignoredFieldCount: parsedHelper.ignoredFieldCount,
+    } }),
   }
 }
 

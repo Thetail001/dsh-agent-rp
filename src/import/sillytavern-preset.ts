@@ -3,7 +3,8 @@
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { parseRegexScript } from './regex-script.ts'
 import { parseTavernHelperScripts, tavernHelperExtension, tavernHelperVariables } from './tavern-helper.ts'
-import type { ImportedRegexScript, ImportedTavernHelperScript } from './types.ts'
+import type { ImportedRegexScript, ImportedTavernHelperScript, TavernHelperImportSummary } from './types.ts'
+import type { NormalizedTavernHelperExtension } from './tavern-helper.ts'
 
 /** Role assigned to one Prompt Manager entry. */
 export type SillyTavernPresetRole = 'system' | 'user' | 'assistant'
@@ -50,6 +51,9 @@ export interface SillyTavernPresetExtensionCompatibility {
   readonly regexBindingMatchesPresetScripts?: boolean
   readonly tavernHelperScriptCount?: number
   readonly enabledTavernHelperScriptCount?: number
+  readonly tavernHelperFormat?: TavernHelperImportSummary['format']
+  readonly tavernHelperVariableCount?: number
+  readonly tavernHelperIgnoredFieldCount?: number
 }
 
 /** Normalized executable portion of one Chat Completion preset. */
@@ -112,12 +116,13 @@ function optionalObject(value: unknown): Record<string, unknown> | undefined {
 function extensionCompatibility(
   extensions: Record<string, unknown>,
   rawRegex: unknown,
-  helper: Record<string, unknown> | undefined,
+  helper: NormalizedTavernHelperExtension | undefined,
+  helperScripts: readonly ImportedTavernHelperScript[],
+  helperVariables: Readonly<Record<string, JsonValue>>,
 ): SillyTavernPresetExtensionCompatibility | undefined {
   const spreset = optionalObject(extensions.SPreset)
   const chatSquash = optionalObject(spreset?.ChatSquash)
   const regexBinding = optionalObject(spreset?.RegexBinding)
-  const helperScripts = Array.isArray(helper?.scripts) ? helper.scripts : undefined
   const compatibility: SillyTavernPresetExtensionCompatibility = {
     ...(typeof spreset?.MacroNest === 'boolean' ? { macroNestEnabled: spreset.MacroNest } : {}),
     ...(typeof chatSquash?.enabled === 'boolean' ? { chatSquashEnabled: chatSquash.enabled } : {}),
@@ -125,9 +130,12 @@ function extensionCompatibility(
     ...(Array.isArray(regexBinding?.regexes) && Array.isArray(rawRegex)
       ? { regexBindingMatchesPresetScripts: JSON.stringify(regexBinding.regexes) === JSON.stringify(rawRegex) }
       : {}),
-    ...(helperScripts === undefined ? {} : {
+    ...(helper === undefined ? {} : {
       tavernHelperScriptCount: helperScripts.length,
-      enabledTavernHelperScriptCount: helperScripts.filter(value => optionalObject(value)?.enabled === true).length,
+      enabledTavernHelperScriptCount: helperScripts.filter(script => script.enabled).length,
+      tavernHelperFormat: helper.format,
+      tavernHelperVariableCount: Object.keys(helperVariables).length,
+      tavernHelperIgnoredFieldCount: helper.ignoredFieldCount,
     }),
   }
   return Object.keys(compatibility).length === 0 ? undefined : compatibility
@@ -210,13 +218,14 @@ export function parseSillyTavernPresetJson(source: string, fileName = 'SillyTave
   const helper = rawHelper === undefined || rawHelper === null
     ? undefined
     : tavernHelperExtension(rawHelper, 'extensions.tavern_helper')
-  const helperScripts = helper?.scripts === undefined
+  const helperScripts = helper?.value.scripts === undefined
     ? []
     : (() => {
-        if (!Array.isArray(helper.scripts)) throw new Error('extensions.tavern_helper.scripts must be an array')
-        return parseTavernHelperScripts(helper.scripts, 'extensions.tavern_helper.scripts')
+        if (!Array.isArray(helper.value.scripts)) throw new Error('extensions.tavern_helper.scripts must be an array')
+        return parseTavernHelperScripts(helper.value.scripts, 'extensions.tavern_helper.scripts')
       })()
-  const compatibility = extensionCompatibility(extensions, rawRegex, helper)
+  const helperVariables = tavernHelperVariables(helper?.value.variables)
+  const compatibility = extensionCompatibility(extensions, rawRegex, helper, helperScripts, helperVariables)
   return {
     format: 0,
     name: fileName.replace(/\.json$/iu, '').trim() || 'SillyTavern preset',
@@ -241,7 +250,7 @@ export function parseSillyTavernPresetJson(source: string, fileName = 'SillyTave
     },
     regexScripts,
     tavernHelperScripts: helperScripts,
-    tavernHelperVariables: tavernHelperVariables(helper?.variables),
+    tavernHelperVariables: helperVariables,
     extensionSummary: {
       regexScriptCount: regexScripts.length,
       hasSPreset: extensions.SPreset !== undefined && extensions.SPreset !== null,

@@ -91,6 +91,7 @@ test('imports the complete Tavern Helper script tree and initial variables', () 
       extensions: {
         tavern_helper: {
           variables: { theme: 'night' },
+          legacy_ui: { theme: 'old' },
           scripts: [{
             type: 'script', id: 'inline', name: '状态同步', enabled: true,
             content: 'insertOrAssignVariables({ ready: true })', info: 'fixture', data: { runs: 1 },
@@ -114,6 +115,9 @@ test('imports the complete Tavern Helper script tree and initial variables', () 
     id: 'nested', name: '不运行', content: 'throw new Error()', info: '', enabled: false,
     buttonEnabled: true, buttons: [], data: {},
   }])
+  assert.deepEqual(card.frontend.tavernHelper, {
+    format: 'object', scriptCount: 2, enabledScriptCount: 1, variableCount: 1, ignoredFieldCount: 1,
+  })
 })
 
 test('imports Tavern Helper extensions serialized as key-value entries', () => {
@@ -125,6 +129,7 @@ test('imports Tavern Helper extensions serialized as key-value entries', () => {
         tavern_helper: [
           ['scripts', [{ id: 'entry-script', name: '条目脚本', content: 'eventOn("app_ready", run)', enabled: true }]],
           ['variables', { theme: 'entry-list' }],
+          ['legacy_ui', { theme: 'old' }],
         ],
       },
     }),
@@ -133,6 +138,9 @@ test('imports Tavern Helper extensions serialized as key-value entries', () => {
   assert.deepEqual(card.frontend.tavernHelperScriptNames, ['条目脚本'])
   assert.deepEqual(card.frontend.tavernHelperVariables, { theme: 'entry-list' })
   assert.equal(card.frontend.tavernHelperScripts[0]?.id, 'entry-script')
+  assert.deepEqual(card.frontend.tavernHelper, {
+    format: 'entries', scriptCount: 1, enabledScriptCount: 1, variableCount: 1, ignoredFieldCount: 1,
+  })
 })
 
 test('accepts regex substitution modes serialized with SillyTavern numeric coercion', () => {

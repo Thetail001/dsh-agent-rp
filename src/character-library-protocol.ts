@@ -1,6 +1,7 @@
 /** Browser-safe character-library values shared by the Host and Roleplay UI. */
 
 import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
+import type { CharacterImportDegradation, TavernHelperImportSummary } from './import/types.ts'
 
 /** Same-origin endpoint served by the Agent RP Host plugin. */
 export const CHARACTER_LIBRARY_PATH = '/api/agent-rp/characters'
@@ -30,6 +31,7 @@ export interface CharacterLibrarySummary {
   readonly worldInfoCount: number
   readonly avatarAvailable: boolean
   readonly imageAssetCount: number
+  readonly tavernHelper?: TavernHelperImportSummary
   readonly archived: boolean
   readonly transport: 'png' | 'json' | 'charx'
   readonly importedAt: number
@@ -41,6 +43,7 @@ export interface CharacterLibraryDetail extends CharacterLibrarySummary {
   readonly mediaType: string
   readonly greetings: readonly string[]
   readonly imageAssets: readonly CharacterLibraryImage[]
+  readonly degradations: readonly CharacterImportDegradation[]
 }
 
 /** What changed when one local card file was added to the library. */

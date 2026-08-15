@@ -396,7 +396,15 @@ function presetProjection(
     },
     compatibility?.tavernHelperScriptCount === undefined ? undefined : {
       name: 'Tavern Helper 脚本',
-      detail: `${helperScripts.filter(script => script.enabled).length}/${helperScripts.length} 个由隔离运行时接管`,
+      detail: [
+        compatibility.tavernHelperFormat === 'entries' ? '条目数组'
+          : compatibility.tavernHelperFormat === 'object' ? '对象格式' : undefined,
+        `${helperScripts.filter(script => script.enabled).length}/${helperScripts.length} 个脚本接管`,
+        compatibility.tavernHelperVariableCount === undefined
+          ? undefined : `${compatibility.tavernHelperVariableCount} 个变量`,
+        compatibility.tavernHelperIgnoredFieldCount === undefined || compatibility.tavernHelperIgnoredFieldCount === 0
+          ? undefined : `${compatibility.tavernHelperIgnoredFieldCount} 个扩展字段未接管`,
+      ].filter((value): value is string => value !== undefined).join(' · '),
       state: helperScripts.some(script => script.enabled) ? 'active' as const : 'inactive' as const,
     },
       ].filter((value): value is NonNullable<typeof value> => value !== undefined)

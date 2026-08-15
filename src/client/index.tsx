@@ -2946,6 +2946,27 @@ function WorldInfoEntryEditor({ draft, saving, onCancel, onSave }: {
   </form>
 }
 
+function tavernHelperSummaryText(summary: NonNullable<CharacterLibrarySummary['tavernHelper']>): string {
+  return [
+    summary.format === 'entries' ? '条目数组' : '对象格式',
+    `${summary.enabledScriptCount}/${summary.scriptCount} 条脚本启用`,
+    `${summary.variableCount} 个变量`,
+    summary.ignoredFieldCount === 0 ? undefined : `${summary.ignoredFieldCount} 个扩展字段未接管`,
+  ].filter((value): value is string => value !== undefined).join(' · ')
+}
+
+function characterDegradationLabel(value: CharacterLibraryDetail['degradations'][number]): string {
+  switch (value) {
+    case 'character-assets': return '外部角色资源'
+    case 'future-card-version': return '未来版本字段'
+    case 'group-greetings': return '群聊开场'
+    case 'lorebook-decorators': return '世界书装饰器'
+    case 'lorebook-regex': return '世界书正则'
+    case 'lorebook-recursion': return '世界书递归'
+    case 'remote-assets': return '远程资源'
+  }
+}
+
 function CharacterLibraryDialog({
   currentCharacterName, currentCharacterId, listCharacters, readCharacter, setCharacterArchived, importCharacterFile,
   listPresets, listPersonas, savePersona, deletePersona, onClose, onStart,
@@ -3102,9 +3123,10 @@ function CharacterLibraryDialog({
       setGreetingIndex(0)
       setLoadingId(undefined)
       setImporting(false)
-      setActionNotice(outcome === 'created' ? `已加入角色库「${entry.displayName}」`
+      const notice = outcome === 'created' ? `已加入角色库「${entry.displayName}」`
         : outcome === 'restored' ? `已恢复「${entry.displayName}」`
-          : `角色库中已有「${entry.displayName}」`)
+          : `角色库中已有「${entry.displayName}」`
+      setActionNotice(`${notice}${entry.tavernHelper === undefined ? '' : ` · Tavern Helper：${tavernHelperSummaryText(entry.tavernHelper)}`}`)
     }).catch(importError => {
       setImporting(false)
       setError(importError instanceof Error ? importError.message : String(importError))
@@ -3266,6 +3288,19 @@ function CharacterLibraryDialog({
               }}>{importing ? '正在导入…' : '选择角色卡'}</button>}
           </div>}
           {selected !== undefined && <>
+            {selected.tavernHelper !== undefined && <div style={{
+              background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+              borderRadius: '10px', fontSize: '11px', lineHeight: 1.55, margin: '4px 0 12px', padding: '9px 11px',
+            }}>
+              <strong style={{ display: 'block', fontSize: '12px', marginBottom: '2px' }}>Tavern Helper</strong>
+              <span style={{ opacity: .58 }}>{tavernHelperSummaryText(selected.tavernHelper)} · 脚本在隔离运行时中执行</span>
+            </div>}
+            {selected.degradations.length > 0 && <div style={{
+              borderLeft: '2px solid color-mix(in srgb, #d6a24d 70%, transparent)', fontSize: '11px', lineHeight: 1.55,
+              margin: '4px 0 12px', opacity: .62, padding: '2px 0 2px 10px',
+            }}>
+              原卡仍保留但当前不执行：{selected.degradations.map(characterDegradationLabel).join('、')}
+            </div>}
             <CharacterAssetsSection detail={selected} />
             <label style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '8px 0 8px', opacity: .65 }}>选择开场</label>
             <div style={{ display: 'grid', gap: '8px' }}>
@@ -4256,6 +4291,9 @@ function PresetLibraryRow({ entry, active = false, busy = false, onSelect, onDel
       <div style={{ fontSize: '10px', marginTop: '4px', opacity: 0.48 }}>
         {entry.enabledCount}/{entry.promptCount} 项启用 · {entry.regexScriptCount} 条正则{active ? ' · 当前来源' : ''}
       </div>
+      {entry.tavernHelper !== undefined && <div style={{ fontSize: '10px', marginTop: '3px', opacity: 0.48 }}>
+        Tavern Helper · {tavernHelperSummaryText(entry.tavernHelper)}
+      </div>}
     </div>
     <button type="button" disabled={busy || active} onClick={onSelect} style={{ ...miniButtonStyle, marginLeft: 'auto' }}>{active ? '已选' : '使用'}</button>
     {onDelete !== undefined && <button type="button" disabled={busy} onClick={onDelete} style={miniButtonStyle}>删除</button>}

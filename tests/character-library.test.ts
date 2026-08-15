@@ -82,6 +82,32 @@ test('keeps one exact reusable Character Card asset with selectable greetings', 
   assert.deepEqual(library.asset(pngImport.id).data, png)
 })
 
+test('returns safe Tavern Helper and degradation diagnostics with library entries', (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-character-library-diagnostics-'))
+  context.after(() => { rmSync(root, { recursive: true, force: true }) })
+  const raw = JSON.parse(readFileSync('tests/fixtures/manual-character-card.json', 'utf8')) as Record<string, unknown>
+  const cardData = raw.data as Record<string, unknown>
+  cardData.group_only_greetings = ['群聊开场不会执行']
+  const extensions = cardData.extensions as Record<string, unknown>
+  extensions.tavern_helper = [
+    ['scripts', [{ id: 'status', name: '状态', content: 'secret script', enabled: true },
+      { id: 'off', name: '关闭', content: 'secret script', enabled: false }]],
+    ['variables', { privateValue: 'not exposed' }],
+    ['legacy_ui', { hidden: true }],
+  ]
+  const data = new TextEncoder().encode(JSON.stringify(raw))
+  const library = new CharacterLibrary({ root })
+  const imported = library.importFileWithOutcome({ data, filename: 'diagnostics.json', mediaType: 'application/json' })
+
+  assert.deepEqual(imported.entry.tavernHelper, {
+    format: 'entries', scriptCount: 2, enabledScriptCount: 1, variableCount: 1, ignoredFieldCount: 1,
+  })
+  assert.deepEqual(imported.entry.degradations, ['group-greetings'])
+  assert.deepEqual(library.list()[0]?.tavernHelper, imported.entry.tavernHelper)
+  assert.equal(JSON.stringify(imported.entry).includes('secret script'), false)
+  assert.equal(JSON.stringify(imported.entry).includes('not exposed'), false)
+})
+
 test('keeps the original CHARX archive reusable', (context) => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-character-library-charx-'))
   context.after(() => { rmSync(root, { recursive: true, force: true }) })
