@@ -336,7 +336,10 @@ test('preserves authorized ESM imports and plans their required public globals',
   const fetched: string[] = []
   globalThis.fetch = (input: string | URL | Request) => {
     fetched.push(String(input))
-    return Promise.resolve(new Response('export function register() { return z.object({ value: z.string() }).parse(YAML.parse("value: ok")); }'))
+    return Promise.resolve(new Response([
+      'export function register() { return z.object({ value: z.string() }).parse(YAML.parse("value: ok")); }',
+      'try { (window.parent || window).__辅助计算脚本_loaded__ = true; } catch { window.__辅助计算脚本_loaded__ = true; }',
+    ].join('\n')))
   }
   try {
     const plan = await resolveTavernScriptExecution([
@@ -347,6 +350,7 @@ test('preserves authorized ESM imports and plans their required public globals',
     assert.deepEqual(plan.preloads, ['yaml', 'zod'])
     assert.equal(plan.needsDomPurify, false)
     assert.equal(plan.needsFuse, false)
+    assert.deepEqual(plan.compatibilityMarkers, ['__辅助计算脚本_loaded__'])
     assert.match(plan.source, /import \{ register \} from 'https:\/\/cdn\.jsdelivr\.net/u)
     assert.deepEqual(fetched, ['https://cdn.jsdelivr.net/gh/example/project@1.0.0/module.js'])
   } finally {
@@ -384,7 +388,7 @@ test('runs module plans through a Blob and reports ready only after evaluation',
     buttonEnabled: false, buttons: [], data: {},
   }, {
     source: 'export const ready = true;', mode: 'module', preloads: ['yaml', 'zod'],
-    needsDomPurify: false, needsFuse: false,
+    needsDomPurify: false, needsFuse: false, compatibilityMarkers: ['__远程依赖_loaded__'],
   }, {
     scriptId: 'module-runtime', scriptName: '模块兼容', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
@@ -398,12 +402,13 @@ test('runs module plans through a Blob and reports ready only after evaluation',
   assert.match(html, /script-src 'unsafe-inline' 'unsafe-eval' blob:/u)
   assert.match(html, /connect-src 'none'/u)
   assert.match(source!, /URL\.createObjectURL\(new Blob/u)
+  assert.match(source!, /var __dshDeclaredCompatibilityMarkers=\["__远程依赖_loaded__"\]/u)
   assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/yaml@2\.9\.0\/\+esm"\)/u)
   assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/zod@4\.4\.3\/\+esm"\)/u)
   assert.ok(source!.indexOf('await import(__dshModuleUrl)') < source!.lastIndexOf("__dshPost('ready',"))
 })
 
-test('reports only bounded true compatibility markers after script startup', () => {
+test('reports only bounded true compatibility markers after startup and on request', () => {
   const html = tavernScriptFrameSource({
     id: 'marker-runtime', name: '依赖标记', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
@@ -422,6 +427,14 @@ test('reports only bounded true compatibility markers after script startup', () 
   const ready = (context.posted as Record<string, unknown>[]).find(message => message.action === 'ready')
 
   assert.deepEqual(JSON.parse(JSON.stringify(ready?.markers)), ['__辅助计算脚本_loaded__'])
+  context.__迟到依赖_loaded__ = true
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({ action: 'compatibility-markers-request' })
+  const refreshed = (context.posted as Record<string, unknown>[]).findLast(
+    message => message.action === 'compatibility-markers',
+  )
+  assert.deepEqual(JSON.parse(JSON.stringify(refreshed?.markers)), [
+    '__辅助计算脚本_loaded__', '__迟到依赖_loaded__',
+  ])
   assert.deepEqual(validatedTavernCompatibilityMarkers([
     '__辅助计算脚本_loaded__', '__辅助计算脚本_loaded__', '__invalid marker_loaded__', true,
   ]), ['__辅助计算脚本_loaded__'])

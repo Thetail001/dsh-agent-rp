@@ -5937,6 +5937,8 @@ function TavernScriptRuntime({
   const [runtimeToasts, setRuntimeToasts] = useState<readonly TavernToastMessage[]>([])
   const toastSequence = useRef(0)
   const frameRefs = useRef(new Map<string, HTMLIFrameElement>())
+  const failedScriptIds = useRef(new Set<string>())
+  const compatibilityMarkerTimers = useRef(new Set<number>())
   const generationQueue = useRef(new Map<string, QueuedTavernGeneration[]>())
   const customGenerationQueue = useRef(new Map<string, QueuedTavernGeneration[]>())
   const activeGenerations = useRef(new Map<string, {
@@ -5981,6 +5983,9 @@ function TavernScriptRuntime({
     setSurfaceScriptIds(new Set())
     setPopupRequests([])
     setRuntimeToasts([])
+    failedScriptIds.current.clear()
+    for (const timer of compatibilityMarkerTimers.current) window.clearTimeout(timer)
+    compatibilityMarkerTimers.current.clear()
     void Promise.all(scripts.map(async (script): Promise<TavernScriptFrame> => {
       try {
         const execution = await resolveTavernScriptExecution(script.content, controller.signal, scriptOrigins)
@@ -6008,6 +6013,8 @@ function TavernScriptRuntime({
     })
     return () => {
       controller.abort()
+      for (const timer of compatibilityMarkerTimers.current) window.clearTimeout(timer)
+      compatibilityMarkerTimers.current.clear()
       for (const active of activeGenerations.current.values()) active.controller.abort()
       activeGenerations.current.clear()
     }
@@ -6254,22 +6261,34 @@ function TavernScriptRuntime({
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
         setReadyScriptIds(current => new Set(current).add(entry.script.id))
-        setCompatibilityMarkersByScript(current => new Map(current).set(
-          entry.script.id,
-          validatedTavernCompatibilityMarkers(message.markers),
-        ))
-        setRuntimeErrors(current => {
-          if (!current.has(entry.script.id)) return current
-          const next = new Map(current)
-          next.delete(entry.script.id)
-          return next
-        })
+        if (!failedScriptIds.current.has(entry.script.id)) {
+          setCompatibilityMarkersByScript(current => new Map(current).set(
+            entry.script.id,
+            validatedTavernCompatibilityMarkers(message.markers),
+          ))
+          setRuntimeErrors(current => {
+            if (!current.has(entry.script.id)) return current
+            const next = new Map(current)
+            next.delete(entry.script.id)
+            return next
+          })
+        }
         const frame = frameRefs.current.get(entry.script.id)
         if (frame === undefined) return
         syncFrame(frame, entry.script)
         frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'script-buttons-request' }, '*')
         frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'app_ready', args: [] }, '*')
         frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'chat_id_changed', args: [String(sessionId)] }, '*')
+        for (const delay of [250, 1_000, 2_500]) {
+          const timer = window.setTimeout(() => {
+            compatibilityMarkerTimers.current.delete(timer)
+            if (failedScriptIds.current.has(entry.script.id) || frameRefs.current.get(entry.script.id) !== frame) return
+            frame.contentWindow?.postMessage({
+              source: 'dsh-agent-rp-host', action: 'compatibility-markers-request',
+            }, '*')
+          }, delay)
+          compatibilityMarkerTimers.current.add(timer)
+        }
         if (projectionRef.current.mvu !== undefined) {
           frame.contentWindow?.postMessage({
             source: 'dsh-agent-rp-host', action: 'event', eventType: 'mag_variable_initialized',
@@ -6282,8 +6301,17 @@ function TavernScriptRuntime({
         }
         return
       }
+      if (message.action === 'compatibility-markers') {
+        if (failedScriptIds.current.has(entry.script.id)) return
+        setCompatibilityMarkersByScript(current => new Map(current).set(
+          entry.script.id,
+          validatedTavernCompatibilityMarkers(message.markers),
+        ))
+        return
+      }
       if (message.action === 'runtime-error') {
         const detail = String(message.value)
+        failedScriptIds.current.add(entry.script.id)
         setRuntimeErrors(current => new Map(current).set(entry.script.id, detail))
         setCompatibilityMarkersByScript(current => {
           if (!current.has(entry.script.id)) return current
@@ -7203,7 +7231,6 @@ function roleplayComposerDockComponent(
             continue
           }
         }
-        if (item.dataset.agentRpFrontend === 'true') continue
         if (activeViewMode === 'immersive') {
           for (const element of item.querySelectorAll<HTMLElement>('[data-variant="think"]')) {
             hideTranscriptDetail(element)
