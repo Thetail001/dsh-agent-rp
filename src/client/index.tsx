@@ -631,6 +631,10 @@ async function fetchCharacterDetail(id: string): Promise<CharacterLibraryDetail>
 
 const characterLibraryChangedEvent = 'agent-rp:character-library-changed'
 
+function notifyCharacterLibraryChanged(id: string): void {
+  window.dispatchEvent(new CustomEvent(characterLibraryChangedEvent, { detail: { id } }))
+}
+
 async function updateCharacterRemoteResource(
   id: string,
   origin: string,
@@ -649,7 +653,6 @@ async function updateCharacterRemoteResource(
   if (!response.ok || value.entry === undefined) {
     throw new Error(value.error ?? `外部资源授权失败（${response.status}）`)
   }
-  window.dispatchEvent(new CustomEvent(characterLibraryChangedEvent, { detail: { id } }))
   return value.entry
 }
 
@@ -675,12 +678,16 @@ function useCharacterDetail(libraryId: string | undefined): CharacterLibraryDeta
   const [detail, setDetail] = useState<CharacterLibraryDetail>()
   useEffect(() => {
     let current = true
+    let revision = 0
     if (libraryId === undefined) return () => { current = false }
-    const load = (): void => { void fetchCharacterDetail(libraryId).then(value => {
-      if (current) setDetail(value)
-    }, () => {
-      if (current) setDetail(undefined)
-    }) }
+    const load = (): void => {
+      const requestedRevision = ++revision
+      void fetchCharacterDetail(libraryId).then(value => {
+        if (current && requestedRevision === revision) setDetail(value)
+      }, () => {
+        if (current && requestedRevision === revision) setDetail(undefined)
+      })
+    }
     setDetail(undefined)
     load()
     const changed = (event: Event): void => {
@@ -728,7 +735,15 @@ function BlockedCardResources({ character, origins }: {
       setBusy(true)
       setError(undefined)
       void (async () => {
-        for (const origin of origins) await updateCharacterRemoteResource(character.id, origin, true)
+        let changed = false
+        try {
+          for (const origin of origins) {
+            await updateCharacterRemoteResource(character.id, origin, true)
+            changed = true
+          }
+        } finally {
+          if (changed) notifyCharacterLibraryChanged(character.id)
+        }
       })().then(() => {
         setBusy(false)
       }, reason => {
@@ -1235,6 +1250,7 @@ function CharacterRemoteResourcesSection({ detail, onChange }: {
           void updateCharacterRemoteResource(detail.id, origin, !enabled).then(value => {
             setWorkingOrigin(undefined)
             onChange?.(value)
+            notifyCharacterLibraryChanged(detail.id)
           }, reason => {
             setWorkingOrigin(undefined)
             setError(reason instanceof Error ? reason.message : String(reason))
