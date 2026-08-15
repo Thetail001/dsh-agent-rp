@@ -18,7 +18,7 @@ import {
   type ImportedSillyTavernPreset,
   type SillyTavernPresetExtensionCompatibility,
 } from './import/sillytavern-preset.ts'
-import type { TavernHelperImportSummary } from './import/types.ts'
+import type { TavernHelperLibrarySummary } from './import/types.ts'
 
 const FILE_SUFFIX = '.json'
 
@@ -29,7 +29,7 @@ export interface PresetLibrarySummary {
   readonly promptCount: number
   readonly enabledCount: number
   readonly regexScriptCount: number
-  readonly tavernHelper?: TavernHelperImportSummary
+  readonly tavernHelper?: TavernHelperLibrarySummary
   readonly updatedAt: number
 }
 
@@ -91,16 +91,20 @@ function validateExtensionCompatibility(value: unknown): void {
   }
 }
 
-function tavernHelperSummary(preset: ImportedSillyTavernPreset): TavernHelperImportSummary | undefined {
+function tavernHelperSummary(preset: ImportedSillyTavernPreset): TavernHelperLibrarySummary | undefined {
   const compatibility = preset.extensionCompatibility
-  if (compatibility?.tavernHelperFormat === undefined) return undefined
   const scripts = preset.tavernHelperScripts ?? []
+  const expectedScriptCount = compatibility?.tavernHelperScriptCount
+  if (!preset.extensionSummary.hasTavernHelper && expectedScriptCount === undefined && scripts.length === 0) return undefined
   return {
-    format: compatibility.tavernHelperFormat,
+    ...(compatibility?.tavernHelperFormat === undefined ? {} : { format: compatibility.tavernHelperFormat }),
     scriptCount: scripts.length,
     enabledScriptCount: scripts.filter(script => script.enabled).length,
-    variableCount: compatibility.tavernHelperVariableCount ?? Object.keys(preset.tavernHelperVariables ?? {}).length,
-    ignoredFieldCount: compatibility.tavernHelperIgnoredFieldCount ?? 0,
+    ...(expectedScriptCount === undefined ? {} : { expectedScriptCount }),
+    ...(compatibility?.tavernHelperVariableCount === undefined
+      ? {} : { variableCount: compatibility.tavernHelperVariableCount }),
+    ...(compatibility?.tavernHelperIgnoredFieldCount === undefined
+      ? {} : { ignoredFieldCount: compatibility.tavernHelperIgnoredFieldCount }),
   }
 }
 

@@ -47,6 +47,7 @@ import { exportSillyTavernPresetJson } from '../preset-export.ts'
 import { projectPresetPromptSections } from '../preset-sections.ts'
 import {
   PRESET_LIBRARY_PATH,
+  presetLibraryOptionLabel,
   type PresetLibraryImportResponse,
   type PresetLibraryListResponse,
   type PresetLibrarySummary,
@@ -702,11 +703,12 @@ function inlineCardFrameSource(
   return cardFrameSource(sanitized, statData, character)
 }
 
-function CharacterDisplay({ segments, statData, characterName, character }: {
+function CharacterDisplay({ segments, statData, characterName, character, preview = false }: {
   readonly segments: readonly CharacterDisplaySegment[]
   readonly statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined
   readonly characterName: string
   readonly character?: CharacterLibraryDetail
+  readonly preview?: boolean
 }) {
   return <div data-agent-rp-character-display style={{ display: 'grid', gap: '10px', minWidth: 0 }}>
     {segments.map((segment, index) => segment.kind === 'markdown'
@@ -715,11 +717,14 @@ function CharacterDisplay({ segments, statData, characterName, character }: {
           key={index}
           title={`${characterName}的轻前端界面 ${index + 1}`}
           data-agent-rp-frame
-          sandbox="allow-scripts"
+          sandbox={preview ? '' : 'allow-scripts'}
           srcDoc={segment.kind === 'html'
             ? cardFrameSource(segment.source, statData, character)
             : inlineCardFrameSource(segment.source, statData, character)}
-          style={{ background: 'transparent', border: 0, colorScheme: 'dark', display: 'block', height: '72px', maxWidth: '100%', width: '100%' }}
+          style={{
+            background: 'transparent', border: 0, colorScheme: 'dark', display: 'block',
+            height: preview ? 'min(38vh, 320px)' : '72px', maxWidth: '100%', width: '100%',
+          }}
         />)}
   </div>
 }
@@ -1231,7 +1236,7 @@ function SillyTavernImportDialog({ listPresets, onClose, onImport, onImportRpDis
           marginTop: '7px', padding: '9px 10px', width: '100%',
         }}>
           <option value="">不使用预设</option>
-          {presets?.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+          {presets?.map(entry => <option key={entry.id} value={entry.id}>{presetLibraryOptionLabel(entry, presets)}</option>)}
         </select>
       </label>
       <div style={{ fontSize: '11px', lineHeight: 1.55, marginTop: '6px', opacity: .5 }}>
@@ -2955,6 +2960,19 @@ function tavernHelperSummaryText(summary: NonNullable<CharacterLibrarySummary['t
   ].filter((value): value is string => value !== undefined).join(' · ')
 }
 
+function presetTavernHelperSummaryText(summary: NonNullable<PresetLibrarySummary['tavernHelper']>): string {
+  const missing = summary.expectedScriptCount === undefined
+    ? 0 : Math.max(0, summary.expectedScriptCount - summary.scriptCount)
+  return [
+    summary.format === 'entries' ? '条目数组' : summary.format === 'object' ? '对象格式' : undefined,
+    missing > 0 ? `旧导入缺少 ${missing} 个脚本，建议重新导入`
+      : `${summary.enabledScriptCount}/${summary.scriptCount} 条脚本启用`,
+    summary.variableCount === undefined ? undefined : `${summary.variableCount} 个变量`,
+    summary.ignoredFieldCount === undefined || summary.ignoredFieldCount === 0
+      ? undefined : `${summary.ignoredFieldCount} 个扩展字段未接管`,
+  ].filter((value): value is string => value !== undefined).join(' · ')
+}
+
 function characterDegradationLabel(value: CharacterLibraryDetail['degradations'][number]): string {
   switch (value) {
     case 'character-assets': return '外部角色资源'
@@ -3304,18 +3322,40 @@ function CharacterLibraryDialog({
             <CharacterAssetsSection detail={selected} />
             <label style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '8px 0 8px', opacity: .65 }}>选择开场</label>
             <div style={{ display: 'grid', gap: '8px' }}>
-              {selected.greetings.map((greeting, index) => <button key={index} type="button" aria-pressed={greetingIndex === index}
-                onClick={() => { setGreetingIndex(index) }} style={{
+              {selected.greetings.map((greeting, index) => {
+                const active = greetingIndex === index
+                return <div key={index} style={{
                   background: greetingIndex === index ? `color-mix(in srgb, ${color} 13%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
                   border: greetingIndex === index ? `1px solid color-mix(in srgb, ${color} 38%, transparent)` : '1px solid var(--dsw-alias-border-l2, #39393c)',
-                  borderRadius: '10px', color: 'inherit', cursor: 'pointer', font: 'inherit', lineHeight: 1.6,
-                  maxHeight: greetingIndex === index ? '170px' : '78px', overflow: 'hidden', padding: '11px 12px', textAlign: 'left', whiteSpace: 'pre-wrap',
+                  borderRadius: '10px', color: 'inherit', overflow: 'hidden',
                 }}>
-                <span style={{ display: 'block', fontSize: '11px', fontWeight: 620, marginBottom: '4px', opacity: .5 }}>
-                  {index === 0 ? '默认开场' : `备选开场 ${index}`}
-                </span>
-                <span style={{ fontSize: '13px' }}>{greeting.trim() === '' ? '无开场白' : greeting}</span>
-              </button>)}
+                  <button type="button" aria-pressed={active} onClick={() => { setGreetingIndex(index) }} style={{
+                    background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', display: 'block',
+                    font: 'inherit', lineHeight: 1.6, padding: '10px 12px', textAlign: 'left', width: '100%',
+                  }}>
+                    <span style={{ display: 'block', fontSize: '11px', fontWeight: 620, opacity: .5 }}>
+                      {index === 0 ? '默认开场' : `备选开场 ${index}`}{active ? ' · 已选择' : ''}
+                    </span>
+                    {!active && <span style={{
+                      display: '-webkit-box', fontSize: '13px', marginTop: '4px', overflow: 'hidden',
+                      WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, whiteSpace: 'pre-wrap',
+                    }}>{greeting.trim() === '' ? '无开场白' : greeting}</span>}
+                  </button>
+                  {active && <div style={{
+                    borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', maxHeight: 'min(42vh, 360px)',
+                    overflow: 'auto', padding: '10px 12px',
+                  }}>
+                    {greeting.trim() === '' ? <span style={{ fontSize: '13px', opacity: .58 }}>无开场白</span>
+                      : <CharacterDisplay
+                          segments={splitCharacterDisplay(selected.renderedGreetings[index] ?? greeting)}
+                          statData={undefined}
+                          characterName={selected.displayName}
+                          character={selected}
+                          preview
+                        />}
+                  </div>}
+                </div>
+              })}
             </div>
             <label htmlFor="agent-rp-session-preset" style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '20px 0 8px', opacity: .65 }}>对话预设</label>
             <select id="agent-rp-session-preset" value={presetId} onChange={event => { selectPreset(event.target.value) }} style={{
@@ -3323,7 +3363,7 @@ function CharacterLibraryDialog({
               borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 10px', width: '100%',
             }}>
               <option value="">不使用预设</option>
-              {presets?.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+              {presets?.map(entry => <option key={entry.id} value={entry.id}>{presetLibraryOptionLabel(entry, presets)}</option>)}
             </select>
             <div style={{ fontSize: '11px', lineHeight: 1.55, marginTop: '6px', opacity: .5 }}>
               {presetError !== undefined
@@ -4292,7 +4332,7 @@ function PresetLibraryRow({ entry, active = false, busy = false, onSelect, onDel
         {entry.enabledCount}/{entry.promptCount} 项启用 · {entry.regexScriptCount} 条正则{active ? ' · 当前来源' : ''}
       </div>
       {entry.tavernHelper !== undefined && <div style={{ fontSize: '10px', marginTop: '3px', opacity: 0.48 }}>
-        Tavern Helper · {tavernHelperSummaryText(entry.tavernHelper)}
+        Tavern Helper · {presetTavernHelperSummaryText(entry.tavernHelper)}
       </div>}
     </div>
     <button type="button" disabled={busy || active} onClick={onSelect} style={{ ...miniButtonStyle, marginLeft: 'auto' }}>{active ? '已选' : '使用'}</button>
@@ -6555,7 +6595,7 @@ function importHintComponent(
           borderRadius: '7px', color: 'inherit', font: 'inherit', fontSize: '11px', maxWidth: '150px', padding: '5px 7px',
         }}>
           <option value="">不使用预设</option>
-          {presets.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+          {presets.map(entry => <option key={entry.id} value={entry.id}>{presetLibraryOptionLabel(entry, presets)}</option>)}
         </select>
         <button type="button" style={actionStyle} disabled={busy} onClick={() => {
           setBusy(true)

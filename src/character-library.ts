@@ -17,6 +17,7 @@ import type { ImportedCharacterCard } from './import/types.ts'
 import { parseCharacterCardJson, parseCharacterCardJsonBytes } from './import/character-card.ts'
 import { readCharacterCardPng } from './import/png.ts'
 import { charxAvatar, charxImageAssets, parseCharx } from './import/charx.ts'
+import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay } from './frontend-regex.ts'
 import type {
   CharacterLibraryDetail, CharacterLibraryImage, CharacterLibraryImportResult, CharacterLibrarySummary,
 } from './character-library-protocol.ts'
@@ -134,6 +135,17 @@ function summary(
   }
 }
 
+function greetingDetail(card: ImportedCharacterCard): {
+  readonly greetings: readonly string[]
+  readonly renderedGreetings: readonly string[]
+} {
+  const greetings = [card.firstMessage, ...card.alternateGreetings]
+  return {
+    greetings,
+    renderedGreetings: greetings.map(greeting => renderCharacterDisplay(greeting, card, AI_OUTPUT_PLACEMENT, 0)),
+  }
+}
+
 /** Small content-addressed card library; the original PNG, JSON, or CHARX remains exportable. */
 export class CharacterLibrary {
   readonly root: string
@@ -159,7 +171,7 @@ export class CharacterLibrary {
     return {
       ...summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length),
       mediaType: entry.meta.mediaType,
-      greetings: [parsed.card.firstMessage, ...parsed.card.alternateGreetings],
+      ...greetingDetail(parsed.card),
       imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
       degradations: parsed.card.degradations,
     }
@@ -173,7 +185,7 @@ export class CharacterLibrary {
       detail: {
         ...summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length),
         mediaType: entry.meta.mediaType,
-        greetings: [parsed.card.firstMessage, ...parsed.card.alternateGreetings],
+        ...greetingDetail(parsed.card),
         imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
         degradations: parsed.card.degradations,
       },

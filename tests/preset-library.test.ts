@@ -13,6 +13,7 @@ import { PresetLibrary } from '../src/preset-library.ts'
 import { executePresetLibraryCommand } from '../src/preset-library-command.ts'
 import { parsePresetLibraryResult } from '../src/preset-library-protocol.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
+import { presetLibraryOptionLabel, type PresetLibrarySummary } from '../src/preset-library-http-protocol.ts'
 
 function preset(name = '通用预设') {
   return parseSillyTavernPresetJson(JSON.stringify({
@@ -100,7 +101,8 @@ test('retains Tavern Helper source diagnostics after a preset library round trip
   }), '条目预设.json'))
 
   assert.deepEqual(imported.tavernHelper, {
-    format: 'entries', scriptCount: 2, enabledScriptCount: 1, variableCount: 1, ignoredFieldCount: 1,
+    format: 'entries', scriptCount: 2, enabledScriptCount: 1, expectedScriptCount: 2,
+    variableCount: 1, ignoredFieldCount: 1,
   })
   assert.deepEqual(library.list()[0]?.tavernHelper, imported.tavernHelper)
   assert.deepEqual(library.get(imported.id).preset.extensionCompatibility, {
@@ -118,6 +120,22 @@ test('retains Tavern Helper source diagnostics after a preset library round trip
     state: 'active',
   }])
   assert.deepEqual(projected(agent).presetLibrary[0]?.tavernHelper, imported.tavernHelper)
+})
+
+test('disambiguates an incomplete old import from a complete same-name preset', () => {
+  const base = {
+    name: '同名预设', promptCount: 217, enabledCount: 62, regexScriptCount: 40,
+  }
+  const entries: PresetLibrarySummary[] = [{
+    ...base, id: 'import-old', updatedAt: 1_786_650_371_352,
+    tavernHelper: { scriptCount: 0, enabledScriptCount: 0, expectedScriptCount: 3 },
+  }, {
+    ...base, id: 'import-complete', updatedAt: 1_786_688_182_091,
+    tavernHelper: { scriptCount: 3, enabledScriptCount: 2, expectedScriptCount: 3 },
+  }]
+
+  assert.match(presetLibraryOptionLabel(entries[0]!, entries), /旧导入，缺 3 个 TH 脚本/u)
+  assert.match(presetLibraryOptionLabel(entries[1]!, entries), /TH 2\/3/u)
 })
 
 test('selects, saves, lists, and deletes library presets without mutating an active snapshot', (context) => {

@@ -174,7 +174,7 @@ export interface AgentRpProjection {
     readonly promptCount: number
     readonly enabledCount: number
     readonly regexScriptCount: number
-    readonly tavernHelper?: import('./import/types.ts').TavernHelperImportSummary
+    readonly tavernHelper?: import('./import/types.ts').TavernHelperLibrarySummary
     readonly updatedAt: number
   }[]
   /** Last Host-recorded request header, used only by the local compatibility inspector. */

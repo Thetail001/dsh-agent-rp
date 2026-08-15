@@ -55,11 +55,19 @@ export interface ImportedTavernHelperScript {
   readonly data: Readonly<Record<string, JsonValue>>
 }
 
-/** Source encoding and non-sensitive counts retained from one Tavern Helper extension. */
-export interface TavernHelperImportSummary {
-  readonly format: 'object' | 'entries'
+/** Non-sensitive Tavern Helper counts shown by reusable-library interfaces. */
+export interface TavernHelperLibrarySummary {
+  readonly format?: 'object' | 'entries'
   readonly scriptCount: number
   readonly enabledScriptCount: number
+  readonly expectedScriptCount?: number
+  readonly variableCount?: number
+  readonly ignoredFieldCount?: number
+}
+
+/** Source encoding and non-sensitive counts retained from one Tavern Helper extension. */
+export interface TavernHelperImportSummary extends TavernHelperLibrarySummary {
+  readonly format: 'object' | 'entries'
   readonly variableCount: number
   readonly ignoredFieldCount: number
 }

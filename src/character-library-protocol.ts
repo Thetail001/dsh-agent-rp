@@ -42,6 +42,8 @@ export interface CharacterLibrarySummary {
 export interface CharacterLibraryDetail extends CharacterLibrarySummary {
   readonly mediaType: string
   readonly greetings: readonly string[]
+  /** Card-owned display rules applied for inert picker previews. */
+  readonly renderedGreetings: readonly string[]
   readonly imageAssets: readonly CharacterLibraryImage[]
   readonly degradations: readonly CharacterImportDegradation[]
 }

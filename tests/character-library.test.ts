@@ -88,7 +88,13 @@ test('returns safe Tavern Helper and degradation diagnostics with library entrie
   const raw = JSON.parse(readFileSync('tests/fixtures/manual-character-card.json', 'utf8')) as Record<string, unknown>
   const cardData = raw.data as Record<string, unknown>
   cardData.group_only_greetings = ['群聊开场不会执行']
+  cardData.first_mes = '<标题>开场</标题>'
   const extensions = cardData.extensions as Record<string, unknown>
+  extensions.regex_scripts = [{
+    scriptName: '开场界面', findRegex: '/^<标题>(.*?)<\\/标题>$/su', replaceString: '```html\n<h1>$1</h1>\n```',
+    trimStrings: [], placement: [2], disabled: false, markdownOnly: true, promptOnly: false,
+    runOnEdit: false, substituteRegex: 0, minDepth: null, maxDepth: null,
+  }]
   extensions.tavern_helper = [
     ['scripts', [{ id: 'status', name: '状态', content: 'secret script', enabled: true },
       { id: 'off', name: '关闭', content: 'secret script', enabled: false }]],
@@ -103,6 +109,8 @@ test('returns safe Tavern Helper and degradation diagnostics with library entrie
     format: 'entries', scriptCount: 2, enabledScriptCount: 1, variableCount: 1, ignoredFieldCount: 1,
   })
   assert.deepEqual(imported.entry.degradations, ['group-greetings'])
+  assert.equal(imported.entry.greetings[0], '<标题>开场</标题>')
+  assert.equal(imported.entry.renderedGreetings[0], '```html\n<h1>开场</h1>\n```')
   assert.deepEqual(library.list()[0]?.tavernHelper, imported.entry.tavernHelper)
   assert.equal(JSON.stringify(imported.entry).includes('secret script'), false)
   assert.equal(JSON.stringify(imported.entry).includes('not exposed'), false)
