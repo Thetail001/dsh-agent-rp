@@ -187,7 +187,7 @@ test('explains the same active entries used by prompt rendering', () => {
     { active: true, reason: 'active-constant', keys: [] },
     { active: true, reason: 'active-keyword', keys: ['钟楼'] },
     { active: false, reason: 'primary-unmatched', keys: [] },
-    { active: false, reason: 'regex-unsupported', keys: [] },
+    { active: false, reason: 'regex-runtime-unavailable', keys: [] },
   ])
 })
 

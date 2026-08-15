@@ -1,4 +1,4 @@
-/** Standalone SillyTavern World Info JSON parser with inert advanced behavior. */
+/** Standalone SillyTavern World Info JSON parser with bounded runtime behavior. */
 
 import { snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-session'
 import type {
@@ -146,7 +146,7 @@ export function parseWorldInfoJsonBytes(data: Uint8Array): ImportedWorldInfo {
 /**
  * Parse one SillyTavern World Info JSON document.
  * @param json - UTF-8 JSON text from a standalone file.
- * @returns normalized literal-key lore plus exact parsed JSON.
+ * @returns normalized lore plus exact parsed JSON.
  */
 export function parseWorldInfoJson(json: string): ImportedWorldInfo {
   if (Buffer.byteLength(json, 'utf8') > MAX_WORLD_INFO_JSON_BYTES) {

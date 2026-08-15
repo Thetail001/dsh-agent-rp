@@ -3207,7 +3207,7 @@ function worldInfoReason(entry: WorldInfoEntryProjection): { readonly title: str
             : entry.template === 'syntax-error' ? '模板语法无法解析，已只跳过这一条'
               : '模板执行失败，已只跳过这一条',
     }
-    case 'regex-unsupported': return { title: '暂不执行', detail: '该条目使用正则关键词；当前只执行确定性的文字匹配' }
+    case 'regex-runtime-unavailable': return { title: '正则运行时不可用', detail: '本次检查没有启动隔离正则运行时；该条目已跳过，重新启动 DSH 后可再检查' }
     case 'regex-invalid': return { title: '表达式无效', detail: '该条目的正则关键词无法解析，已跳过且不会影响其他条目' }
     case 'regex-execution-limit': return { title: '已安全中止', detail: '该条目的正则匹配超过执行上限，已在隔离环境中停止' }
     case 'regex-resource-limit': return { title: '超过安全上限', detail: '该条目的正则输入或累计评估量超过本轮上限' }
