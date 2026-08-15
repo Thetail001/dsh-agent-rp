@@ -703,6 +703,7 @@ function inlineCardFrameSource(
     FORBID_ATTR: ['srcdoc'],
     FORBID_TAGS: ['base', 'embed', 'form', 'iframe', 'link', 'meta', 'object', 'script'],
     USE_PROFILES: { html: true },
+    WHOLE_DOCUMENT: true,
   })
   return cardFrameSource(sanitized, statData, character)
 }
