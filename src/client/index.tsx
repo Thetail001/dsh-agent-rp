@@ -53,7 +53,7 @@ import {
   type PresetLibrarySummary,
 } from '../preset-library-http-protocol.ts'
 import {
-  AI_OUTPUT_PLACEMENT, renderCharacterDisplay, splitCharacterDisplay,
+  AI_OUTPUT_PLACEMENT, hasCharacterDisplayFrontend, renderCharacterDisplay, splitCharacterDisplay,
   type CharacterDisplaySegment,
 } from '../frontend-regex.ts'
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
@@ -6738,7 +6738,7 @@ function roleplayComposerDockComponent(
         }, AI_OUTPUT_PLACEMENT, depth, projection.userName, projection.preset?.regexScripts)
         if (rendered === raw) continue
         const segments = splitCharacterDisplay(rendered)
-        if (!segments.some(segment => segment.kind === 'html')) continue
+        if (!hasCharacterDisplayFrontend(segments)) continue
         if (original === null) continue
         mountRenderedDisplay(item, original, segments)
       }

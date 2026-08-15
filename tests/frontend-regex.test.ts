@@ -12,6 +12,7 @@ import {
 import { parseTavernSlashCommand } from '../src/client/tavern-slash.ts'
 import {
   AI_OUTPUT_PLACEMENT,
+  hasCharacterDisplayFrontend,
   normalizeSillyTavernMarkdown,
   renderCharacterDisplay,
   renderCharacterPromptView,
@@ -1294,7 +1295,10 @@ test('keeps HTML examples in fenced code as native Markdown', () => {
 
 test('isolates ordinary inline HTML for sanitized rendering', () => {
   const source = '正文\n\n<details><summary>状态</summary>平静</details>'
-  assert.deepEqual(splitCharacterDisplay(source), [{ kind: 'inline-html', source }])
+  const segments = splitCharacterDisplay(source)
+  assert.deepEqual(segments, [{ kind: 'inline-html', source }])
+  assert.equal(hasCharacterDisplayFrontend(segments), true)
+  assert.equal(hasCharacterDisplayFrontend([{ kind: 'markdown', text: '纯文字' }]), false)
 })
 
 test('hides model-defined wrapper tags while preserving their displayed text', () => {

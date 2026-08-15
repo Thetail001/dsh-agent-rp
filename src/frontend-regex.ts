@@ -18,6 +18,11 @@ export type CharacterDisplaySegment =
   | { readonly kind: 'html'; readonly source: string }
   | { readonly kind: 'inline-html'; readonly source: string }
 
+/** Whether split display output needs the isolated character frontend renderer. */
+export function hasCharacterDisplayFrontend(segments: readonly CharacterDisplaySegment[]): boolean {
+  return segments.some(segment => segment.kind !== 'markdown')
+}
+
 /** Why one regex script did or did not affect a prompt message. */
 export type PromptRegexOutcome =
   | 'applied'
