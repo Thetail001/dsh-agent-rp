@@ -19,7 +19,7 @@ import { parseCharacterCardJson, parseCharacterCardJsonBytes } from './import/ch
 import { parseRegexScript } from './import/regex-script.ts'
 import { readCharacterCardPng } from './import/png.ts'
 import { charxAvatar, charxImageAssets, parseCharx } from './import/charx.ts'
-import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay } from './frontend-regex.ts'
+import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay, summarizeCharacterRegexScript } from './frontend-regex.ts'
 import type {
   CharacterLibraryDetail, CharacterLibraryDisplayExtension, CharacterLibraryImage, CharacterLibraryImportResult,
   CharacterLibrarySummary, CharacterLibraryWorldInfo,
@@ -304,6 +304,7 @@ function summary(
     cardVersion: card.version,
     greetingCount: 1 + card.alternateGreetings.length,
     worldInfoCount: card.lorebook?.entries.length ?? 0,
+    regexScriptCount: card.frontend.regexScripts.length,
     avatarAvailable,
     imageAssetCount,
     ...(card.frontend.tavernHelper === undefined ? {} : { tavernHelper: card.frontend.tavernHelper }),
@@ -323,6 +324,13 @@ function greetingDetail(card: ImportedCharacterCard): {
     greetings,
     renderedGreetings: greetings.map(greeting => renderCharacterDisplay(greeting, card, AI_OUTPUT_PLACEMENT, 0)),
   }
+}
+
+function regexScriptDetail(card: ImportedCharacterCard): CharacterLibraryDetail['regexScripts'] {
+  return card.frontend.regexScripts.map((script, index) => ({
+    index,
+    ...summarizeCharacterRegexScript(script),
+  }))
 }
 
 function worldInfoDetail(card: ImportedCharacterCard): CharacterLibraryWorldInfo | undefined {
@@ -391,6 +399,7 @@ export class CharacterLibrary {
       imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
       ...(worldInfo === undefined ? {} : { worldInfo }),
       degradations: parsed.card.degradations,
+      regexScripts: regexScriptDetail(parsed.card),
       displayExtensions: displayExtensionDetail(parsed.overlay, parsed.sourceCard),
       localCorrectionCount: parsed.overlay.textReplacements.reduce((total, replacement) =>
         total + replacement.expectedMatches, 0),
@@ -410,6 +419,7 @@ export class CharacterLibrary {
         imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
         ...(worldInfo === undefined ? {} : { worldInfo }),
         degradations: parsed.card.degradations,
+        regexScripts: regexScriptDetail(parsed.card),
         displayExtensions: displayExtensionDetail(parsed.overlay, parsed.sourceCard),
         localCorrectionCount: parsed.overlay.textReplacements.reduce((total, replacement) =>
           total + replacement.expectedMatches, 0),

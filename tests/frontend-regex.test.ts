@@ -17,7 +17,9 @@ import {
   renderCharacterDisplay,
   renderCharacterPromptView,
   splitCharacterDisplay,
+  summarizeCharacterRegexScript,
   traceCharacterPromptView,
+  USER_INPUT_PLACEMENT,
 } from '../src/frontend-regex.ts'
 
 const base: ImportedRegexScript = {
@@ -39,6 +41,35 @@ const character = {
   name: '白露',
   frontend: { regexScripts: [base], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {} },
 }
+
+test('summarizes character regex compatibility without exposing its source', () => {
+  assert.deepEqual(summarizeCharacterRegexScript(base), {
+    scriptName: 'script',
+    enabled: true,
+    state: 'active',
+    placement: [AI_OUTPUT_PLACEMENT],
+    unsupportedPlacement: [],
+    display: true,
+    prompt: false,
+    runOnEdit: false,
+    minDepth: null,
+    maxDepth: null,
+  })
+  assert.equal(summarizeCharacterRegexScript({ ...base, placement: [AI_OUTPUT_PLACEMENT, 5] }).state, 'partial')
+  assert.equal(summarizeCharacterRegexScript({ ...base, placement: [5] }).state, 'unsupported')
+  assert.equal(summarizeCharacterRegexScript({ ...base, findRegex: '/[/' }).state, 'invalid')
+  assert.equal(summarizeCharacterRegexScript({ ...base, disabled: true }).state, 'disabled')
+})
+
+test('renders plain Markdown replacements for user-message display rules', () => {
+  const userRule = { ...base, placement: [USER_INPUT_PLACEMENT], replaceString: '**new**' }
+  const rendered = renderCharacterDisplay('old', {
+    ...character,
+    frontend: { ...character.frontend, regexScripts: [userRule] },
+  }, USER_INPUT_PLACEMENT)
+  assert.equal(rendered, '**new**')
+  assert.deepEqual(splitCharacterDisplay(rendered), [{ kind: 'markdown', text: '**new**' }])
+})
 
 test('parses Tavern send and trigger pipelines without leaking commands into chat', () => {
   assert.deepEqual(parseTavernSlashCommand('/send 选择A || /trigger'), { kind: 'send', text: '选择A' })

@@ -2,6 +2,7 @@
 
 import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
 import type { CharacterImportDegradation, TavernHelperImportSummary } from './import/types.ts'
+import type { CharacterRegexScriptSummary } from './frontend-regex.ts'
 
 /** Same-origin endpoint served by the Agent RP Host plugin. */
 export const CHARACTER_LIBRARY_PATH = '/api/agent-rp/characters'
@@ -61,6 +62,7 @@ export interface CharacterLibrarySummary {
   readonly cardVersion: 1 | 2 | 3
   readonly greetingCount: number
   readonly worldInfoCount: number
+  readonly regexScriptCount: number
   readonly avatarAvailable: boolean
   readonly imageAssetCount: number
   readonly tavernHelper?: TavernHelperImportSummary
@@ -80,6 +82,8 @@ export interface CharacterLibraryDetail extends CharacterLibrarySummary {
   /** Original embedded entries; edits belong to a launched Session overlay. */
   readonly worldInfo?: CharacterLibraryWorldInfo
   readonly degradations: readonly CharacterImportDegradation[]
+  /** Card-owned regex metadata without expressions, replacements, or card text. */
+  readonly regexScripts: readonly (CharacterRegexScriptSummary & { readonly index: number })[]
   /** Display-only extensions stored beside, rather than inside, the original card asset. */
   readonly displayExtensions: readonly CharacterLibraryDisplayExtension[]
   /** Exact local text corrections applied without rewriting the imported asset. */

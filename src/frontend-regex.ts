@@ -12,6 +12,20 @@ export interface RegexCharacter {
   readonly frontend: ImportedCharacterFrontend
 }
 
+/** Non-sensitive compatibility summary for one imported character regex. */
+export interface CharacterRegexScriptSummary {
+  readonly scriptName: string
+  readonly enabled: boolean
+  readonly state: 'active' | 'partial' | 'disabled' | 'unsupported' | 'invalid'
+  readonly placement: readonly number[]
+  readonly unsupportedPlacement: readonly number[]
+  readonly display: boolean
+  readonly prompt: boolean
+  readonly runOnEdit: boolean
+  readonly minDepth: number | null
+  readonly maxDepth: number | null
+}
+
 /** One ordered piece of a display-regex result. */
 export type CharacterDisplaySegment =
   | { readonly kind: 'markdown'; readonly text: string }
@@ -316,6 +330,32 @@ function compileRegex(value: string): RegExp | undefined {
     return new RegExp(literal[1] ?? '', flags)
   } catch (_invalidRegex) {
     return undefined
+  }
+}
+
+/** Describe executable coverage without returning a script expression or replacement. */
+export function summarizeCharacterRegexScript(script: ImportedRegexScript): CharacterRegexScriptSummary {
+  const placement = [...new Set(script.placement)]
+  const supportedPlacement = placement.filter(value => value === USER_INPUT_PLACEMENT || value === AI_OUTPUT_PLACEMENT)
+  const unsupportedPlacement = placement.filter(value => value !== USER_INPUT_PLACEMENT && value !== AI_OUTPUT_PLACEMENT)
+  const valid = script.findRegex !== '' && compileRegex(script.findRegex) !== undefined
+  const substitutionSupported = [0, 1, 2].includes(Number(script.substituteRegex))
+  const state = script.disabled ? 'disabled' as const
+    : !valid ? 'invalid' as const
+      : supportedPlacement.length === 0 ? 'unsupported' as const
+        : unsupportedPlacement.length > 0 || !substitutionSupported ? 'partial' as const
+          : 'active' as const
+  return {
+    scriptName: script.scriptName,
+    enabled: !script.disabled,
+    state,
+    placement,
+    unsupportedPlacement,
+    display: script.markdownOnly || (!script.markdownOnly && !script.promptOnly),
+    prompt: script.promptOnly || (!script.markdownOnly && !script.promptOnly),
+    runOnEdit: script.runOnEdit,
+    minDepth: script.minDepth,
+    maxDepth: script.maxDepth,
   }
 }
 

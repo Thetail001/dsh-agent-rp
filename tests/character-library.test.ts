@@ -47,6 +47,7 @@ test('keeps one exact reusable Character Card asset with selectable greetings', 
     cardVersion: 2,
     greetingCount: 2,
     worldInfoCount: 0,
+    regexScriptCount: 0,
     avatarAvailable: false,
     imageAssetCount: 0,
     archived: false,
@@ -117,6 +118,19 @@ test('returns safe Tavern Helper and degradation diagnostics with library entrie
     format: 'entries', scriptCount: 2, enabledScriptCount: 1, variableCount: 1, ignoredFieldCount: 1,
   })
   assert.deepEqual(imported.entry.degradations, ['group-greetings'])
+  assert.deepEqual(imported.entry.regexScripts, [{
+    index: 0,
+    scriptName: '开场界面',
+    enabled: true,
+    state: 'active',
+    placement: [2],
+    unsupportedPlacement: [],
+    display: true,
+    prompt: false,
+    runOnEdit: false,
+    minDepth: null,
+    maxDepth: null,
+  }])
   assert.equal(imported.entry.greetings[0], '<标题>开场</标题>')
   assert.equal(imported.entry.renderedGreetings[0], '```html\n<h1>开场</h1>\n```')
   assert.deepEqual(imported.entry.worldInfo, {
@@ -129,6 +143,8 @@ test('returns safe Tavern Helper and degradation diagnostics with library entrie
   assert.deepEqual(library.list()[0]?.tavernHelper, imported.entry.tavernHelper)
   assert.equal(JSON.stringify(imported.entry).includes('secret script'), false)
   assert.equal(JSON.stringify(imported.entry).includes('not exposed'), false)
+  assert.equal(JSON.stringify(imported.entry).includes('findRegex'), false)
+  assert.equal(JSON.stringify(imported.entry).includes('replaceString'), false)
 })
 
 test('keeps the original CHARX archive reusable', (context) => {

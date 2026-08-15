@@ -53,8 +53,8 @@ import {
   type PresetLibrarySummary,
 } from '../preset-library-http-protocol.ts'
 import {
-  AI_OUTPUT_PLACEMENT, hasCharacterDisplayFrontend, renderCharacterDisplay, splitCharacterDisplay,
-  type CharacterDisplaySegment,
+  AI_OUTPUT_PLACEMENT, renderCharacterDisplay, splitCharacterDisplay, summarizeCharacterRegexScript,
+  USER_INPUT_PLACEMENT, type CharacterDisplaySegment, type CharacterRegexScriptSummary,
 } from '../frontend-regex.ts'
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
 import { parseTavernSlashCommand } from './tavern-slash.ts'
@@ -993,7 +993,7 @@ function initials(name: string): string {
 function characterCapabilitySummary(projection: AgentRpProjection): string {
   const parts = [
     projection.worldInfoCount > 0 ? `${projection.worldInfoCount} 条世界书` : undefined,
-    (projection.frontend?.regexScripts.length ?? 0) > 0 ? '轻前端' : undefined,
+    (projection.frontend?.regexScripts.length ?? 0) > 0 ? '角色卡正则' : undefined,
     (projection.frontend?.tavernHelperScriptNames.length ?? 0) > 0 ? '酒馆脚本' : undefined,
     projection.mvu === undefined ? undefined : '动态状态',
     projection.preset === undefined ? undefined : `预设 · ${projection.preset.enabledCount} 项启用`,
@@ -1181,6 +1181,91 @@ interface PendingDisplayExtension {
   readonly imageOrigins: readonly string[]
 }
 
+type IndexedCharacterRegexSummary = CharacterRegexScriptSummary & { readonly index: number }
+
+function regexPlacementLabel(value: number): string {
+  switch (value) {
+    case 0: return '旧式 Markdown'
+    case USER_INPUT_PLACEMENT: return '用户消息'
+    case AI_OUTPUT_PLACEMENT: return '角色回复'
+    case 3: return '斜杠命令'
+    case 4: return '旧式发送'
+    case 5: return '世界书'
+    case 6: return '推理内容'
+    default: return `位置 ${value}`
+  }
+}
+
+function regexStateLabel(script: CharacterRegexScriptSummary): string {
+  switch (script.state) {
+    case 'active': return '可运行'
+    case 'partial': return '部分兼容'
+    case 'disabled': return '卡内已停用'
+    case 'unsupported': return '当前位置未接管'
+    case 'invalid': return '表达式无效'
+  }
+}
+
+function CharacterRegexScriptsSection({ scripts, promptRegex }: {
+  readonly scripts: readonly IndexedCharacterRegexSummary[]
+  readonly promptRegex?: AgentRpProjection['promptRegex']
+}) {
+  const [open, setOpen] = useState(false)
+  const enabled = scripts.filter(script => script.enabled).length
+  const warnings = scripts.filter(script => script.state === 'partial'
+    || script.state === 'unsupported' || script.state === 'invalid').length
+  const traceByIndex = new Map(promptRegex?.scripts
+    .filter(script => script.source === 'character').map(script => [script.index, script]))
+  return <details open={open} onToggle={event => { setOpen(event.currentTarget.open) }} style={{
+    background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+    borderRadius: '10px', margin: '4px 0 12px', overflow: 'hidden',
+  }}>
+    <summary style={{ alignItems: 'center', cursor: 'pointer', display: 'flex', gap: '9px', listStyle: 'none', padding: '10px 11px' }}>
+      <span style={{ fontSize: '12px', fontWeight: 650 }}>角色卡正则</span>
+      <span style={{ fontSize: '10px', opacity: .5 }}>{scripts.length === 0 ? '无内置脚本' : `${enabled}/${scripts.length} 条启用`}</span>
+      {warnings > 0 && <span style={{ color: '#d9a85f', fontSize: '10px', marginLeft: 'auto' }}>{warnings} 条需留意</span>}
+      <DisclosureChevron expanded={open} />
+    </summary>
+    <div style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', padding: '4px 11px 10px' }}>
+      {scripts.length === 0 && <div style={{ fontSize: '11px', lineHeight: 1.55, opacity: .5, paddingTop: '7px' }}>
+        这张角色卡没有自带正则脚本
+      </div>}
+      {scripts.map(script => {
+        const trace = traceByIndex.get(script.index)
+        const target = script.display && script.prompt ? '显示与生成'
+          : script.display ? '界面显示' : script.prompt ? '生成提示' : '无目标'
+        const traceLabel = trace === undefined ? undefined : trace.outcome === 'applied'
+          ? `上次命中 ${trace.affectedMessages} 条消息`
+          : trace.outcome === 'no-match' ? '上次未命中'
+            : trace.outcome === 'display-only' ? '仅用于显示'
+              : trace.outcome === 'placement' ? '上次消息位置不匹配'
+                : trace.outcome === 'depth' ? '上次深度不匹配'
+                  : trace.outcome === 'disabled' ? '上次未启用' : '表达式无效'
+        return <div key={script.index} style={{
+          borderTop: script.index === 0 ? 0 : '1px solid var(--dsw-alias-border-l2, #34343a)', padding: '8px 0 7px',
+        }}>
+          <div style={{ alignItems: 'baseline', display: 'flex', gap: '8px' }}>
+            <span title={script.scriptName} style={{ fontSize: '11px', fontWeight: 620, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {script.scriptName || `未命名脚本 ${script.index + 1}`}
+            </span>
+            <span style={{
+              color: script.state === 'active' || script.state === 'disabled' ? 'inherit' : '#d9a85f',
+              flex: 'none', fontSize: '10px', marginLeft: 'auto', opacity: script.state === 'active' ? .58 : .82,
+            }}>{regexStateLabel(script)}</span>
+          </div>
+          <div style={{ fontSize: '10px', lineHeight: 1.5, marginTop: '3px', opacity: .46 }}>
+            {[target, script.placement.map(regexPlacementLabel).join('、') || '未设置消息位置',
+              script.minDepth === null && script.maxDepth === null ? undefined
+                : `深度 ${script.minDepth ?? '不限'}–${script.maxDepth ?? '不限'}`,
+              script.runOnEdit ? '编辑时也运行' : undefined].filter(Boolean).join(' · ')}
+          </div>
+          {traceLabel !== undefined && <div style={{ fontSize: '10px', marginTop: '3px', opacity: .58 }}>{traceLabel}</div>}
+        </div>
+      })}
+    </div>
+  </details>
+}
+
 function inspectDisplayExtension(file: File): Promise<PendingDisplayExtension> {
   if (file.size === 0 || file.size > 256 * 1024) return Promise.reject(new Error('显示扩展文件为空或过大'))
   return file.text().then(source => {
@@ -1285,8 +1370,8 @@ function CharacterDisplayExtensionsSection({ detail, onChange, onNotice, onError
   }}>
     <div style={{ alignItems: 'center', display: 'flex', gap: '10px' }}>
       <div style={{ minWidth: 0 }}>
-        <strong style={{ display: 'block', fontSize: '12px' }}>显示扩展</strong>
-        <span style={{ display: 'block', fontSize: '10px', marginTop: '2px', opacity: .5 }}>作者另发的酒馆正则，只改变界面显示</span>
+        <strong style={{ display: 'block', fontSize: '12px' }}>附加显示正则</strong>
+        <span style={{ display: 'block', fontSize: '10px', marginTop: '2px', opacity: .5 }}>卡外单独导入，只改变界面显示</span>
       </div>
       <input ref={inputRef} type="file" accept=".json,application/json" hidden onChange={event => {
         const file = event.target.files?.[0]
@@ -2495,6 +2580,10 @@ function RoleplayHeader({
   const statusSource = statusHtml === undefined || projection.mvu === undefined
     ? undefined
     : cardFrameSource(statusHtml, projection.mvu.statData, characterDetail)
+  const characterRegexScripts = (projection.frontend?.regexScripts ?? []).map((script, index) => ({
+    index,
+    ...summarizeCharacterRegexScript(script),
+  }))
   return <>
     <div ref={rootRef} className="agent-rp-header" data-agent-rp-header style={{ alignItems: 'center', display: 'flex', gap: '10px', marginRight: 'auto', minWidth: 0 }}>
       <Avatar projection={displayProjection} loadAvatar={loadAvatar} {...(expressionUrl === undefined ? {} : { imageUrl: expressionUrl })} />
@@ -2607,7 +2696,7 @@ function RoleplayHeader({
           {projection.userName !== undefined && <span style={chipStyle}>你是 {projection.userName}</span>}
           {projection.importedMessageCount > 0 && <span style={chipStyle}>{projection.importedMessageCount} 条历史消息</span>}
           {projection.worldInfoCount > 0 && <span style={chipStyle}>{projection.worldInfoCount} 条世界书设定</span>}
-          {(projection.frontend?.regexScripts.length ?? 0) > 0 && <span style={chipStyle}>轻前端 · {projection.frontend?.regexScripts.length} 条显示规则</span>}
+          {characterRegexScripts.length > 0 && <span style={chipStyle}>角色卡正则 · {characterRegexScripts.length} 条</span>}
           {(projection.frontend?.tavernHelperScriptNames.length ?? 0) > 0 && <span style={chipStyle}>
             酒馆脚本 · {projection.frontend?.tavernHelperScriptNames.length} 个启用 · 隔离运行
           </span>}
@@ -2619,6 +2708,9 @@ function RoleplayHeader({
             预设 · {projection.preset.name} · {projection.preset.enabledCount}/{projection.preset.promptCount} 项启用
           </span>}
         </div>
+        {characterRegexScripts.length > 0 && <div style={{ marginTop: '16px' }}>
+          <CharacterRegexScriptsSection scripts={characterRegexScripts} promptRegex={projection.promptRegex} />
+        </div>}
         <form style={{ marginTop: '20px' }} onSubmit={event => {
           event.preventDefault()
           const alias = aliasDraft.trim()
@@ -3532,6 +3624,7 @@ function CharacterLibraryDialog({
               <div style={{ fontSize: '11px', marginTop: '5px', opacity: .5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {duplicateNames.has(entry.displayName) ? `同名 · ${entry.originalFilename} · ${new Date(entry.importedAt).toLocaleString('zh-CN', { hour12: false })} · ` : ''}
                 V{entry.cardVersion} · {entry.greetingCount} 个开场{entry.worldInfoCount === 0 ? '' : ` · ${entry.worldInfoCount} 条世界书`}
+                {entry.regexScriptCount === 0 ? '' : ` · ${entry.regexScriptCount} 条正则`}
                 {entry.imageAssetCount === 0 ? '' : ` · ${entry.imageAssetCount} 张图片`}
               </div>
             </div>
@@ -3580,6 +3673,7 @@ function CharacterLibraryDialog({
           </div>}
           {selected !== undefined && <>
             <CharacterWorldInfoSection key={selected.id} detail={selected} />
+            <CharacterRegexScriptsSection scripts={selected.regexScripts} />
             {selected.tavernHelper !== undefined && <div style={{
               background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
               borderRadius: '10px', fontSize: '11px', lineHeight: 1.55, margin: '4px 0 12px', padding: '9px 11px',
@@ -6678,6 +6772,7 @@ function roleplayComposerDockComponent(
       const hasDisplayRules = activeViewMode === 'immersive' && frontend !== undefined
         && frontend.regexScripts.length + (activeProjection.preset?.regexScripts.length ?? 0) > 0
       const messageIdBySeq = new Map(activeProjection.tavern?.messages.map(message => [message.seq, message.messageId]))
+      const tavernMessageBySeq = new Map(activeProjection.tavern?.messages.map(message => [message.seq, message]))
       if (activeViewMode === 'immersive') {
         for (const item of scroll.querySelectorAll<HTMLElement>(
           '[data-chat-flow-kind="context"], [data-chat-flow-kind="tool-call"], '
@@ -6722,13 +6817,27 @@ function roleplayComposerDockComponent(
       }
       for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="user"]')) {
         const key = item.dataset.chatFlowKey
-        const node = key === undefined ? undefined : activeChat.nodes.get(key)
+        if (key === undefined) continue
+        const node = activeChat.nodes.get(key)
         if (node?.kind !== 'user') continue
-        const messageId = messageIdBySeq.get((node.data as { readonly seq: number }).seq)
+        const seq = (node.data as { readonly seq: number }).seq
+        const messageId = messageIdBySeq.get(seq)
         const override = messageId === undefined ? undefined : activeDisplayOverrides.get(messageId)
         const original = item.firstElementChild as HTMLElement | null
-        if (override === undefined || original === null) continue
-        mountRenderedDisplay(item, original, [{ kind: 'html', source: override }], activeProjection, activeCharacterDetail)
+        if (original === null) continue
+        if (override !== undefined) {
+          mountRenderedDisplay(item, original, [{ kind: 'html', source: override }], activeProjection, activeCharacterDetail)
+          continue
+        }
+        const message = tavernMessageBySeq.get(seq)
+        if (!hasDisplayRules || frontend === undefined || message?.role !== 'user' || message.text === '') continue
+        const depth = Math.max(0, activeChat.order.length - activeChat.order.indexOf(key) - 1)
+        const rendered = renderCharacterDisplay(message.text, {
+          name: activeProjection.characterName,
+          frontend,
+        }, USER_INPUT_PLACEMENT, depth, activeProjection.userName, activeProjection.preset?.regexScripts)
+        if (rendered === message.text) continue
+        mountRenderedDisplay(item, original, splitCharacterDisplay(rendered), activeProjection, activeCharacterDetail)
       }
       for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="assistant-step"]')) {
         const key = item.dataset.chatFlowKey
@@ -6782,7 +6891,6 @@ function roleplayComposerDockComponent(
         }, AI_OUTPUT_PLACEMENT, depth, activeProjection.userName, activeProjection.preset?.regexScripts)
         if (rendered === raw) continue
         const segments = splitCharacterDisplay(rendered)
-        if (!hasCharacterDisplayFrontend(segments)) continue
         if (original === null) continue
         mountRenderedDisplay(item, original, segments, activeProjection, activeCharacterDetail)
       }
