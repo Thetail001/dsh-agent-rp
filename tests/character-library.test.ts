@@ -89,6 +89,14 @@ test('returns safe Tavern Helper and degradation diagnostics with library entrie
   const cardData = raw.data as Record<string, unknown>
   cardData.group_only_greetings = ['群聊开场不会执行']
   cardData.first_mes = '<标题>开场</标题>'
+  cardData.character_book = {
+    name: '海城',
+    entries: [{
+      id: 7, name: '钟楼', keys: ['午夜'], secondary_keys: [], content: '钟楼每天午夜停摆。',
+      enabled: true, insertion_order: 10, selective: false, constant: false,
+      case_sensitive: false, match_whole_words: false, position: 'after_char', extensions: {},
+    }],
+  }
   const extensions = cardData.extensions as Record<string, unknown>
   extensions.regex_scripts = [{
     scriptName: '开场界面', findRegex: '/^<标题>(.*?)<\\/标题>$/su', replaceString: '```html\n<h1>$1</h1>\n```',
@@ -111,6 +119,13 @@ test('returns safe Tavern Helper and degradation diagnostics with library entrie
   assert.deepEqual(imported.entry.degradations, ['group-greetings'])
   assert.equal(imported.entry.greetings[0], '<标题>开场</标题>')
   assert.equal(imported.entry.renderedGreetings[0], '```html\n<h1>开场</h1>\n```')
+  assert.deepEqual(imported.entry.worldInfo, {
+    name: '海城',
+    entries: [{
+      sourceId: '7', name: '钟楼', keys: ['午夜'], secondaryKeys: [], content: '钟楼每天午夜停摆。',
+      enabled: true, constant: false, selective: false, useRegex: false,
+    }],
+  })
   assert.deepEqual(library.list()[0]?.tavernHelper, imported.entry.tavernHelper)
   assert.equal(JSON.stringify(imported.entry).includes('secret script'), false)
   assert.equal(JSON.stringify(imported.entry).includes('not exposed'), false)

@@ -404,6 +404,10 @@ function runScripts(
   }, normalized)
 }
 
+function stripDisplayOnlyCharacterMediaFields(value: string): string {
+  return value.replace(/<角色图片(?:\s[^<>]*?)?>[\s\S]*?<\/角色图片\s*>/giu, '')
+}
+
 /** Apply character display-only scripts without executing their HTML. */
 export function renderCharacterDisplay(
   raw: string,
@@ -413,7 +417,7 @@ export function renderCharacterDisplay(
   userName?: string,
   presetScripts?: readonly ImportedRegexScript[],
 ): string {
-  return runScripts(raw, card, placement, 'display', depth, userName, presetScripts)
+  return stripDisplayOnlyCharacterMediaFields(runScripts(raw, card, placement, 'display', depth, userName, presetScripts))
 }
 
 /** Apply character prompt-only scripts before model context leaves the roleplay boundary. */

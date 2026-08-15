@@ -730,15 +730,82 @@ function CharacterDisplay({ segments, statData, characterName, character, previe
 }
 
 function compactCharacterDisplayText(value: string): string {
-  const text = splitCharacterDisplay(value).map(segment => {
+  const segments = splitCharacterDisplay(value)
+  const text = segments.filter(segment => segment.kind !== 'html').map(segment => {
     const source = segment.kind === 'markdown'
       ? marked.parse(segment.text, { async: false, breaks: true, gfm: true }) as string
       : segment.source
     const document = new DOMParser().parseFromString(source, 'text/html')
     document.querySelectorAll('style,script,noscript,template,svg').forEach(element => { element.remove() })
+    document.querySelectorAll('br').forEach(element => { element.replaceWith('\n') })
+    document.querySelectorAll('p,div,li,h1,h2,h3,h4,h5,h6,blockquote,section,article').forEach(element => {
+      element.append('\n')
+    })
     return document.body.textContent ?? ''
-  }).join(' ')
-  return text.replace(/\s+/gu, ' ').trim()
+  }).join('\n')
+  const summary = text.split(/\r?\n/gu).map(line => line.replace(/[\t ]+/gu, ' ').trim()).filter(Boolean).join(' · ')
+  return summary === '' && segments.some(segment => segment.kind === 'html') ? '轻前端开场，展开查看' : summary
+}
+
+function DisclosureChevron({ expanded, size = 15 }: { readonly expanded: boolean; readonly size?: number }) {
+  return <svg aria-hidden="true" viewBox="0 0 16 16" width={size} height={size} style={{
+    display: 'block', flex: 'none', transform: expanded ? 'rotate(180deg)' : undefined,
+    transition: 'transform 140ms ease',
+  }}>
+    <path d="M3.5 6 8 10.25 12.5 6" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.6" />
+  </svg>
+}
+
+function SelectChevron() {
+  return <span aria-hidden="true" style={{
+    alignItems: 'center', display: 'flex', opacity: .72, pointerEvents: 'none',
+    position: 'absolute', right: '12px', top: 0, bottom: 0,
+  }}><DisclosureChevron expanded={false} size={14} /></span>
+}
+
+function CharacterWorldInfoSection({ detail }: { readonly detail: CharacterLibraryDetail }) {
+  const [open, setOpen] = useState(false)
+  const worldInfo = detail.worldInfo
+  if (worldInfo === undefined || worldInfo.entries.length === 0) return null
+  return <section style={{
+    background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+    borderRadius: '10px', margin: '4px 0 12px', overflow: 'hidden',
+  }}>
+    <button type="button" aria-expanded={open} onClick={() => { setOpen(value => !value) }} title="查看角色卡内置世界书" style={{
+      alignItems: 'center', background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer',
+      display: 'flex', font: 'inherit', gap: '9px', padding: '10px 11px', textAlign: 'left', width: '100%',
+    }}>
+      <strong style={{ fontSize: '12px' }}>世界书</strong>
+      <span style={{
+        background: `color-mix(in srgb, ${color} 14%, transparent)`, borderRadius: '999px',
+        color, fontSize: '10px', padding: '2px 7px',
+      }}>{worldInfo.entries.length} 条</span>
+      <span style={{ fontSize: '10px', marginLeft: 'auto', opacity: .46 }}>原卡 · 只读</span>
+      <DisclosureChevron expanded={open} />
+    </button>
+    {open && <div style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'grid', gap: '6px', padding: '8px' }}>
+      {worldInfo.entries.map((entry, index) => {
+        const title = entry.name?.trim() || entry.comment?.trim() || `条目 ${index + 1}`
+        const activation = !entry.enabled ? '已停用' : entry.constant ? '常驻'
+          : entry.keys.length === 0 ? '无关键词' : `${entry.useRegex ? '正则' : '关键词'} · ${entry.keys.length}`
+        return <details key={`${entry.sourceId}-${index}`} style={{
+          background: 'color-mix(in srgb, var(--dsw-alias-bg-base, #171719) 56%, transparent)',
+          border: '1px solid var(--dsw-alias-border-l2, #39393c)', borderRadius: '8px',
+        }}>
+          <summary style={{ alignItems: 'center', cursor: 'pointer', display: 'flex', gap: '8px', listStyle: 'none', padding: '8px 9px' }}>
+            <span title={title} style={{ flex: 1, fontSize: '11px', fontWeight: 620, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
+            <span style={{ fontSize: '10px', opacity: entry.enabled ? .52 : .32 }}>{activation}</span>
+          </summary>
+          <div style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', padding: '8px 9px 9px' }}>
+            {!entry.constant && entry.keys.length > 0 && <div style={{ fontSize: '10px', lineHeight: 1.55, marginBottom: '6px', opacity: .5 }}>
+              {entry.keys.join(' · ')}
+            </div>}
+            <div style={{ fontSize: '11px', lineHeight: 1.6, opacity: .7, whiteSpace: 'pre-wrap' }}>{entry.content || '无内容'}</div>
+          </div>
+        </details>
+      })}
+    </div>}
+  </section>
 }
 
 function replySceneNote(value: string): string {
@@ -3324,14 +3391,7 @@ function CharacterLibraryDialog({
               }}>{importing ? '正在导入…' : '选择角色卡'}</button>}
           </div>}
           {selected !== undefined && <>
-            {selected.worldInfoCount > 0 && <div style={{
-              background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
-              borderRadius: '10px', fontSize: '11px', lineHeight: 1.55, margin: '4px 0 12px', padding: '9px 11px',
-            }}>
-              <strong style={{ display: 'block', fontSize: '12px', marginBottom: '2px' }}>世界书 · {selected.worldInfoCount} 条</strong>
-              <span style={{ display: 'block', opacity: .58 }}>兼容条目会在开聊后按常驻或关键词自动参与提示词</span>
-              <span style={{ display: 'block', marginTop: '2px', opacity: .58 }}>开聊后可在会话顶部的「世界书」查看与调整；改动只属于该会话，不会重写原卡</span>
-            </div>}
+            <CharacterWorldInfoSection key={selected.id} detail={selected} />
             {selected.tavernHelper !== undefined && <div style={{
               background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
               borderRadius: '10px', fontSize: '11px', lineHeight: 1.55, margin: '4px 0 12px', padding: '9px 11px',
@@ -3368,13 +3428,15 @@ function CharacterLibraryDialog({
                     background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', display: 'block',
                     font: 'inherit', lineHeight: 1.6, padding: '10px 12px', textAlign: 'left', width: '100%',
                   }}>
-                    <span style={{ alignItems: 'center', display: 'flex', fontSize: '11px', fontWeight: 620, gap: '8px', justifyContent: 'space-between', opacity: .5 }}>
+                    <span style={{ alignItems: 'center', display: 'flex', fontSize: '11px', fontWeight: 620, gap: '8px', justifyContent: 'space-between', opacity: .56 }}>
                       <span>{index === 0 ? '默认开场' : `备选开场 ${index}`}{active ? ' · 已选择' : ''}</span>
-                      <span aria-hidden="true" style={{ flex: 'none', fontWeight: 400 }}>{expanded ? '收起⌃' : '展开⌄'}</span>
+                      <span style={{ alignItems: 'center', display: 'flex', flex: 'none', fontWeight: 400, gap: '4px' }}>
+                        {expanded ? '收起' : '展开'}<DisclosureChevron expanded={expanded} />
+                      </span>
                     </span>
                     {!expanded && <span style={{
-                      display: '-webkit-box', fontSize: '13px', marginTop: '4px', overflow: 'hidden',
-                      WebkitBoxOrient: 'vertical', WebkitLineClamp: 2,
+                      display: '-webkit-box', fontSize: '12px', lineHeight: 1.55, marginTop: '5px', opacity: .72,
+                      overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2,
                     }}>{summary === '' ? '无开场白' : summary}</span>}
                   </button>
                   {expanded && <div style={{
@@ -3393,13 +3455,16 @@ function CharacterLibraryDialog({
               })}
             </div>
             <label htmlFor="agent-rp-session-preset" style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '20px 0 8px', opacity: .65 }}>对话预设</label>
-            <select id="agent-rp-session-preset" value={presetId} onChange={event => { selectPreset(event.target.value) }} style={{
-              background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
-              borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 10px', width: '100%',
-            }}>
-              <option value="">不使用预设</option>
-              {presets?.map(entry => <option key={entry.id} value={entry.id}>{presetLibraryOptionLabel(entry, presets)}</option>)}
-            </select>
+            <div style={{ position: 'relative' }}>
+              <select id="agent-rp-session-preset" value={presetId} onChange={event => { selectPreset(event.target.value) }} style={{
+                appearance: 'none', background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+                borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 36px 9px 10px', width: '100%',
+              }}>
+                <option value="">不使用预设</option>
+                {presets?.map(entry => <option key={entry.id} value={entry.id}>{presetLibraryOptionLabel(entry, presets)}</option>)}
+              </select>
+              <SelectChevron />
+            </div>
             <div style={{ fontSize: '11px', lineHeight: 1.55, marginTop: '6px', opacity: .5 }}>
               {presetError !== undefined
                 ? presetError
@@ -3426,16 +3491,19 @@ function CharacterLibraryDialog({
                 {editingPersona ? '收起' : '新建身份'}
               </button>
             </div>
-            <select id="agent-rp-session-persona" value={personaId} disabled={removingPersonaId !== undefined} onChange={event => {
-              setPersonaId(event.target.value)
-              setConfirmingPersonaId(undefined)
-            }} style={{
-              background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
-              borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 10px', width: '100%',
-            }}>
-              <option value="">暂不设置</option>
-              {personas?.map(persona => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
-            </select>
+            <div style={{ position: 'relative' }}>
+              <select id="agent-rp-session-persona" value={personaId} disabled={removingPersonaId !== undefined} onChange={event => {
+                setPersonaId(event.target.value)
+                setConfirmingPersonaId(undefined)
+              }} style={{
+                appearance: 'none', background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+                borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 36px 9px 10px', width: '100%',
+              }}>
+                <option value="">暂不设置</option>
+                {personas?.map(persona => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
+              </select>
+              <SelectChevron />
+            </div>
             {personaId !== '' && (() => {
               const persona = personas?.find(entry => entry.id === personaId)
               if (persona === undefined) return null

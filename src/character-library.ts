@@ -20,6 +20,7 @@ import { charxAvatar, charxImageAssets, parseCharx } from './import/charx.ts'
 import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay } from './frontend-regex.ts'
 import type {
   CharacterLibraryDetail, CharacterLibraryImage, CharacterLibraryImportResult, CharacterLibrarySummary,
+  CharacterLibraryWorldInfo,
 } from './character-library-protocol.ts'
 
 const META_SUFFIX = '.meta.json'
@@ -146,6 +147,25 @@ function greetingDetail(card: ImportedCharacterCard): {
   }
 }
 
+function worldInfoDetail(card: ImportedCharacterCard): CharacterLibraryWorldInfo | undefined {
+  if (card.lorebook === undefined) return undefined
+  return {
+    ...(card.lorebook.name === undefined ? {} : { name: card.lorebook.name }),
+    entries: card.lorebook.entries.map(entry => ({
+      sourceId: entry.sourceId,
+      ...(entry.name === undefined ? {} : { name: entry.name }),
+      ...(entry.comment === undefined ? {} : { comment: entry.comment }),
+      keys: entry.keys,
+      secondaryKeys: entry.secondaryKeys,
+      content: entry.content,
+      enabled: entry.enabled,
+      constant: entry.constant,
+      selective: entry.selective,
+      useRegex: entry.useRegex,
+    })),
+  }
+}
+
 /** Small content-addressed card library; the original PNG, JSON, or CHARX remains exportable. */
 export class CharacterLibrary {
   readonly root: string
@@ -168,11 +188,13 @@ export class CharacterLibrary {
   get(id: string): CharacterLibraryDetail {
     const entry = this.readId(id)
     const parsed = this.parseStored(entry.meta, entry.data)
+    const worldInfo = worldInfoDetail(parsed.card)
     return {
       ...summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length),
       mediaType: entry.meta.mediaType,
       ...greetingDetail(parsed.card),
       imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
+      ...(worldInfo === undefined ? {} : { worldInfo }),
       degradations: parsed.card.degradations,
     }
   }
@@ -181,12 +203,14 @@ export class CharacterLibrary {
   resolve(id: string): ResolvedCharacterLibraryEntry {
     const entry = this.readId(id)
     const parsed = this.parseStored(entry.meta, entry.data)
+    const worldInfo = worldInfoDetail(parsed.card)
     return {
       detail: {
         ...summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length),
         mediaType: entry.meta.mediaType,
         ...greetingDetail(parsed.card),
         imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
+        ...(worldInfo === undefined ? {} : { worldInfo }),
         degradations: parsed.card.degradations,
       },
       card: parsed.card,

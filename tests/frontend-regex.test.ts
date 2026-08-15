@@ -1171,6 +1171,12 @@ test('keeps display-only and prompt-only execution separate', () => {
   assert.equal(renderCharacterPromptView('old', character, AI_OUTPUT_PLACEMENT, 0, '宝宝', prompt), 'new')
 })
 
+test('keeps author media fields available to prompts but out of the visible greeting', () => {
+  const source = '<角色图片>角色名<img>external.png</img></角色图片>\n正文'
+  assert.equal(renderCharacterDisplay(source, character, AI_OUTPUT_PLACEMENT, 0), '\n正文')
+  assert.equal(renderCharacterPromptView(source, character, AI_OUTPUT_PLACEMENT, 0), source)
+})
+
 test('runs ordinary message scripts before view-specific scripts', () => {
   const ordinary = { ...base, findRegex: '/<StatusBlocks>([\\s\\S]*?)<\\/StatusBlocks>/gu', replaceString: '$1', markdownOnly: false }
   const display = { ...base, findRegex: '/状态：(.+)/gu', replaceString: '```html\n<details><summary>状态</summary>$1</details>\n```' }

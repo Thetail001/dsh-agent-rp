@@ -20,6 +20,26 @@ export interface CharacterLibraryImage {
   readonly sourceUri: string
 }
 
+/** One read-only embedded World Info entry shown before a character Session exists. */
+export interface CharacterLibraryWorldInfoEntry {
+  readonly sourceId: string
+  readonly name?: string
+  readonly comment?: string
+  readonly keys: readonly string[]
+  readonly secondaryKeys: readonly string[]
+  readonly content: string
+  readonly enabled: boolean
+  readonly constant: boolean
+  readonly selective: boolean
+  readonly useRegex: boolean
+}
+
+/** Read-only World Info retained inside an imported Character Card. */
+export interface CharacterLibraryWorldInfo {
+  readonly name?: string
+  readonly entries: readonly CharacterLibraryWorldInfoEntry[]
+}
+
 /** One compact reusable Character Card shown in the library. */
 export interface CharacterLibrarySummary {
   readonly id: string
@@ -45,6 +65,8 @@ export interface CharacterLibraryDetail extends CharacterLibrarySummary {
   /** Card-owned display rules applied for inert picker previews. */
   readonly renderedGreetings: readonly string[]
   readonly imageAssets: readonly CharacterLibraryImage[]
+  /** Original embedded entries; edits belong to a launched Session overlay. */
+  readonly worldInfo?: CharacterLibraryWorldInfo
   readonly degradations: readonly CharacterImportDegradation[]
 }
 
