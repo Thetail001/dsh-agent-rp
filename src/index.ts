@@ -77,7 +77,7 @@ import {
   renderSessionLorebooks,
   substituteCardMacros,
 } from './prompt.ts'
-import { EjsTemplateEngine, type EjsTemplateContext } from './ejs-template.ts'
+import { createEjsWorldInfoBooks, EjsTemplateEngine, type EjsTemplateContext } from './ejs-template.ts'
 import { installBundledAgentRpPreset } from './preset.ts'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { createAgentRpProjectionDefinition } from './projection.ts'
@@ -707,7 +707,11 @@ export function installAgentRp(
         source,
         configured: configuredLorebook(source, worldInfoConfiguration).lorebook,
       }))
-      const books = configuredSources.map(({ source, configured }) => ({ id: source.id, lorebook: configured }))
+      const books = configuredSources.map(({ source, configured }) => ({
+        id: source.id,
+        name: source.name,
+        lorebook: configured,
+      }))
       const splitLore = (rendered: ReturnType<typeof renderSessionLorebooks>) => {
         const collect = (source: 'character' | 'standalone') => {
           const selected = rendered.books.filter((_book, index) => configuredSources[index]?.source.source === source)
@@ -727,6 +731,7 @@ export function installAgentRp(
           messages: [...roleplayVisibleDialogue(agent.session, pendingMessages), ...injectedScanText],
           transcript: roleplayVisibleTranscript(agent.session, pendingMessages),
           variableScopes: ejsVariableScopes(tavern),
+          worldInfoBooks: createEjsWorldInfoBooks(books),
         })
         const { standalone: standaloneLore } = splitLore(renderSessionLorebooks({
           books,
@@ -763,6 +768,7 @@ export function installAgentRp(
         transcript: roleplayVisibleTranscript(agent.session, pendingMessages),
         variableScopes: ejsVariableScopes(tavern),
         ...(mvu === undefined ? {} : { statData: mvu.statData }),
+        worldInfoBooks: createEjsWorldInfoBooks(books),
       })
       const { standalone: standaloneLore, character: characterLore } = splitLore(renderSessionLorebooks({
         books,

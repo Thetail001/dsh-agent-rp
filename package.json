@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-agent-rp",
-  "version": "0.0.0-rc.139",
+  "version": "0.0.0-rc.140",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -73,6 +73,7 @@
     "@types/png-chunks-extract": "1.0.2",
     "@types/react": "18.3.31",
     "@types/react-dom": "18.3.7",
+    "png-chunk-text": "1.0.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "tsdown": "0.22.2",
@@ -106,7 +107,6 @@
     "dompurify": "3.3.0",
     "fflate": "0.8.3",
     "marked": "16.4.2",
-    "png-chunk-text": "1.0.0",
     "png-chunks-extract": "1.0.0",
     "quickjs-emscripten-core": "0.32.0",
     "yaml": "2.9.0"

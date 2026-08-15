@@ -1,7 +1,7 @@
 /** Deterministic activation of the safe Character Card lorebook subset. */
 
 import type { ImportedLorebook, ImportedLorebookEntry } from './types.ts'
-import type { EjsTemplateResult } from '../ejs-template.ts'
+import type { EjsTemplateResult, EjsTemplateTarget } from '../ejs-template.ts'
 
 /** Runtime result of selecting lorebook entries for one prompt. */
 export interface ActiveLorebook {
@@ -45,7 +45,8 @@ export interface InspectedLorebook extends ActiveLorebook {
 
 /** Optional isolated renderer used to admit executable EJS content. */
 export interface LorebookActivationOptions {
-  readonly renderTemplate?: (template: string) => EjsTemplateResult
+  readonly renderTemplate?: (template: string, target?: EjsTemplateTarget) => EjsTemplateResult
+  readonly worldInfoBookId?: string
 }
 
 /** One book participating in a shared Session-level World Info budget. */
@@ -173,7 +174,9 @@ function candidate(
   }
   if (!activation.candidate || !hasExecutableTemplate(entry.content)) return activation
   if (options.renderTemplate === undefined) return { ...activation, candidate: false, reason: 'template-unsupported' }
-  const rendered = options.renderTemplate(entry.content)
+  const rendered = options.renderTemplate(entry.content, {
+    ...(options.worldInfoBookId === undefined ? {} : { worldInfoBookId: options.worldInfoBookId }),
+  })
   if (!rendered.ok) return {
     ...activation,
     candidate: false,
@@ -284,7 +287,10 @@ export function inspectLorebooks(
   messages: readonly string[],
   options: LorebookActivationOptions & { readonly tokenBudget?: number } = {},
 ): InspectedLorebookCollection {
-  const inspected = books.map(book => ({ id: book.id, inspected: inspectLorebook(book.lorebook, messages, options) }))
+  const inspected = books.map(book => ({
+    id: book.id,
+    inspected: inspectLorebook(book.lorebook, messages, { ...options, worldInfoBookId: book.id }),
+  }))
   const candidates = inspected.flatMap((book, bookIndex) => book.inspected.entries.flatMap(decision => {
     if (!decision.active) return []
     const entry = books[bookIndex]!.lorebook.entries[decision.index]!

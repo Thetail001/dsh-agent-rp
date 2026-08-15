@@ -328,6 +328,49 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
     '<p><strong>粗体</strong></p><pre><code class="language-yaml">key: value</code></pre>')
 })
 
+test('provides the common Tavern Helper lodash surface without opening network access', () => {
+  const script = String.raw`
+var values = [1, 2, 3, 4];
+var removed = _.remove(values, function(value) { return value % 2 === 0; });
+window.__lodashSurface = {
+  escaped: _.escape('<&>"'),
+  object: _.isObject({}),
+  date: _.isDate(new Date(0)),
+  string: _.isString(new String('x')),
+  path: _.toPath('a[0].b'),
+  unique: _.uniq([1, 1, 2]),
+  concatenated: _.concat([1], [2, 3], 4),
+  remaining: values,
+  removed: removed,
+  intersection: _.intersectionBy([{ id: 1 }, { id: 2 }], [{ id: 2 }], function(item) { return item.id; }).map(function(item) { return item.id; }),
+  empty: _.isEmpty({}),
+  mapped: _.mapValues({ a: 2 }, function(value) { return value * 3; }),
+  saveChat: typeof SillyTavern.saveChat().then === 'function',
+};
+`
+  const html = tavernScriptFrameSource({
+    id: 'lodash-runtime', name: '工具兼容', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptId: 'lodash-runtime', scriptName: '工具兼容', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+
+  assert.deepEqual(JSON.parse(JSON.stringify(context.__lodashSurface)), {
+    escaped: '&lt;&amp;&gt;&quot;', object: true, date: true, string: true,
+    path: ['a', '0', 'b'], unique: [1, 2], concatenated: [1, 2, 3, 4],
+    remaining: [1, 3], removed: [2, 4], intersection: [2], empty: true, mapped: { a: 6 }, saveChat: true,
+  })
+})
+
 test('bridges Tavern confirmation popups to the Host and returns custom results', async () => {
   const script = String.raw`
 window.__popupResult = SillyTavern.callGenericPopup(

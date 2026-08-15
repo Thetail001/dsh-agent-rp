@@ -22,7 +22,7 @@ Card `system_prompt` replaces the fallback identity instruction when non-empty a
 
 Enabled entries support constant activation, literal primary keys, selective secondary keys, case sensitivity, scan depth, insertion order, `before_char` and `after_char` placement, priority, and token budget. Each active entry enters the prompt once.
 
-EJS in an otherwise compatible active entry is rendered before token accounting. The current subset supports `<% %>`, `<%= %>`, `<%- %>`, comments, whitespace slurping, conditions, loops, `print`, character and user names, role-aware recent-message metadata and readers, `variables`, `stat_data`, and read-only `getvar` aliases. Promises that settle entirely inside the isolated runtime may be awaited. The same renderer is used for model-facing character fields and imported preset modules. Host-backed async APIs, includes, variable writes, dynamic World Info activation, prompt injection, regex activation, and `@@` decorators remain preserved but inactive. The exact matrix is documented in [EJS compatibility](ejs-compatibility.md).
+EJS in an otherwise compatible active entry is rendered before token accounting. The current subset supports `<% %>`, `<%= %>`, `<%- %>`, comments, whitespace slurping, conditions, loops, `print`, character and user names, role-aware recent-message metadata and readers, `variables`, `stat_data`, read-only `getvar` aliases, deterministic JSON-data Lodash helpers, YAML serialization, and bounded reads of plain Session-owned World Info through `getwi` or `getWorldInfo`. Promises that settle entirely inside the isolated runtime may be awaited. The same renderer is used for model-facing character fields and imported preset modules. Host-backed async APIs, includes, variable writes, nested World Info template evaluation, dynamic World Info activation, prompt injection, regex activation, and `@@` decorators remain preserved but inactive. The exact matrix is documented in [EJS compatibility](ejs-compatibility.md).
 
 ## Independent World Info
 
@@ -44,6 +44,6 @@ The implementation is independent and follows public interoperability formats ra
 - [Character Card V3 specification](https://github.com/kwaroran/character-card-spec-v3), reviewed at `f3a86af019fbd99f788f7a1155f399655b34ab35`
 - [SillyTavern](https://github.com/SillyTavern/SillyTavern) observable PNG and chat formats, reviewed at `8172dcd0ee672d3cd9a5e5f7af134f91a45cd2b8`
 
-PNG chunk extraction uses the MIT-licensed `png-chunks-extract` and `png-chunk-text` packages. No SillyTavern AGPL source is included.
+PNG chunk extraction uses the MIT-licensed `png-chunks-extract` package. The MIT-licensed `png-chunk-text` encoder is retained only for generated test fixtures. No SillyTavern AGPL source is included.
 
 Isolated EJS evaluation uses the MIT-licensed `quickjs-emscripten-core` and the embedded release-sync QuickJS variant. The implementation is based on public EJS syntax and observable interoperability behavior; no AGPL template-extension source is included.

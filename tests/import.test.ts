@@ -314,6 +314,21 @@ test('prefers ccv3 over chara in a dual-metadata PNG', () => {
   assert.equal(card.name, 'V3 角色')
 })
 
+test('decodes large PNG character metadata without truncation', () => {
+  const raw = {
+    spec: 'chara_card_v3',
+    spec_version: '3.0',
+    data: {
+      ...v2Data({ creator_notes: 'x'.repeat(512 * 1024) }),
+      group_only_greetings: [],
+    },
+  }
+  const payload = readCharacterCardPng(cardPng([['ccv3', raw]]))
+
+  assert.ok(payload.json.length > 512 * 1024)
+  assert.equal(parseCharacterCardJson(payload.json).name, '白露')
+})
+
 test('rejects malformed transport and schema without partial fallback', () => {
   assert.throws(() => readCharacterCardPng(Buffer.from('not png')), /not a PNG/u)
   assert.throws(() => parseCharacterCardJson('{'), /not valid JSON/u)

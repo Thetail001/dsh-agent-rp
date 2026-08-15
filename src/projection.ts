@@ -21,7 +21,7 @@ import { parsePresetLibraryResult } from './preset-library-protocol.ts'
 import { parseSessionPersona } from './session-persona.ts'
 import { decodeGenerationState, type GenerationStateRecord } from './generation.ts'
 import { inspectLorebooks } from './import/lorebook.ts'
-import { EjsTemplateEngine } from './ejs-template.ts'
+import { createEjsWorldInfoBooks, EjsTemplateEngine } from './ejs-template.ts'
 import type { ImportedCharacterCard, ImportedWorldInfo } from './import/types.ts'
 import {
   configuredLorebook,
@@ -255,6 +255,7 @@ function worldInfoProjection(
   const transcript = state.surface.flatMap(node => node.text === undefined || node.role === undefined
     ? []
     : [{ role: node.role, content: node.text }])
+  const configuredSources = sources.map(source => ({ source, configured: configuredLorebook(source, state.worldInfoConfiguration) }))
   const templateOptions = ejsTemplateEngine === undefined ? {} : {
     renderTemplate: ejsTemplateEngine.createRenderer({
       characterName: state.character.characterName,
@@ -263,10 +264,14 @@ function worldInfoProjection(
       transcript,
       variableScopes: state.tavern?.scopes ?? {},
       ...(state.mvu === undefined ? {} : { statData: state.mvu.statData }),
+      worldInfoBooks: createEjsWorldInfoBooks(configuredSources.map(({ source, configured }) => ({
+        id: source.id,
+        name: source.name,
+        lorebook: configured.lorebook,
+      }))),
     }),
   }
   let activeCount = 0
-  const configuredSources = sources.map(source => ({ source, configured: configuredLorebook(source, state.worldInfoConfiguration) }))
   const aggregateBudget = worldInfoTokenBudget(state.worldInfoConfiguration)
   const inspectedCollection = inspectLorebooks(
     configuredSources.map(({ source, configured }) => ({ id: source.id, lorebook: configured.lorebook })),

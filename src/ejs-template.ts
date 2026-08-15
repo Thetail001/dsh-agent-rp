@@ -9,6 +9,7 @@ import {
 
 const MAX_TEMPLATE_CHARS = 256 * 1024
 const MAX_OUTPUT_CHARS = 256 * 1024
+const MAX_RESOURCE_CHARS = 4 * 1024 * 1024
 const MEMORY_LIMIT_BYTES = 16 * 1024 * 1024
 const MAX_STACK_BYTES = 512 * 1024
 const MAX_INTERRUPT_POLLS = 512
@@ -23,6 +24,48 @@ export interface EjsTemplateMessage {
   readonly content: string
 }
 
+/** One Session-owned World Info book available to deterministic template reads. */
+export interface EjsTemplateWorldInfoBook {
+  readonly id: string
+  readonly name?: string
+  readonly entries: readonly {
+    readonly sourceId: string
+    readonly name?: string
+    readonly comment?: string
+    readonly content: string
+  }[]
+}
+
+/** Project normalized Session lorebooks into the read-only EJS resource index. */
+export function createEjsWorldInfoBooks(books: readonly {
+  readonly id: string
+  readonly name?: string
+  readonly lorebook: {
+    readonly entries: readonly {
+      readonly sourceId: string
+      readonly name?: string
+      readonly comment?: string
+      readonly content: string
+    }[]
+  }
+}[]): EjsTemplateWorldInfoBook[] {
+  return books.map(book => ({
+    id: book.id,
+    ...(book.name === undefined ? {} : { name: book.name }),
+    entries: book.lorebook.entries.map(entry => ({
+      sourceId: entry.sourceId,
+      ...(entry.name === undefined ? {} : { name: entry.name }),
+      ...(entry.comment === undefined ? {} : { comment: entry.comment }),
+      content: entry.content,
+    })),
+  }))
+}
+
+/** Resource identity of the template currently being rendered. */
+export interface EjsTemplateTarget {
+  readonly worldInfoBookId?: string
+}
+
 /** JSON-only values exposed to one template evaluation. */
 export interface EjsTemplateContext {
   readonly characterName: string
@@ -32,6 +75,7 @@ export interface EjsTemplateContext {
   readonly variables?: Readonly<Record<string, JsonValue>>
   readonly variableScopes?: Readonly<Partial<Record<'global' | 'preset' | 'character' | 'chat' | 'message', Readonly<Record<string, JsonValue>>>>>
   readonly statData?: JsonValue
+  readonly worldInfoBooks?: readonly EjsTemplateWorldInfoBook[]
 }
 
 /** Stable failure categories that never include private template source. */
@@ -42,6 +86,8 @@ export type EjsTemplateFailureKind =
   | 'execution-limit'
   | 'memory-limit'
   | 'output-limit'
+  | 'resource-unsupported'
+  | 'resource-limit'
 
 /** Result of one isolated template evaluation. */
 export type EjsTemplateResult =
@@ -213,6 +259,106 @@ function compileTemplate(template: string, context: EjsTemplateContext): string 
       }
       return target;
     };
+    const __cloneDeep = (value, seen = new WeakMap()) => {
+      if (value === null || typeof value !== 'object') return value;
+      if (seen.has(value)) return seen.get(value);
+      const target = Array.isArray(value) ? [] : Object.create(null);
+      seen.set(value, target);
+      for (const key of Object.keys(value)) __set(target, key, __cloneDeep(value[key], seen));
+      return target;
+    };
+    const __path = value => (Array.isArray(value) ? value : String(value)
+      .replace(/\\[([^\\]]+)\\]/g, '.$1').split('.'))
+      .map(segment => String(segment).replace(/^['"]|['"]$/g, '')).filter(Boolean);
+    const __readPath = (record, path, fallback) => {
+      let current = record;
+      for (const segment of __path(path)) {
+        if (current === null || typeof current !== 'object' || !__owns(current, segment)) return fallback;
+        current = current[segment];
+      }
+      return current;
+    };
+    const __writePath = (record, path, value) => {
+      const segments = __path(path);
+      if (segments.length === 0) return record;
+      let current = record;
+      for (let index = 0; index < segments.length - 1; index += 1) {
+        const segment = segments[index];
+        const next = segments[index + 1];
+        const child = current[segment];
+        if (child === null || typeof child !== 'object') {
+          __set(current, segment, /^\\d+$/u.test(next) ? [] : Object.create(null));
+        }
+        current = current[segment];
+      }
+      __set(current, segments[segments.length - 1], value);
+      return record;
+    };
+    const __deletePath = (record, path) => {
+      const segments = __path(path);
+      let current = record;
+      for (let index = 0; index < segments.length - 1; index += 1) {
+        const segment = segments[index];
+        if (current === null || typeof current !== 'object' || !__owns(current, segment)) return;
+        current = current[segment];
+      }
+      if (current !== null && typeof current === 'object') delete current[segments.at(-1)];
+    };
+    const __flattenPaths = values => values.flatMap(value => Array.isArray(value) ? value : [value]);
+    const _ = Object.freeze({
+      get: (record, path, fallback = undefined) => __readPath(record, path, fallback),
+      cloneDeep: value => __cloneDeep(value),
+      mapValues: (record, iteratee) => {
+        const result = Object.create(null);
+        if (record === null || typeof record !== 'object') return result;
+        for (const key of Object.keys(record)) __set(result, key, iteratee(record[key], key, record));
+        return result;
+      },
+      isEmpty: value => {
+        if (value === null || value === undefined) return true;
+        if (typeof value === 'string' || Array.isArray(value)) return value.length === 0;
+        if (value instanceof Map || value instanceof Set) return value.size === 0;
+        return typeof value === 'object' ? Object.keys(value).length === 0 : true;
+      },
+      omit: (record, ...paths) => {
+        const result = __cloneDeep(record);
+        for (const path of __flattenPaths(paths)) __deletePath(result, path);
+        return result;
+      },
+      pick: (record, ...paths) => {
+        const result = Object.create(null);
+        const missing = Object.create(null);
+        for (const path of __flattenPaths(paths)) {
+          const value = __readPath(record, path, missing);
+          if (value !== missing) __writePath(result, path, __cloneDeep(value));
+        }
+        return result;
+      },
+      transform: (record, iteratee, accumulator = Array.isArray(record) ? [] : Object.create(null)) => {
+        if (record === null || typeof record !== 'object') return accumulator;
+        for (const key of Object.keys(record)) {
+          if (iteratee(accumulator, record[key], Array.isArray(record) ? Number(key) : key, record) === false) break;
+        }
+        return accumulator;
+      },
+    });
+    const __yamlScalar = value => {
+      if (value === null) return 'null';
+      if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+      return JSON.stringify(String(value));
+    };
+    const __yamlLines = (value, depth = 0) => {
+      const indent = '  '.repeat(depth);
+      if (value === null || typeof value !== 'object') return [indent + __yamlScalar(value)];
+      const entries = Array.isArray(value) ? value.map((item, index) => [index, item]) : Object.entries(value);
+      if (entries.length === 0) return [indent + (Array.isArray(value) ? '[]' : '{}')];
+      return entries.flatMap(([key, item]) => {
+        const prefix = Array.isArray(value) ? '-' : JSON.stringify(String(key)) + ':';
+        if (item === null || typeof item !== 'object') return [indent + prefix + ' ' + __yamlScalar(item)];
+        return [indent + prefix, ...__yamlLines(item, depth + 1)];
+      });
+    };
+    const YAML = Object.freeze({ stringify: value => value === undefined ? undefined : __yamlLines(value).join('\\n') + '\\n' });
     const variables = [
       variableScopes.global, variableScopes.preset, variableScopes.character,
       variableScopes.chat, variableScopes.message, __input.variables,
@@ -261,6 +407,8 @@ function compileTemplate(template: string, context: EjsTemplateContext): string 
     const getPresetVar = getpresetvar;
     const getCharacterVar = getcharactervar;
     const getMessageVar = getmessagevar;
+    const getWorldInfo = async (...args) => globalThis.__agentRpGetWorldInfo(...args);
+    const getwi = getWorldInfo;
     const print = (...values) => { for (const value of values) __append(value); };
     globalThis.Date = undefined;
     Math.random = () => { throw new Error('__AGENT_RP_EJS_NONDETERMINISTIC__'); };
@@ -274,6 +422,8 @@ function failureKind(value: unknown): EjsTemplateFailureKind {
   const record = value as { readonly name?: unknown; readonly message?: unknown }
   const message = typeof record.message === 'string' ? record.message : ''
   if (message.includes('__AGENT_RP_EJS_OUTPUT_LIMIT__')) return 'output-limit'
+  if (message.includes('__AGENT_RP_EJS_RESOURCE_UNSUPPORTED__')) return 'resource-unsupported'
+  if (message.includes('__AGENT_RP_EJS_RESOURCE_LIMIT__')) return 'resource-limit'
   if (message.includes('interrupted')) return 'execution-limit'
   if (/out of memory|memory limit/iu.test(message)) return 'memory-limit'
   if (record.name === 'SyntaxError') return 'syntax-error'
@@ -291,7 +441,7 @@ export class EjsTemplateEngine {
   }
 
   /** Render one template without exposing Host globals, modules, files, or network APIs. */
-  render(template: string, context: EjsTemplateContext): EjsTemplateResult {
+  render(template: string, context: EjsTemplateContext, target: EjsTemplateTarget = {}): EjsTemplateResult {
     if (template.length > MAX_TEMPLATE_CHARS) return { ok: false, kind: 'source-limit' }
     const code = compileTemplate(template, context)
     if (code === undefined) return { ok: false, kind: 'syntax-error' }
@@ -302,6 +452,32 @@ export class EjsTemplateEngine {
     runtime.setInterruptHandler(() => ++polls > MAX_INTERRUPT_POLLS)
     const vm = runtime.newContext()
     try {
+      let resourceReads = 0
+      let resourceChars = 0
+      const lookup = vm.newFunction('__agentRpGetWorldInfo', (...handles) => {
+        resourceReads += 1
+        if (resourceReads > 128) throw new Error('__AGENT_RP_EJS_RESOURCE_LIMIT__')
+        const args = handles.map(handle => vm.dump(handle) as unknown)
+        const books = context.worldInfoBooks ?? []
+        const explicitEntry = typeof args[1] === 'string' || typeof args[1] === 'number'
+        const selectedBooks = explicitEntry
+          ? books.filter(book => book.id === String(args[0]) || book.name === args[0])
+          : target.worldInfoBookId === undefined
+            ? books
+            : books.filter(book => book.id === target.worldInfoBookId)
+        const query = explicitEntry ? args[1] : args[0]
+        const entry = (typeof query === 'string' || typeof query === 'number')
+          ? selectedBooks.flatMap(book => book.entries).find(item =>
+              item.sourceId === String(query) || item.name === query || item.comment === query)
+          : undefined
+        const text = entry?.content ?? ''
+        if (/<%[=_-]?[\s\S]*?%>/imu.test(text)) throw new Error('__AGENT_RP_EJS_RESOURCE_UNSUPPORTED__')
+        resourceChars += text.length
+        if (resourceChars > MAX_RESOURCE_CHARS) throw new Error('__AGENT_RP_EJS_RESOURCE_LIMIT__')
+        return vm.newString(text)
+      })
+      vm.setProp(vm.global, '__agentRpGetWorldInfo', lookup)
+      lookup.dispose()
       const result = vm.evalCode(code, 'agent-rp:ejs')
       const errorHandle = result.error
       if (errorHandle !== undefined) {
@@ -343,12 +519,12 @@ export class EjsTemplateEngine {
   }
 
   /** Bind one immutable context and cap the number of templates evaluated for one prompt or projection pass. */
-  createRenderer(context: EjsTemplateContext): (template: string) => EjsTemplateResult {
+  createRenderer(context: EjsTemplateContext): (template: string, target?: EjsTemplateTarget) => EjsTemplateResult {
     let evaluations = 0
-    return template => {
+    return (template, target) => {
       if (evaluations >= MAX_RENDERER_EVALUATIONS) return { ok: false, kind: 'execution-limit' }
       evaluations += 1
-      return this.render(template, context)
+      return this.render(template, context, target)
     }
   }
 }

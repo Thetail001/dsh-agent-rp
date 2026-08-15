@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { EjsTemplateEngine } from '../src/ejs-template.ts'
-import { inspectLorebook } from '../src/import/lorebook.ts'
+import { createEjsWorldInfoBooks, EjsTemplateEngine } from '../src/ejs-template.ts'
+import { inspectLorebook, inspectLorebooks } from '../src/import/lorebook.ts'
 import type { ImportedLorebook } from '../src/import/types.ts'
 
 const engine = await EjsTemplateEngine.create()
@@ -115,6 +115,114 @@ test('supports EJS variable options and camel-case scope aliases as read-only sn
   })
 
   assert.deepEqual(result, { ok: true, text: '5/undefined/global/chat/character' })
+})
+
+test('provides deterministic JSON-safe utility and YAML helpers', () => {
+  const result = engine.render([
+    '<% const value = { stats: { hp: 7, mood: "calm" }, items: ["a", "b"], empty: {} };',
+    'const clone = _.cloneDeep(value); clone.stats.hp = 9;',
+    'const mapped = _.mapValues({ a: 2, b: 3 }, number => number * 2);',
+    'const transformed = _.transform({ a: 2, b: 3 }, (target, number, key) => { target[key] = number + 1; }, {}); %>',
+    '<%- [_.get(value, "stats.hp"), _.get(value, "missing", 5), clone.stats.hp, value.stats.hp,',
+    '_.isEmpty(value.empty), JSON.stringify(_.pick(value, ["stats.hp", "items[1]"])),',
+    'JSON.stringify(_.omit(value, "stats.mood")), JSON.stringify(mapped), JSON.stringify(transformed)].join("|") %>\n',
+    '<%- YAML.stringify({ hp: 7, nested: { mood: "calm" }, items: ["a", "b"] }) %>',
+  ].join(''), { characterName: '角色', userName: '用户', messages: [] })
+
+  assert.deepEqual(result, {
+    ok: true,
+    text: [
+      '7|5|9|7|true|{"stats":{"hp":7},"items":[null,"b"]}|{"stats":{"hp":7},"items":["a","b"],"empty":{}}|{"a":4,"b":6}|{"a":3,"b":4}',
+      '"hp": 7',
+      '"nested":',
+      '  "mood": "calm"',
+      '"items":',
+      '  - "a"',
+      '  - "b"',
+      '',
+    ].join('\n'),
+  })
+})
+
+test('reads plain Session World Info by current or explicit book identity', () => {
+  const context = {
+    characterName: '角色', userName: '用户', messages: [],
+    worldInfoBooks: [
+      { id: 'book-one', name: '第一本', entries: [{ sourceId: '1', comment: '共享条目', content: '第一段' }] },
+      { id: 'book-two', name: '第二本', entries: [{ sourceId: '2', comment: '共享条目', content: '第二段' }] },
+    ],
+  }
+  const result = engine.render([
+    '<%= await getWorldInfo("共享条目") %>|',
+    '<%= await getWorldInfo("第二本", "共享条目") %>|',
+    '<%= await getwi("不存在") %>',
+  ].join(''), context, { worldInfoBookId: 'book-one' })
+
+  assert.deepEqual(result, { ok: true, text: '第一段|第二段|' })
+})
+
+test('does not leak an unrendered nested World Info template', () => {
+  const result = engine.render('<%= await getWorldInfo("嵌套") %>', {
+    characterName: '角色', userName: '用户', messages: [],
+    worldInfoBooks: [{
+      id: 'book',
+      entries: [{ sourceId: '1', comment: '嵌套', content: '<%= char %>的私密模板' }],
+    }],
+  }, { worldInfoBookId: 'book' })
+
+  assert.deepEqual(result, { ok: false, kind: 'resource-unsupported' })
+})
+
+test('keeps large resource reads separate from the final output limit', () => {
+  const result = engine.render('<%= (await getWorldInfo("数据表")).length %>', {
+    characterName: '角色', userName: '用户', messages: [],
+    worldInfoBooks: [{
+      id: 'book',
+      entries: [{ sourceId: '1', comment: '数据表', content: 'x'.repeat(300 * 1024) }],
+    }],
+  }, { worldInfoBookId: 'book' })
+
+  assert.deepEqual(result, { ok: true, text: String(300 * 1024) })
+})
+
+test('bounds cumulative World Info reads inside one isolated render', () => {
+  const result = engine.render([
+    '<% for (let index = 0; index < 129; index += 1) await getWorldInfo("数据表"); %>',
+    'unreachable',
+  ].join(''), {
+    characterName: '角色', userName: '用户', messages: [],
+    worldInfoBooks: [{
+      id: 'book',
+      entries: [{ sourceId: '1', comment: '数据表', content: 'x' }],
+    }],
+  }, { worldInfoBookId: 'book' })
+
+  assert.deepEqual(result, { ok: false, kind: 'resource-limit' })
+})
+
+test('retains current-book identity while inspecting several lorebooks', () => {
+  const entry = (sourceId: string, content: string, enabled: boolean, comment?: string) => ({
+    sourceId, ...(comment === undefined ? {} : { comment }), keys: [], secondaryKeys: [], content, enabled,
+    insertionOrder: Number(sourceId), selective: false, constant: true, caseSensitive: false,
+    matchWholeWords: false, secondaryLogic: 'and-any' as const, position: 'before_char' as const,
+    ignoreBudget: false, useRegex: false, hasDecorators: false,
+  })
+  const books = [
+    { id: 'one', lorebook: { recursiveScanning: false, entries: [
+      entry('1', '<%= await getWorldInfo("共享") %>', true), entry('2', '第一本', false, '共享'),
+    ] } },
+    { id: 'two', lorebook: { recursiveScanning: false, entries: [
+      entry('1', '<%= await getWorldInfo("共享") %>', true), entry('2', '第二本', false, '共享'),
+    ] } },
+  ] satisfies { id: string; lorebook: ImportedLorebook }[]
+  const inspected = inspectLorebooks(books, [], {
+    renderTemplate: engine.createRenderer({
+      characterName: '角色', userName: '用户', messages: [],
+      worldInfoBooks: createEjsWorldInfoBooks(books),
+    }),
+  })
+
+  assert.deepEqual(inspected.beforeCharacter, ['第一本', '第二本'])
 })
 
 test('parses JSON context without treating special object keys as source syntax', () => {

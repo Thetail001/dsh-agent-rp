@@ -23,9 +23,6 @@ importers:
       marked:
         specifier: 16.4.2
         version: 16.4.2
-      png-chunk-text:
-        specifier: 1.0.0
-        version: 1.0.0
       png-chunks-extract:
         specifier: 1.0.0
         version: 1.0.0
@@ -120,6 +117,9 @@ importers:
       '@types/react-dom':
         specifier: 18.3.7
         version: 18.3.7(@types/react@18.3.31)
+      png-chunk-text:
+        specifier: 1.0.0
+        version: 1.0.0
       react:
         specifier: 18.3.1
         version: 18.3.1

@@ -2,7 +2,6 @@
 
 import { Buffer } from 'node:buffer'
 import extractChunks from 'png-chunks-extract'
-import { decode as decodeTextChunk } from 'png-chunk-text'
 import { assertCharacterCardJsonSize } from './character-card.ts'
 import type { CharacterCardPngPayload } from './types.ts'
 
@@ -38,6 +37,19 @@ function decodeBase64(value: string, keyword: string): string {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
   } catch (error) {
     throw new Error(`${keyword} PNG metadata is not valid UTF-8`, { cause: error })
+  }
+}
+
+function decodeTextChunk(data: Uint8Array): { readonly keyword: string; readonly text: string } {
+  const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+  const separator = bytes.indexOf(0)
+  if (separator < 0) return { keyword: bytes.toString('latin1'), text: '' }
+  if (bytes.indexOf(0, separator + 1) >= 0) {
+    throw new Error('Invalid NULL character found. 0x00 character is not permitted in tEXt content')
+  }
+  return {
+    keyword: bytes.subarray(0, separator).toString('latin1'),
+    text: bytes.subarray(separator + 1).toString('latin1'),
   }
 }
 
