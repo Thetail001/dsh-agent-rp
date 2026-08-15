@@ -124,3 +124,23 @@ test('normalizes the model role used by community presets to assistant', () => {
   assert.equal(preset.prompts[1]?.role, 'assistant')
   assert.equal(preset.order[1]?.enabled, false)
 })
+
+test('imports Tavern Helper preset extensions serialized as key-value entries', () => {
+  const preset = parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [{ identifier: 'main', name: '主提示', role: 'system', content: 'main' }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: 'main', enabled: true }] }],
+    extensions: {
+      tavern_helper: [
+        ['scripts', [{ id: 'entry-script', name: '条目脚本', content: 'eventOn("app_ready", run)', enabled: true }]],
+        ['variables', { presetTheme: 'entry-list' }],
+      ],
+    },
+  }), 'entry-list.json')
+
+  assert.deepEqual(preset.tavernHelperVariables, { presetTheme: 'entry-list' })
+  assert.equal(preset.tavernHelperScripts?.[0]?.id, 'entry-script')
+  assert.deepEqual(preset.extensionCompatibility, {
+    tavernHelperScriptCount: 1,
+    enabledTavernHelperScriptCount: 1,
+  })
+})

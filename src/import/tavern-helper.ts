@@ -10,6 +10,19 @@ function object(value: unknown, path: string): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
+/** Normalize Tavern Helper's object and JSON-serialized entry-list formats. */
+export function tavernHelperExtension(value: unknown, path: string): Record<string, unknown> {
+  if (!Array.isArray(value)) return object(value, path)
+  const result: Record<string, unknown> = {}
+  for (const [index, entry] of value.entries()) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string') {
+      throw new Error(`${path}[${index}] must be a [key, value] entry`)
+    }
+    if (entry[0] === 'scripts' || entry[0] === 'variables') result[entry[0]] = entry[1]
+  }
+  return result
+}
+
 /** Preserve one JSON object used as a Tavern Helper variable namespace. */
 export function tavernHelperVariables(value: unknown): Readonly<Record<string, JsonValue>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

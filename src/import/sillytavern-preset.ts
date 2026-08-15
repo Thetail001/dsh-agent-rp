@@ -2,7 +2,7 @@
 
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { parseRegexScript } from './regex-script.ts'
-import { parseTavernHelperScripts, tavernHelperVariables } from './tavern-helper.ts'
+import { parseTavernHelperScripts, tavernHelperExtension, tavernHelperVariables } from './tavern-helper.ts'
 import type { ImportedRegexScript, ImportedTavernHelperScript } from './types.ts'
 
 /** Role assigned to one Prompt Manager entry. */
@@ -112,11 +112,11 @@ function optionalObject(value: unknown): Record<string, unknown> | undefined {
 function extensionCompatibility(
   extensions: Record<string, unknown>,
   rawRegex: unknown,
+  helper: Record<string, unknown> | undefined,
 ): SillyTavernPresetExtensionCompatibility | undefined {
   const spreset = optionalObject(extensions.SPreset)
   const chatSquash = optionalObject(spreset?.ChatSquash)
   const regexBinding = optionalObject(spreset?.RegexBinding)
-  const helper = optionalObject(extensions.tavern_helper)
   const helperScripts = Array.isArray(helper?.scripts) ? helper.scripts : undefined
   const compatibility: SillyTavernPresetExtensionCompatibility = {
     ...(typeof spreset?.MacroNest === 'boolean' ? { macroNestEnabled: spreset.MacroNest } : {}),
@@ -206,14 +206,17 @@ export function parseSillyTavernPresetJson(source: string, fileName = 'SillyTave
         if (!Array.isArray(rawRegex)) throw new Error('extensions.regex_scripts must be an array')
         return rawRegex.map((value, index) => parseRegexScript(value as JsonValue, `extensions.regex_scripts[${index}]`))
       })()
-  const helper = optionalObject(extensions.tavern_helper)
+  const rawHelper = extensions.tavern_helper
+  const helper = rawHelper === undefined || rawHelper === null
+    ? undefined
+    : tavernHelperExtension(rawHelper, 'extensions.tavern_helper')
   const helperScripts = helper?.scripts === undefined
     ? []
     : (() => {
         if (!Array.isArray(helper.scripts)) throw new Error('extensions.tavern_helper.scripts must be an array')
         return parseTavernHelperScripts(helper.scripts, 'extensions.tavern_helper.scripts')
       })()
-  const compatibility = extensionCompatibility(extensions, rawRegex)
+  const compatibility = extensionCompatibility(extensions, rawRegex, helper)
   return {
     format: 0,
     name: fileName.replace(/\.json$/iu, '').trim() || 'SillyTavern preset',

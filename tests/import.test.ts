@@ -116,6 +116,25 @@ test('imports the complete Tavern Helper script tree and initial variables', () 
   }])
 })
 
+test('imports Tavern Helper extensions serialized as key-value entries', () => {
+  const card = parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: v2Data({
+      extensions: {
+        tavern_helper: [
+          ['scripts', [{ id: 'entry-script', name: '条目脚本', content: 'eventOn("app_ready", run)', enabled: true }]],
+          ['variables', { theme: 'entry-list' }],
+        ],
+      },
+    }),
+  }))
+
+  assert.deepEqual(card.frontend.tavernHelperScriptNames, ['条目脚本'])
+  assert.deepEqual(card.frontend.tavernHelperVariables, { theme: 'entry-list' })
+  assert.equal(card.frontend.tavernHelperScripts[0]?.id, 'entry-script')
+})
+
 test('accepts regex substitution modes serialized with SillyTavern numeric coercion', () => {
   const script = {
     scriptName: '显示规则', findRegex: '/old/gu', replaceString: 'new', trimStrings: [], placement: [2],
