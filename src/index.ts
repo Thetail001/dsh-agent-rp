@@ -744,7 +744,7 @@ export function installAgentRp(
         [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
         [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
         userName,
-        mvu !== undefined,
+        mvu?.statData,
         persona?.description,
       )
     },

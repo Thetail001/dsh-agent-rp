@@ -12,6 +12,15 @@ const CHARACTER_BEHAVIOR = '只写角色此刻自然会说或做的内容，不�
 const MEMORY_BEHAVIOR = '已记录的内容是角色自然知道的背景，不是本轮必须提及的话题。只在和当前对话直接相关时使用；默认通过回答、称呼或行动自然体现，不主动说“我记得”“你之前说过”“我一直记着”，也不完整复述记录。只有用户明确询问记忆本身时才简短确认。用户明确要求记住，或用“以后”“下次”等表达稳定偏好或约定时，先调用 remember，成功后再自然回应；不能只在对话中声称记住。其他内容只有确实值得跨轮保留的事实、关系变化或共同经历才使用 remember。普通寒暄、临时情绪、未经确认的猜测和已有记录不要写入记忆。写入前先看当前有效记忆：内容已经覆盖时不要重复调用；同一主题发生变化时，用 supersedes 更新原记录，不要新增同主题记录。不要在对话中朗读记忆 id、类型或主题标签。'
 const IMPORT_BEHAVIOR = '用户附带 SillyTavern 角色卡 PNG、JSON 或 CHARX 并要求导入、接管或切换角色时，调用 import_character_card；附带独立 World Info / 世界书 JSON 并要求导入时，调用 import_world_info；附带 Chat Completion 预设 JSON 并要求导入时，调用 import_sillytavern_preset。一条消息附有多个同类文件时才指定从零开始的 attachmentIndex。导入成功后直接采用新角色、世界设定或预设，不解释内部格式。'
 
+function finalizeRoleplayPrompt(value: string, statData?: import('@deepseek-ai/dsh-session').JsonValue): string {
+  let result = substituteMvuMacros(value, statData)
+  for (;;) {
+    const next = result.replace(/\{\{[^{}]*\}\}/gu, '')
+    if (next === result) return result
+    result = next
+  }
+}
+
 /**
  * Render the stable character contract installed as the Agent-scoped persona.
  * @param config - normalized character identity and opening state.
@@ -22,7 +31,7 @@ export function renderCharacterPrompt(
   loreBefore: readonly string[] = [],
   loreAfter: readonly string[] = [],
 ): string {
-  return [
+  return finalizeRoleplayPrompt([
     `你是${config.characterName}。你不是扮演该角色的助手，也不是旁白；直接以${config.characterName}的身份与用户相处和交谈。`,
     ...loreBefore,
     `角色设定：${config.persona}`,
@@ -32,7 +41,7 @@ export function renderCharacterPrompt(
     CHARACTER_BEHAVIOR,
     MEMORY_BEHAVIOR,
     IMPORT_BEHAVIOR,
-  ].join('\n\n')
+  ].join('\n\n'))
 }
 
 /**
@@ -43,7 +52,7 @@ export function renderCharacterPrompt(
  * @returns model-visible prompt that continues imported history without applying the deployment default persona.
  */
 export function renderImportedChatPrompt(characterName: string, userName?: string, userPersona?: string): string {
-  return [
+  return finalizeRoleplayPrompt([
     `你是${characterName}。直接以${characterName}的身份延续当前会话。`,
     ...(userName === undefined ? [] : [`与您对话的人在导入记录中名为${userName}。`]),
     ...(userPersona?.trim() ? [`对方当前选择的 Persona：\n${userPersona.trim()}`] : []),
@@ -51,7 +60,7 @@ export function renderImportedChatPrompt(characterName: string, userName?: strin
     CHARACTER_BEHAVIOR,
     MEMORY_BEHAVIOR,
     IMPORT_BEHAVIOR,
-  ].join('\n\n')
+  ].join('\n\n'))
 }
 
 /**
@@ -106,7 +115,7 @@ export function renderImportedCharacterPrompt(
   loreBefore: readonly string[],
   loreAfter: readonly string[],
   userName?: string,
-  mvuEnabled = false,
+  statData?: import('@deepseek-ai/dsh-session').JsonValue,
   userPersona?: string,
 ): string {
   const name = card.nickname?.trim() || card.name
@@ -130,10 +139,10 @@ export function renderImportedCharacterPrompt(
   if (card.postHistoryInstructions.trim().length > 0) {
     parts.push(substituteCardMacros(card.postHistoryInstructions, card, userName).replaceAll('{{original}}', ''))
   }
-  if (mvuEnabled) {
+  if (statData !== undefined) {
     parts.push('每次回复都必须在正文末尾完整输出一个 <UpdateVariable><Analysis>…</Analysis><JSONPatch>[…]</JSONPatch></UpdateVariable>；没有变量变化时 JSONPatch 也输出空数组。')
   }
-  return parts.join('\n\n')
+  return finalizeRoleplayPrompt(parts.join('\n\n'), statData)
 }
 
 function dialogueText(messages: readonly UserMessage[]): string[] {
@@ -191,8 +200,8 @@ export function renderImportedLorebook(
 export function renderMemoryContext(events: readonly SessionEvent[]): string {
   const { active } = readAgentRpMemoryHistory(events)
   if (active.length === 0) return ''
-  return [
+  return finalizeRoleplayPrompt([
     '角色已知的持久背景如下。这不是本轮要逐条提及的清单；方括号内仅是更新记忆所需的内部索引：',
     ...active.map(record => `- [${record.id} | ${record.kind} | ${record.subject}] ${record.text}`),
-  ].join('\n')
+  ].join('\n'))
 }

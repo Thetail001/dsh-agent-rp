@@ -632,6 +632,7 @@ function selectedBackground(
 const cardFrameCompatibility = `<style>
 html{background:transparent!important;color-scheme:dark;scrollbar-color:rgba(145,158,181,.58) transparent;scrollbar-width:thin}
 *,*::before,*::after{box-sizing:border-box}
+[data-agent-rp-center]{display:block;text-align:center}
 ::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:999px;background:rgba(145,158,181,.58);background-clip:padding-box}
@@ -699,7 +700,10 @@ function inlineCardFrameSource(
   statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined,
   character?: CharacterLibraryDetail,
 ): string {
-  const markdown = marked.parse(source, { async: false, breaks: true, gfm: true }) as string
+  const legacy = source
+    .replace(/<center(\s[^>]*)?>/giu, '<div data-agent-rp-center$1>')
+    .replace(/<\/center\s*>/giu, '</div>')
+  const markdown = marked.parse(legacy, { async: false, breaks: true, gfm: true }) as string
   const sanitized = DOMPurify.sanitize(markdown, {
     ADD_TAGS: ['style'],
     FORBID_ATTR: ['srcdoc'],

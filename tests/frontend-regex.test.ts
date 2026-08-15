@@ -1332,6 +1332,11 @@ test('isolates ordinary inline HTML for sanitized rendering', () => {
   assert.equal(hasCharacterDisplayFrontend([{ kind: 'markdown', text: '纯文字' }]), false)
 })
 
+test('keeps legacy center wrappers for the card frontend compatibility pass', () => {
+  const source = '<div>角色名<center><img src="image.png"></center></div>'
+  assert.deepEqual(splitCharacterDisplay(source), [{ kind: 'inline-html', source }])
+})
+
 test('hides model-defined wrapper tags while preserving their displayed text', () => {
   assert.equal(normalizeSillyTavernMarkdown('<content>\n正文\n</content>'), '\n正文\n')
   assert.equal(normalizeSillyTavernMarkdown('<details><summary>展开</summary>正文</details>'),

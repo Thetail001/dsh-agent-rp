@@ -82,6 +82,34 @@ test('resolves stable SillyTavern identity macros across imported card prose', (
   assert.doesNotMatch(prompt, /\{\{(?:char|user)\}\}|<(?:char|bot|user)>/iu)
 })
 
+test('resolves MVU state and removes unsupported Tavern macros before DSH interpolation', () => {
+  const card = parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: {
+      name: '白露',
+      description: '状态：{{format_message_variable::stat_data}}',
+      personality: '未知：{{format_message_variable::stat/data}}',
+      scenario: '',
+      first_mes: '你好。',
+      mes_example: '',
+      creator_notes: '',
+      system_prompt: '',
+      post_history_instructions: '',
+      alternate_greetings: [],
+      tags: [],
+      creator: '',
+      character_version: '',
+      extensions: {},
+    },
+  }))
+
+  const withState = renderImportedCharacterPrompt(card, [], [], '宝宝', { trust: 3 })
+  assert.match(withState, /trust: 3/u)
+  assert.doesNotMatch(withState, /\{\{/u)
+  assert.doesNotMatch(renderImportedCharacterPrompt(card, [], [], '宝宝'), /\{\{/u)
+})
+
 test('claims one Character Card JSON only for an Agent RP import request', () => {
   const request = [
     { type: 'text' as const, text: '请导入这张角色卡' },
