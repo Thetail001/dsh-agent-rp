@@ -832,7 +832,7 @@ function RewriteTurnDialog({ initialText, busy, error, onClose, onRewrite }: {
   const submit = (): void => {
     if (!busy && text.trim() !== '') onRewrite(text)
   }
-  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="改写这轮" style={{
+  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="修改这轮输入" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.56)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '16px', position: 'fixed', zIndex: 1100,
   }} onMouseDown={event => { if (!busy && event.target === event.currentTarget) onClose() }}>
@@ -840,11 +840,11 @@ function RewriteTurnDialog({ initialText, busy, error, onClose, onRewrite }: {
       background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
       borderRadius: '14px', boxShadow: '0 18px 70px rgba(0,0,0,.38)', maxWidth: '620px', padding: '18px', width: '100%',
     }}>
-      <h2 style={{ fontSize: '15px', margin: 0 }}>改写这轮</h2>
+      <h2 style={{ fontSize: '15px', margin: 0 }}>修改这轮输入</h2>
       <p style={{ fontSize: '12px', lineHeight: 1.6, margin: '7px 0 12px', opacity: .62 }}>
-        确认后会从这句话之前创建新对话，发送改写内容并重新生成回复。原对话不会被修改。
+        会保留当前对话，并从修改后的输入创建一个新分支。
       </p>
-      <textarea autoFocus aria-label="改写后的消息" disabled={busy} maxLength={8_000} value={text} onChange={event => { setText(event.target.value) }}
+      <textarea autoFocus aria-label="修改后的输入" disabled={busy} maxLength={8_000} value={text} onChange={event => { setText(event.target.value) }}
         onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) submit() }} style={{
           background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
           borderRadius: '10px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', fontSize: '13px',
@@ -856,7 +856,7 @@ function RewriteTurnDialog({ initialText, busy, error, onClose, onRewrite }: {
         <button type="button" disabled={busy || text.trim() === ''} onClick={submit} style={{
           ...generationButtonStyle, background: `color-mix(in srgb, ${color} 18%, transparent)`,
           borderColor: `color-mix(in srgb, ${color} 48%, transparent)`, fontSize: '12px', minHeight: '30px', opacity: 1,
-        }}>{busy ? '正在创建…' : '发送并重新生成'}</button>
+        }}>{busy ? '正在创建…' : '创建新分支'}</button>
       </div>
     </section>
   </div>
@@ -903,30 +903,35 @@ function GenerationTail({
     )
   }
   const disabled = running || busy !== undefined
-  return <div data-agent-rp-generation-tail style={{ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: '5px', marginRight: 'auto' }}>
+  return <div data-agent-rp-generation-tail style={{
+    alignItems: 'center', background: 'color-mix(in srgb, currentColor 4%, transparent)',
+    border: '1px solid color-mix(in srgb, currentColor 10%, transparent)', borderRadius: '9px',
+    display: 'flex', flexWrap: 'wrap', gap: '2px', marginRight: 'auto', padding: '3px',
+  }}>
     {currentReply && group !== undefined && group.versions.length > 1 && <>
       <button type="button" aria-label="上一版回复" disabled={disabled || selectedIndex <= 0} onClick={() => {
         invoke({ operation: 'select', replySeq: matched.replySeq, versionIndex: selectedIndex - 1 })
-      }} style={generationButtonStyle}>‹</button>
-      <span style={{ fontSize: '10px', minWidth: '32px', opacity: 0.5, textAlign: 'center' }}>{selectedIndex + 1} / {group.versions.length}</span>
+      }} style={generationActionButtonStyle}>‹</button>
+      <span style={{ fontSize: '11px', minWidth: '34px', opacity: 0.56, textAlign: 'center' }}>{selectedIndex + 1} / {group.versions.length}</span>
       <button type="button" aria-label="下一版回复" disabled={disabled || selectedIndex >= group.versions.length - 1} onClick={() => {
         invoke({ operation: 'select', replySeq: matched.replySeq, versionIndex: selectedIndex + 1 })
-      }} style={generationButtonStyle}>›</button>
+      }} style={generationActionButtonStyle}>›</button>
+      <span aria-hidden="true" style={generationActionDividerStyle} />
     </>}
-    {currentReply && <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'regenerate', replySeq: matched.replySeq }) }} style={generationButtonStyle}>
-      {busy === 'regenerate' ? '重写中…' : '重写'}
+    {currentReply && <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'regenerate', replySeq: matched.replySeq }) }} style={generationActionButtonStyle}>
+      {busy === 'regenerate' ? '生成中…' : '重新生成'}
     </button>}
-    {currentReply && <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'continue', replySeq: matched.replySeq }) }} style={generationButtonStyle}>
-      {busy === 'continue' ? '续写中…' : '续写'}
+    {currentReply && <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'continue', replySeq: matched.replySeq }) }} style={generationActionButtonStyle}>
+      {busy === 'continue' ? '生成中…' : '继续生成'}
     </button>}
-    {currentReply && <button type="button" disabled={disabled || sceneNote === ''} onClick={() => { setDrawOpen(true) }} style={generationButtonStyle}>
-      画这段
+    {currentReply && <button type="button" disabled={disabled || sceneNote === ''} onClick={() => { setDrawOpen(true) }} style={generationActionButtonStyle}>
+      生成插图
     </button>}
-    <button type="button" title={editableUserText === undefined ? '这一轮含附件或没有用户消息，暂时不能改写' : '保留原对话，在新对话中修改这轮输入'}
-      disabled={disabled || editableUserText === undefined} onClick={() => { setError(undefined); setRewriteOpen(true) }} style={generationButtonStyle}>
-      改写这轮
+    <button type="button" title={editableUserText === undefined ? '这一轮含附件或没有用户消息，暂时不能修改' : '保留当前对话，从修改后的输入创建新分支'}
+      disabled={disabled || editableUserText === undefined} onClick={() => { setError(undefined); setRewriteOpen(true) }} style={generationActionButtonStyle}>
+      修改输入
     </button>
-    <button type="button" title="保留截至这里的对话，并从新分支继续" disabled={disabled || turn.end === undefined} onClick={() => {
+    <button type="button" title="保留截至这里的对话，并创建一个新分支" disabled={disabled || turn.end === undefined} onClick={() => {
       if (turn.end === undefined) return
       setBusy('fork')
       setError(undefined)
@@ -937,7 +942,7 @@ function GenerationTail({
           setError(reason instanceof Error ? reason.message : '无法从这里继续')
         },
       )
-    }} style={generationButtonStyle}>{busy === 'fork' ? '正在创建…' : '从这里继续'}</button>
+    }} style={generationActionButtonStyle}>{busy === 'fork' ? '正在创建…' : '创建分支'}</button>
     {error !== undefined && <span role="alert" title={error} style={{ color: '#dc7777', fontSize: '10px', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{error}</span>}
     {currentReply && drawOpen && <ImageGenerationDialog projection={projection} initialMode="scene" initialNote={sceneNote}
       onClose={() => { setDrawOpen(false) }} onGenerate={request => { runImageGeneration(sessionId, request) }} />}
@@ -961,6 +966,18 @@ const generationButtonStyle = {
   background: 'transparent', border: '1px solid color-mix(in srgb, currentColor 18%, transparent)',
   borderRadius: '6px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '10px',
   lineHeight: 1, minHeight: '24px', minWidth: '24px', opacity: 0.58, padding: '4px 7px',
+} as const
+
+const generationActionButtonStyle = {
+  alignItems: 'center', background: 'transparent', border: 0, borderRadius: '6px', color: 'inherit',
+  cursor: 'pointer', display: 'inline-flex', font: 'inherit', fontSize: '11px', fontWeight: 520,
+  justifyContent: 'center', lineHeight: 1.2, minHeight: '28px', minWidth: '28px', opacity: 0.68,
+  padding: '5px 8px', whiteSpace: 'nowrap',
+} as const
+
+const generationActionDividerStyle = {
+  alignSelf: 'stretch', background: 'color-mix(in srgb, currentColor 10%, transparent)',
+  margin: '3px 2px', width: '1px',
 } as const
 
 const headerMenuItemStyle = {
@@ -6452,7 +6469,7 @@ function roleplayComposerDockComponent(
   const backgroundChoice = useRoleplayBackground(sessionId)
   const background = selectedBackground(characterDetail, backgroundChoice)
   const displayName = projection === undefined ? undefined : roleplayDisplayName(summary, projection)
-  const placeholder = displayName === undefined ? undefined : `和${displayName}说点什么…`
+  const placeholder = displayName === undefined ? undefined : '写下你的回应…'
   const transcriptSignature = projection?.tavern?.messages.map(message => `${message.seq}\u0000${message.text}`).join('\u0001')
   const onDisplayOverride = useCallback((_scriptId: string, messageId: number, value: string): void => {
     setDisplayOverrides(current => new Map(current).set(messageId, value))
