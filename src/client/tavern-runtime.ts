@@ -10,6 +10,15 @@ import type {
 
 type JsonRecord = Readonly<Record<string, JsonValue>>
 
+const tavernCompatibilityMarkerPattern = /^__[\p{L}\p{N}_-]{1,112}_loaded__$/u
+
+/** Validate the small boolean readiness-marker surface shared with card display frames. */
+export function validatedTavernCompatibilityMarkers(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.flatMap(marker => typeof marker === 'string' && marker.length <= 128
+    && tavernCompatibilityMarkerPattern.test(marker) ? [marker] : []))].sort().slice(0, 32)
+}
+
 /** Current session preset exposed to one isolated Tavern Helper script. */
 export interface TavernScriptPresetSnapshot {
   readonly name: string
@@ -316,6 +325,7 @@ function __dshPlain(value){return value!==null&&typeof value==='object'&&!Array.
 function __dshMerge(target){for(var source of Array.prototype.slice.call(arguments,1)){if(!__dshPlain(source))continue;for(var key of Object.keys(source)){var value=source[key];if(__dshPlain(value)){if(!__dshPlain(target[key]))target[key]={};__dshMerge(target[key],value)}else target[key]=__dshClone(value)}}return target}
 function __dshScope(option){var type=option?.type??'chat';if(type==='script')return 'script';if(type==='message')return 'message';return ['global','preset','character','chat'].includes(type)?type:'chat'}
 function __dshPost(action,data){parent.postMessage(Object.assign({source:'dsh-agent-rp-tavern-script',scriptId:__dshSnapshot.scriptId,action:action},data??{}),'*')}
+function __dshCompatibilityMarkers(){var markers=[];for(var name of Object.getOwnPropertyNames(window)){if(markers.length>=32)break;if(typeof name!=='string'||name.length>128||!/^__[\\p{L}\\p{N}_-]{1,112}_loaded__$/u.test(name))continue;var descriptor=Object.getOwnPropertyDescriptor(window,name);if(descriptor&&Object.prototype.hasOwnProperty.call(descriptor,'value')&&descriptor.value===true)markers.push(name)}return markers.sort()}
 function __dshReplace(variables,option){var scope=__dshScope(option);var cloned=__dshClone(variables??{});__dshScopes[scope]=cloned;if(scope==='script')__dshSyncScriptTreeData(__dshSnapshot.scriptId,cloned);var requestId=String(++__dshRequest);return new Promise(function(resolve,reject){__dshPending.set(requestId,{resolve:resolve,reject:reject});__dshPost('variables-replace',{requestId:requestId,scope:scope,variables:cloned})})}
 function __dshWorldbookMutation(request){var requestId=String(++__dshRequest);return new Promise(function(resolve,reject){__dshPending.set(requestId,{resolve:resolve,reject:reject});__dshPost('worldbook-mutate',{requestId:requestId,request:__dshClone(request)})})}
 function __dshChatMutation(request){var requestId=String(++__dshRequest);return new Promise(function(resolve,reject){__dshPending.set(requestId,{resolve:resolve,reject:reject});__dshPost('chat-mutate',{requestId:requestId,request:__dshClone(request)})})}
@@ -639,6 +649,6 @@ export function tavernScriptFrameSource(
     ? `var __dshModuleUrl=URL.createObjectURL(new Blob([${encoded}],{type:'text/javascript'}));try{await import(__dshModuleUrl)}finally{URL.revokeObjectURL(__dshModuleUrl)}`
     : `Function('localStorage','sessionStorage',${encoded})(__dshLocalStorage,__dshSessionStorage)`
   const preload = preloads.length === 0 ? '' : `await Promise.all([${preloads.join(',')}]);`
-  const bootstrap = `void (async function(){try{${preload}${execute};__dshPost('ready')}catch(error){console.error(error);__dshPost('runtime-error',{value:String(error)})}})();`
+  const bootstrap = `void (async function(){try{${preload}${execute};__dshPost('ready',{markers:__dshCompatibilityMarkers()})}catch(error){console.error(error);__dshPost('runtime-error',{value:String(error)})}})();`
   return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: ${origins}; connect-src 'none'; img-src 'none'; style-src 'unsafe-inline'; font-src 'none'; frame-src 'none'">${libraries}<style>html,body{background:transparent;color-scheme:dark}</style></head><body><script>${runtimeSource(snapshot)}\n${bootstrap}</script></body></html>`
 }

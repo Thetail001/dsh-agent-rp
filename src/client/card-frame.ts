@@ -37,6 +37,8 @@ export interface CardFrameCompileOptions {
   readonly origin: string
   readonly statData?: JsonValue
   readonly character?: CharacterLibraryDetail
+  /** Successful script-runtime markers that a card may use for compatibility checks. */
+  readonly compatibilityMarkers?: readonly string[]
 }
 
 /** Select card-declared resource origins that still need local approval. */
@@ -75,10 +77,21 @@ function remoteOrigins(source: string): readonly string[] {
   return [...origins].sort()
 }
 
-function mvuFrameRuntime(statData: JsonValue | undefined): string {
+const compatibilityMarkerPattern = /^__[\p{L}\p{N}_-]{1,112}_loaded__$/u
+
+function boundedCompatibilityMarkers(value: readonly string[] | undefined): readonly string[] {
+  if (value === undefined) return []
+  return [...new Set(value.filter(marker => marker.length <= 128 && compatibilityMarkerPattern.test(marker)))]
+    .sort().slice(0, 32)
+}
+
+function mvuFrameRuntime(statData: JsonValue | undefined, compatibilityMarkers: readonly string[] | undefined): string {
   const json = JSON.stringify(statData ?? {}).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
+  const markers = JSON.stringify(boundedCompatibilityMarkers(compatibilityMarkers))
   return `
 var __dshStatData=${json};
+var __dshCompatibilityMarkers=${markers};
+for(var __dshMarker of __dshCompatibilityMarkers)window[__dshMarker]=true;
 var __dshCardListeners=new Map();
 function __dshCardOn(type,listener){var list=__dshCardListeners.get(String(type))??[];list.push(listener);__dshCardListeners.set(String(type),list);var stop=function(){var current=__dshCardListeners.get(String(type))??[];__dshCardListeners.set(String(type),current.filter(function(value){return value!==listener}))};stop.stop=stop;return stop}
 function __dshCardEmit(type){var args=Array.prototype.slice.call(arguments,1);for(var listener of [...(__dshCardListeners.get(String(type))??[])]){try{listener.apply(window,args)}catch(error){console.error(error)}}}
@@ -93,7 +106,7 @@ window.toastr={info:function(){},success:function(){},warning:function(){},error
 var __dshCardChat=[{message_id:0,message:'',mes:'',name:'角色',is_user:false,role:'assistant',extra:{}}];
 window.getChatMessages=function(){return Promise.resolve(__dshCardChat.map(function(message){return Object.assign({},message,{extra:Object.assign({},message.extra)})}))};
 window.setChatMessage=function(value,id){var index=Number(id);if(!Number.isSafeInteger(index)||index<0||index>=__dshCardChat.length)index=__dshCardChat.length-1;var text=typeof value==='string'?value:value?.message??value?.mes;if(typeof text==='string'){__dshCardChat[index].message=text;__dshCardChat[index].mes=text;__dshCardEmit('mag_before_message_update',index);__dshCardEmit('mvu-variable-update-ended',{stat_data:__dshStatData})}return Promise.resolve()};
-window.SillyTavern={chat:__dshCardChat,name1:'用户',name2:'角色',characters:[],this_chid:0,characterId:0,groups:[],groupId:null,chatMetadata:{},chat_metadata:{},extensionSettings:{},eventSource:{on:window.eventOn,once:window.eventOnce,emit:window.eventEmit},getChatMessages:window.getChatMessages,setChatMessage:window.setChatMessage,getContext:function(){return this}};
+window.SillyTavern={chat:__dshCardChat,name1:'用户',name2:'角色',characters:[],this_chid:0,characterId:0,groups:[],groupId:null,chatMetadata:{},chat_metadata:{},extensionSettings:{EjsTemplate:{enabled:true}},eventSource:{on:window.eventOn,once:window.eventOnce,emit:window.eventEmit},getChatMessages:window.getChatMessages,setChatMessage:window.setChatMessage,getContext:function(){return this}};
 window.getContext=function(){return window.SillyTavern.getContext()};
 window.TavernHelper=window;
 window._={
@@ -124,13 +137,17 @@ const sandboxFacadeNames = [
 ] as const
 
 function redirectKnownHostFacades(source: string): string {
+  const localHostAliases = source.replace(
+    /(?:window\s*\.\s*)?(?:parent|top)\s*(?:\|\||\?\?)\s*window\b/gu,
+    'window',
+  )
   return sandboxFacadeNames.reduce((value, name) => {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
     return value.replace(new RegExp(
       `(?:window\\s*\\.\\s*)?(?:parent|top)\\s*(?:\\?\\.)?\\.?\\s*${escaped}(?![\\w$])`,
       'gu',
     ), `window.${name}`)
-  }, source)
+  }, localHostAliases)
 }
 
 function cardFrameSource(source: string, options: CardFrameCompileOptions): string {
@@ -152,7 +169,7 @@ function cardFrameSource(source: string, options: CardFrameCompileOptions): stri
   const interactiveOrigins = (options.character?.approvedRemoteResourceOrigins ?? [])
     .map(origin => origin.replace(/["'<>\s]/gu, '')).filter(Boolean).join(' ')
   const remotePolicy = interactiveOrigins === '' ? "'none'" : interactiveOrigins
-  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigins}; style-src 'unsafe-inline' ${interactiveOrigins}; script-src 'unsafe-inline' ${interactiveOrigins}; connect-src ${remotePolicy}; font-src ${remotePolicy}; frame-src 'none';"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<script>${mvuFrameRuntime(options.statData)}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}addEventListener('message',function(event){var message=event.data;if(message&&message.source==='dsh-agent-rp-host'&&message.action==='request-resize')requestAnimationFrame(__dshReportSize)});addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>`
+  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigins}; style-src 'unsafe-inline' ${interactiveOrigins}; script-src 'unsafe-inline' ${interactiveOrigins}; connect-src ${remotePolicy}; font-src ${remotePolicy}; frame-src 'none';"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<script>${mvuFrameRuntime(options.statData, options.compatibilityMarkers)}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}addEventListener('message',function(event){var message=event.data;if(message&&message.source==='dsh-agent-rp-host'&&message.action==='request-resize')requestAnimationFrame(__dshReportSize)});addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});requestAnimationFrame(__dshReportSize);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>`
   if (/<head(?:\s|>)/iu.test(adapted)) return adapted.replace(/<head([^>]*)>/iu, `<head$1>${head}`)
   if (/<html(?:\s|>)/iu.test(adapted)) return adapted.replace(/<html([^>]*)>/iu, `<html$1><head>${head}</head>`)
   return `<!doctype html><html><head>${head}</head><body>${adapted}</body></html>`

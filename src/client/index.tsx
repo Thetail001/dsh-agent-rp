@@ -37,6 +37,7 @@ import {
   readTavernExtensionSettings,
   resolveTavernScriptExecution,
   tavernScriptFrameSource,
+  validatedTavernCompatibilityMarkers,
   writeTavernExtensionSettings,
   TavernScriptOriginApprovalError,
   type TavernTranscriptCursor,
@@ -755,11 +756,14 @@ function BlockedCardResources({ character, origins }: {
   </div>
 }
 
-function CharacterDisplay({ compilation, statData, characterName, character, onReady, preview = false }: {
+function CharacterDisplay({
+  compilation, statData, characterName, character, compatibilityMarkers, onReady, preview = false,
+}: {
   readonly compilation: CompiledCharacterDisplay
   readonly statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined
   readonly characterName: string
   readonly character?: CharacterLibraryDetail
+  readonly compatibilityMarkers?: readonly string[]
   readonly onReady?: () => void
   readonly preview?: boolean
 }) {
@@ -767,7 +771,8 @@ function CharacterDisplay({ compilation, statData, characterName, character, onR
     origin: window.location.origin,
     ...(statData === undefined ? {} : { statData }),
     ...(character === undefined ? {} : { character }),
-  }), [character, compilation, statData])
+    ...(compatibilityMarkers === undefined ? {} : { compatibilityMarkers }),
+  }), [character, compatibilityMarkers, compilation, statData])
   useLayoutEffect(() => { onReady?.() }, [onReady])
   return <div data-agent-rp-character-display data-agent-rp-display-diagnostics={cardFrameDiagnosticSummary(compiled.diagnostics)}
     style={{ display: 'grid', gap: '10px', minWidth: 0 }}>
@@ -5875,11 +5880,12 @@ function TavernScriptToast({ toast, onClose }: {
 }
 
 function TavernScriptRuntime({
-  ctx, inputActions, onDisplayOverride, projection, runGeneration, runModelList, runMutation, runPresetConfiguration,
-  runPromptPreview, runTrigger, sessionId,
+  ctx, inputActions, onCompatibilityMarkersChange, onDisplayOverride, projection, runGeneration, runModelList, runMutation,
+  runPresetConfiguration, runPromptPreview, runTrigger, sessionId,
 }: {
   readonly ctx: Context
   readonly inputActions: ComposerDockProps['inputActions']
+  readonly onCompatibilityMarkersChange: (markers: readonly string[]) => void
   readonly onDisplayOverride: (scriptId: string, messageId: number, value: string) => void
   readonly projection: AgentRpProjection
   readonly runGeneration: RunTavernGeneration
@@ -5900,6 +5906,9 @@ function TavernScriptRuntime({
   const signature = `${scripts.map(script => JSON.stringify(script)).join('\u0001')}\u0002${scriptOrigins.join('\u0001')}`
   const [frames, setFrames] = useState<readonly TavernScriptFrame[]>([])
   const [readyScriptIds, setReadyScriptIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [compatibilityMarkersByScript, setCompatibilityMarkersByScript] = useState<ReadonlyMap<string, readonly string[]>>(
+    () => new Map(),
+  )
   const [runtimeErrors, setRuntimeErrors] = useState<ReadonlyMap<string, string>>(() => new Map())
   const [runtimeButtons, setRuntimeButtons] = useState<ReadonlyMap<string, readonly {
     readonly name: string
@@ -5956,6 +5965,7 @@ function TavernScriptRuntime({
     const controller = new AbortController()
     setFrames([])
     setReadyScriptIds(new Set())
+    setCompatibilityMarkersByScript(new Map())
     setRuntimeErrors(new Map())
     setRuntimeButtons(new Map())
     setExternalScriptRequests(new Map())
@@ -6001,6 +6011,11 @@ function TavernScriptRuntime({
       activeGenerations.current.clear()
     }
   }, [sessionId, signature])
+  useEffect(() => {
+    onCompatibilityMarkersChange([
+      ...new Set([...compatibilityMarkersByScript.values()].flat()),
+    ].sort())
+  }, [compatibilityMarkersByScript, onCompatibilityMarkersChange])
   const syncFrame = (frame: HTMLIFrameElement, script: ImportedTavernHelperScript): void => {
     const snapshot = tavernScriptSnapshot(projectionRef.current, script, scriptOrigins, sessionId)
     frame.contentWindow?.postMessage({
@@ -6233,10 +6248,15 @@ function TavernScriptRuntime({
         readonly namespace?: unknown
         readonly operation?: unknown
         readonly index?: unknown
+        readonly markers?: unknown
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
         setReadyScriptIds(current => new Set(current).add(entry.script.id))
+        setCompatibilityMarkersByScript(current => new Map(current).set(
+          entry.script.id,
+          validatedTavernCompatibilityMarkers(message.markers),
+        ))
         setRuntimeErrors(current => {
           if (!current.has(entry.script.id)) return current
           const next = new Map(current)
@@ -6264,6 +6284,12 @@ function TavernScriptRuntime({
       if (message.action === 'runtime-error') {
         const detail = String(message.value)
         setRuntimeErrors(current => new Map(current).set(entry.script.id, detail))
+        setCompatibilityMarkersByScript(current => {
+          if (!current.has(entry.script.id)) return current
+          const next = new Map(current)
+          next.delete(entry.script.id)
+          return next
+        })
         ctx.logger.warn(`agent-rp: Tavern Helper script ${JSON.stringify(entry.script.name)} failed: ${detail}`)
         return
       }
@@ -6837,11 +6863,12 @@ function roleplayComposerDockComponent(
   const viewMode = useRoleplayViewMode(sessionId)
   const [drawOpen, setDrawOpen] = useState(false)
   const [displayOverrides, setDisplayOverrides] = useState<ReadonlyMap<number, string>>(() => new Map())
+  const [compatibilityMarkers, setCompatibilityMarkers] = useState<readonly string[]>([])
   const rootRef = useRef<HTMLDivElement | null>(null)
   const characterDetail = useCharacterDetail(projection?.avatarLibraryId)
-  const displayStateRef = useRef({ chat, characterDetail, displayOverrides, projection, viewMode })
+  const displayStateRef = useRef({ chat, characterDetail, compatibilityMarkers, displayOverrides, projection, viewMode })
   const scanDisplayRef = useRef<() => void>(() => undefined)
-  displayStateRef.current = { chat, characterDetail, displayOverrides, projection, viewMode }
+  displayStateRef.current = { chat, characterDetail, compatibilityMarkers, displayOverrides, projection, viewMode }
   const backgroundChoice = useRoleplayBackground(sessionId)
   const background = selectedBackground(characterDetail, backgroundChoice)
   const displayName = projection === undefined ? undefined : roleplayDisplayName(summary, projection)
@@ -6850,7 +6877,12 @@ function roleplayComposerDockComponent(
   const onDisplayOverride = useCallback((_scriptId: string, messageId: number, value: string): void => {
     setDisplayOverrides(current => new Map(current).set(messageId, value))
   }, [])
+  const onCompatibilityMarkersChange = useCallback((markers: readonly string[]): void => {
+    setCompatibilityMarkers(current => current.length === markers.length
+      && current.every((marker, index) => marker === markers[index]) ? current : [...markers])
+  }, [])
   useEffect(() => { setDisplayOverrides(new Map()) }, [sessionId, transcriptSignature])
+  useEffect(() => { setCompatibilityMarkers([]) }, [sessionId])
   useLayoutEffect(() => {
     const scroll = rootRef.current?.closest<HTMLElement>('[data-conversation-scroll]')
     if (scroll == null || background === undefined || projection?.avatarLibraryId === undefined || viewMode !== 'immersive') return
@@ -7001,6 +7033,7 @@ function roleplayComposerDockComponent(
       compilation: CompiledCharacterDisplay,
       activeProjection: AgentRpProjection,
       activeCharacterDetail: CharacterLibraryDetail | undefined,
+      activeCompatibilityMarkers: readonly string[],
     ): void => {
       const existing = item.querySelector<HTMLElement>(':scope > [data-agent-rp-rendered-display]')
       const signature = JSON.stringify([
@@ -7011,6 +7044,7 @@ function roleplayComposerDockComponent(
         activeCharacterDetail?.imageAssets,
         activeCharacterDetail?.displayExtensions.filter(extension => extension.enabled),
         activeCharacterDetail?.approvedRemoteResourceOrigins,
+        activeCompatibilityMarkers,
       ])
       const existingMount = existing === null ? undefined : mounted.get(existing)
       const render = (display: HTMLElement, root: Root): void => {
@@ -7020,6 +7054,7 @@ function roleplayComposerDockComponent(
           compilation={compilation}
           statData={activeProjection.mvu?.statData}
           characterName={activeProjection.characterName}
+          compatibilityMarkers={activeCompatibilityMarkers}
           {...(activeCharacterDetail === undefined ? {} : { character: activeCharacterDetail })}
           onReady={() => { original.style.display = 'none' }}
         />)
@@ -7044,6 +7079,7 @@ function roleplayComposerDockComponent(
       const {
         chat: activeChat,
         characterDetail: activeCharacterDetail,
+        compatibilityMarkers: activeCompatibilityMarkers,
         displayOverrides: activeDisplayOverrides,
         projection: activeProjection,
         viewMode: activeViewMode,
@@ -7110,7 +7146,7 @@ function roleplayComposerDockComponent(
         if (override !== undefined) {
           mountRenderedDisplay(item, original, {
             segments: [{ kind: 'html', source: override }], diagnostics: [],
-          }, activeProjection, activeCharacterDetail)
+          }, activeProjection, activeCharacterDetail, activeCompatibilityMarkers)
           continue
         }
         const message = tavernMessageBySeq.get(seq)
@@ -7121,7 +7157,9 @@ function roleplayComposerDockComponent(
           frontend,
         }, USER_INPUT_PLACEMENT, depth, activeProjection.userName, activeProjection.preset?.regexScripts)
         if (rendered === message.text) continue
-        mountRenderedDisplay(item, original, compileCharacterDisplay(rendered), activeProjection, activeCharacterDetail)
+        mountRenderedDisplay(
+          item, original, compileCharacterDisplay(rendered), activeProjection, activeCharacterDetail, activeCompatibilityMarkers,
+        )
       }
       for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="assistant-step"]')) {
         const key = item.dataset.chatFlowKey
@@ -7141,7 +7179,7 @@ function roleplayComposerDockComponent(
         if (override !== undefined && original !== null) {
           mountRenderedDisplay(item, original, {
             segments: [{ kind: 'html', source: override }], diagnostics: [],
-          }, activeProjection, activeCharacterDetail)
+          }, activeProjection, activeCharacterDetail, activeCompatibilityMarkers)
           continue
         }
         if (activeViewMode === 'immersive' && generation !== undefined) {
@@ -7156,7 +7194,10 @@ function roleplayComposerDockComponent(
                 regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {},
               },
             }, AI_OUTPUT_PLACEMENT, 0, activeProjection.userName, activeProjection.preset?.regexScripts)
-            mountRenderedDisplay(item, original, compileCharacterDisplay(rendered), activeProjection, activeCharacterDetail)
+            mountRenderedDisplay(
+              item, original, compileCharacterDisplay(rendered), activeProjection, activeCharacterDetail,
+              activeCompatibilityMarkers,
+            )
             continue
           }
         }
@@ -7176,7 +7217,9 @@ function roleplayComposerDockComponent(
         }, AI_OUTPUT_PLACEMENT, depth, activeProjection.userName, activeProjection.preset?.regexScripts)
         if (rendered === raw) continue
         if (original === null) continue
-        mountRenderedDisplay(item, original, compileCharacterDisplay(rendered), activeProjection, activeCharacterDetail)
+        mountRenderedDisplay(
+          item, original, compileCharacterDisplay(rendered), activeProjection, activeCharacterDetail, activeCompatibilityMarkers,
+        )
       }
       if (activeViewMode === 'immersive') {
         for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="turn-tail"]')) {
@@ -7228,10 +7271,11 @@ function roleplayComposerDockComponent(
       }
     }
   }, [sessionId, viewMode, projection !== undefined])
-  useEffect(() => { scanDisplayRef.current() }, [chat, characterDetail, displayOverrides, projection])
+  useEffect(() => { scanDisplayRef.current() }, [chat, characterDetail, compatibilityMarkers, displayOverrides, projection])
   if (projection === undefined) return null
   return <div ref={rootRef} data-agent-rp-status style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
-    <TavernScriptRuntime ctx={ctx} inputActions={inputActions} onDisplayOverride={onDisplayOverride} projection={projection}
+    <TavernScriptRuntime ctx={ctx} inputActions={inputActions}
+      onCompatibilityMarkersChange={onCompatibilityMarkersChange} onDisplayOverride={onDisplayOverride} projection={projection}
       runGeneration={runTavernGeneration} runModelList={runTavernModelList} runMutation={runTavernMutation}
       runPresetConfiguration={runPresetConfiguration} runPromptPreview={runTavernPromptPreview}
       runTrigger={runTavernTrigger} sessionId={sessionId} />

@@ -8,6 +8,7 @@ import {
   TAVERN_EXTENSION_SETTINGS_KEY,
   TavernScriptOriginApprovalError,
   tavernScriptFrameSource,
+  validatedTavernCompatibilityMarkers,
   writeTavernExtensionSettings,
   type TavernScriptSnapshot,
 } from '../src/client/tavern-runtime.ts'
@@ -399,7 +400,31 @@ test('runs module plans through a Blob and reports ready only after evaluation',
   assert.match(source!, /URL\.createObjectURL\(new Blob/u)
   assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/yaml@2\.9\.0\/\+esm"\)/u)
   assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/zod@4\.4\.3\/\+esm"\)/u)
-  assert.ok(source!.indexOf('await import(__dshModuleUrl)') < source!.lastIndexOf("__dshPost('ready')"))
+  assert.ok(source!.indexOf('await import(__dshModuleUrl)') < source!.lastIndexOf("__dshPost('ready',"))
+})
+
+test('reports only bounded true compatibility markers after script startup', () => {
+  const html = tavernScriptFrameSource({
+    id: 'marker-runtime', name: '依赖标记', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, 'window.__辅助计算脚本_loaded__=true;window.__小手机脚本_loaded__=false;window.__invalid=true;', {
+    scriptId: 'marker-runtime', scriptName: '依赖标记', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const ready = (context.posted as Record<string, unknown>[]).find(message => message.action === 'ready')
+
+  assert.deepEqual(JSON.parse(JSON.stringify(ready?.markers)), ['__辅助计算脚本_loaded__'])
+  assert.deepEqual(validatedTavernCompatibilityMarkers([
+    '__辅助计算脚本_loaded__', '__辅助计算脚本_loaded__', '__invalid marker_loaded__', true,
+  ]), ['__辅助计算脚本_loaded__'])
 })
 
 test('provides the common Tavern Helper lodash surface without opening network access', () => {

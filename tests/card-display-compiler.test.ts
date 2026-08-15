@@ -62,7 +62,7 @@ test('distinguishes fenced frontend documents from inline HTML in source order',
 })
 
 test('keeps application greetings isolated while redirecting only known Host facades', () => {
-  const source = '<!doctype html><html><body><script>const context=top.SillyTavern.getContext();top.Mvu.getMvuData();parent.getChatMessages();parent.document.body;</script><img src="https://cdn.example.com/cover.webp"></body></html>'
+  const source = '<!doctype html><html><body><script>function getWin(){return window.parent || window}const context=top.SillyTavern.getContext();getWin().Mvu.getMvuData();parent.getChatMessages();parent.document.body;</script><img src="https://cdn.example.com/cover.webp"></body></html>'
   const frames = compileCardFrames(compileCharacterDisplay(`\`\`\`html\n${source}\n\`\`\``), {
     origin: 'http://127.0.0.1:3091',
   })
@@ -72,9 +72,26 @@ test('keeps application greetings isolated while redirecting only known Host fac
   assert.equal(frame.interactive, true)
   assert.deepEqual(frame.remoteOrigins, ['https://cdn.example.com'])
   assert.match(frame.srcDoc, /window\.SillyTavern\.getContext\(\)/u)
-  assert.match(frame.srcDoc, /window\.Mvu\.getMvuData\(\)/u)
+  assert.match(frame.srcDoc, /function getWin\(\)\{return window\}/u)
+  assert.doesNotMatch(frame.srcDoc, /window\.parent\s*\|\|\s*window/u)
   assert.match(frame.srcDoc, /window\.getChatMessages\(\)/u)
   assert.match(frame.srcDoc, /parent\.document\.body/u)
+})
+
+test('exposes implemented prompt-template support and bounded successful script markers', () => {
+  const source = compileCardFrameDocument('<!doctype html><html><body>panel</body></html>', {
+    origin: 'http://127.0.0.1:3091',
+    compatibilityMarkers: [
+      '__辅助计算脚本_loaded__',
+      '__辅助计算脚本_loaded__',
+      '__invalid marker_loaded__',
+      'not-a-marker',
+    ],
+  })
+
+  assert.match(source, /extensionSettings:\{EjsTemplate:\{enabled:true\}\}/u)
+  assert.match(source, /var __dshCompatibilityMarkers=\["__辅助计算脚本_loaded__"\]/u)
+  assert.doesNotMatch(source, /invalid marker/u)
 })
 
 test('allows only explicitly approved card resource origins in the frame CSP', () => {
