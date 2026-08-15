@@ -39,6 +39,19 @@ export interface CardFrameCompileOptions {
   readonly character?: CharacterLibraryDetail
 }
 
+/** Select card-declared resource origins that still need local approval. */
+export function blockedCardFrameOrigins(
+  segmentOrigins: readonly string[],
+  character: {
+    readonly remoteResourceOrigins?: readonly string[]
+    readonly approvedRemoteResourceOrigins?: readonly string[]
+  },
+): readonly string[] {
+  const declared = new Set(character.remoteResourceOrigins ?? [])
+  const approved = new Set(character.approvedRemoteResourceOrigins ?? [])
+  return segmentOrigins.filter(origin => declared.has(origin) && !approved.has(origin))
+}
+
 const cardFrameCompatibility = `<style>
 html{background:transparent!important;color-scheme:dark;scrollbar-color:rgba(145,158,181,.58) transparent;scrollbar-width:thin}
 *,*::before,*::after{box-sizing:border-box}
@@ -133,7 +146,7 @@ function cardFrameSource(source: string, options: CardFrameCompileOptions): stri
   const allowedImageOrigins = [...new Set([
     options.origin,
     ...(options.character?.approvedRemoteResourceOrigins ?? []),
-    ...(options.character?.displayExtensions.filter(extension => extension.enabled)
+    ...(options.character?.displayExtensions?.filter(extension => extension.enabled)
       .flatMap(extension => extension.remoteImageOrigins) ?? []),
   ])].map(origin => origin.replace(/["'<>\s]/gu, '')).filter(Boolean).join(' ')
   const interactiveOrigins = (options.character?.approvedRemoteResourceOrigins ?? [])

@@ -59,7 +59,9 @@ import {
   summarizeCharacterRegexScript, USER_INPUT_PLACEMENT, type CompiledCharacterDisplay,
   type CharacterDisplaySegment, type CharacterRegexScriptSummary,
 } from '../frontend-regex.ts'
-import { cardFrameDiagnosticSummary, compileCardFrameDocument, compileCardFrames } from './card-frame.ts'
+import {
+  blockedCardFrameOrigins, cardFrameDiagnosticSummary, compileCardFrameDocument, compileCardFrames,
+} from './card-frame.ts'
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
 import { parseTavernSlashCommand } from './tavern-slash.ts'
 import { executeTavernStorageRequest, type TavernStorageRequest } from './tavern-storage.ts'
@@ -738,11 +740,12 @@ function BlockedCardResources({ character, origins }: {
   </div>
 }
 
-function CharacterDisplay({ compilation, statData, characterName, character, preview = false }: {
+function CharacterDisplay({ compilation, statData, characterName, character, onReady, preview = false }: {
   readonly compilation: CompiledCharacterDisplay
   readonly statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined
   readonly characterName: string
   readonly character?: CharacterLibraryDetail
+  readonly onReady?: () => void
   readonly preview?: boolean
 }) {
   const compiled = useMemo(() => compileCardFrames(compilation, {
@@ -750,6 +753,7 @@ function CharacterDisplay({ compilation, statData, characterName, character, pre
     ...(statData === undefined ? {} : { statData }),
     ...(character === undefined ? {} : { character }),
   }), [character, compilation, statData])
+  useLayoutEffect(() => { onReady?.() }, [onReady])
   return <div data-agent-rp-character-display data-agent-rp-display-diagnostics={cardFrameDiagnosticSummary(compiled.diagnostics)}
     style={{ display: 'grid', gap: '10px', minWidth: 0 }}>
     {compiled.segments.map((segment, index) => {
@@ -768,9 +772,7 @@ function CharacterDisplay({ compilation, statData, characterName, character, pre
             </span>
           </div>
       if (!preview && character !== undefined) {
-        const approved = new Set(character.approvedRemoteResourceOrigins)
-        const blocked = segment.remoteOrigins.filter(origin =>
-          character.remoteResourceOrigins.includes(origin) && !approved.has(origin))
+        const blocked = blockedCardFrameOrigins(segment.remoteOrigins, character)
         if (blocked.length > 0) return <BlockedCardResources key={index} character={character} origins={blocked} />
       }
       return <iframe
@@ -6995,31 +6997,31 @@ function roleplayComposerDockComponent(
         activeCharacterDetail?.approvedRemoteResourceOrigins,
       ])
       const existingMount = existing === null ? undefined : mounted.get(existing)
-      if (existing !== null && existingMount !== undefined) {
-        if (existingMount.signature === signature) return
-        existingMount.signature = signature
-        existingMount.root.render(<CharacterDisplay
+      const render = (display: HTMLElement, root: Root): void => {
+        original.style.removeProperty('display')
+        display.style.setProperty('display', 'block')
+        root.render(<CharacterDisplay
           compilation={compilation}
           statData={activeProjection.mvu?.statData}
           characterName={activeProjection.characterName}
           {...(activeCharacterDetail === undefined ? {} : { character: activeCharacterDetail })}
+          onReady={() => { original.style.display = 'none' }}
         />)
+      }
+      if (existing !== null && existingMount !== undefined) {
+        if (existingMount.signature === signature) return
+        existingMount.signature = signature
+        render(existing, existingMount.root)
         return
       }
       const display = document.createElement('div')
       display.style.cssText = 'display:block;min-width:0;width:100%;'
       display.dataset.agentRpRenderedDisplay = 'true'
-      original.style.display = 'none'
       item.dataset.agentRpFrontend = 'true'
       item.insertBefore(display, original.nextSibling)
       const root = createRoot(display)
       mounted.set(display, { root, signature })
-      root.render(<CharacterDisplay
-        compilation={compilation}
-        statData={activeProjection.mvu?.statData}
-        characterName={activeProjection.characterName}
-        {...(activeCharacterDetail === undefined ? {} : { character: activeCharacterDetail })}
-      />)
+      render(display, root)
     }
     window.addEventListener('message', bridge)
     const scan = (): void => {

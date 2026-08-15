@@ -4,7 +4,9 @@ import {
   compileCharacterDisplay,
   normalizeLegacyCardHtml,
 } from '../src/card-display-compiler.ts'
-import { compileCardFrameDocument, compileCardFrames } from '../src/client/card-frame.ts'
+import {
+  blockedCardFrameOrigins, compileCardFrameDocument, compileCardFrames,
+} from '../src/client/card-frame.ts'
 
 test('removes model-defined wrappers and reports only safe tag metadata', () => {
   const source = '<scene>private sample prose</scene>'
@@ -87,6 +89,16 @@ test('allows only explicitly approved card resource origins in the frame CSP', (
   })
   assert.match(blocked, /connect-src 'none'/u)
   assert.match(approved, /connect-src https:\/\/app\.example\.com/u)
+})
+
+test('keeps a mixed-version Host response from blanking the card display', () => {
+  const origins = ['https://app.example.com', 'https://cdn.example.com']
+
+  assert.deepEqual(blockedCardFrameOrigins(origins, {}), [])
+  assert.deepEqual(blockedCardFrameOrigins(origins, {
+    remoteResourceOrigins: origins,
+    approvedRemoteResourceOrigins: ['https://cdn.example.com'],
+  }), ['https://app.example.com'])
 })
 
 test('recognizes a complete frontend document mislabeled as fenced text', () => {
