@@ -35,9 +35,10 @@ import {
   advanceTavernTranscript,
   BUILT_IN_TAVERN_SCRIPT_ORIGINS,
   readTavernExtensionSettings,
-  resolveTavernScriptSource,
+  resolveTavernScriptExecution,
   tavernScriptFrameSource,
   writeTavernExtensionSettings,
+  TavernScriptOriginApprovalError,
   type TavernTranscriptCursor,
   type TavernScriptSnapshot,
 } from './tavern-runtime.ts'
@@ -5552,6 +5553,14 @@ interface TavernToastMessage {
   readonly value: string
 }
 
+interface TavernScriptFrame {
+  readonly script: ImportedTavernHelperScript
+  readonly source?: string
+  readonly srcDoc?: string
+  readonly error?: string
+  readonly requestedOrigin?: string
+}
+
 function TavernScriptToast({ toast, onClose }: {
   readonly toast: TavernToastMessage
   readonly onClose: () => void
@@ -5599,12 +5608,7 @@ function TavernScriptRuntime({
   const [approvedOrigins, setApprovedOrigins] = useState(readApprovedTavernScriptOrigins)
   const scriptOrigins = [...new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...approvedOrigins])].sort()
   const signature = `${scripts.map(script => JSON.stringify(script)).join('\u0001')}\u0002${scriptOrigins.join('\u0001')}`
-  const [frames, setFrames] = useState<readonly {
-    readonly script: ImportedTavernHelperScript
-    readonly source?: string
-    readonly srcDoc?: string
-    readonly error?: string
-  }[]>([])
+  const [frames, setFrames] = useState<readonly TavernScriptFrame[]>([])
   const [readyScriptIds, setReadyScriptIds] = useState<ReadonlySet<string>>(() => new Set())
   const [runtimeErrors, setRuntimeErrors] = useState<ReadonlyMap<string, string>>(() => new Map())
   const [runtimeButtons, setRuntimeButtons] = useState<ReadonlyMap<string, readonly {
@@ -5676,22 +5680,31 @@ function TavernScriptRuntime({
     setSurfaceScriptIds(new Set())
     setPopupRequests([])
     setRuntimeToasts([])
-    void Promise.all(scripts.map(async script => {
+    void Promise.all(scripts.map(async (script): Promise<TavernScriptFrame> => {
       try {
-        const source = await resolveTavernScriptSource(script.content, controller.signal)
+        const execution = await resolveTavernScriptExecution(script.content, controller.signal, scriptOrigins)
         return {
           script,
-          source,
+          source: execution.source,
           srcDoc: tavernScriptFrameSource(
             script,
-            source,
+            execution,
             tavernScriptSnapshot(projectionRef.current, script, scriptOrigins, sessionId),
           ),
         }
       } catch (reason: unknown) {
-        return { script, error: reason instanceof Error ? reason.message : String(reason) }
+        return {
+          script,
+          error: reason instanceof Error ? reason.message : String(reason),
+          ...(reason instanceof TavernScriptOriginApprovalError ? { requestedOrigin: reason.origin } : {}),
+        }
       }
-    })).then(result => { if (!controller.signal.aborted) setFrames(result) })
+    })).then(result => {
+      if (controller.signal.aborted) return
+      setFrames(result)
+      setExternalScriptRequests(new Map(result.flatMap(entry => entry.requestedOrigin === undefined
+        ? [] : [[entry.script.id, entry.requestedOrigin] as const])))
+    })
     return () => {
       controller.abort()
       for (const active of activeGenerations.current.values()) active.controller.abort()
@@ -5868,8 +5881,13 @@ function TavernScriptRuntime({
     previousMvu.current = { sessionId, ...(current === undefined ? {} : { value: current }) }
     if (previous === undefined || previous.sessionId !== sessionId) return
     const before = previous.value
-    if (current === undefined || before === undefined || current === before) return
+    if (current === undefined || current === before) return
     const currentValue = JSON.parse(current) as object
+    if (before === undefined) {
+      broadcast({ action: 'event', eventType: 'mag_variable_initialized', args: [currentValue, 0] })
+      broadcast({ action: 'event', eventType: 'mag_variable_initiailized', args: [currentValue, 0] })
+      return
+    }
     const beforeValue = JSON.parse(before) as object
     broadcast({ action: 'event', eventType: 'mag_variable_update_ended', args: [currentValue, beforeValue] })
   }, [projection.mvu, sessionId])
@@ -5942,6 +5960,10 @@ function TavernScriptRuntime({
         frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'app_ready', args: [] }, '*')
         frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'chat_id_changed', args: [String(sessionId)] }, '*')
         if (projectionRef.current.mvu !== undefined) {
+          frame.contentWindow?.postMessage({
+            source: 'dsh-agent-rp-host', action: 'event', eventType: 'mag_variable_initialized',
+            args: [{ stat_data: projectionRef.current.mvu.statData }, 0],
+          }, '*')
           frame.contentWindow?.postMessage({
             source: 'dsh-agent-rp-host', action: 'event', eventType: 'mag_variable_initiailized',
             args: [{ stat_data: projectionRef.current.mvu.statData }, 0],

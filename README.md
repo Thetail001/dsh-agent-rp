@@ -12,7 +12,7 @@
 - 导入 SillyTavern JSONL 聊天记录，或与对应角色卡一起迁移。
 - 使用角色世界书，直接导入独立 World Info 与 SillyTavern Chat Completion 预设。
 - 在隔离的 QuickJS 环境中运行世界书、角色提示和预设里的同步 EJS 模板；单条模板失败不会中断会话。
-- 运行角色自带的显示正则、轻量 HTML 界面与 MVU 状态。
+- 在隔离脚本环境中运行兼容的 Tavern Helper 脚本、显示正则、轻量 HTML 界面与 MVU 状态。
 - 重写、续写和切换回复版本，并保留明确的长期记忆。
 - 在沉浸视图与调试视图之间切换，检查实际生效的提示内容。
 
@@ -72,7 +72,7 @@ dsh-agent-rp --port 3080
 
 ## 目前的范围
 
-这个里程碑聚焦单角色 RP、SillyTavern 迁移与轻前端卡片。群聊、多人互动和重前端/独立前端尚未纳入当前兼容范围。可执行卡片 HTML 会在禁用网络且没有同源权限的沙箱 iframe 中运行；EJS 在独立 QuickJS/WASM 运行时中执行，不会获得 Host 的文件、网络、进程或模块接口。
+这个里程碑聚焦单角色 RP、SillyTavern 迁移与轻前端卡片。群聊、多人互动和重前端/独立前端尚未纳入当前兼容范围。可执行卡片 HTML 会在没有同源权限的沙箱 iframe 中运行；Tavern Helper 脚本只能加载内置或玩家明确批准来源的 HTTPS 模块，不能直接访问 Host 页面、文件或进程；EJS 在独立 QuickJS/WASM 运行时中执行，不会获得 Host 的文件、网络、进程或模块接口。
 
 更具体的格式支持与降级方式见 [SillyTavern 兼容说明](docs/sillytavern-compatibility.md)。
 

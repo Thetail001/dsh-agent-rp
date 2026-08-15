@@ -17,22 +17,46 @@ function jsonRecord(value: JsonValue): Record<string, JsonValue> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined
 }
 
-function initializerContent(card: ImportedCharacterCard): string | undefined {
-  return card.lorebook?.entries
-    .map(entry => entry.content.match(/<initvar>\s*([\s\S]*?)\s*<\/initvar>/iu)?.[1])
-    .find((value): value is string => value !== undefined)
+function unwrapInitializer(content: string): string {
+  const tagged = content.match(/<initvar>\s*([\s\S]*?)\s*<\/initvar>/iu)?.[1]
+  const source = tagged ?? content
+  return source.trim().match(/^```[^\r\n]*\r?\n([\s\S]*?)\r?\n```$/u)?.[1] ?? source
 }
 
-/** Read the card-owned initial `stat_data` without activating its hidden initializer as lore. */
-export function readInitialMvuState(card: ImportedCharacterCard): JsonValue | undefined {
-  const content = initializerContent(card)
-  if (content === undefined) return undefined
-  const parsed: unknown = parseYaml(content, { maxAliasCount: 100 })
-  const snapshot = snapshotJsonValue(parsed) as JsonValue | undefined
-  if (snapshot === undefined || jsonRecord(snapshot) === undefined) {
-    throw new Error('Character Card MVU initializer must contain one JSON-compatible object')
+function initializerContents(card: ImportedCharacterCard): string[] {
+  return [...(card.lorebook?.entries ?? [])]
+    .sort((left, right) => left.insertionOrder - right.insertionOrder)
+    .flatMap(entry => {
+      const tagged = /<initvar>[\s\S]*?<\/initvar>/iu.test(entry.content)
+      const named = /\[initvar\]/iu.test(`${entry.comment ?? ''}\n${entry.name ?? ''}`)
+      return tagged || named ? [unwrapInitializer(entry.content)] : []
+    })
+}
+
+function mergeInitialRecord(target: Record<string, JsonValue>, source: Record<string, JsonValue>): void {
+  for (const [key, value] of Object.entries(source)) {
+    const current = jsonRecord(target[key] as JsonValue)
+    const incoming = jsonRecord(value)
+    if (current !== undefined && incoming !== undefined) mergeInitialRecord(current, incoming)
+    else target[key] = value
   }
-  return snapshot
+}
+
+/** Read and merge the card-owned initial `stat_data` without activating hidden initializer lore. */
+export function readInitialMvuState(card: ImportedCharacterCard): JsonValue | undefined {
+  const contents = initializerContents(card)
+  if (contents.length === 0) return undefined
+  const merged: Record<string, JsonValue> = {}
+  for (const content of contents) {
+    const parsed: unknown = parseYaml(content, { maxAliasCount: 100 })
+    const snapshot = snapshotJsonValue(parsed) as JsonValue | undefined
+    const record = snapshot === undefined ? undefined : jsonRecord(snapshot)
+    if (record === undefined) {
+      throw new Error('Character Card MVU initializer must contain one JSON-compatible object')
+    }
+    mergeInitialRecord(merged, record)
+  }
+  return merged
 }
 
 /** Fold the latest durable MVU snapshot, falling back to the card initializer. */
@@ -40,9 +64,7 @@ export function readCurrentMvuState(
   card: ImportedCharacterCard,
   events: readonly SessionEvent[],
 ): { readonly statData: JsonValue; readonly updateCount: number; readonly lastError?: string } | undefined {
-  const initial = readInitialMvuState(card)
-  if (initial === undefined) return undefined
-  let statData = initial
+  let statData = readInitialMvuState(card)
   let updateCount = 0
   let lastError: string | undefined
   for (const event of events) {
@@ -53,14 +75,15 @@ export function readCurrentMvuState(
         const variables = scriptState.scopes[scope]
         const replacement = variables.stat_data
         if (replacement !== undefined && jsonRecord(replacement) !== undefined) {
+          const initializing = statData === undefined
           statData = replacement
-          updateCount += 1
+          if (!initializing) updateCount += 1
           lastError = undefined
         }
       }
       continue
     }
-    if (event.type !== 'assistant/message') continue
+    if (event.type !== 'assistant/message' || statData === undefined) continue
     const text = event.data.message.content
       .flatMap(block => block.type === 'text' ? [block.text] : [])
       .join('\n')
@@ -75,6 +98,7 @@ export function readCurrentMvuState(
       lastError = error instanceof Error ? error.message : String(error)
     }
   }
+  if (statData === undefined) return undefined
   return { statData, updateCount, ...(lastError === undefined ? {} : { lastError }) }
 }
 

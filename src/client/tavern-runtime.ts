@@ -1,6 +1,7 @@
 /** Browser-only isolated Tavern Helper runtime. */
 
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
+import { parse as parseModule } from 'es-module-lexer/js'
 import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/types.ts'
 import type { SessionPersonaSnapshot } from '../persona-library-protocol.ts'
 import type {
@@ -75,6 +76,27 @@ export interface TavernTranscriptCursor {
   }
 }
 
+/** Browser execution plan for one isolated Tavern Helper script. */
+export interface TavernScriptExecution {
+  readonly source: string
+  readonly mode: 'classic' | 'module'
+  readonly preloads: readonly ('yaml' | 'zod')[]
+  readonly needsDomPurify: boolean
+  readonly needsFuse: boolean
+}
+
+/** Signals that a valid HTTPS module origin needs player approval before loading. */
+export class TavernScriptOriginApprovalError extends Error {
+  /** Origin awaiting approval. */
+  readonly origin: string
+
+  constructor(origin: string) {
+    super(`远程脚本来源需要授权：${origin}`)
+    this.name = 'TavernScriptOriginApprovalError'
+    this.origin = origin
+  }
+}
+
 /**
  * Find messages appended after a previously observed transcript tail.
  *
@@ -99,55 +121,118 @@ export function advanceTavernTranscript<Message extends {
   return { cursor, appended: anchor < 0 ? [] : messages.slice(anchor + 1) }
 }
 
-const remoteCache = new Map<string, Promise<string>>()
+const remoteCache = new Map<string, string>()
+const MAX_REMOTE_CACHE_ENTRIES = 32
 /** Script origins trusted by the built-in jsDelivr bundle resolver. */
 export const BUILT_IN_TAVERN_SCRIPT_ORIGINS = ['https://cdn.jsdelivr.net', 'https://testingcf.jsdelivr.net'] as const
-const allowedScriptOrigins = new Set<string>(BUILT_IN_TAVERN_SCRIPT_ORIGINS)
 const DOMPURIFY_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/dompurify@3.3.0/dist/purify.min.js'
 const DOMPURIFY_SCRIPT_INTEGRITY = 'sha384-+qi1h9Ene5uYXijovnRnDpm2TZiNyVFgYjKIqjw6id8zLdWYt+tCPG9/1u6yLaNj'
 const FUSE_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.min.js'
 const FUSE_SCRIPT_INTEGRITY = 'sha384-P/y/5cwqUn6MDvJ9lCHJSaAi2EoH3JSeEdyaORsQMPgbpvA+NvvUqik7XH2YGBjb'
-const importLine = /^\s*import\s+(['"])(https:\/\/[^'"\s]+)\1\s*;?\s*$/gmu
+const ZOD_MODULE_URL = 'https://cdn.jsdelivr.net/npm/zod@4.4.3/+esm'
+const YAML_MODULE_URL = 'https://cdn.jsdelivr.net/npm/yaml@2.9.0/+esm'
+const MAX_REMOTE_SCRIPT_BYTES = 2 * 1024 * 1024
+const MAX_REMOTE_SCRIPTS_BYTES = 4 * 1024 * 1024
 
-async function remoteSource(url: string, signal: AbortSignal): Promise<string> {
-  const parsed = new URL(url)
-  if (!allowedScriptOrigins.has(parsed.origin)) {
-    throw new Error(`远程脚本来源未开放：${parsed.origin}`)
+function approvedOrigins(additional: readonly string[]): ReadonlySet<string> {
+  return new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...additional].map(value => new URL(value).origin))
+}
+
+function approvedModuleUrl(specifier: string, origins: ReadonlySet<string>): URL {
+  let parsed: URL
+  try {
+    parsed = new URL(specifier)
+  } catch {
+    throw new Error(`远程模块必须使用完整 HTTPS 地址：${specifier}`)
   }
+  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') {
+    throw new Error(`远程模块必须使用完整 HTTPS 地址：${specifier}`)
+  }
+  if (!origins.has(parsed.origin)) throw new TavernScriptOriginApprovalError(parsed.origin)
+  return parsed
+}
+
+function isMagVarUpdateBundle(url: URL): boolean {
+  return BUILT_IN_TAVERN_SCRIPT_ORIGINS.includes(url.origin as typeof BUILT_IN_TAVERN_SCRIPT_ORIGINS[number])
+    && /^\/gh\/MagicalAstrogy\/MagVarUpdate(?:@[^/]+)?\/artifact\/bundle\.js$/iu.test(url.pathname)
+}
+
+async function remoteSource(url: URL, signal: AbortSignal): Promise<string> {
+  const parsed = new URL(url)
   const cached = remoteCache.get(parsed.href)
   if (cached !== undefined) return cached
-  const loading = fetch(parsed.href, {
+  const response = await fetch(parsed.href, {
     cache: 'force-cache',
     credentials: 'omit',
     headers: { accept: 'text/javascript, application/javascript, text/plain' },
     referrerPolicy: 'no-referrer',
     signal,
-  }).then(async response => {
-    if (!response.ok) throw new Error(`远程脚本读取失败（${response.status}）`)
-    const length = Number(response.headers.get('content-length') ?? 0)
-    if (Number.isFinite(length) && length > 2 * 1024 * 1024) throw new Error('远程脚本超过 2 MiB')
-    const source = await response.text()
-    if (new TextEncoder().encode(source).byteLength > 2 * 1024 * 1024) throw new Error('远程脚本超过 2 MiB')
-    return source
   })
-  remoteCache.set(parsed.href, loading)
-  try {
-    return await loading
-  } catch (error) {
-    remoteCache.delete(parsed.href)
-    throw error
+  if (!response.ok) throw new Error(`远程脚本读取失败（${response.status}）`)
+  if (response.url !== '' && new URL(response.url).origin !== parsed.origin) {
+    throw new Error('远程脚本不能重定向到另一个来源')
   }
+  const length = Number(response.headers.get('content-length') ?? 0)
+  if (Number.isFinite(length) && length > MAX_REMOTE_SCRIPT_BYTES) throw new Error('远程脚本超过 2 MiB')
+  const source = await response.text()
+  if (new TextEncoder().encode(source).byteLength > MAX_REMOTE_SCRIPT_BYTES) throw new Error('远程脚本超过 2 MiB')
+  remoteCache.set(parsed.href, source)
+  if (remoteCache.size > MAX_REMOTE_CACHE_ENTRIES) remoteCache.delete(remoteCache.keys().next().value!)
+  return source
 }
 
-/** Resolve the common card form consisting of side-effect imports from jsDelivr bundles. */
-export async function resolveTavernScriptSource(content: string, signal: AbortSignal): Promise<string> {
-  const urls = [...content.matchAll(importLine)].map(match => match[2]!)
-  const local = content.replace(importLine, '').trim()
-  if (urls.length === 0) return content
-  const sources = await Promise.all(urls.map(url => remoteSource(url, signal)))
+function removeSourceRanges(source: string, ranges: readonly { readonly start: number; readonly end: number }[]): string {
+  let result = source
+  for (const range of [...ranges].sort((left, right) => right.start - left.start)) {
+    result = `${result.slice(0, range.start)}${result.slice(range.end)}`
+  }
+  return result.trim()
+}
+
+/** Resolve and authorize one card script while preserving ESM module boundaries. */
+export async function resolveTavernScriptExecution(
+  content: string,
+  signal: AbortSignal,
+  additionalOrigins: readonly string[] = [],
+): Promise<TavernScriptExecution> {
+  const origins = approvedOrigins(additionalOrigins)
+  const [imports] = parseModule(content)
+  const urls: URL[] = []
+  const adapterRanges: { readonly start: number; readonly end: number }[] = []
+  for (const imported of imports) {
+    if (imported.d === -2) continue
+    if (imported.n === undefined) throw new Error('远程模块的动态 import 必须使用固定 HTTPS 地址')
+    const url = approvedModuleUrl(imported.n, origins)
+    if (isMagVarUpdateBundle(url)) {
+      const statement = content.slice(imported.ss, imported.se)
+      if (imported.d !== -1 || !/^\s*import\s*['"]/u.test(statement)) {
+        throw new Error('MagVarUpdate 宿主适配仅支持副作用导入')
+      }
+      let end = imported.se
+      while (content[end] === ' ' || content[end] === '\t') end += 1
+      if (content[end] === ';') end += 1
+      adapterRanges.push({ start: imported.ss, end })
+      continue
+    }
+    urls.push(url)
+  }
+  const uniqueUrls = [...new Map(urls.map(url => [url.href, url])).values()]
+  const sources = await Promise.all(uniqueUrls.map(url => remoteSource(url, signal)))
   const total = sources.reduce((size, source) => size + new TextEncoder().encode(source).byteLength, 0)
-  if (total > 4 * 1024 * 1024) throw new Error('远程脚本合计超过 4 MiB')
-  return [...sources, local].filter(Boolean).join('\n;\n')
+  if (total > MAX_REMOTE_SCRIPTS_BYTES) throw new Error('远程脚本合计超过 4 MiB')
+  const source = removeSourceRanges(content, adapterRanges)
+  const [, , , hasModuleSyntax] = parseModule(source)
+  const dependencySource = [source, ...sources].join('\n')
+  const preloads: ('yaml' | 'zod')[] = []
+  if (/\bYAML\.(?:parse|parseDocument|stringify)\b/u.test(dependencySource)) preloads.push('yaml')
+  if (/\bz\.(?:any|array|boolean|coerce|discriminatedUnion|enum|intersection|lazy|literal|nullable|number|object|optional|preprocess|record|string|tuple|union|unknown)\b/u.test(dependencySource)) preloads.push('zod')
+  return {
+    source,
+    mode: hasModuleSyntax ? 'module' : 'classic',
+    preloads,
+    needsDomPurify: /\bDOMPurify\b/u.test(dependencySource),
+    needsFuse: /\bFuse\b/u.test(dependencySource),
+  }
 }
 
 function safeJson(value: unknown): string {
@@ -433,7 +518,7 @@ function __dshPopupMessage(title,message){var heading=String(title??'').trim();r
 function __DshPopup(content,type,inputValue,options){this.content=content;this.type=type;this.inputValue=inputValue;this.options=options}
 __DshPopup.prototype.show=function(){return __dshCallGenericPopup(this.content,this.type,this.inputValue,this.options)};
 __DshPopup.show={confirm:function(title,message,options){return __dshCallGenericPopup(__dshPopupMessage(title,message),__dshPopupType.CONFIRM,'',options).then(function(result){return result===true||result===__dshPopupResult.AFFIRMATIVE})},input:function(title,message,defaultValue,options){return __dshCallGenericPopup(__dshPopupMessage(title,message),__dshPopupType.INPUT,defaultValue,options)},text:function(title,message,options){return __dshCallGenericPopup(__dshPopupMessage(title,message),__dshPopupType.TEXT,'',options).then(function(){})},display:function(content,options){return __dshCallGenericPopup(content,__dshPopupType.DISPLAY,'',options)}};
-window.Mvu={events:{VARIABLE_INITIALIZED:'mag_variable_initiailized',VARIABLE_UPDATE_STARTED:'mag_variable_update_started',COMMAND_PARSED:'mag_command_parsed',VARIABLE_UPDATE_ENDED:'mag_variable_update_ended',BEFORE_MESSAGE_UPDATE:'mag_before_message_update'},getMvuData:function(option){return window.getVariables(option??{type:'message'})},replaceMvuData:function(value,option){return __dshReplace(value,option??{type:'message'})},isDuringExtraAnalysis:function(){return false}};
+window.Mvu={events:{VARIABLE_INITIALIZED:'mag_variable_initialized',VARIABLE_UPDATE_STARTED:'mag_variable_update_started',COMMAND_PARSED:'mag_command_parsed',VARIABLE_UPDATE_ENDED:'mag_variable_update_ended',BEFORE_MESSAGE_UPDATE:'mag_before_message_update'},getMvuData:function(option){return window.getVariables(option??{type:'message'})},replaceMvuData:function(value,option){return __dshReplace(value,option??{type:'message'})},isDuringExtraAnalysis:function(){return false}};
 function __dshChatMetadata(){return Object.assign({},__dshClone(__dshScopes.chat??{}),{wi_activated:__dshClone(__dshActiveWorldbookEntries??[])})}
 var __dshCurrentChatMetadata=__dshChatMetadata();
 function __dshCurrentCharacter(){var raw=__dshClone(__dshSnapshot.characterCard);if(!__dshPlain(raw))return;var data=__dshPlain(raw.data)?raw.data:raw;var name=typeof data.name==='string'&&data.name.trim()?data.name:__dshSnapshot.characterName;return Object.assign({},raw,__dshClone(data),{name:name,avatar:__dshSnapshot.characterId,description:String(data.description??''),personality:String(data.personality??''),scenario:String(data.scenario??''),first_mes:String(data.first_mes??''),mes_example:String(data.mes_example??''),data:__dshClone(data)})}
@@ -475,9 +560,14 @@ Chain.prototype.assign=function(){this.data=Object.assign(this.data,...arguments
 Chain.prototype.sortBy=function(iteratee){var getter=typeof iteratee==='function'?iteratee:function(value){return __dshGet(value,iteratee)};this.data=Array.from(this.data??[]).sort(function(a,b){return String(getter(a)).localeCompare(String(getter(b)))});return this};
 Chain.prototype.fromPairs=function(){this.data=Object.fromEntries(this.data);return this};
 function lodash(value){return new Chain(value)}
+function __dshCollectionValues(value){return Array.isArray(value)?value:Object.values(value??{})}
+function __dshIteratee(value){if(typeof value==='function')return value;if(value==null)return function(item){return item};if(Array.isArray(value)&&value.length===2)return function(item){return Object.is(__dshGet(item,value[0]),value[1])};if(__dshPlain(value))return function(item){return Object.entries(value).every(function(pair){return Object.is(__dshGet(item,pair[0]),pair[1])})};return function(item){return __dshGet(item,value)}}
+function __dshSortBy(value){var iteratees=Array.prototype.slice.call(arguments,1).flat();if(iteratees.length===0)iteratees=[function(item){return item}];iteratees=iteratees.map(__dshIteratee);return __dshCollectionValues(value).map(function(item,index){return {item:item,index:index,criteria:iteratees.map(function(iteratee){return iteratee(item)})}}).sort(function(left,right){for(var index=0;index<left.criteria.length;index++){var a=left.criteria[index],b=right.criteria[index];if(Object.is(a,b))continue;if(a==null)return 1;if(b==null)return -1;return a>b?1:-1}return left.index-right.index}).map(function(entry){return entry.item})}
+function __dshPullAt(array){if(!Array.isArray(array))return [];var indexes=Array.prototype.slice.call(arguments,1).flat().map(function(value){var index=Math.trunc(Number(value));return index<0?array.length+index:index});var removed=indexes.map(function(index){return array[index]});for(var index of Array.from(new Set(indexes)).sort(function(a,b){return b-a}))if(index>=0&&index<array.length)array.splice(index,1);return removed}
 function __dshDebounce(func,wait,option){if(typeof func!=='function')throw new TypeError('Expected a function');wait=Math.max(0,Number(wait)||0);option=__dshPlain(option)?option:{};var timer,lastArgs,lastThis,lastCall=0,lastInvoke=0,result;var leading=option.leading===true,trailing=option.trailing!==false,maxing=Number.isFinite(option.maxWait),maxWait=maxing?Math.max(wait,Number(option.maxWait)):0;function invoke(time){var args=lastArgs,receiver=lastThis;lastArgs=lastThis=undefined;lastInvoke=time;result=func.apply(receiver,args);return result}function expire(){var time=Date.now(),sinceCall=time-lastCall,sinceInvoke=time-lastInvoke;if(lastArgs&&(sinceCall<wait||(maxing&&sinceInvoke<maxWait))){var remaining=wait-sinceCall;if(maxing)remaining=Math.min(remaining,maxWait-sinceInvoke);timer=setTimeout(expire,Math.max(0,remaining));return}timer=undefined;if(trailing&&lastArgs)invoke(time);else lastArgs=lastThis=undefined}function debounced(){var time=Date.now(),fresh=timer===undefined;lastArgs=arguments;lastThis=this;lastCall=time;if(fresh){lastInvoke=time;timer=setTimeout(expire,wait);if(leading)return invoke(time)}else if(maxing&&time-lastInvoke>=maxWait){clearTimeout(timer);timer=setTimeout(expire,wait);return invoke(time)}return result}debounced.cancel=function(){clearTimeout(timer);timer=lastArgs=lastThis=undefined;lastCall=lastInvoke=0};debounced.flush=function(){if(timer===undefined)return result;clearTimeout(timer);timer=undefined;if(trailing&&lastArgs)return invoke(Date.now());lastArgs=lastThis=undefined;return result};debounced.pending=function(){return timer!==undefined};return debounced}
 Object.assign(lodash,{get:__dshGet,set:__dshSet,has:function(object,path){return __dshGet(object,path,Symbol.for('missing'))!==Symbol.for('missing')},unset:__dshUnset,merge:__dshMerge,assign:Object.assign,cloneDeep:__dshClone,debounce:__dshDebounce,isArray:Array.isArray,isPlainObject:__dshPlain,isEqual:function(a,b){return JSON.stringify(a)===JSON.stringify(b)},clamp:function(value,min,max){return Math.min(max,Math.max(min,Number(value)))},inRange:function(value,start,end){return value>=start&&value<end},range:function(start,end){if(end===undefined){end=start;start=0}return Array.from({length:Math.max(0,end-start)},function(_,i){return start+i})},times:function(count,iteratee){return Array.from({length:count},function(_,i){return iteratee(i)})},constant:function(value){return function(){return value}},keys:Object.keys,values:Object.values,size:function(value){return Array.isArray(value)||typeof value==='string'?value.length:Object.keys(value??{}).length},forEach:function(value,iteratee){Object.entries(value??{}).forEach(function(pair){iteratee(pair[1],pair[0])});return value},pickBy:function(value,predicate){return Object.fromEntries(Object.entries(value??{}).filter(function(pair){return predicate(pair[1],pair[0])}))},pick:function(value,keys){return Object.fromEntries(keys.filter(function(key){return key in value}).map(function(key){return [key,value[key]]}))},omit:function(value,keys){return Object.fromEntries(Object.entries(value??{}).filter(function(pair){return !keys.includes(pair[0])}))},difference:function(left,right){return left.filter(function(value){return !right.includes(value)})},pull:function(array){var values=Array.prototype.slice.call(arguments,1);for(var i=array.length-1;i>=0;i--)if(values.includes(array[i]))array.splice(i,1);return array},toInteger:function(value){var number=Number(value);return Number.isFinite(number)?Math.trunc(number):0}});
 Object.assign(lodash,{escape:function(value){return String(value??'').replace(/[&<>"']/g,function(character){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]})},isObject:function(value){return value!==null&&(typeof value==='object'||typeof value==='function')},isDate:function(value){return Object.prototype.toString.call(value)==='[object Date]'},isString:function(value){return typeof value==='string'||value instanceof String},toPath:__dshPath,uniq:function(value){return Array.from(new Set(Array.isArray(value)?value:[]))},concat:function(value){var result=Array.isArray(value)?value.slice():[value];for(var item of Array.prototype.slice.call(arguments,1))Array.isArray(item)?result.push.apply(result,item):result.push(item);return result},remove:function(array,predicate){var removed=[];if(!Array.isArray(array))return removed;for(var index=array.length-1;index>=0;index--)if(predicate(array[index],index,array))removed.unshift(array.splice(index,1)[0]);return removed},intersectionBy:function(){var values=Array.from(arguments);var iteratee=typeof values.at(-1)==='function'?values.pop():function(value){return value};var arrays=values.filter(Array.isArray);if(arrays.length===0)return [];var rest=arrays.slice(1).map(function(array){return new Set(array.map(iteratee))});return arrays[0].filter(function(value,index,array){var key=iteratee(value);return array.findIndex(function(item){return Object.is(iteratee(item),key)})===index&&rest.every(function(keys){return keys.has(key)})})},isEmpty:function(value){if(value==null)return true;if(typeof value==='string'||Array.isArray(value))return value.length===0;if(value instanceof Map||value instanceof Set)return value.size===0;return typeof value==='object'?Object.keys(value).length===0:true},mapValues:function(value,iteratee){return Object.fromEntries(Object.entries(value??{}).map(function(pair){return [pair[0],iteratee(pair[1],pair[0],value)]}))}});
+Object.assign(lodash,{sortBy:__dshSortBy,flatMap:function(value,iteratee){iteratee=__dshIteratee(iteratee);return __dshCollectionValues(value).flatMap(function(item,index){return iteratee(item,index,value)})},some:function(value,predicate){predicate=__dshIteratee(predicate);return __dshCollectionValues(value).some(function(item,index){return predicate(item,index,value)})},update:function(object,path,updater){return __dshSet(object,path,updater(__dshGet(object,path)))},isNil:function(value){return value==null},dropRight:function(value,count){value=Array.isArray(value)?value:[];count=count===undefined?1:Math.max(0,Math.trunc(Number(count))||0);return value.slice(0,Math.max(0,value.length-count))},pullAt:__dshPullAt,last:function(value){return Array.isArray(value)?value.at(-1):undefined}});
 window._=lodash;
 window.SillyTavern.libs.lodash=lodash;
 window.SillyTavern.libs.DOMPurify=window.DOMPurify;
@@ -510,30 +600,45 @@ window.builtin={renderMarkdown:function(value){return __dshMarkdownHtml(value)},
 function __dshToastText(value){if(typeof value==='string')return value;try{return JSON.stringify(value)}catch(error){return String(value)}}
 function __dshToast(level,args){var value=Array.from(args).slice(0,2).map(__dshToastText).filter(Boolean).join(' · ').slice(0,8000);(level==='error'?console.error:level==='warning'?console.warn:console.info)(value);if(value)__dshPost('toast',{level:level,value:value});return value}
 window.toastr={info:function(){return __dshToast('info',arguments)},success:function(){return __dshToast('success',arguments)},warning:function(){return __dshToast('warning',arguments)},error:function(){return __dshToast('error',arguments)}};
-  addEventListener('message',function(event){if(event.source!==parent||!event.data||event.data.source!=='dsh-agent-rp-host')return;var message=event.data;if(message.action==='script-buttons-request'){__dshReportScriptButtons();return}if(message.action==='variables-result'||message.action==='preset-result'||message.action==='model-list-result'||message.action==='popup-result'||message.action==='settings-result'||message.action==='storage-result'){var pending=__dshPending.get(message.requestId);if(!pending)return;__dshPending.delete(message.requestId);message.ok?pending.resolve(message.action==='model-list-result'||message.action==='popup-result'||message.action==='storage-result'?message.value:undefined):pending.reject(new Error(String(message.error??'保存失败')));return}if(message.action==='settings-error'){__dshPost('runtime-error',{value:String(message.error??'酒馆扩展设置保存失败')});return}if(message.action==='extension-settings-sync'&&__dshPlain(message.settings)){for(var key of Object.keys(__dshExtensionSettings))delete __dshExtensionSettings[key];Object.assign(__dshExtensionSettings,__dshClone(message.settings));return}if(message.action==='generation-preview-result'){var pending=__dshPending.get(message.requestId);if(!pending)return;__dshPending.delete(message.requestId);message.ok?pending.resolve(message.value):pending.reject(new Error(String(message.error??'提示词预览失败')));return}if(message.action==='generation-result'){var pending=__dshPending.get(message.requestId);if(!pending)return;__dshPending.delete(message.requestId);if(pending.generationFetch){pending.resolve({ok:message.ok===true,value:message.value,error:message.error});return}message.ok?pending.resolve(String(message.value??'')):pending.reject(new Error(String(message.error??'生成失败')));return}if(message.action==='preset-sync'){__dshPreset=message.preset;return}if(message.action==='variables-sync'){var transcriptChanged=__dshMessageSignature(__dshMessages)!==__dshMessageSignature(message.messages);__dshScopes=message.scopes;__dshMessages=message.messages;__dshCharacterRegexScripts=message.characterRegexScripts??__dshCharacterRegexScripts;__dshGlobalScriptTrees=message.globalScriptTrees??__dshGlobalScriptTrees;__dshPresetScriptTrees=message.presetScriptTrees??__dshPresetScriptTrees;__dshCharacterScriptTrees=message.characterScriptTrees??__dshCharacterScriptTrees;__dshInjectedPrompts=message.injectedPrompts??__dshInjectedPrompts;__dshDisplayRegexScripts=message.displayRegexScripts??__dshDisplayRegexScripts;__dshWorldbooks=message.worldbooks;__dshWorldbookBindings=message.worldbookBindings;__dshActiveWorldbookEntries=message.activeWorldbookEntries??__dshActiveWorldbookEntries;var metadata=__dshChatMetadata();window.SillyTavern.chatMetadata=metadata;window.SillyTavern.chat_metadata=metadata;if(message.preset!==undefined)__dshPreset=message.preset;if(transcriptChanged){for(var root of __dshDisplayedRoots.values())root.remove();__dshDisplayedRoots.clear()}__dshSyncSillyTavernChat();void __dshRefreshInjections();return}if(message.action==='event'){var args=message.args??[];var before=message.eventType==='mag_variable_update_ended'?JSON.stringify(args[0]??{}):undefined;void __dshEmitLocal(message.eventType,args).then(function(){var changed=before!==undefined&&JSON.stringify(args[0]??{})!==before?__dshReplace(args[0]??{},{type:'message'}):undefined;return Promise.resolve(changed).then(function(){if(message.eventType==='generation_ended')__dshConsumeOnceInjections()})}).catch(function(error){console.error(error);__dshPost('runtime-error',{value:String(error)})})}});
+  addEventListener('message',function(event){if(event.source!==parent||!event.data||event.data.source!=='dsh-agent-rp-host')return;var message=event.data;if(message.action==='script-buttons-request'){__dshReportScriptButtons();return}if(message.action==='variables-result'||message.action==='preset-result'||message.action==='model-list-result'||message.action==='popup-result'||message.action==='settings-result'||message.action==='storage-result'){var pending=__dshPending.get(message.requestId);if(!pending)return;__dshPending.delete(message.requestId);message.ok?pending.resolve(message.action==='model-list-result'||message.action==='popup-result'||message.action==='storage-result'?message.value:undefined):pending.reject(new Error(String(message.error??'保存失败')));return}if(message.action==='settings-error'){__dshPost('runtime-error',{value:String(message.error??'酒馆扩展设置保存失败')});return}if(message.action==='extension-settings-sync'&&__dshPlain(message.settings)){for(var key of Object.keys(__dshExtensionSettings))delete __dshExtensionSettings[key];Object.assign(__dshExtensionSettings,__dshClone(message.settings));return}if(message.action==='generation-preview-result'){var pending=__dshPending.get(message.requestId);if(!pending)return;__dshPending.delete(message.requestId);message.ok?pending.resolve(message.value):pending.reject(new Error(String(message.error??'提示词预览失败')));return}if(message.action==='generation-result'){var pending=__dshPending.get(message.requestId);if(!pending)return;__dshPending.delete(message.requestId);if(pending.generationFetch){pending.resolve({ok:message.ok===true,value:message.value,error:message.error});return}message.ok?pending.resolve(String(message.value??'')):pending.reject(new Error(String(message.error??'生成失败')));return}if(message.action==='preset-sync'){__dshPreset=message.preset;return}if(message.action==='variables-sync'){var transcriptChanged=__dshMessageSignature(__dshMessages)!==__dshMessageSignature(message.messages);__dshScopes=message.scopes;__dshMessages=message.messages;__dshCharacterRegexScripts=message.characterRegexScripts??__dshCharacterRegexScripts;__dshGlobalScriptTrees=message.globalScriptTrees??__dshGlobalScriptTrees;__dshPresetScriptTrees=message.presetScriptTrees??__dshPresetScriptTrees;__dshCharacterScriptTrees=message.characterScriptTrees??__dshCharacterScriptTrees;__dshInjectedPrompts=message.injectedPrompts??__dshInjectedPrompts;__dshDisplayRegexScripts=message.displayRegexScripts??__dshDisplayRegexScripts;__dshWorldbooks=message.worldbooks;__dshWorldbookBindings=message.worldbookBindings;__dshActiveWorldbookEntries=message.activeWorldbookEntries??__dshActiveWorldbookEntries;var metadata=__dshChatMetadata();window.SillyTavern.chatMetadata=metadata;window.SillyTavern.chat_metadata=metadata;if(message.preset!==undefined)__dshPreset=message.preset;if(transcriptChanged){for(var root of __dshDisplayedRoots.values())root.remove();__dshDisplayedRoots.clear()}__dshSyncSillyTavernChat();void __dshRefreshInjections();return}if(message.action==='event'){var args=message.args??[];var mutableMvuEvent=message.eventType==='mag_variable_initialized'||message.eventType==='mag_variable_initiailized'||message.eventType==='mag_variable_update_ended';var before=mutableMvuEvent?JSON.stringify(args[0]??{}):undefined;void __dshEmitLocal(message.eventType,args).then(function(){var changed=before!==undefined&&JSON.stringify(args[0]??{})!==before?__dshReplace(args[0]??{},{type:'message'}):undefined;return Promise.resolve(changed).then(function(){if(message.eventType==='generation_ended')__dshConsumeOnceInjections()})}).catch(function(error){console.error(error);__dshPost('runtime-error',{value:String(error)})})}});
 addEventListener('error',function(event){__dshPost('runtime-error',{value:event.message})});
 addEventListener('unhandledrejection',function(event){__dshPost('runtime-error',{value:String(event.reason)})});
 __dshReportScriptButtons();
-__dshPost('ready');
 `
 }
 
-/** Create a network-isolated script document from already-resolved JavaScript. */
+/** Create a network-isolated script document from an authorized execution plan. */
 export function tavernScriptFrameSource(
   script: ImportedTavernHelperScript,
-  source: string,
+  execution: string | TavernScriptExecution,
   snapshot: TavernScriptSnapshot,
 ): string {
+  const plan: TavernScriptExecution = typeof execution === 'string' ? {
+    source: execution,
+    mode: 'classic',
+    preloads: [],
+    needsDomPurify: /\bDOMPurify\b/u.test(execution),
+    needsFuse: /\bFuse\b/u.test(execution),
+  } : execution
+  const source = plan.source
   const encoded = safeJson(`${source}\n//# sourceURL=dsh-agent-rp:${script.id}`)
   const origins = [...new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...snapshot.approvedScriptOrigins])]
     .map(origin => new URL(origin).origin).join(' ')
   const libraries = [
-    /\bDOMPurify\b/u.test(source)
+    plan.needsDomPurify
       ? `<script src="${DOMPURIFY_SCRIPT_URL}" integrity="${DOMPURIFY_SCRIPT_INTEGRITY}" crossorigin="anonymous"></script>`
       : '',
-    /\bFuse\b/u.test(source)
+    plan.needsFuse
       ? `<script src="${FUSE_SCRIPT_URL}" integrity="${FUSE_SCRIPT_INTEGRITY}" crossorigin="anonymous"></script>`
       : '',
   ].join('')
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' ${origins}; connect-src 'none'; img-src 'none'; style-src 'unsafe-inline'; font-src 'none'; frame-src 'none'">${libraries}<style>html,body{background:transparent;color-scheme:dark}</style></head><body><script>${runtimeSource(snapshot)}\ntry{Function('localStorage','sessionStorage',${encoded})(__dshLocalStorage,__dshSessionStorage)}catch(error){console.error(error);parent.postMessage({source:'dsh-agent-rp-tavern-script',scriptId:${safeJson(script.id)},action:'runtime-error',value:String(error)},'*')}</script></body></html>`
+  const preloads = plan.preloads.map(preload => preload === 'zod'
+    ? `import(${safeJson(ZOD_MODULE_URL)}).then(function(module){window.z=module.z??module.default??module})`
+    : `import(${safeJson(YAML_MODULE_URL)}).then(function(module){window.YAML=module.default??module})`)
+  const execute = plan.mode === 'module'
+    ? `var __dshModuleUrl=URL.createObjectURL(new Blob([${encoded}],{type:'text/javascript'}));try{await import(__dshModuleUrl)}finally{URL.revokeObjectURL(__dshModuleUrl)}`
+    : `Function('localStorage','sessionStorage',${encoded})(__dshLocalStorage,__dshSessionStorage)`
+  const preload = preloads.length === 0 ? '' : `await Promise.all([${preloads.join(',')}]);`
+  const bootstrap = `void (async function(){try{${preload}${execute};__dshPost('ready')}catch(error){console.error(error);__dshPost('runtime-error',{value:String(error)})}})();`
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: ${origins}; connect-src 'none'; img-src 'none'; style-src 'unsafe-inline'; font-src 'none'; frame-src 'none'">${libraries}<style>html,body{background:transparent;color-scheme:dark}</style></head><body><script>${runtimeSource(snapshot)}\n${bootstrap}</script></body></html>`
 }

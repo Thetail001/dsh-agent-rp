@@ -4,7 +4,9 @@ import { runInNewContext } from 'node:vm'
 import type { ImportedRegexScript } from '../src/import/types.ts'
 import {
   readTavernExtensionSettings,
+  resolveTavernScriptExecution,
   TAVERN_EXTENSION_SETTINGS_KEY,
+  TavernScriptOriginApprovalError,
   tavernScriptFrameSource,
   writeTavernExtensionSettings,
   type TavernScriptSnapshot,
@@ -328,6 +330,78 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
     '<p><strong>粗体</strong></p><pre><code class="language-yaml">key: value</code></pre>')
 })
 
+test('preserves authorized ESM imports and plans their required public globals', async () => {
+  const originalFetch = globalThis.fetch
+  const fetched: string[] = []
+  globalThis.fetch = (input: string | URL | Request) => {
+    fetched.push(String(input))
+    return Promise.resolve(new Response('export function register() { return z.object({ value: z.string() }).parse(YAML.parse("value: ok")); }'))
+  }
+  try {
+    const plan = await resolveTavernScriptExecution([
+      "import { register } from 'https://cdn.jsdelivr.net/gh/example/project@1.0.0/module.js';",
+      'window.__registered = register();',
+    ].join('\n'), AbortSignal.timeout(5_000))
+    assert.equal(plan.mode, 'module')
+    assert.deepEqual(plan.preloads, ['yaml', 'zod'])
+    assert.equal(plan.needsDomPurify, false)
+    assert.equal(plan.needsFuse, false)
+    assert.match(plan.source, /import \{ register \} from 'https:\/\/cdn\.jsdelivr\.net/u)
+    assert.deepEqual(fetched, ['https://cdn.jsdelivr.net/gh/example/project@1.0.0/module.js'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('adapts the public MagVarUpdate side-effect bundle to the Host Mvu capability', async () => {
+  const plan = await resolveTavernScriptExecution([
+    "import 'https://cdn.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate@beta/artifact/bundle.js';",
+    'window.__mvu = Mvu;',
+  ].join('\n'), AbortSignal.timeout(5_000))
+  assert.equal(plan.mode, 'classic')
+  assert.equal(plan.source, 'window.__mvu = Mvu;')
+})
+
+test('rejects module references that cannot be authorized before execution', async () => {
+  await assert.rejects(
+    resolveTavernScriptExecution("import value from './local.js';", AbortSignal.timeout(5_000)),
+    /完整 HTTPS 地址/u,
+  )
+  await assert.rejects(
+    resolveTavernScriptExecution('const path = location.hash; import(path);', AbortSignal.timeout(5_000)),
+    /固定 HTTPS 地址/u,
+  )
+  await assert.rejects(
+    resolveTavernScriptExecution("import 'https://modules.example.test/entry.js';", AbortSignal.timeout(5_000)),
+    error => error instanceof TavernScriptOriginApprovalError && error.origin === 'https://modules.example.test',
+  )
+})
+
+test('runs module plans through a Blob and reports ready only after evaluation', () => {
+  const html = tavernScriptFrameSource({
+    id: 'module-runtime', name: '模块兼容', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, {
+    source: 'export const ready = true;', mode: 'module', preloads: ['yaml', 'zod'],
+    needsDomPurify: false, needsFuse: false,
+  }, {
+    scriptId: 'module-runtime', scriptName: '模块兼容', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  assert.match(html, /script-src 'unsafe-inline' 'unsafe-eval' blob:/u)
+  assert.match(html, /connect-src 'none'/u)
+  assert.match(source!, /URL\.createObjectURL\(new Blob/u)
+  assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/yaml@2\.9\.0\/\+esm"\)/u)
+  assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/zod@4\.4\.3\/\+esm"\)/u)
+  assert.ok(source!.indexOf('await import(__dshModuleUrl)') < source!.lastIndexOf("__dshPost('ready')"))
+})
+
 test('provides the common Tavern Helper lodash surface without opening network access', () => {
   const script = String.raw`
 var values = [1, 2, 3, 4];
@@ -345,6 +419,14 @@ window.__lodashSurface = {
   intersection: _.intersectionBy([{ id: 1 }, { id: 2 }], [{ id: 2 }], function(item) { return item.id; }).map(function(item) { return item.id; }),
   empty: _.isEmpty({}),
   mapped: _.mapValues({ a: 2 }, function(value) { return value * 3; }),
+  sorted: _.sortBy([{ rank: 2 }, { rank: 1 }], 'rank').map(function(value) { return value.rank; }),
+  flattened: _.flatMap([{ values: [1, 2] }, { values: [3] }], 'values'),
+  some: _.some([{ ready: false }, { ready: true }], ['ready', true]),
+  updated: _.update({ nested: { value: 2 } }, 'nested.value', function(value) { return value * 4; }),
+  nil: [_.isNil(null), _.isNil(undefined), _.isNil(0)],
+  dropped: _.dropRight([1, 2, 3], 2),
+  pulled: (function() { var value = ['a', 'b', 'c']; return { removed: _.pullAt(value, [0, 2]), value: value }; })(),
+  last: _.last(['a', 'b']),
   saveChat: typeof SillyTavern.saveChat().then === 'function',
 };
 `
@@ -368,6 +450,8 @@ window.__lodashSurface = {
     escaped: '&lt;&amp;&gt;&quot;', object: true, date: true, string: true,
     path: ['a', '0', 'b'], unique: [1, 2], concatenated: [1, 2, 3, 4],
     remaining: [1, 3], removed: [2, 4], intersection: [2], empty: true, mapped: { a: 6 }, saveChat: true,
+    sorted: [1, 2], flattened: [1, 2, 3], some: true, updated: { nested: { value: 8 } },
+    nil: [true, true, false], dropped: [1], pulled: { removed: ['a', 'c'], value: ['b'] }, last: 'b',
   })
 })
 
@@ -1018,6 +1102,36 @@ test('consumes only one-shot prompt injections after a completed generation even
   assert.deepEqual(JSON.parse(JSON.stringify(mutation?.prompts)), [
     { id: 'lasting', position: 'in_chat', depth: 0, role: 'system', content: '保留', shouldScan: true, once: false },
   ])
+})
+
+test('persists canonical MVU initialization listener changes', async () => {
+  const html = tavernScriptFrameSource({
+    id: 'mvu-schema', name: '变量结构', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, String.raw`
+window.__mvuInitializedEvent = Mvu.events.VARIABLE_INITIALIZED;
+eventOn(Mvu.events.VARIABLE_INITIALIZED, variables => { variables.stat_data.ready = true; });
+`, {
+    scriptId: 'mvu-schema', scriptName: '变量结构', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: { stat_data: {} }, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  assert.equal(context.__mvuInitializedEvent, 'mag_variable_initialized')
+
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'event', eventType: 'mag_variable_initialized', args: [{ stat_data: {} }, 0],
+  })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const mutation = (context.posted as Record<string, unknown>[])
+    .findLast(message => message.action === 'variables-replace')
+  assert.deepEqual(JSON.parse(JSON.stringify(mutation?.variables)), { stat_data: { ready: true } })
 })
 
 test('lets V18-style dry-run listeners capture prompts without Host generation', async () => {
