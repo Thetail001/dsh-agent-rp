@@ -727,7 +727,8 @@ function CharacterDisplay({ segments, statData, characterName, character, previe
             : inlineCardFrameSource(segment.source, statData, character)}
           style={{
             background: 'transparent', border: 0, colorScheme: 'dark', display: 'block',
-            height: preview ? 'min(52vh, 480px)' : '72px', maxWidth: '100%', width: '100%',
+            height: preview ? 'min(52vh, 480px)' : '72px', maxWidth: '100%',
+            visibility: preview ? 'visible' : 'hidden', width: '100%',
           }}
         />)}
   </div>
@@ -6445,6 +6446,9 @@ function roleplayComposerDockComponent(
   const [displayOverrides, setDisplayOverrides] = useState<ReadonlyMap<number, string>>(() => new Map())
   const rootRef = useRef<HTMLDivElement | null>(null)
   const characterDetail = useCharacterDetail(projection?.avatarLibraryId)
+  const displayStateRef = useRef({ chat, characterDetail, displayOverrides, projection, viewMode })
+  const scanDisplayRef = useRef<() => void>(() => undefined)
+  displayStateRef.current = { chat, characterDetail, displayOverrides, projection, viewMode }
   const backgroundChoice = useRoleplayBackground(sessionId)
   const background = selectedBackground(characterDetail, backgroundChoice)
   const displayName = projection === undefined ? undefined : roleplayDisplayName(summary, projection)
@@ -6532,11 +6536,9 @@ function roleplayComposerDockComponent(
   }, [placeholder, viewMode])
   useEffect(() => {
     if (projection === undefined) return
-    const frontend = projection.frontend
-    const hasDisplayRules = viewMode === 'immersive' && frontend !== undefined
-      && frontend.regexScripts.length + (projection.preset?.regexScripts.length ?? 0) > 0
-    const messageIdBySeq = new Map(projection.tavern?.messages.map(message => [message.seq, message.messageId]))
-    const mounted = new Map<HTMLElement, Root>()
+    const scroll = rootRef.current?.closest<HTMLElement>('[data-conversation-scroll]')
+    if (scroll == null) return
+    const mounted = new Map<HTMLElement, { readonly root: Root; signature: string }>()
     const hiddenTranscriptDetails = new Map<HTMLElement, { readonly display: string; readonly priority: string }>()
     const legacyConversationNotices = new Set<HTMLElement>()
     const hideTranscriptDetail = (element: HTMLElement): void => {
@@ -6575,6 +6577,7 @@ function roleplayComposerDockComponent(
       if (message.source !== 'dsh-agent-rp-card') return
       if (message.action === 'resize' && typeof message.value === 'number' && Number.isFinite(message.value)) {
         sourceFrame.style.height = `${Math.max(72, Math.ceil(message.value))}px`
+        sourceFrame.style.visibility = 'visible'
         return
       }
       if (typeof message.value !== 'string' || message.value.length > 65_536) return
@@ -6603,15 +6606,27 @@ function roleplayComposerDockComponent(
       item: HTMLElement,
       original: HTMLElement,
       segments: readonly CharacterDisplaySegment[],
+      activeProjection: AgentRpProjection,
+      activeCharacterDetail: CharacterLibraryDetail | undefined,
     ): void => {
       const existing = item.querySelector<HTMLElement>(':scope > [data-agent-rp-rendered-display]')
-      const existingRoot = existing === null ? undefined : mounted.get(existing)
-      if (existing !== null && existingRoot !== undefined) {
-        existingRoot.render(<CharacterDisplay
+      const signature = JSON.stringify([
+        segments,
+        activeProjection.mvu?.statData,
+        activeProjection.characterName,
+        activeCharacterDetail?.id,
+        activeCharacterDetail?.imageAssets,
+        activeCharacterDetail?.displayExtensions.filter(extension => extension.enabled),
+      ])
+      const existingMount = existing === null ? undefined : mounted.get(existing)
+      if (existing !== null && existingMount !== undefined) {
+        if (existingMount.signature === signature) return
+        existingMount.signature = signature
+        existingMount.root.render(<CharacterDisplay
           segments={segments}
-          statData={projection.mvu?.statData}
-          characterName={projection.characterName}
-          {...(characterDetail === undefined ? {} : { character: characterDetail })}
+          statData={activeProjection.mvu?.statData}
+          characterName={activeProjection.characterName}
+          {...(activeCharacterDetail === undefined ? {} : { character: activeCharacterDetail })}
         />)
         return
       }
@@ -6622,19 +6637,30 @@ function roleplayComposerDockComponent(
       item.dataset.agentRpFrontend = 'true'
       item.insertBefore(display, original.nextSibling)
       const root = createRoot(display)
-      mounted.set(display, root)
+      mounted.set(display, { root, signature })
       root.render(<CharacterDisplay
         segments={segments}
-        statData={projection.mvu?.statData}
-        characterName={projection.characterName}
-        {...(characterDetail === undefined ? {} : { character: characterDetail })}
+        statData={activeProjection.mvu?.statData}
+        characterName={activeProjection.characterName}
+        {...(activeCharacterDetail === undefined ? {} : { character: activeCharacterDetail })}
       />)
     }
     window.addEventListener('message', bridge)
     const scan = (): void => {
-      const scroll = rootRef.current?.closest('[data-conversation-scroll]')
-      if (scroll === null || scroll === undefined) return
-      if (viewMode === 'immersive') {
+      const {
+        chat: activeChat,
+        characterDetail: activeCharacterDetail,
+        displayOverrides: activeDisplayOverrides,
+        projection: activeProjection,
+        viewMode: activeViewMode,
+      } = displayStateRef.current
+      if (activeProjection === undefined) return
+      if (activeProjection.avatarLibraryId !== undefined && activeCharacterDetail === undefined) return
+      const frontend = activeProjection.frontend
+      const hasDisplayRules = activeViewMode === 'immersive' && frontend !== undefined
+        && frontend.regexScripts.length + (activeProjection.preset?.regexScripts.length ?? 0) > 0
+      const messageIdBySeq = new Map(activeProjection.tavern?.messages.map(message => [message.seq, message.messageId]))
+      if (activeViewMode === 'immersive') {
         for (const item of scroll.querySelectorAll<HTMLElement>(
           '[data-chat-flow-kind="context"], [data-chat-flow-kind="tool-call"], '
           + '[data-chat-flow-kind="manual-compaction"], [data-chat-flow-kind="compaction"], '
@@ -6678,52 +6704,52 @@ function roleplayComposerDockComponent(
       }
       for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="user"]')) {
         const key = item.dataset.chatFlowKey
-        const node = key === undefined ? undefined : chat.nodes.get(key)
+        const node = key === undefined ? undefined : activeChat.nodes.get(key)
         if (node?.kind !== 'user') continue
         const messageId = messageIdBySeq.get((node.data as { readonly seq: number }).seq)
-        const override = messageId === undefined ? undefined : displayOverrides.get(messageId)
+        const override = messageId === undefined ? undefined : activeDisplayOverrides.get(messageId)
         const original = item.firstElementChild as HTMLElement | null
         if (override === undefined || original === null) continue
-        mountRenderedDisplay(item, original, [{ kind: 'html', source: override }])
+        mountRenderedDisplay(item, original, [{ kind: 'html', source: override }], activeProjection, activeCharacterDetail)
       }
       for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="assistant-step"]')) {
         const key = item.dataset.chatFlowKey
         if (key === undefined) continue
-        const node = chat.nodes.get(key)
+        const node = activeChat.nodes.get(key)
         if (node?.kind !== 'assistant-step') continue
         const data = node.data as { readonly blocks?: readonly { readonly kind: string; readonly text?: string }[] }
         const finalSeq = (node.data as { readonly finalNode?: { readonly seq: number } }).finalNode?.seq
         const generation = finalSeq === undefined
           ? undefined
-          : projection.generations.find(group => group.assistantSeqs.includes(finalSeq))
+          : activeProjection.generations.find(group => group.assistantSeqs.includes(finalSeq))
         const selected = generation?.versions.find(version => version.seq === generation.selectedVersionSeq)
         const messageId = (selected === undefined ? undefined : messageIdBySeq.get(selected.seq))
           ?? (finalSeq === undefined ? undefined : messageIdBySeq.get(finalSeq))
-        const override = messageId === undefined ? undefined : displayOverrides.get(messageId)
+        const override = messageId === undefined ? undefined : activeDisplayOverrides.get(messageId)
         const original = item.firstElementChild as HTMLElement | null
         if (override !== undefined && original !== null) {
-          mountRenderedDisplay(item, original, [{ kind: 'html', source: override }])
+          mountRenderedDisplay(item, original, [{ kind: 'html', source: override }], activeProjection, activeCharacterDetail)
           continue
         }
-        if (viewMode === 'immersive' && generation !== undefined) {
+        if (activeViewMode === 'immersive' && generation !== undefined) {
           if (finalSeq !== generation.anchorSeq) {
             hideTranscriptDetail(item)
             continue
           }
           if (selected !== undefined && original !== null) {
             const rendered = renderCharacterDisplay(selected.text.replaceAll(statusPlaceholder, ''), {
-              name: projection.characterName,
-              frontend: projection.frontend ?? {
+              name: activeProjection.characterName,
+              frontend: activeProjection.frontend ?? {
                 regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {},
               },
-            }, AI_OUTPUT_PLACEMENT, 0, projection.userName, projection.preset?.regexScripts)
+            }, AI_OUTPUT_PLACEMENT, 0, activeProjection.userName, activeProjection.preset?.regexScripts)
             const segments = splitCharacterDisplay(rendered)
-            mountRenderedDisplay(item, original, segments)
+            mountRenderedDisplay(item, original, segments, activeProjection, activeCharacterDetail)
             continue
           }
         }
         if (item.dataset.agentRpFrontend === 'true') continue
-        if (viewMode === 'immersive') {
+        if (activeViewMode === 'immersive') {
           for (const element of item.querySelectorAll<HTMLElement>('[data-variant="think"]')) {
             hideTranscriptDetail(element)
           }
@@ -6731,35 +6757,46 @@ function roleplayComposerDockComponent(
         if (!hasDisplayRules || frontend === undefined) continue
         const raw = data.blocks?.flatMap(block => block.kind === 'text' && block.text !== undefined ? [block.text] : []).join('\n') ?? ''
         if (raw === '') continue
-        const depth = Math.max(0, chat.order.length - chat.order.indexOf(key) - 1)
+        const depth = Math.max(0, activeChat.order.length - activeChat.order.indexOf(key) - 1)
         const rendered = renderCharacterDisplay(raw.replaceAll(statusPlaceholder, ''), {
-          name: projection.characterName,
+          name: activeProjection.characterName,
           frontend,
-        }, AI_OUTPUT_PLACEMENT, depth, projection.userName, projection.preset?.regexScripts)
+        }, AI_OUTPUT_PLACEMENT, depth, activeProjection.userName, activeProjection.preset?.regexScripts)
         if (rendered === raw) continue
         const segments = splitCharacterDisplay(rendered)
         if (!hasCharacterDisplayFrontend(segments)) continue
         if (original === null) continue
-        mountRenderedDisplay(item, original, segments)
+        mountRenderedDisplay(item, original, segments, activeProjection, activeCharacterDetail)
       }
-      if (viewMode === 'immersive') {
+      if (activeViewMode === 'immersive') {
         for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="turn-tail"]')) {
           const key = item.dataset.chatFlowKey
-          const node = key === undefined ? undefined : chat.nodes.get(key)
+          const node = key === undefined ? undefined : activeChat.nodes.get(key)
           if (node?.kind !== 'turn-tail') continue
           const seq = (node.data as { readonly closing?: { readonly finalNode?: { readonly seq: number } } }).closing?.finalNode?.seq
-          if (seq !== undefined && projection.generations.some(group =>
+          if (seq !== undefined && activeProjection.generations.some(group =>
             group.assistantSeqs.includes(seq) && seq !== group.anchorSeq)) hideTranscriptDetail(item)
         }
       }
     }
+    let scanFrame: number | undefined
+    const scheduleScan = (): void => {
+      if (scanFrame !== undefined) return
+      scanFrame = window.requestAnimationFrame(() => {
+        scanFrame = undefined
+        scan()
+      })
+    }
+    scanDisplayRef.current = scheduleScan
     scan()
-    const observer = new MutationObserver(scan)
-    observer.observe(document.body, { childList: true, subtree: true })
+    const observer = new MutationObserver(scheduleScan)
+    observer.observe(scroll, { childList: true, subtree: true })
     return () => {
       observer.disconnect()
+      if (scanFrame !== undefined) window.cancelAnimationFrame(scanFrame)
+      scanDisplayRef.current = () => undefined
       window.removeEventListener('message', bridge)
-      for (const [display, root] of mounted) {
+      for (const [display, { root }] of mounted) {
         const item = display.closest<HTMLElement>('[data-agent-rp-frontend]')
         const original = item?.firstElementChild as HTMLElement | null
         if (original !== null) original.style.removeProperty('display')
@@ -6773,15 +6810,15 @@ function roleplayComposerDockComponent(
         delete element.dataset.agentRpLegacyConversation
       }
       for (const notice of legacyConversationNotices) notice.remove()
-      const scroll = rootRef.current?.closest('[data-conversation-scroll]')
-      for (const item of scroll?.querySelectorAll<HTMLElement>('[data-agent-rp-setup-collapsed="true"]') ?? []) {
+      for (const item of scroll.querySelectorAll<HTMLElement>('[data-agent-rp-setup-collapsed="true"]')) {
         const content = item.firstElementChild as HTMLElement | null
         content?.style.removeProperty('display')
         item.querySelector(':scope > details')?.remove()
         delete item.dataset.agentRpSetupCollapsed
       }
     }
-  }, [chat, characterDetail, displayOverrides, projection, viewMode])
+  }, [sessionId, viewMode, projection !== undefined])
+  useEffect(() => { scanDisplayRef.current() }, [chat, characterDetail, displayOverrides, projection])
   if (projection === undefined) return null
   return <div ref={rootRef} data-agent-rp-status style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
     <TavernScriptRuntime ctx={ctx} inputActions={inputActions} onDisplayOverride={onDisplayOverride} projection={projection}
