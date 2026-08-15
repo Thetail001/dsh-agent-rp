@@ -5,6 +5,7 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ImportedSillyTavernPreset } from '../src/import/sillytavern-preset.ts'
 import type { ImportedCharacterCard } from '../src/import/types.ts'
 import { assembleSillyTavernPreset, injectSillyTavernInChatPrompts } from '../src/preset-prompt.ts'
+import { EjsTemplateEngine } from '../src/ejs-template.ts'
 
 const card: ImportedCharacterCard = {
   format: 0,
@@ -85,6 +86,39 @@ test('assembles markers and nested variables on the correct side of chat history
   assert.equal(assembled.enabledPromptCount, 12)
   assert.equal(assembled.degradedRoleCount, 1)
   assert.equal(assembled.unsupportedMacroCount, 0)
+  assert.equal(assembled.templateFailureCount, 0)
+})
+
+test('renders EJS in imported preset modules and drops only a failing module', async () => {
+  const engine = await EjsTemplateEngine.create()
+  const prompts: ImportedSillyTavernPreset['prompts'] = [
+    { identifier: 'main', name: '主提示', role: 'system', content: '<% if (getvar("enabled")) { %><%= char %>回应<%- user %><% } %>', marker: false, systemPrompt: true, forbidOverrides: false },
+    { identifier: 'broken', name: '坏模板', role: 'system', content: '<% while (true) {} %>', marker: false, systemPrompt: true, forbidOverrides: false },
+  ]
+  const preset: ImportedSillyTavernPreset = {
+    format: 0,
+    name: 'EJS 预设',
+    prompts,
+    order: prompts.map(prompt => ({ identifier: prompt.identifier, enabled: true })),
+    generation: {},
+    formats: { worldInfo: '{0}', scenario: '{0}', personality: '{0}' },
+    regexScripts: [],
+    extensionSummary: { regexScriptCount: 0, hasSPreset: false, hasTavernHelper: false },
+  }
+  const context = {
+    characterName: '<白露>', userName: '<宝宝>', messages: [], variables: { enabled: true },
+  }
+  const assembled = assembleSillyTavernPreset(preset, {
+    card,
+    userName: '<宝宝>',
+    worldInfoBefore: [],
+    worldInfoAfter: [],
+    session: Session.create(SessionId('preset-ejs')),
+    renderTemplate: template => engine.render(template, context),
+  })
+
+  assert.equal(assembled.system, '&lt;白露&gt;回应<宝宝>')
+  assert.equal(assembled.templateFailureCount, 1)
 })
 
 function message(role: Message['role'], text: string): Message {

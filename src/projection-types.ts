@@ -29,6 +29,9 @@ export interface AgentRpProjection {
   readonly worldInfo: {
     readonly revision: number
     readonly activeCount: number
+    readonly tokenBudget: number
+    readonly approximateTokens: number
+    readonly budgetExcludedCount: number
     readonly books: readonly {
       readonly id: string
       readonly name: string
@@ -63,6 +66,7 @@ export interface AgentRpProjection {
         readonly matchedKeys: readonly string[]
         readonly matchedSecondaryKeys: readonly string[]
         readonly approximateTokens: number
+        readonly template?: 'rendered' | import('./ejs-template.ts').EjsTemplateFailureKind
         readonly modified: boolean
         readonly deleted: boolean
       }[]

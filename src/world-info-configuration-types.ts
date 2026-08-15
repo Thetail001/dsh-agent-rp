@@ -33,6 +33,8 @@ export interface WorldInfoConfigurationState {
   readonly format: 0
   readonly revision: number
   readonly overrides: readonly WorldInfoEntryOverride[]
+  /** Aggregate cap across every active book; omitted records use the current default. */
+  readonly tokenBudget?: number
 }
 
 /** Browser mutation accepted by the World Info manager. */
@@ -42,3 +44,4 @@ export type WorldInfoConfigurationRequest =
   | { readonly operation: 'delete'; readonly revision: number; readonly bookId: string; readonly entryIndex: number; readonly deleted: boolean }
   | { readonly operation: 'reset-entry'; readonly revision: number; readonly bookId: string; readonly entryIndex: number }
   | { readonly operation: 'reset-all'; readonly revision: number }
+  | { readonly operation: 'set-budget'; readonly revision: number; readonly tokenBudget: number }

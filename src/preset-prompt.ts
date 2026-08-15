@@ -9,6 +9,7 @@ import type {
   SillyTavernPresetRole,
 } from './import/sillytavern-preset.ts'
 import { substituteCardMacros } from './prompt.ts'
+import type { EjsTemplateResult } from './ejs-template.ts'
 
 /** Runtime values substituted into marker prompts and macros. */
 export interface PresetPromptInputs {
@@ -20,6 +21,7 @@ export interface PresetPromptInputs {
   readonly session: Session
   readonly pendingMessages?: readonly UserMessage[]
   readonly mvuEnabled?: boolean
+  readonly renderTemplate?: (template: string) => EjsTemplateResult
 }
 
 /** Host-compatible prompt split around SillyTavern's chatHistory marker. */
@@ -30,6 +32,7 @@ export interface AssembledSillyTavernPreset {
   readonly enabledPromptCount: number
   readonly degradedRoleCount: number
   readonly unsupportedMacroCount: number
+  readonly templateFailureCount: number
 }
 
 /** One expanded Prompt Manager module placed relative to recent chat messages. */
@@ -45,6 +48,7 @@ interface MacroState {
   readonly userName: string
   readonly lastUserMessage: string
   unsupported: number
+  templateFailures: number
 }
 
 function lastUserMessage(session: Session, pending: readonly UserMessage[]): string {
@@ -187,7 +191,18 @@ function promptText(
   if (prompt.identifier === 'jailbreak' && card.postHistoryInstructions.trim() !== '' && !prompt.forbidOverrides) {
     value = substituteCardMacros(card.postHistoryInstructions, card, inputs.userName).replaceAll('{{original}}', marker)
   }
-  return expandMacros(substituteCardMacros(value, card, inputs.userName), state)
+  const expanded = expandMacros(substituteCardMacros(value, card, inputs.userName), state)
+  if (!/<%[=_-]?[\s\S]*?%>/imu.test(expanded)) return expanded
+  if (inputs.renderTemplate === undefined) {
+    state.templateFailures += 1
+    return undefined
+  }
+  const rendered = inputs.renderTemplate(expanded)
+  if (!rendered.ok) {
+    state.templateFailures += 1
+    return undefined
+  }
+  return rendered.text
 }
 
 function roleBoundary(role: SillyTavernPresetRole, name: string, text: string): string {
@@ -239,6 +254,7 @@ export function assembleSillyTavernPreset(
     userName: inputs.userName?.trim() || '用户',
     lastUserMessage: lastUserMessage(inputs.session, inputs.pendingMessages ?? []),
     unsupported: 0,
+    templateFailures: 0,
   }
   const before: string[] = []
   const after: string[] = []
@@ -281,5 +297,6 @@ export function assembleSillyTavernPreset(
     enabledPromptCount,
     degradedRoleCount,
     unsupportedMacroCount: state.unsupported,
+    templateFailureCount: state.templateFailures,
   }
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { activateLorebook, inspectLorebook } from '../src/import/lorebook.ts'
+import { activateLorebook, inspectLorebook, inspectLorebooks } from '../src/import/lorebook.ts'
 import { parseWorldInfoJson, parseWorldInfoJsonBytes } from '../src/import/world-info.ts'
 
 function world(entries: object): string {
@@ -206,4 +206,22 @@ test('activates constant entries without evaluating their regex keywords', () =>
 
   assert.deepEqual(inspected.beforeCharacter, ['常驻内容。'])
   assert.equal(inspected.entries[0]?.reason, 'active-constant')
+})
+
+test('shares one final token budget across books using entry priority', () => {
+  const low = parseWorldInfoJson(world({
+    low: { key: [], content: '低优先级', constant: true, order: 1, position: 0 },
+  }))
+  const high = parseWorldInfoJson(world({
+    high: { key: [], content: '高', constant: true, order: 100, position: 0 },
+  }))
+  const inspected = inspectLorebooks([
+    { id: 'low', lorebook: low.lorebook },
+    { id: 'high', lorebook: high.lorebook },
+  ], [], { tokenBudget: 2 })
+
+  assert.deepEqual(inspected.beforeCharacter, ['高'])
+  assert.equal(inspected.approximateTokens, 1)
+  assert.equal(inspected.books[0]?.inspected.entries[0]?.reason, 'session-budget-excluded')
+  assert.equal(inspected.books[1]?.inspected.entries[0]?.reason, 'active-constant')
 })

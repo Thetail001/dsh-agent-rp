@@ -3,6 +3,8 @@ import { defineConfig, type UserConfig } from 'tsdown'
 
 function isHostExternal(id: string): boolean {
   return id.startsWith('node:') || id.startsWith('@deepseek-ai/')
+    || id === 'quickjs-emscripten-core'
+    || id === '@jitl/quickjs-singlefile-mjs-release-sync'
 }
 
 const host: UserConfig = {

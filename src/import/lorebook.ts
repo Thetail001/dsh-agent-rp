@@ -1,6 +1,7 @@
 /** Deterministic activation of the safe Character Card lorebook subset. */
 
 import type { ImportedLorebook, ImportedLorebookEntry } from './types.ts'
+import type { EjsTemplateResult } from '../ejs-template.ts'
 
 /** Runtime result of selecting lorebook entries for one prompt. */
 export interface ActiveLorebook {
@@ -17,10 +18,12 @@ export type LorebookActivationReason =
   | 'empty-content'
   | 'decorator-unsupported'
   | 'template-unsupported'
+  | 'template-error'
   | 'regex-unsupported'
   | 'primary-unmatched'
   | 'secondary-unmatched'
   | 'budget-excluded'
+  | 'session-budget-excluded'
 
 /** Explainable activation result for one entry in source order. */
 export interface LorebookEntryActivation {
@@ -30,11 +33,41 @@ export interface LorebookEntryActivation {
   readonly matchedKeys: readonly string[]
   readonly matchedSecondaryKeys: readonly string[]
   readonly approximateTokens: number
+  readonly template?: 'rendered' | Exclude<EjsTemplateResult, { readonly ok: true }>['kind']
+  /** Resolved prompt text retained only for collection-level budgeting and assembly. */
+  readonly resolvedContent: string
 }
 
 /** Prompt fragments and entry-level explanations produced by the same decision pass. */
 export interface InspectedLorebook extends ActiveLorebook {
   readonly entries: readonly LorebookEntryActivation[]
+}
+
+/** Optional isolated renderer used to admit executable EJS content. */
+export interface LorebookActivationOptions {
+  readonly renderTemplate?: (template: string) => EjsTemplateResult
+}
+
+/** One book participating in a shared Session-level World Info budget. */
+export interface LorebookCollectionItem {
+  readonly id: string
+  readonly lorebook: ImportedLorebook
+}
+
+/** Shared-budget inspection retaining entry explanations for every source book. */
+export interface InspectedLorebookCollection extends ActiveLorebook {
+  readonly books: readonly { readonly id: string; readonly inspected: InspectedLorebook }[]
+  readonly approximateTokens: number
+  readonly tokenBudget?: number
+}
+
+interface CandidateDecision {
+  readonly candidate: boolean
+  readonly reason: LorebookActivationReason
+  readonly matchedKeys: readonly string[]
+  readonly matchedSecondaryKeys: readonly string[]
+  readonly content: string
+  readonly template?: LorebookEntryActivation['template']
 }
 
 function includesKey(text: string, key: string, caseSensitive: boolean, matchWholeWords: boolean): boolean {
@@ -87,39 +120,74 @@ function candidate(
   entry: ImportedLorebookEntry,
   messages: readonly string[],
   bookDepth: number | undefined,
-): Omit<LorebookEntryActivation, 'index' | 'active' | 'approximateTokens'> & { readonly candidate: boolean } {
-  if (!entry.enabled) return { candidate: false, reason: 'disabled', matchedKeys: [], matchedSecondaryKeys: [] }
-  if (entry.content.trim().length === 0) return { candidate: false, reason: 'empty-content', matchedKeys: [], matchedSecondaryKeys: [] }
-  if (entry.hasDecorators) return { candidate: false, reason: 'decorator-unsupported', matchedKeys: [], matchedSecondaryKeys: [] }
-  if (hasExecutableTemplate(entry.content)) return { candidate: false, reason: 'template-unsupported', matchedKeys: [], matchedSecondaryKeys: [] }
-  if (entry.constant) return { candidate: true, reason: 'active-constant', matchedKeys: [], matchedSecondaryKeys: [] }
-  const depth = entry.scanDepth ?? bookDepth ?? messages.length
-  const text = depth === 0 ? '' : messages.slice(-Math.max(0, Math.trunc(depth))).join('\n')
-  if (entry.useRegex) {
-    const matchedKeys = literalRegexMatches(entry.keys, text, entry)
-    if (matchedKeys === undefined) {
-      return { candidate: false, reason: 'regex-unsupported', matchedKeys: [], matchedSecondaryKeys: [] }
+  options: LorebookActivationOptions,
+): CandidateDecision {
+  const decision = (
+    candidate: boolean,
+    reason: LorebookActivationReason,
+    matchedKeys: readonly string[] = [],
+    matchedSecondaryKeys: readonly string[] = [],
+  ): CandidateDecision => ({
+    candidate, reason, matchedKeys, matchedSecondaryKeys, content: entry.content,
+  })
+  if (!entry.enabled) return decision(false, 'disabled')
+  if (entry.content.trim().length === 0) return decision(false, 'empty-content')
+  if (entry.hasDecorators) return decision(false, 'decorator-unsupported')
+
+  let activation: CandidateDecision
+  if (entry.constant) {
+    activation = decision(true, 'active-constant')
+  } else {
+    const depth = entry.scanDepth ?? bookDepth ?? messages.length
+    const text = depth === 0 ? '' : messages.slice(-Math.max(0, Math.trunc(depth))).join('\n')
+    if (entry.useRegex) {
+      const matchedKeys = literalRegexMatches(entry.keys, text, entry)
+      activation = matchedKeys === undefined
+        ? decision(false, 'regex-unsupported')
+        : matchedKeys.length === 0
+          ? decision(false, 'primary-unmatched', matchedKeys)
+          : decision(true, 'active-keyword', matchedKeys)
+    } else {
+      const matchedKeys = keywordMatches(entry.keys, text, entry)
+      if (matchedKeys.length === 0) {
+        activation = decision(false, 'primary-unmatched', matchedKeys)
+      } else {
+        const matchedSecondaryKeys = keywordMatches(entry.secondaryKeys, text, entry)
+        if (!entry.selective || entry.secondaryKeys.length === 0) {
+          activation = decision(true, 'active-keyword', matchedKeys, matchedSecondaryKeys)
+        } else {
+          const matches = entry.secondaryKeys.map(key => matchedSecondaryKeys.includes(key))
+          const secondaryMatches = entry.secondaryLogic === 'and-any' ? matches.some(Boolean)
+            : entry.secondaryLogic === 'and-all' ? matches.every(Boolean)
+              : entry.secondaryLogic === 'not-any' ? matches.every(match => !match)
+                : matches.some(match => !match)
+          activation = decision(
+            secondaryMatches,
+            secondaryMatches ? 'active-keyword' : 'secondary-unmatched',
+            matchedKeys,
+            matchedSecondaryKeys,
+          )
+        }
+      }
     }
-    return matchedKeys.length === 0
-      ? { candidate: false, reason: 'primary-unmatched', matchedKeys, matchedSecondaryKeys: [] }
-      : { candidate: true, reason: 'active-keyword', matchedKeys, matchedSecondaryKeys: [] }
   }
-  const matchedKeys = keywordMatches(entry.keys, text, entry)
-  if (matchedKeys.length === 0) {
-    return { candidate: false, reason: 'primary-unmatched', matchedKeys, matchedSecondaryKeys: [] }
+  if (!activation.candidate || !hasExecutableTemplate(entry.content)) return activation
+  if (options.renderTemplate === undefined) return { ...activation, candidate: false, reason: 'template-unsupported' }
+  const rendered = options.renderTemplate(entry.content)
+  if (!rendered.ok) return {
+    ...activation,
+    candidate: false,
+    reason: 'template-error',
+    template: rendered.kind,
   }
-  const matchedSecondaryKeys = keywordMatches(entry.secondaryKeys, text, entry)
-  if (!entry.selective || entry.secondaryKeys.length === 0) {
-    return { candidate: true, reason: 'active-keyword', matchedKeys, matchedSecondaryKeys }
+  if (rendered.text.trim().length === 0) return {
+    ...activation,
+    candidate: false,
+    reason: 'empty-content',
+    content: rendered.text,
+    template: 'rendered',
   }
-  const matches = entry.secondaryKeys.map(key => matchedSecondaryKeys.includes(key))
-  const secondaryMatches = entry.secondaryLogic === 'and-any' ? matches.some(Boolean)
-    : entry.secondaryLogic === 'and-all' ? matches.every(Boolean)
-      : entry.secondaryLogic === 'not-any' ? matches.every(match => !match)
-        : matches.some(match => !match)
-  return secondaryMatches
-    ? { candidate: true, reason: 'active-keyword', matchedKeys, matchedSecondaryKeys }
-    : { candidate: false, reason: 'secondary-unmatched', matchedKeys, matchedSecondaryKeys }
+  return { ...activation, content: rendered.text, template: 'rendered' }
 }
 
 function approximateTokens(text: string): number {
@@ -132,7 +200,11 @@ function approximateTokens(text: string): number {
   return Math.max(1, Math.ceil(ascii / 4) + nonAscii)
 }
 
-function budgeted(book: ImportedLorebook, entries: readonly { readonly index: number; readonly entry: ImportedLorebookEntry }[]): number[] {
+function budgeted(book: ImportedLorebook, entries: readonly {
+  readonly index: number
+  readonly entry: ImportedLorebookEntry
+  readonly content: string
+}[]): number[] {
   const budget = book.tokenBudget
   if (budget === undefined) return entries.map(value => value.index)
   const preferred = [...entries].sort((left, right) =>
@@ -140,8 +212,8 @@ function budgeted(book: ImportedLorebook, entries: readonly { readonly index: nu
       || left.entry.insertionOrder - right.entry.insertionOrder)
   const kept: number[] = []
   let used = 0
-  for (const { index, entry } of preferred) {
-    const cost = approximateTokens(entry.content)
+  for (const { index, entry, content } of preferred) {
+    const cost = approximateTokens(content)
     if (entry.ignoreBudget) {
       kept.push(index)
       continue
@@ -153,36 +225,103 @@ function budgeted(book: ImportedLorebook, entries: readonly { readonly index: nu
   return kept.sort((left, right) => left - right)
 }
 
+function activeContent(book: ImportedLorebook, entries: readonly LorebookEntryActivation[]): ActiveLorebook {
+  const active = entries.filter(value => value.active)
+    .map(value => ({ index: value.index, entry: book.entries[value.index]!, content: value.resolvedContent }))
+    .sort((left, right) => left.entry.insertionOrder - right.entry.insertionOrder || left.index - right.index)
+  return {
+    beforeCharacter: active.filter(value => value.entry.position === 'before_char').map(value => value.content),
+    afterCharacter: active.filter(value => value.entry.position === 'after_char').map(value => value.content),
+  }
+}
+
 /**
  * Inspect prompt activation with entry-level reasons and matching evidence.
  * @param book - imported character lorebook.
  * @param messages - model-visible conversation text in chronological order.
  * @returns prompt fragments and explanations produced by one shared decision pass.
  */
-export function inspectLorebook(book: ImportedLorebook, messages: readonly string[]): InspectedLorebook {
+export function inspectLorebook(
+  book: ImportedLorebook,
+  messages: readonly string[],
+  options: LorebookActivationOptions = {},
+): InspectedLorebook {
   const decisions = book.entries.map((entry, index) => ({
     index,
     entry,
-    decision: candidate(entry, messages, book.scanDepth),
+    decision: candidate(entry, messages, book.scanDepth, options),
   }))
   const candidates = decisions.filter(value => value.decision.candidate)
-  const included = new Set(budgeted(book, candidates.map(({ index, entry }) => ({ index, entry }))))
-  const entries = decisions.map(({ index, entry, decision }): LorebookEntryActivation => ({
+  const included = new Set(budgeted(book, candidates.map(({ index, entry, decision }) => ({
+    index, entry, content: decision.content,
+  }))))
+  const entries = decisions.map(({ index, decision }): LorebookEntryActivation => ({
     index,
     active: decision.candidate && included.has(index),
     reason: decision.candidate && !included.has(index) ? 'budget-excluded' : decision.reason,
     matchedKeys: decision.matchedKeys,
     matchedSecondaryKeys: decision.matchedSecondaryKeys,
-    approximateTokens: approximateTokens(entry.content),
+    approximateTokens: approximateTokens(decision.content),
+    ...(decision.template === undefined ? {} : { template: decision.template }),
+    resolvedContent: decision.content,
   }))
-  const active = entries.filter(value => value.active)
-    .map(value => ({ index: value.index, entry: book.entries[value.index]! }))
-    .sort((left, right) => left.entry.insertionOrder - right.entry.insertionOrder || left.index - right.index)
-    .map(value => value.entry)
+  const active = activeContent(book, entries)
   return {
-    beforeCharacter: active.filter(entry => entry.position === 'before_char').map(entry => entry.content),
-    afterCharacter: active.filter(entry => entry.position === 'after_char').map(entry => entry.content),
+    ...active,
     entries,
+  }
+}
+
+/**
+ * Inspect multiple books under their source budgets and one final Session budget.
+ * @param books - active books in prompt order.
+ * @param messages - model-visible conversation text in chronological order.
+ * @param options - isolated template renderer and optional aggregate token cap.
+ * @returns per-book decisions plus combined prompt fragments.
+ */
+export function inspectLorebooks(
+  books: readonly LorebookCollectionItem[],
+  messages: readonly string[],
+  options: LorebookActivationOptions & { readonly tokenBudget?: number } = {},
+): InspectedLorebookCollection {
+  const inspected = books.map(book => ({ id: book.id, inspected: inspectLorebook(book.lorebook, messages, options) }))
+  const candidates = inspected.flatMap((book, bookIndex) => book.inspected.entries.flatMap(decision => {
+    if (!decision.active) return []
+    const entry = books[bookIndex]!.lorebook.entries[decision.index]!
+    return [{ bookIndex, decision, entry }]
+  }))
+  const selected = new Set(candidates.map(value => `${value.bookIndex}\u0000${value.decision.index}`))
+  if (options.tokenBudget !== undefined) {
+    selected.clear()
+    let used = 0
+    const preferred = [...candidates].sort((left, right) =>
+      (right.entry.priority ?? right.entry.insertionOrder) - (left.entry.priority ?? left.entry.insertionOrder)
+        || left.bookIndex - right.bookIndex
+        || left.entry.insertionOrder - right.entry.insertionOrder
+        || left.decision.index - right.decision.index)
+    for (const value of preferred) {
+      if (used + value.decision.approximateTokens > Math.max(0, options.tokenBudget)) continue
+      used += value.decision.approximateTokens
+      selected.add(`${value.bookIndex}\u0000${value.decision.index}`)
+    }
+  }
+  const resolved = inspected.map((book, bookIndex) => {
+    const entries = book.inspected.entries.map(decision => decision.active
+      && !selected.has(`${bookIndex}\u0000${decision.index}`)
+      ? { ...decision, active: false, reason: 'session-budget-excluded' as const }
+      : decision)
+    return {
+      id: book.id,
+      inspected: { ...activeContent(books[bookIndex]!.lorebook, entries), entries },
+    }
+  })
+  return {
+    beforeCharacter: resolved.flatMap(book => book.inspected.beforeCharacter),
+    afterCharacter: resolved.flatMap(book => book.inspected.afterCharacter),
+    books: resolved,
+    approximateTokens: resolved.flatMap(book => book.inspected.entries)
+      .filter(entry => entry.active).reduce((sum, entry) => sum + entry.approximateTokens, 0),
+    ...(options.tokenBudget === undefined ? {} : { tokenBudget: options.tokenBudget }),
   }
 }
 
@@ -192,7 +331,11 @@ export function inspectLorebook(book: ImportedLorebook, messages: readonly strin
  * @param messages - model-visible conversation text in chronological order.
  * @returns position-separated content in insertion order and within budget.
  */
-export function activateLorebook(book: ImportedLorebook, messages: readonly string[]): ActiveLorebook {
-  const { beforeCharacter, afterCharacter } = inspectLorebook(book, messages)
+export function activateLorebook(
+  book: ImportedLorebook,
+  messages: readonly string[],
+  options: LorebookActivationOptions = {},
+): ActiveLorebook {
+  const { beforeCharacter, afterCharacter } = inspectLorebook(book, messages, options)
   return { beforeCharacter, afterCharacter }
 }

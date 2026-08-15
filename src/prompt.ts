@@ -2,8 +2,8 @@
 
 import type { Session, SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
 import type { ResolvedConfig } from './config.ts'
-import { activateLorebook } from './import/lorebook.ts'
-import type { ImportedCharacterCard } from './import/types.ts'
+import { activateLorebook, inspectLorebooks, type LorebookActivationOptions } from './import/lorebook.ts'
+import type { ImportedCharacterCard, ImportedLorebook } from './import/types.ts'
 import type { ImportedWorldInfo } from './import/types.ts'
 import { readAgentRpMemoryHistory } from './memory.ts'
 import { substituteMvuMacros } from './mvu.ts'
@@ -19,6 +19,12 @@ function finalizeRoleplayPrompt(value: string, statData?: import('@deepseek-ai/d
     if (next === result) return result
     result = next
   }
+}
+
+function renderCardTemplate(value: string, options: LorebookActivationOptions): string {
+  if (!/<%[=_-]?[\s\S]*?%>/imu.test(value)) return value
+  const rendered = options.renderTemplate?.(value)
+  return rendered?.ok === true ? rendered.text : ''
 }
 
 /**
@@ -75,14 +81,47 @@ export function renderImportedWorldInfos(
   session: Session,
   pendingMessages: readonly UserMessage[] = [],
   scanText: readonly string[] = [],
+  templateOptions: LorebookActivationOptions = {},
 ) {
   const messages = [...visibleDialogue(session, pendingMessages), ...scanText]
   return worldInfos.reduce((result, worldInfo) => {
-    const active = activateLorebook(worldInfo.lorebook, messages)
+    const active = activateLorebook(worldInfo.lorebook, messages, templateOptions)
     result.beforeCharacter.push(...active.beforeCharacter)
     result.afterCharacter.push(...active.afterCharacter)
     return result
   }, { beforeCharacter: [] as string[], afterCharacter: [] as string[] })
+}
+
+/** Activate every Session book under one aggregate budget while retaining source identity. */
+export function renderSessionLorebooks(input: {
+  readonly books: readonly { readonly id: string; readonly lorebook: ImportedLorebook }[]
+  readonly session: Session
+  readonly pendingMessages?: readonly UserMessage[]
+  readonly scanText?: readonly string[]
+  readonly statData?: import('@deepseek-ai/dsh-session').JsonValue
+  readonly templateOptions?: LorebookActivationOptions
+  readonly tokenBudget: number
+}) {
+  const scanText = input.scanText ?? []
+  const inspected = inspectLorebooks(
+    input.books,
+    [...visibleDialogue(input.session, input.pendingMessages ?? []), ...scanText],
+    { ...(input.templateOptions ?? {}), tokenBudget: input.tokenBudget },
+  )
+  const render = (values: readonly string[]) => values.map(value => substituteMvuMacros(value, input.statData))
+  return {
+    ...inspected,
+    beforeCharacter: render(inspected.beforeCharacter),
+    afterCharacter: render(inspected.afterCharacter),
+    books: inspected.books.map(book => ({
+      ...book,
+      inspected: {
+        ...book.inspected,
+        beforeCharacter: render(book.inspected.beforeCharacter),
+        afterCharacter: render(book.inspected.afterCharacter),
+      },
+    })),
+  }
 }
 
 /**
@@ -117,27 +156,32 @@ export function renderImportedCharacterPrompt(
   userName?: string,
   statData?: import('@deepseek-ai/dsh-session').JsonValue,
   userPersona?: string,
+  templateOptions: LorebookActivationOptions = {},
 ): string {
   const name = card.nickname?.trim() || card.name
   const original = `你是${name}。直接以${name}的身份与用户相处和交谈。`
-  const system = card.systemPrompt.trim().length === 0
+  const systemSource = card.systemPrompt.trim().length === 0
     ? original
     : substituteCardMacros(card.systemPrompt, card, userName).replaceAll('{{original}}', original)
+  const system = renderCardTemplate(systemSource, templateOptions)
   const parts = [
     system,
     ...loreBefore.map(value => substituteCardMacros(value, card, userName)),
-    `角色描述：${substituteCardMacros(card.description, card, userName)}`,
-    `性格：${substituteCardMacros(card.personality, card, userName)}`,
-    `当前场景：${substituteCardMacros(card.scenario, card, userName)}`,
+    `角色描述：${renderCardTemplate(substituteCardMacros(card.description, card, userName), templateOptions)}`,
+    `性格：${renderCardTemplate(substituteCardMacros(card.personality, card, userName), templateOptions)}`,
+    `当前场景：${renderCardTemplate(substituteCardMacros(card.scenario, card, userName), templateOptions)}`,
     ...(userPersona?.trim() ? [`与角色对话的人：${userPersona.trim()}`] : []),
-    ...(card.messageExample.trim().length === 0 ? [] : [`对话示例：\n${substituteCardMacros(card.messageExample, card, userName)}`]),
+    ...(card.messageExample.trim().length === 0 ? [] : [`对话示例：\n${renderCardTemplate(substituteCardMacros(card.messageExample, card, userName), templateOptions)}`]),
     ...loreAfter.map(value => substituteCardMacros(value, card, userName)),
     CHARACTER_BEHAVIOR,
     MEMORY_BEHAVIOR,
     IMPORT_BEHAVIOR,
   ]
   if (card.postHistoryInstructions.trim().length > 0) {
-    parts.push(substituteCardMacros(card.postHistoryInstructions, card, userName).replaceAll('{{original}}', ''))
+    parts.push(renderCardTemplate(
+      substituteCardMacros(card.postHistoryInstructions, card, userName).replaceAll('{{original}}', ''),
+      templateOptions,
+    ))
   }
   if (statData !== undefined) {
     parts.push('每次回复都必须在正文末尾完整输出一个 <UpdateVariable><Analysis>…</Analysis><JSONPatch>[…]</JSONPatch></UpdateVariable>；没有变量变化时 JSONPatch 也输出空数组。')
@@ -182,10 +226,11 @@ export function renderImportedLorebook(
   pendingMessages: readonly UserMessage[] = [],
   statData?: import('@deepseek-ai/dsh-session').JsonValue,
   scanText: readonly string[] = [],
+  templateOptions: LorebookActivationOptions = {},
 ) {
   const active = card.lorebook === undefined
     ? { beforeCharacter: [], afterCharacter: [] }
-    : activateLorebook(card.lorebook, [...visibleDialogue(session, pendingMessages), ...scanText])
+    : activateLorebook(card.lorebook, [...visibleDialogue(session, pendingMessages), ...scanText], templateOptions)
   return {
     beforeCharacter: active.beforeCharacter.map(value => substituteMvuMacros(value, statData)),
     afterCharacter: active.afterCharacter.map(value => substituteMvuMacros(value, statData)),

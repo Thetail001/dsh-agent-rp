@@ -10,6 +10,7 @@ import {
   encodeWorldInfoConfiguration,
   parseWorldInfoConfigurationRequest,
   readWorldInfoConfiguration,
+  worldInfoTokenBudget,
   type SessionLorebookSource,
 } from '../src/world-info-configuration-core.ts'
 
@@ -78,4 +79,20 @@ test('normalizes empty overrides already persisted by an earlier build', () => {
   })
 
   assert.deepEqual(readWorldInfoConfiguration(session.events), { format: 0, revision: 4, overrides: [] })
+})
+
+test('persists a bounded Session-wide token budget without resetting entry overlays', () => {
+  const book = source()
+  const edited = configureWorldInfo({ format: 0, revision: 0, overrides: [] }, {
+    operation: 'toggle', revision: 0, bookId: book.id, entryIndex: 0, enabled: false,
+  }, [book])
+  const budgeted = configureWorldInfo(edited, {
+    operation: 'set-budget', revision: 1, tokenBudget: 2_048,
+  }, [book])
+
+  assert.equal(worldInfoTokenBudget(budgeted), 2_048)
+  assert.equal(budgeted.overrides.length, 1)
+  assert.throws(() => parseWorldInfoConfigurationRequest(JSON.stringify({
+    operation: 'set-budget', revision: 2, tokenBudget: 100_001,
+  })), /过大/u)
 })

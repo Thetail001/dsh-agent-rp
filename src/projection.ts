@@ -20,12 +20,14 @@ import { configurePreset, parsePresetConfigurationRequest } from './preset-confi
 import { parsePresetLibraryResult } from './preset-library-protocol.ts'
 import { parseSessionPersona } from './session-persona.ts'
 import { decodeGenerationState, type GenerationStateRecord } from './generation.ts'
-import { inspectLorebook } from './import/lorebook.ts'
+import { inspectLorebooks } from './import/lorebook.ts'
+import { EjsTemplateEngine } from './ejs-template.ts'
 import type { ImportedWorldInfo } from './import/types.ts'
 import {
   configuredLorebook,
   decodeWorldInfoConfiguration,
   editableWorldInfoEntry,
+  worldInfoTokenBudget,
   withTavernWorldbooks,
   type SessionLorebookSource,
 } from './world-info-configuration-core.ts'
@@ -242,16 +244,34 @@ function promptRegexTrace(event: SessionEvent): AgentRpProjection['promptRegex']
   )?.trace
 }
 
-function worldInfoProjection(state: AgentRpProjectionState): AgentRpProjection['worldInfo'] {
+function worldInfoProjection(
+  state: AgentRpProjectionState,
+  ejsTemplateEngine?: EjsTemplateEngine,
+): AgentRpProjection['worldInfo'] {
   const sources = withTavernWorldbooks([
     ...(state.cardLorebook === undefined ? [] : [state.cardLorebook]),
     ...Object.values(state.standaloneWorldInfos),
   ], state.tavern)
   const messages = state.surface.flatMap(node => node.text === undefined ? [] : [node.text])
+  const templateOptions = ejsTemplateEngine === undefined ? {} : {
+    renderTemplate: ejsTemplateEngine.createRenderer({
+      characterName: state.character.characterName,
+      userName: state.character.persona?.name ?? state.character.userName ?? '用户',
+      messages,
+      variableScopes: state.tavern?.scopes ?? {},
+      ...(state.mvu === undefined ? {} : { statData: state.mvu.statData }),
+    }),
+  }
   let activeCount = 0
-  const books = sources.map(source => {
-    const configured = configuredLorebook(source, state.worldInfoConfiguration)
-    const inspected = inspectLorebook(configured.lorebook, messages)
+  const configuredSources = sources.map(source => ({ source, configured: configuredLorebook(source, state.worldInfoConfiguration) }))
+  const aggregateBudget = worldInfoTokenBudget(state.worldInfoConfiguration)
+  const inspectedCollection = inspectLorebooks(
+    configuredSources.map(({ source, configured }) => ({ id: source.id, lorebook: configured.lorebook })),
+    messages,
+    { ...templateOptions, tokenBudget: aggregateBudget },
+  )
+  const books = configuredSources.map(({ source, configured }, sourceIndex) => {
+    const inspected = inspectedCollection.books[sourceIndex]!.inspected
     const overrides = new Map(state.worldInfoConfiguration.overrides
       .filter(item => item.bookId === source.id).map(item => [item.entryIndex, item]))
     return {
@@ -278,13 +298,22 @@ function worldInfoProjection(state: AgentRpProjectionState): AgentRpProjection['
           matchedKeys: decision.matchedKeys,
           matchedSecondaryKeys: decision.matchedSecondaryKeys,
           approximateTokens: decision.approximateTokens,
+          ...(decision.template === undefined ? {} : { template: decision.template }),
           modified: override?.entry !== undefined,
           deleted,
         }
       }),
     }
   })
-  return { revision: state.worldInfoConfiguration.revision, activeCount, books }
+  return {
+    revision: state.worldInfoConfiguration.revision,
+    activeCount,
+    tokenBudget: aggregateBudget,
+    approximateTokens: inspectedCollection.approximateTokens,
+    budgetExcludedCount: inspectedCollection.books.flatMap(book => book.inspected.entries)
+      .filter(entry => entry.reason === 'session-budget-excluded').length,
+    books,
+  }
 }
 
 function toolCallId(event: Extract<SessionEvent, { type: 'tool/result' }>): string | undefined {
@@ -523,8 +552,11 @@ function withoutCall(
   return Object.fromEntries(Object.entries(calls).filter(([id]) => id !== callId))
 }
 
-/** Projection definition shared by every Agent RP Session. */
-export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentRpProjectionState> = {
+/** Build one projection definition with an optional isolated EJS evaluator. */
+export function createAgentRpProjectionDefinition(
+  ejsTemplateEngine?: EjsTemplateEngine,
+): ProjectionDefinition<'agentRp', AgentRpProjectionState> {
+  return {
   key: 'agentRp',
   schema: projectionSchema as never,
   init: () => ({
@@ -958,7 +990,7 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
         }
   },
   view: state => {
-    const worldInfo = worldInfoProjection(state)
+    const worldInfo = worldInfoProjection(state, ejsTemplateEngine)
     const visibleTavernMessages = state.surface.flatMap(({ seq, text, role }) => text === undefined || role === undefined
       ? []
       : [{ seq, role, text, isHidden: false as const }])
@@ -992,4 +1024,8 @@ export const agentRpProjectionDefinition: ProjectionDefinition<'agentRp', AgentR
     }
   },
   stateVersion: 9,
+  }
 }
+
+/** Projection definition used by pure replay tests and deployments without EJS initialization. */
+export const agentRpProjectionDefinition = createAgentRpProjectionDefinition()
