@@ -83,6 +83,7 @@ import {
   PUBLISH_ROLEPLAY_IMAGE_TOOL,
   preparePublishedRoleplayImage,
   type PublishedRoleplayImageMeta,
+  type PublishedRoleplayImageValue,
 } from './roleplay-image.ts'
 import { createEjsWorldInfoBooks, EjsTemplateEngine, type EjsTemplateContext } from './ejs-template.ts'
 import { installBundledAgentRpPreset } from './preset.ts'
@@ -910,10 +911,16 @@ export function installAgentRp(
     },
     output: {
       schema: PUBLISHED_ROLEPLAY_IMAGE_VALUE_SCHEMA,
-      render: (_args, value) => [{
-        type: 'text',
-        text: `Published ${value.images.length} roleplay image${value.images.length === 1 ? '' : 's'} for the final reply.`,
-      }],
+      render: (_args, value) => {
+        const published = value as unknown as PublishedRoleplayImageValue
+        return [
+          ...published.images.map(attachment => ({ type: 'image' as const, attachment })),
+          {
+            type: 'text' as const,
+            text: `Published ${published.images.length} roleplay image${published.images.length === 1 ? '' : 's'} for the final reply.`,
+          },
+        ]
+      },
       presentationMeta: (_args, value) => {
         const meta = { format: 0, ...value } as unknown as PublishedRoleplayImageMeta
         return meta as unknown as import('@deepseek-ai/dsh-session').JsonValue
