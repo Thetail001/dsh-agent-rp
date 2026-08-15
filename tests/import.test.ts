@@ -257,7 +257,6 @@ test('imports V3 while preserving and disabling unsafe optional behavior', () =>
     'group-greetings',
     'lorebook-decorators',
     'lorebook-recursion',
-    'lorebook-regex',
     'remote-assets',
   ])
   assert.deepEqual(activateLorebook(card.lorebook!, ['秘密', '旧港']), {

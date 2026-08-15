@@ -48,6 +48,28 @@ async function readUpload(request: IncomingMessage): Promise<Uint8Array> {
   return new Uint8Array(Buffer.concat(chunks))
 }
 
+async function readRename(request: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = []
+  let bytes = 0
+  for await (const chunk of request) {
+    const data = Buffer.from(chunk as Uint8Array)
+    bytes += data.byteLength
+    if (bytes > 8 * 1024) throw new Error('预设名称请求过大')
+    chunks.push(data)
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  } catch (error: unknown) {
+    throw new Error('预设名称请求不是有效 JSON', { cause: error })
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)
+    || typeof (value as Record<string, unknown>).name !== 'string') {
+    throw new Error('预设名称请求缺少 name')
+  }
+  return (value as { readonly name: string }).name
+}
+
 /** Register model-free preset listing and upload routes for the Roleplay UI. */
 export function installPresetLibraryHttp(ctx: Context, library: PresetLibrary, server: AgentRpHttpServer): void {
   ctx.effect(() => server.register({
@@ -63,8 +85,18 @@ export function installPresetLibraryHttp(ctx: Context, library: PresetLibrary, s
           json(response, 200, { format: 0, entries: library.list() })
           return
         }
+        if (request.method === 'PATCH') {
+          const id = new URL(request.url ?? '/', 'http://agent-rp.local').searchParams.get('id')
+          if (id === null) {
+            json(response, 400, { error: '预设库 id 缺失' })
+            return
+          }
+          const { preset: _preset, ...entry } = library.rename(id, await readRename(request))
+          json(response, 200, { format: 0, entry })
+          return
+        }
         if (request.method !== 'POST') {
-          response.setHeader('allow', 'GET, POST')
+          response.setHeader('allow', 'GET, POST, PATCH')
           json(response, 405, { error: 'method not allowed' })
           return
         }

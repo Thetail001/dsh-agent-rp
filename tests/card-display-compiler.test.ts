@@ -4,6 +4,7 @@ import {
   compileCharacterDisplay,
   normalizeLegacyCardHtml,
 } from '../src/card-display-compiler.ts'
+import { compileCardFrameDocument, compileCardFrames } from '../src/client/card-frame.ts'
 
 test('removes model-defined wrappers and reports only safe tag metadata', () => {
   const source = '<scene>private sample prose</scene>'
@@ -56,6 +57,36 @@ test('distinguishes fenced frontend documents from inline HTML in source order',
     { code: 'frontend-document', count: 1 },
     { code: 'inline-html', count: 1 },
   ])
+})
+
+test('keeps application greetings isolated while redirecting only known Host facades', () => {
+  const source = '<!doctype html><html><body><script>const context=top.SillyTavern.getContext();top.Mvu.getMvuData();parent.getChatMessages();parent.document.body;</script><img src="https://cdn.example.com/cover.webp"></body></html>'
+  const frames = compileCardFrames(compileCharacterDisplay(`\`\`\`html\n${source}\n\`\`\``), {
+    origin: 'http://127.0.0.1:3091',
+  })
+  const frame = frames.segments[0]
+  assert.equal(frame?.kind, 'frame')
+  if (frame?.kind !== 'frame') return
+  assert.equal(frame.interactive, true)
+  assert.deepEqual(frame.remoteOrigins, ['https://cdn.example.com'])
+  assert.match(frame.srcDoc, /window\.SillyTavern\.getContext\(\)/u)
+  assert.match(frame.srcDoc, /window\.Mvu\.getMvuData\(\)/u)
+  assert.match(frame.srcDoc, /window\.getChatMessages\(\)/u)
+  assert.match(frame.srcDoc, /parent\.document\.body/u)
+})
+
+test('allows only explicitly approved card resource origins in the frame CSP', () => {
+  const source = '<!doctype html><html><body><script>fetch("https://app.example.com/view")</script></body></html>'
+  const blocked = compileCardFrameDocument(source, { origin: 'http://127.0.0.1:3091' })
+  const approved = compileCardFrameDocument(source, {
+    origin: 'http://127.0.0.1:3091',
+    character: {
+      id: 'character-test', approvedRemoteResourceOrigins: ['https://app.example.com'],
+      displayExtensions: [], imageAssets: [],
+    } as never,
+  })
+  assert.match(blocked, /connect-src 'none'/u)
+  assert.match(approved, /connect-src https:\/\/app\.example\.com/u)
 })
 
 test('recognizes a complete frontend document mislabeled as fenced text', () => {

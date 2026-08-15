@@ -230,6 +230,16 @@ test('keeps local wording fixes and standalone display regexes beside the origin
   const data = new TextEncoder().encode(JSON.stringify(raw))
   const library = new CharacterLibrary({ root })
   const imported = library.importFile({ data, filename: 'overlay.json', mediaType: 'application/json' })
+  assert.deepEqual(imported.remoteResourceOrigins, ['https://cdn.example.com'])
+  assert.deepEqual(imported.approvedRemoteResourceOrigins, [])
+
+  const approved = library.setRemoteResourceOriginApproved(imported.id, 'https://cdn.example.com', true)
+  assert.deepEqual(approved.approvedRemoteResourceOrigins, ['https://cdn.example.com'])
+  assert.deepEqual(library.get(imported.id).approvedRemoteResourceOrigins, ['https://cdn.example.com'])
+  assert.deepEqual(library.setRemoteResourceOriginApproved(imported.id, 'https://cdn.example.com', false)
+    .approvedRemoteResourceOrigins, [])
+  assert.throws(() => library.setRemoteResourceOriginApproved(imported.id, 'https://other.example.com', true),
+    /没有引用/u)
 
   const corrected = library.replaceText(imported.id, '门还没锁', '门已经打开')
   assert.equal(corrected.localCorrectionCount, 1)

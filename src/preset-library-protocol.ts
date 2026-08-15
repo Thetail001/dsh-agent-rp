@@ -8,7 +8,7 @@ const PREFIX = 'agent-rp:preset-library:v0:'
 /** Preset library result persisted inside a native `command/done` event. */
 export interface PresetLibraryCommandResult {
   readonly format: 0
-  readonly operation: 'list' | 'select' | 'save' | 'delete'
+  readonly operation: 'list' | 'select' | 'save' | 'rename' | 'delete'
   readonly entries: readonly PresetLibrarySummary[]
   readonly linkedLibraryId?: string
   readonly selected?: {
@@ -34,7 +34,7 @@ export function parsePresetLibraryResult(text: string | undefined): PresetLibrar
   }
   const result = value as Partial<PresetLibraryCommandResult> | null
   if (result === null || typeof result !== 'object' || result.format !== 0
-    || !['list', 'select', 'save', 'delete'].includes(String(result.operation))
+    || !['list', 'select', 'save', 'rename', 'delete'].includes(String(result.operation))
     || !Array.isArray(result.entries)
     || (result.linkedLibraryId !== undefined && typeof result.linkedLibraryId !== 'string')
     || (result.selected !== undefined && (typeof result.selected !== 'object' || result.selected === null

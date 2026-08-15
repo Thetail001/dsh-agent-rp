@@ -109,7 +109,6 @@ test('preserves but does not execute advanced World Info behavior', () => {
   assert.deepEqual(book.degradations, [
     'entry-decorators',
     'entry-probability',
-    'entry-regex',
     'entry-unsupported-position',
     'timed-effects',
     'vector-matching',

@@ -176,6 +176,19 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
           json(response, 200, { format: 0, entry: browserDetail(entry) })
           return
         }
+        if (request.method === 'POST' && parts.length === 3 && parts[0] !== undefined
+          && parts[1] === 'remote-resources' && (parts[2] === 'approve' || parts[2] === 'revoke')) {
+          const origin = new URL(request.url ?? '/', 'http://agent-rp.local').searchParams.get('origin')
+          if (origin === null) {
+            fail(response, 400, '外部资源来源缺失')
+            return
+          }
+          json(response, 200, {
+            format: 0,
+            entry: browserDetail(library.setRemoteResourceOriginApproved(parts[0], origin, parts[2] === 'approve')),
+          })
+          return
+        }
         if (request.method === 'GET' && parts.length === 2 && parts[0] !== undefined && parts[1] === 'world-info') {
           const url = new URL(request.url ?? '/', 'http://agent-rp.local')
           const offset = Number(url.searchParams.get('offset') ?? '0')

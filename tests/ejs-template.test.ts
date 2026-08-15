@@ -243,6 +243,51 @@ test('interrupts non-terminating templates and reports source errors without sou
   }), { ok: false, kind: 'syntax-error' })
 })
 
+test('matches World Info regex in one isolated bounded runtime', () => {
+  const matcher = engine.createRegexMatcher()
+  try {
+    assert.deepEqual(matcher.match(['/secret/iu', '^clock\\s+tower$', 'missing'], 'Secret\nclock tower', true), {
+      ok: true,
+      matchedKeys: ['/secret/iu'],
+    })
+    assert.deepEqual(matcher.match(['CLOCK'], 'clock tower', false), {
+      ok: true,
+      matchedKeys: ['CLOCK'],
+    })
+    assert.deepEqual(matcher.match(['/unterminated[/u'], 'text', true), { ok: false, kind: 'invalid' })
+  } finally {
+    matcher.dispose()
+  }
+})
+
+test('interrupts catastrophic World Info regex without using the Host RegExp engine', () => {
+  const matcher = engine.createRegexMatcher()
+  try {
+    assert.deepEqual(matcher.match(['/(a+)+$/'], `${'a'.repeat(20_000)}!`, true), {
+      ok: false,
+      kind: 'execution-limit',
+    })
+  } finally {
+    matcher.dispose()
+  }
+})
+
+test('activates regex World Info through the isolated matcher', () => {
+  const book: ImportedLorebook = {
+    recursiveScanning: false,
+    entries: [{
+      sourceId: 'regex', keys: ['/clock\\s+tower/iu'], secondaryKeys: [], content: '钟楼。', enabled: true,
+      insertionOrder: 1, selective: false, constant: false, caseSensitive: true,
+      matchWholeWords: false, secondaryLogic: 'and-any', position: 'before_char',
+      ignoreBudget: false, useRegex: true, hasDecorators: false,
+    }],
+  }
+
+  const inspected = inspectLorebook(book, ['去 Clock Tower。'], { regexEngine: engine })
+  assert.deepEqual(inspected.beforeCharacter, ['钟楼。'])
+  assert.equal(inspected.entries[0]?.reason, 'active-keyword')
+})
+
 test('activates rendered EJS lore and keeps failures out of the prompt', () => {
   const entry = (content: string, insertionOrder: number) => ({
     sourceId: String(insertionOrder), keys: [], secondaryKeys: [], content, enabled: true,

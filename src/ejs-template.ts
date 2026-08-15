@@ -4,8 +4,14 @@ import variant from '@jitl/quickjs-singlefile-mjs-release-sync'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import {
   newQuickJSWASMModuleFromVariant,
+  type QuickJSHandle,
   type QuickJSWASMModule,
 } from 'quickjs-emscripten-core'
+import type {
+  LorebookRegexEngine,
+  LorebookRegexMatcher,
+  LorebookRegexMatchResult,
+} from './import/lorebook.ts'
 
 const MAX_TEMPLATE_CHARS = 256 * 1024
 const MAX_OUTPUT_CHARS = 256 * 1024
@@ -15,6 +21,11 @@ const MAX_STACK_BYTES = 512 * 1024
 const MAX_INTERRUPT_POLLS = 512
 const MAX_PENDING_JOBS = 1_024
 const MAX_RENDERER_EVALUATIONS = 256
+const MAX_REGEX_PATTERN_CHARS = 16 * 1024
+const MAX_REGEX_INPUT_CHARS = 512 * 1024
+const MAX_REGEX_EVALUATIONS = 4_096
+const MAX_REGEX_PATTERN_CHARS_PER_MATCHER = 2 * 1024 * 1024
+const MAX_REGEX_INTERRUPT_POLLS = 64
 
 let quickjsModule: Promise<QuickJSWASMModule> | undefined
 
@@ -430,8 +441,125 @@ function failureKind(value: unknown): EjsTemplateFailureKind {
   return 'runtime-error'
 }
 
+interface ParsedRegexPattern {
+  readonly source: string
+  readonly flags: string
+}
+
+function parsedRegexPattern(value: string, caseSensitive: boolean): ParsedRegexPattern | undefined {
+  if (value === '') return undefined
+  let source = value
+  let flags = ''
+  if (value[0] === '/') {
+    let escaped = false
+    let inClass = false
+    let closing = -1
+    for (let index = 1; index < value.length; index += 1) {
+      const character = value[index]!
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (character === '\\') {
+        escaped = true
+        continue
+      }
+      if (character === '[') inClass = true
+      else if (character === ']') inClass = false
+      else if (character === '/' && !inClass) closing = index
+    }
+    if (closing > 0) {
+      source = value.slice(1, closing)
+      flags = value.slice(closing + 1)
+      if (!/^[a-z]*$/u.test(flags)) return undefined
+    }
+  }
+  if (!caseSensitive && !flags.includes('i')) flags += 'i'
+  return { source, flags }
+}
+
+function regexFailure(value: unknown): 'invalid' | 'execution-limit' | 'resource-limit' {
+  if (typeof value !== 'object' || value === null) return 'invalid'
+  const record = value as { readonly name?: unknown; readonly message?: unknown }
+  const message = typeof record.message === 'string' ? record.message : ''
+  if (message.includes('interrupted')) return 'execution-limit'
+  if (/out of memory|memory limit/iu.test(message)) return 'resource-limit'
+  return 'invalid'
+}
+
+function createQuickJsRegexMatcher(quickjs: QuickJSWASMModule): LorebookRegexMatcher {
+  const runtime = quickjs.newRuntime()
+  runtime.setMemoryLimit(MEMORY_LIMIT_BYTES)
+  runtime.setMaxStackSize(MAX_STACK_BYTES)
+  let polls = 0
+  runtime.setInterruptHandler(() => ++polls > MAX_REGEX_INTERRUPT_POLLS)
+  const vm = runtime.newContext()
+  const compiled = vm.evalCode('(pattern, flags, text) => new RegExp(pattern, flags).test(text)', 'agent-rp:world-info-regex')
+  let matchFunction: QuickJSHandle | undefined
+  if (compiled.error !== undefined) compiled.error.dispose()
+  else matchFunction = compiled.value
+  let disposed = false
+  let evaluations = 0
+  let patternChars = 0
+
+  return {
+    match(keys, text, caseSensitive): LorebookRegexMatchResult {
+      if (disposed || matchFunction === undefined || text.length > MAX_REGEX_INPUT_CHARS) {
+        return { ok: false, kind: 'resource-limit' }
+      }
+      if (evaluations + keys.length > MAX_REGEX_EVALUATIONS) return { ok: false, kind: 'resource-limit' }
+      const matchedKeys: string[] = []
+      for (const key of keys) {
+        const parsed = parsedRegexPattern(key, caseSensitive)
+        if (parsed === undefined || parsed.source.length > MAX_REGEX_PATTERN_CHARS) {
+          return { ok: false, kind: 'invalid' }
+        }
+        patternChars += parsed.source.length
+        evaluations += 1
+        if (patternChars > MAX_REGEX_PATTERN_CHARS_PER_MATCHER) return { ok: false, kind: 'resource-limit' }
+        let patternHandle: QuickJSHandle | undefined
+        let flagsHandle: QuickJSHandle | undefined
+        let textHandle: QuickJSHandle | undefined
+        try {
+          patternHandle = vm.newString(parsed.source)
+          flagsHandle = vm.newString(parsed.flags)
+          textHandle = vm.newString(text)
+          polls = 0
+          const result = vm.callFunction(matchFunction, vm.undefined, patternHandle, flagsHandle, textHandle)
+          const errorHandle = result.error
+          if (errorHandle !== undefined) {
+            const error = vm.dump(errorHandle)
+            errorHandle.dispose()
+            return { ok: false, kind: regexFailure(error) }
+          }
+          const valueHandle = result.value
+          if (valueHandle === undefined) return { ok: false, kind: 'invalid' }
+          const matched = vm.dump(valueHandle)
+          valueHandle.dispose()
+          if (typeof matched !== 'boolean') return { ok: false, kind: 'invalid' }
+          if (matched) matchedKeys.push(key)
+        } catch (error: unknown) {
+          return { ok: false, kind: regexFailure(error) }
+        } finally {
+          patternHandle?.dispose()
+          flagsHandle?.dispose()
+          textHandle?.dispose()
+        }
+      }
+      return { ok: true, matchedKeys }
+    },
+    dispose(): void {
+      if (disposed) return
+      disposed = true
+      matchFunction?.dispose()
+      vm.dispose()
+      runtime.dispose()
+    },
+  }
+}
+
 /** QuickJS-backed evaluator; every render gets a fresh runtime and context. */
-export class EjsTemplateEngine {
+export class EjsTemplateEngine implements LorebookRegexEngine {
   private constructor(private readonly quickjs: QuickJSWASMModule) {}
 
   /** Load the embedded QuickJS WebAssembly module once during plugin startup. */
@@ -526,5 +654,10 @@ export class EjsTemplateEngine {
       evaluations += 1
       return this.render(template, context, target)
     }
+  }
+
+  /** Create one bounded matcher that never executes untrusted regex in the Host JavaScript engine. */
+  createRegexMatcher(): LorebookRegexMatcher {
+    return createQuickJsRegexMatcher(this.quickjs)
   }
 }

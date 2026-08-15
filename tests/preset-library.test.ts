@@ -155,11 +155,16 @@ test('selects, saves, lists, and deletes library presets without mutating an act
   }])
   assert.deepEqual(projected(agent).presetLibrary.map(item => item.id), [imported.id])
 
+  invoke(agent, library, { operation: 'rename', id: imported.id, name: '通用预设（自定义）' })
+  assert.equal(library.get(imported.id).name, '通用预设（自定义）')
+  assert.equal(projected(agent).presetLibrary.find(item => item.id === imported.id)?.name, '通用预设（自定义）')
+  assert.equal(readActiveSessionPreset(agent.session.events)?.result.name, '通用预设')
+
   invoke(agent, library, { operation: 'save', name: '我的副本' })
-  assert.deepEqual(library.list().map(item => item.name).sort(), ['我的副本', '通用预设'])
+  assert.deepEqual(library.list().map(item => item.name).sort(), ['我的副本', '通用预设（自定义）'])
   const saved = library.list().find(item => item.name === '我的副本')!
   invoke(agent, library, { operation: 'delete', id: saved.id })
-  assert.deepEqual(library.list().map(item => item.name), ['通用预设'])
+  assert.deepEqual(library.list().map(item => item.name), ['通用预设（自定义）'])
   assert.equal(readActiveSessionPreset(agent.session.events)?.preset.name, '通用预设')
   assert.equal(agent.session.events.at(-1)?.type, 'command/done')
 })

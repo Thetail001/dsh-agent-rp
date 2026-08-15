@@ -81,6 +81,7 @@ interface StoredCharacterOverlay {
   readonly format: 0
   readonly textReplacements: readonly StoredTextReplacement[]
   readonly displayExtensions: readonly StoredDisplayExtension[]
+  readonly approvedRemoteResourceOrigins: readonly string[]
 }
 
 /** Browser-selected standalone SillyTavern display regex. */
@@ -273,23 +274,58 @@ function parseOverlay(value: unknown): StoredCharacterOverlay {
       script,
     }
   })
-  return { format: 0, textReplacements, displayExtensions }
+  if (record.approvedRemoteResourceOrigins !== undefined && !Array.isArray(record.approvedRemoteResourceOrigins)) {
+    throw new Error('character library overlay has invalid resource origins')
+  }
+  const approvedRemoteResourceOrigins = (record.approvedRemoteResourceOrigins ?? []).map((origin, index) => {
+    if (typeof origin !== 'string') throw new Error('character library overlay has an invalid resource origin')
+    return safeHttpsOrigin(origin, `approved card resource origin ${index + 1}`)
+  })
+  return { format: 0, textReplacements, displayExtensions, approvedRemoteResourceOrigins }
 }
 
 function emptyOverlay(): StoredCharacterOverlay {
-  return { format: 0, textReplacements: [], displayExtensions: [] }
+  return { format: 0, textReplacements: [], displayExtensions: [], approvedRemoteResourceOrigins: [] }
+}
+
+function remoteResourceOrigins(source: string): readonly string[] {
+  const origins = new Set<string>()
+  const patterns = [
+    /<(?:img|script|source|video|audio)\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/giu,
+    /<link\b[^>]*\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/giu,
+    /\bfetch\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
+  ]
+  for (const pattern of patterns) for (const match of source.matchAll(pattern)) {
+    const resource = match[1] ?? match[2] ?? match[3]
+    if (resource === undefined || !/^https:\/\//iu.test(resource)) continue
+    try {
+      origins.add(safeHttpsOrigin(new URL(resource).origin, 'card resource origin'))
+    } catch {
+      // URL-like card text is not an executable resource declaration.
+    }
+  }
+  for (const match of source.matchAll(/https:\/\/[^\s"'<>`\\)]+/giu)) {
+    const resource = match[0].replace(/[),.;]+$/u, '')
+    try {
+      origins.add(safeHttpsOrigin(new URL(resource).origin, 'card resource origin'))
+    } catch {
+      // URL-like card text is not an executable resource declaration.
+    }
+  }
+  return [...origins].sort()
 }
 
 function imageOrigins(script: ImportedRegexScript): readonly string[] {
-  const origins = new Set<string>()
-  const pattern = /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/giu
-  for (const match of script.replaceString.matchAll(pattern)) {
-    const source = match[1] ?? match[2] ?? match[3]
-    if (source === undefined || !/^https:\/\//iu.test(source)) continue
-    const url = new URL(source)
-    origins.add(safeHttpsOrigin(url.origin, 'display extension image origin'))
-  }
-  return [...origins].sort()
+  return remoteResourceOrigins(script.replaceString)
+}
+
+function cardRemoteResourceOrigins(card: ImportedCharacterCard): readonly string[] {
+  const greetings = [card.firstMessage, ...card.alternateGreetings]
+    .map(greeting => renderCharacterDisplay(greeting, card, AI_OUTPUT_PLACEMENT, 0))
+  return [...new Set([
+    ...card.frontend.regexScripts.flatMap(script => remoteResourceOrigins(script.replaceString)),
+    ...greetings.flatMap(remoteResourceOrigins),
+  ])].sort()
 }
 
 function sameMalformedPattern(left: ImportedRegexScript, right: ImportedRegexScript): boolean {
@@ -493,11 +529,15 @@ function characterDetail(
   includeWorldInfo: boolean,
 ): CharacterLibraryDetail {
   const worldInfo = includeWorldInfo ? worldInfoDetail(parsed.card) : undefined
+  const declaredRemoteOrigins = cardRemoteResourceOrigins(parsed.card)
   return {
     ...summary(meta, parsed.card, parsed.avatarAvailable, parsed.images.length),
     mediaType: meta.mediaType,
     ...greetingDetail(parsed.card),
     imageAssets: parsed.images,
+    remoteResourceOrigins: declaredRemoteOrigins,
+    approvedRemoteResourceOrigins: parsed.overlay.approvedRemoteResourceOrigins
+      .filter(origin => declaredRemoteOrigins.includes(origin)),
     ...(worldInfo === undefined ? {} : { worldInfo }),
     degradations: parsed.card.degradations,
     regexScripts: regexScriptDetail(parsed.card),
@@ -789,6 +829,24 @@ export class CharacterLibrary {
     const displayExtensions = parsed.overlay.displayExtensions.filter(extension => extension.id !== extensionId)
     if (displayExtensions.length === parsed.overlay.displayExtensions.length) throw new Error('角色卡没有这个显示扩展')
     this.writeOverlay(id, { ...parsed.overlay, displayExtensions })
+    return this.get(id)
+  }
+
+  /** Allow or revoke one card-declared public HTTPS resource origin. */
+  setRemoteResourceOriginApproved(id: string, origin: string, approved: boolean): CharacterLibraryDetail {
+    const normalized = safeHttpsOrigin(origin, 'card resource origin')
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    if (!cardRemoteResourceOrigins(parsed.card).includes(normalized)) {
+      throw new Error('角色卡没有引用这个外部资源来源')
+    }
+    const origins = new Set(parsed.overlay.approvedRemoteResourceOrigins)
+    if (approved) origins.add(normalized)
+    else origins.delete(normalized)
+    this.writeOverlay(id, {
+      ...parsed.overlay,
+      approvedRemoteResourceOrigins: [...origins].sort(),
+    })
     return this.get(id)
   }
 

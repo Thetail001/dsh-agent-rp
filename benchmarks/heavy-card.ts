@@ -103,7 +103,9 @@ function syntheticCard(options: Options): Uint8Array {
   const entries = Array.from({ length: options.worldInfoEntries }, (_, index) => ({
     id: index,
     name: `Synthetic entry ${index}`,
-    keys: [`synthetic-${index}`, `topic-${index % 32}`],
+    keys: index % 5 === 0
+      ? [`synthetic-${index}`]
+      : [`/synthetic-${index}|topic-${index % 32}/iu`],
     secondary_keys: [],
     content: `Synthetic lore ${index}: <%= char %> / <%= getvar("state.phase", 0) %>.`,
     enabled: true,
@@ -112,7 +114,7 @@ function syntheticCard(options: Options): Uint8Array {
     constant: index % 5 === 0,
     case_sensitive: false,
     match_whole_words: false,
-    use_regex: false,
+    use_regex: index % 5 !== 0,
     position: index % 2 === 0 ? 'before_char' : 'after_char',
     priority: options.worldInfoEntries - index,
     extensions: {},
@@ -247,18 +249,18 @@ try {
     undefined,
     id,
   )
-  const projectionDefinition = createAgentRpProjectionDefinition()
+  let engine: EjsTemplateEngine | undefined
+  const ejsInitialization = await measure(1, async () => {
+    engine = await EjsTemplateEngine.create()
+  })
+  if (engine === undefined) throw new Error('EJS engine did not initialize')
+  const projectionDefinition = createAgentRpProjectionDefinition(engine)
   const projection = await measure(options.repeats, () => {
     let state = projectionDefinition.init()
     for (const event of seed) state = projectionDefinition.apply(state, event)
     sink += projectionDefinition.view(state).worldInfoCount
   })
 
-  let engine: EjsTemplateEngine | undefined
-  const ejsInitialization = await measure(1, async () => {
-    engine = await EjsTemplateEngine.create()
-  })
-  if (engine === undefined) throw new Error('EJS engine did not initialize')
   const ejsBatch = await measure(options.repeats, () => {
     for (let index = 0; index < options.ejsTemplates; index += 1) {
       const result = engine!.render(

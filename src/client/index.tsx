@@ -51,6 +51,7 @@ import {
   presetLibraryOptionLabel,
   type PresetLibraryImportResponse,
   type PresetLibraryListResponse,
+  type PresetLibraryRenameResponse,
   type PresetLibrarySummary,
 } from '../preset-library-http-protocol.ts'
 import {
@@ -542,6 +543,17 @@ function writeRoleplayPresetPreference(presetId: string): void {
   localStorage.setItem(roleplayPresetPreferenceKey, presetId)
 }
 
+async function renamePresetLibraryEntry(id: string, name: string): Promise<PresetLibrarySummary> {
+  const response = await fetch(`${PRESET_LIBRARY_PATH}?id=${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  const value = await response.json() as Partial<PresetLibraryRenameResponse> & { readonly error?: string }
+  if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `预设改名失败（${response.status}）`)
+  return value.entry
+}
+
 function usePresetPreference(
   listPresets: HeaderProps['listPresets'],
   enabled = true,
@@ -551,6 +563,7 @@ function usePresetPreference(
   readonly presetId: string
   readonly selectPreset: (presetId: string) => void
   readonly selectImportedPreset: (entry: PresetLibrarySummary) => void
+  readonly renamePreset: (id: string, name: string) => Promise<PresetLibrarySummary>
 } {
   const [entries, setEntries] = useState<readonly PresetLibrarySummary[]>()
   const [error, setError] = useState<string>()
@@ -592,6 +605,11 @@ function usePresetPreference(
       writeRoleplayPresetPreference(entry.id)
       setPresetId(entry.id)
     },
+    async renamePreset(id, name) {
+      const entry = await renamePresetLibraryEntry(id, name)
+      setEntries(current => (current ?? []).map(candidate => candidate.id === id ? entry : candidate))
+      return entry
+    },
   }
 }
 
@@ -606,6 +624,30 @@ async function fetchCharacterDetail(id: string): Promise<CharacterLibraryDetail>
   const value = await characterLibraryJson<{ readonly format: 0; readonly entry: CharacterLibraryDetail }>(
     `/${encodeURIComponent(id)}`,
   )
+  return value.entry
+}
+
+const characterLibraryChangedEvent = 'agent-rp:character-library-changed'
+
+async function updateCharacterRemoteResource(
+  id: string,
+  origin: string,
+  approved: boolean,
+): Promise<CharacterLibraryDetail> {
+  const operation = approved ? 'approve' : 'revoke'
+  const response = await fetch(
+    `${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(id)}/remote-resources/${operation}?origin=${encodeURIComponent(origin)}`,
+    { method: 'POST', headers: { accept: 'application/json' } },
+  )
+  const value = await response.json() as {
+    readonly error?: string
+    readonly format?: 0
+    readonly entry?: CharacterLibraryDetail
+  }
+  if (!response.ok || value.entry === undefined) {
+    throw new Error(value.error ?? `外部资源授权失败（${response.status}）`)
+  }
+  window.dispatchEvent(new CustomEvent(characterLibraryChangedEvent, { detail: { id } }))
   return value.entry
 }
 
@@ -631,14 +673,20 @@ function useCharacterDetail(libraryId: string | undefined): CharacterLibraryDeta
   const [detail, setDetail] = useState<CharacterLibraryDetail>()
   useEffect(() => {
     let current = true
-    setDetail(undefined)
     if (libraryId === undefined) return () => { current = false }
-    void fetchCharacterDetail(libraryId).then(value => {
+    const load = (): void => { void fetchCharacterDetail(libraryId).then(value => {
       if (current) setDetail(value)
     }, () => {
       if (current) setDetail(undefined)
-    })
-    return () => { current = false }
+    }) }
+    setDetail(undefined)
+    load()
+    const changed = (event: Event): void => {
+      const id = (event as CustomEvent<{ readonly id?: unknown }>).detail?.id
+      if (id === libraryId) load()
+    }
+    window.addEventListener(characterLibraryChangedEvent, changed)
+    return () => { current = false; window.removeEventListener(characterLibraryChangedEvent, changed) }
   }, [libraryId])
   return detail
 }
@@ -660,6 +708,36 @@ function selectedBackground(
 
 const cardFrameRevealFallbackMs = 250
 
+function BlockedCardResources({ character, origins }: {
+  readonly character: CharacterLibraryDetail
+  readonly origins: readonly string[]
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+  return <div role="note" style={{
+    background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+    borderRadius: '10px', fontSize: '12px', lineHeight: 1.55, padding: '12px 14px',
+  }}>
+    <strong style={{ display: 'block', fontSize: '13px' }}>外部界面尚未加载</strong>
+    <span style={{ display: 'block', marginTop: '3px', opacity: .56 }}>
+      这段开场需要从 {origins.map(origin => new URL(origin).hostname).join('、')} 读取资源；确认后仍只在隔离页面中运行
+    </span>
+    <button type="button" disabled={busy} onClick={() => {
+      setBusy(true)
+      setError(undefined)
+      void (async () => {
+        for (const origin of origins) await updateCharacterRemoteResource(character.id, origin, true)
+      })().then(() => {
+        setBusy(false)
+      }, reason => {
+        setBusy(false)
+        setError(reason instanceof Error ? reason.message : String(reason))
+      })
+    }} style={{ ...miniButtonStyle, marginTop: '9px' }}>{busy ? '正在确认…' : '允许这些来源并加载'}</button>
+    {error !== undefined && <span role="alert" style={{ color: '#e88989', display: 'block', marginTop: '6px' }}>{error}</span>}
+  </div>
+}
+
 function CharacterDisplay({ compilation, statData, characterName, character, preview = false }: {
   readonly compilation: CompiledCharacterDisplay
   readonly statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined
@@ -674,9 +752,28 @@ function CharacterDisplay({ compilation, statData, characterName, character, pre
   }), [character, compilation, statData])
   return <div data-agent-rp-character-display data-agent-rp-display-diagnostics={cardFrameDiagnosticSummary(compiled.diagnostics)}
     style={{ display: 'grid', gap: '10px', minWidth: 0 }}>
-    {compiled.segments.map((segment, index) => segment.kind === 'markdown'
-      ? <MarkdownText key={index} text={segment.text} />
-      : <iframe
+    {compiled.segments.map((segment, index) => {
+      if (segment.kind === 'markdown') return <MarkdownText key={index} text={segment.text} />
+      if (preview && segment.interactive) return <div key={index} role="note" style={{
+            alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #202024)',
+            border: '1px solid var(--dsw-alias-border-l2, #39393c)', borderRadius: '10px',
+            display: 'flex', gap: '11px', minHeight: '92px', padding: '15px 16px',
+          }}>
+            <span aria-hidden="true" style={{ fontSize: '20px', opacity: .7 }}>◇</span>
+            <span style={{ minWidth: 0 }}>
+              <strong style={{ display: 'block', fontSize: '13px' }}>交互式开场</strong>
+              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.55, marginTop: '4px', opacity: .56 }}>
+                这段内容需要脚本或外部界面，开始新对话后再启动；角色库不会在后台运行它
+              </span>
+            </span>
+          </div>
+      if (!preview && character !== undefined) {
+        const approved = new Set(character.approvedRemoteResourceOrigins)
+        const blocked = segment.remoteOrigins.filter(origin =>
+          character.remoteResourceOrigins.includes(origin) && !approved.has(origin))
+        if (blocked.length > 0) return <BlockedCardResources key={index} character={character} origins={blocked} />
+      }
+      return <iframe
           key={index}
           title={`${characterName}的轻前端界面 ${index + 1}`}
           data-agent-rp-frame
@@ -695,7 +792,8 @@ function CharacterDisplay({ compilation, statData, characterName, character, pre
             height: preview ? 'min(52vh, 480px)' : '72px', maxWidth: '100%',
             visibility: preview ? 'visible' : 'hidden', width: '100%',
           }}
-        />)}
+        />
+    })}
   </div>
 }
 
@@ -1099,6 +1197,52 @@ function DetailSection({ title, text }: { readonly title: string; readonly text:
   return <section style={{ marginTop: '18px' }}>
     <h3 style={{ fontSize: '12px', fontWeight: 600, margin: '0 0 7px', opacity: 0.56 }}>{title}</h3>
     <p style={{ fontSize: '13px', lineHeight: 1.7, margin: 0, whiteSpace: 'pre-wrap' }}>{text}</p>
+  </section>
+}
+
+function CharacterRemoteResourcesSection({ detail, onChange }: {
+  readonly detail: CharacterLibraryDetail
+  readonly onChange?: (detail: CharacterLibraryDetail) => void
+}) {
+  const [workingOrigin, setWorkingOrigin] = useState<string>()
+  const [error, setError] = useState<string>()
+  if (detail.remoteResourceOrigins.length === 0) return null
+  const approved = new Set(detail.approvedRemoteResourceOrigins)
+  return <section style={{
+    background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+    borderRadius: '10px', margin: '12px 0', overflow: 'hidden',
+  }}>
+    <div style={{ padding: '10px 11px 8px' }}>
+      <strong style={{ display: 'block', fontSize: '12px' }}>外部资源</strong>
+      <span style={{ display: 'block', fontSize: '10px', lineHeight: 1.5, marginTop: '3px', opacity: .5 }}>
+        卡片引用了远程图片或界面文件；只允许你确认过的来源，并始终在隔离页面中运行
+      </span>
+    </div>
+    {detail.remoteResourceOrigins.map(origin => {
+      const enabled = approved.has(origin)
+      return <div key={origin} style={{
+        alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)',
+        display: 'flex', gap: '9px', padding: '8px 11px',
+      }}>
+        <span title={origin} style={{ fontSize: '11px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {new URL(origin).hostname}
+        </span>
+        <button type="button" disabled={workingOrigin !== undefined} onClick={() => {
+          setWorkingOrigin(origin)
+          setError(undefined)
+          void updateCharacterRemoteResource(detail.id, origin, !enabled).then(value => {
+            setWorkingOrigin(undefined)
+            onChange?.(value)
+          }, reason => {
+            setWorkingOrigin(undefined)
+            setError(reason instanceof Error ? reason.message : String(reason))
+          })
+        }} style={{ ...miniButtonStyle, marginLeft: 'auto' }}>
+          {workingOrigin === origin ? '处理中…' : enabled ? '停止加载' : '允许加载'}
+        </button>
+      </div>
+    })}
+    {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '11px', padding: '0 11px 9px' }}>{error}</div>}
   </section>
 }
 
@@ -2755,6 +2899,7 @@ function RoleplayHeader({
         {projection.persona !== undefined && <DetailSection title={`Persona · ${projection.persona.name}`} text={
           projection.persona.description || '没有额外人物设定'
         } />}
+        {characterDetail !== undefined && <CharacterRemoteResourcesSection detail={characterDetail} />}
         {characterDetail !== undefined && <CharacterAssetsSection detail={characterDetail} sessionId={sessionId} />}
         {projection.preset !== undefined && <DetailSection title="运行预设" text={[
           `${projection.preset.promptCount} 个提示模块，当前启用 ${projection.preset.enabledCount} 个`,
@@ -3039,6 +3184,9 @@ function worldInfoReason(entry: WorldInfoEntryProjection): { readonly title: str
               : '模板执行失败，已只跳过这一条',
     }
     case 'regex-unsupported': return { title: '暂不执行', detail: '该条目使用正则关键词；当前只执行确定性的文字匹配' }
+    case 'regex-invalid': return { title: '表达式无效', detail: '该条目的正则关键词无法解析，已跳过且不会影响其他条目' }
+    case 'regex-execution-limit': return { title: '已安全中止', detail: '该条目的正则匹配超过执行上限，已在隔离环境中停止' }
+    case 'regex-resource-limit': return { title: '超过安全上限', detail: '该条目的正则输入或累计评估量超过本轮上限' }
     case 'primary-unmatched': return { title: '等待关键词', detail: entry.keys.length === 0 ? '没有可用于激活的主关键词' : '当前已发送的对话没有命中主关键词' }
     case 'secondary-unmatched': return { title: '次要条件未满足', detail: '主关键词已经出现，但次要关键词规则尚未满足' }
     case 'budget-excluded': return { title: '超出预算', detail: '条目已匹配，但本书的 token 预算优先保留了其他条目' }
@@ -3240,7 +3388,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
             {(entry.useRegex || entry.hasDecorators || book.recursiveScanning || book.degradations.length > 0) && <details style={{ fontSize: '12px', lineHeight: 1.65, marginTop: '17px', opacity: .68 }}>
               <summary style={{ cursor: 'pointer' }}>兼容性信息</summary>
               <div style={{ marginTop: '7px' }}>{[
-                entry.useRegex ? '正则关键词已保留，当前不执行' : '',
+                entry.useRegex ? '正则关键词在受限 QuickJS 环境中执行' : '',
                 entry.hasDecorators ? '装饰器已保留，当前不执行' : '',
                 book.recursiveScanning ? '递归扫描已保留，当前不执行' : '',
                 ...book.degradations,
@@ -3406,7 +3554,7 @@ function CharacterLibraryDialog({
   const [greetingIndex, setGreetingIndex] = useState(0)
   const [expandedGreetingIndex, setExpandedGreetingIndex] = useState<number | undefined>(0)
   const {
-    entries: presets, error: presetError, presetId, selectPreset, selectImportedPreset,
+    entries: presets, error: presetError, presetId, selectPreset, selectImportedPreset, renamePreset,
   } = usePresetPreference(listPresets)
   const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
   const [personaId, setPersonaId] = useState('')
@@ -3423,6 +3571,7 @@ function CharacterLibraryDialog({
   const [updating, setUpdating] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importingPreset, setImportingPreset] = useState(false)
+  const [renamingPreset, setRenamingPreset] = useState(false)
   const [draggingFile, setDraggingFile] = useState(false)
   const [actionNotice, setActionNotice] = useState<string>()
   const [error, setError] = useState<string>()
@@ -3750,6 +3899,7 @@ function CharacterLibraryDialog({
               onNotice={message => { setActionNotice(message); setError(undefined) }}
               onError={message => { setError(message === '' ? undefined : message) }}
             />
+            <CharacterRemoteResourcesSection detail={selected} onChange={entry => { setSelected(entry) }} />
             <CharacterAssetsSection detail={selected} />
             <label style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '8px 0 8px', opacity: .65 }}>选择开场</label>
             <div style={{ display: 'grid', gap: '8px' }}>
@@ -3810,6 +3960,24 @@ function CharacterLibraryDialog({
                 background: 'transparent', border: 0, color, cursor: importingPreset ? 'wait' : 'pointer',
                 font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: 0,
               }}>{importingPreset ? '正在导入…' : '导入预设'}</button>
+              {presetId !== '' && <button type="button" disabled={renamingPreset} onClick={() => {
+                const preset = presets?.find(entry => entry.id === presetId)
+                if (preset === undefined) return
+                const name = window.prompt('预设名称', preset.name)?.trim()
+                if (name === undefined || name === '' || name === preset.name) return
+                setRenamingPreset(true)
+                setError(undefined)
+                void renamePreset(preset.id, name).then(entry => {
+                  setRenamingPreset(false)
+                  setActionNotice(`预设已改名为「${entry.name}」`)
+                }, reason => {
+                  setRenamingPreset(false)
+                  setError(reason instanceof Error ? reason.message : String(reason))
+                })
+              }} style={{
+                background: 'transparent', border: 0, color, cursor: renamingPreset ? 'wait' : 'pointer',
+                font: 'inherit', fontSize: '12px', marginLeft: '12px', padding: 0,
+              }}>{renamingPreset ? '正在改名…' : '改名'}</button>}
             </div>
             <div style={{ position: 'relative' }}>
               <select id="agent-rp-session-preset" value={presetId} onChange={event => { selectPreset(event.target.value) }} style={{
@@ -3832,7 +4000,7 @@ function CharacterLibraryDialog({
                       const preset = presets.find(entry => entry.id === presetId)
                       return preset === undefined
                         ? '新会话不会启用酒馆预设'
-                        : `${preset.enabledCount}/${preset.promptCount} 项启用${preset.regexScriptCount === 0 ? '' : ` · ${preset.regexScriptCount} 条正则`}`
+                        : `${preset.enabledCount}/${preset.promptCount} 项启用${preset.regexScriptCount === 0 ? '' : ` · ${preset.regexScriptCount} 条正则`} · 开聊后可在「会话设置 → 预设」调整开关`
                     })()}
             </div>
             <div style={{ alignItems: 'center', display: 'flex', margin: '20px 0 7px' }}>
@@ -3991,6 +4159,7 @@ type PresetPromptProjection = PresetProjection['prompts'][number]
 type PresetLibraryEntry = AgentRpProjection['presetLibrary'][number]
 type PresetLibraryRequest = { readonly operation: 'list' }
   | { readonly operation: 'select' | 'delete'; readonly id: string }
+  | { readonly operation: 'rename'; readonly id: string; readonly name: string }
   | { readonly operation: 'save'; readonly name: string }
 
 function roleLabel(role: PresetPromptProjection['role']): string {
@@ -4773,11 +4942,12 @@ function PresetImportDialog({ entries, onClose, onImport, onLibrary }: {
   </div>
 }
 
-function PresetLibraryRow({ entry, active = false, busy = false, onSelect, onDelete }: {
+function PresetLibraryRow({ entry, active = false, busy = false, onSelect, onRename, onDelete }: {
   readonly entry: PresetLibraryEntry
   readonly active?: boolean
   readonly busy?: boolean
   readonly onSelect: () => void
+  readonly onRename?: () => void
   readonly onDelete?: () => void
 }) {
   return <div style={{
@@ -4795,6 +4965,7 @@ function PresetLibraryRow({ entry, active = false, busy = false, onSelect, onDel
       </div>}
     </div>
     <button type="button" disabled={busy || active} onClick={onSelect} style={{ ...miniButtonStyle, marginLeft: 'auto' }}>{active ? '已选' : '使用'}</button>
+    {onRename !== undefined && <button type="button" disabled={busy} onClick={onRename} style={miniButtonStyle}>改名</button>}
     {onDelete !== undefined && <button type="button" disabled={busy} onClick={onDelete} style={miniButtonStyle}>删除</button>}
   </div>
 }
@@ -4826,6 +4997,15 @@ function PresetLibraryDialog({ entries, activeId, onClose, onAction }: {
           setError(undefined)
           void onAction({ operation: 'select', id: entry.id }).catch((reason: unknown) => {
             setError(reason instanceof Error ? reason.message : '预设选择失败')
+            setBusy(false)
+          })
+        }} onRename={() => {
+          const name = window.prompt('预设名称', entry.name)?.trim()
+          if (name === undefined || name === '' || name === entry.name) return
+          setBusy(true)
+          setError(undefined)
+          void onAction({ operation: 'rename', id: entry.id, name }).then(() => { setBusy(false) }, (reason: unknown) => {
+            setError(reason instanceof Error ? reason.message : '改名失败')
             setBusy(false)
           })
         }} onDelete={() => {
@@ -6812,6 +6992,7 @@ function roleplayComposerDockComponent(
         activeCharacterDetail?.id,
         activeCharacterDetail?.imageAssets,
         activeCharacterDetail?.displayExtensions.filter(extension => extension.enabled),
+        activeCharacterDetail?.approvedRemoteResourceOrigins,
       ])
       const existingMount = existing === null ? undefined : mounted.get(existing)
       if (existing !== null && existingMount !== undefined) {
