@@ -263,6 +263,39 @@ test('imports V3 while preserving and disabling unsafe optional behavior', () =>
   assert.deepEqual(card.raw, raw)
 })
 
+test('activates Character Card V3 literal regex patterns without executing complex expressions', () => {
+  const raw = {
+    spec: 'chara_card_v3',
+    spec_version: '3.0',
+    data: {
+      ...v2Data({
+        character_book: {
+          extensions: {},
+          entries: [{
+            keys: ['飞行棋'],
+            secondary_keys: [],
+            selective: true,
+            constant: false,
+            content: '棋盘规则。',
+            extensions: {},
+            enabled: true,
+            insertion_order: 1,
+            use_regex: true,
+          }],
+        },
+      }),
+      group_only_greetings: [],
+    },
+  }
+  const card = parseCharacterCardJson(JSON.stringify(raw))
+
+  assert.equal(card.degradations.includes('lorebook-regex'), false)
+  assert.deepEqual(activateLorebook(card.lorebook!, ['开始飞行棋。']), {
+    beforeCharacter: [],
+    afterCharacter: ['棋盘规则。'],
+  })
+})
+
 test('prefers ccv3 over chara in a dual-metadata PNG', () => {
   const v2 = { spec: 'chara_card_v2', spec_version: '2.0', data: v2Data() }
   const v3 = {

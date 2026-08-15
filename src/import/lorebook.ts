@@ -53,6 +53,15 @@ function includesKey(text: string, key: string, caseSensitive: boolean, matchWho
   return false
 }
 
+/**
+ * Report whether a V3 regex key is equivalent to a bounded literal substring lookup.
+ * @param value - raw Character Card V3 regex pattern.
+ * @returns whether the pattern contains no regex operators or escapes.
+ */
+export function isLiteralRegexPattern(value: string): boolean {
+  return value.length > 0 && !value.includes('/') && !/[\\^$.*+?()[\]{}|]/u.test(value)
+}
+
 function hasExecutableTemplate(content: string): boolean {
   return /<%[=_-]?[\s\S]*?%>/imu.test(content)
 }
@@ -65,6 +74,15 @@ function keywordMatches(
   return keys.filter(key => includesKey(text, key, entry.caseSensitive, entry.matchWholeWords))
 }
 
+function literalRegexMatches(
+  keys: readonly string[],
+  text: string,
+  entry: ImportedLorebookEntry,
+): string[] | undefined {
+  if (keys.some(key => !isLiteralRegexPattern(key))) return undefined
+  return keys.filter(key => includesKey(text, key, entry.caseSensitive, false))
+}
+
 function candidate(
   entry: ImportedLorebookEntry,
   messages: readonly string[],
@@ -75,9 +93,17 @@ function candidate(
   if (entry.hasDecorators) return { candidate: false, reason: 'decorator-unsupported', matchedKeys: [], matchedSecondaryKeys: [] }
   if (hasExecutableTemplate(entry.content)) return { candidate: false, reason: 'template-unsupported', matchedKeys: [], matchedSecondaryKeys: [] }
   if (entry.constant) return { candidate: true, reason: 'active-constant', matchedKeys: [], matchedSecondaryKeys: [] }
-  if (entry.useRegex) return { candidate: false, reason: 'regex-unsupported', matchedKeys: [], matchedSecondaryKeys: [] }
   const depth = entry.scanDepth ?? bookDepth ?? messages.length
   const text = depth === 0 ? '' : messages.slice(-Math.max(0, Math.trunc(depth))).join('\n')
+  if (entry.useRegex) {
+    const matchedKeys = literalRegexMatches(entry.keys, text, entry)
+    if (matchedKeys === undefined) {
+      return { candidate: false, reason: 'regex-unsupported', matchedKeys: [], matchedSecondaryKeys: [] }
+    }
+    return matchedKeys.length === 0
+      ? { candidate: false, reason: 'primary-unmatched', matchedKeys, matchedSecondaryKeys: [] }
+      : { candidate: true, reason: 'active-keyword', matchedKeys, matchedSecondaryKeys: [] }
+  }
   const matchedKeys = keywordMatches(entry.keys, text, entry)
   if (matchedKeys.length === 0) {
     return { candidate: false, reason: 'primary-unmatched', matchedKeys, matchedSecondaryKeys: [] }

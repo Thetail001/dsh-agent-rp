@@ -723,7 +723,7 @@ function CharacterDisplay({ segments, statData, characterName, character, previe
             : inlineCardFrameSource(segment.source, statData, character)}
           style={{
             background: 'transparent', border: 0, colorScheme: 'dark', display: 'block',
-            height: preview ? 'min(38vh, 320px)' : '72px', maxWidth: '100%', width: '100%',
+            height: preview ? 'min(52vh, 480px)' : '72px', maxWidth: '100%', width: '100%',
           }}
         />)}
   </div>
@@ -3110,7 +3110,7 @@ function CharacterLibraryDialog({
         setSelected(undefined)
         setLoadingId(undefined)
         setUpdating(false)
-        setActionNotice(`${archived ? '已收起' : '已恢复'}「${displayName}」`)
+        setActionNotice(`${archived ? '已移入收纳箱' : '已移回角色库'}「${displayName}」`)
         return
       }
       setLoadingId(next.id)
@@ -3119,7 +3119,7 @@ function CharacterLibraryDialog({
         setGreetingIndex(0)
         setLoadingId(undefined)
         setUpdating(false)
-        setActionNotice(`${archived ? '已收起' : '已恢复'}「${displayName}」`)
+        setActionNotice(`${archived ? '已移入收纳箱' : '已移回角色库'}「${displayName}」`)
       })
     }).catch(updateError => {
       setLoadingId(undefined)
@@ -3164,23 +3164,20 @@ function CharacterLibraryDialog({
     <section className="agent-rp-character-library-dialog" style={{
       background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
       borderRadius: '16px', boxShadow: '0 22px 80px rgba(0,0,0,.36)', display: 'grid',
-      gridTemplateColumns: narrow ? 'minmax(0, 1fr)' : 'minmax(min(210px, 42%), .78fr) minmax(0, 1.35fr)',
+      gridTemplateColumns: narrow ? 'minmax(0, 1fr)' : 'minmax(260px, 320px) minmax(0, 1fr)',
       gridTemplateRows: narrow ? 'minmax(240px, .8fr) minmax(0, 1.2fr)' : undefined,
       height: 'min(680px, calc(100vh - clamp(16px, 6vw, 48px)))',
-      maxWidth: '980px', overflow: 'hidden', width: 'min(980px, calc(100vw - clamp(16px, 6vw, 48px)))',
+      maxWidth: '1180px', overflow: 'hidden', width: 'min(1180px, calc(100vw - clamp(16px, 6vw, 48px)))',
     }}>
       <div style={{
         borderBottom: narrow ? '1px solid var(--dsw-alias-border-l2, #39393c)' : undefined,
         borderRight: narrow ? undefined : '1px solid var(--dsw-alias-border-l2, #39393c)',
         display: 'flex', flexDirection: 'column', minHeight: 0,
       }}>
-        <div style={{ padding: narrow ? '14px 14px 10px' : '22px 20px 14px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', padding: narrow ? '14px 14px 10px' : '22px 20px 14px' }}>
           <h2 style={{ fontSize: '18px', margin: 0 }}>角色库</h2>
-          <p style={{ fontSize: '12px', lineHeight: 1.55, margin: '7px 0 0', opacity: .55 }}>
-            {startsInCurrentSession ? '选择角色后开始一段新对话' : '从这里开始新对话，不会改动当前聊天'}
-          </p>
-          <div role="tablist" aria-label="角色库分区" style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '9px', display: 'grid', gap: '3px', gridTemplateColumns: '1fr 1fr', marginTop: '14px', padding: '3px' }}>
-            {([['active', '角色'], ['archived', '已收起']] as const).map(([value, label]) => <button
+          <div role="tablist" aria-label="角色库分区" style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '9px', display: 'grid', gap: '3px', gridTemplateColumns: '1fr 1fr', marginTop: '12px', padding: '3px' }}>
+            {([['active', '角色'], ['archived', '收纳箱']] as const).map(([value, label]) => <button
               key={value} type="button" role="tab" aria-selected={collection === value}
               onClick={() => { setCollection(value); setCharacterQuery('') }} style={{
                 background: collection === value ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
@@ -3207,7 +3204,7 @@ function CharacterLibraryDialog({
             }} style={{
               background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
               borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', fontSize: '12px',
-              marginTop: '10px', outline: 'none', padding: '8px 10px', width: '100%',
+              marginTop: '10px', order: 2, outline: 'none', padding: '8px 10px', width: '100%',
             }} />
           <input ref={fileInputRef} type="file" accept=".png,.json,.charx,image/png,application/json,application/zip" hidden onChange={event => {
             const file = event.target.files?.[0]
@@ -3224,19 +3221,19 @@ function CharacterLibraryDialog({
               if (file === undefined) setDraggingFile(false)
               else importFile(file)
             }} style={{
-              background: draggingFile ? `color-mix(in srgb, ${color} 16%, transparent)` : 'transparent',
-              border: `1px dashed ${draggingFile ? `color-mix(in srgb, ${color} 65%, transparent)` : 'var(--dsw-alias-border-l2, #444)'}`,
+              background: `color-mix(in srgb, ${color} ${draggingFile ? 20 : 11}%, transparent)`,
+              border: `1px ${draggingFile ? 'solid' : 'dashed'} color-mix(in srgb, ${color} ${draggingFile ? 75 : 42}%, transparent)`,
               borderRadius: '9px', color: 'inherit', cursor: importing ? 'wait' : 'pointer', display: 'block', font: 'inherit',
-              marginTop: '10px', opacity: importing ? .58 : 1, padding: '9px 10px', textAlign: 'left', width: '100%',
+              marginTop: '10px', opacity: importing ? .58 : 1, order: 1, padding: '11px 12px', textAlign: 'left', width: '100%',
             }}>
-            <span style={{ display: 'block', fontSize: '12px', fontWeight: 620 }}>{importing ? '正在导入…' : draggingFile ? '松开即可导入' : '导入角色卡'}</span>
+            <span style={{ display: 'block', fontSize: '13px', fontWeight: 650 }}>{importing ? '正在导入…' : draggingFile ? '松开即可导入' : '＋ 导入角色卡'}</span>
             <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .5 }}>PNG · JSON · CHARX，也可拖到这里</span>
           </button>
         </div>
         <div style={{ display: 'grid', gap: '6px', minHeight: 0, overflowX: 'hidden', overflowY: 'auto', padding: '4px 10px 18px' }}>
           {entries === undefined && <div style={{ fontSize: '13px', opacity: .55, padding: '16px 10px' }}>正在读取角色…</div>}
           {entries?.length === 0 && <div style={{ fontSize: '13px', lineHeight: 1.65, opacity: .62, padding: '16px 10px' }}>
-            {collection === 'active' ? '角色库还是空的。导入一张角色卡后，它会自动保存在这里' : '还没有收起的角色'}
+            {collection === 'active' ? '角色库还是空的。导入一张角色卡后，它会自动保存在这里' : '收纳箱还是空的'}
           </div>}
           {entries !== undefined && entries.length > 0 && visibleEntries.length === 0 && <div style={{ fontSize: '13px', lineHeight: 1.65, opacity: .62, padding: '16px 10px' }}>
             没有找到匹配的角色
@@ -3275,7 +3272,7 @@ function CharacterLibraryDialog({
           {selected !== undefined && <button type="button" disabled={updating} onClick={updateArchiveState} style={{
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
             color: 'inherit', cursor: updating ? 'wait' : 'pointer', font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: '6px 10px',
-          }}>{updating ? '处理中…' : collection === 'active' ? '收起角色' : '恢复角色'}</button>}
+          }}>{updating ? '处理中…' : collection === 'active' ? '移到收纳箱' : '移回角色库'}</button>}
           <button type="button" aria-label="关闭角色库" onClick={onClose} style={{
             background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', marginLeft: selected === undefined ? 'auto' : '8px', padding: '4px 6px',
           }}>×</button>
@@ -3290,11 +3287,11 @@ function CharacterLibraryDialog({
               color, display: 'flex', fontSize: '24px', height: '54px', justifyContent: 'center', width: '54px',
             }}>✦</div>
             <strong style={{ fontSize: '17px', marginTop: '16px' }}>{collection === 'archived'
-              ? '这里还没有收起的角色'
+              ? '收纳箱还是空的'
               : entries.length === 0 ? '从一张角色卡开始' : '没有匹配的角色'}</strong>
             <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '8px 0 0', opacity: .58 }}>
               {collection === 'archived'
-                ? '收起的角色会留在本机，随时可以恢复'
+                ? '放进收纳箱的角色仍完整保留在本机，随时可以移回角色库'
                 : entries.length === 0
                   ? '支持 SillyTavern 的 PNG、JSON 和 CHARX。原始文件保存在本机；开始对话后，角色设定会提供给模型'
                   : '换个关键词，或清空左侧搜索框'}
@@ -3306,6 +3303,13 @@ function CharacterLibraryDialog({
               }}>{importing ? '正在导入…' : '选择角色卡'}</button>}
           </div>}
           {selected !== undefined && <>
+            {selected.worldInfoCount > 0 && <div style={{
+              background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+              borderRadius: '10px', fontSize: '11px', lineHeight: 1.55, margin: '4px 0 12px', padding: '9px 11px',
+            }}>
+              <strong style={{ display: 'block', fontSize: '12px', marginBottom: '2px' }}>世界书 · {selected.worldInfoCount} 条</strong>
+              <span style={{ opacity: .58 }}>已随角色卡载入；兼容条目会在开聊后按常驻或关键词自动参与提示词</span>
+            </div>}
             {selected.tavernHelper !== undefined && <div style={{
               background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
               borderRadius: '10px', fontSize: '11px', lineHeight: 1.55, margin: '4px 0 12px', padding: '9px 11px',
@@ -3342,8 +3346,7 @@ function CharacterLibraryDialog({
                     }}>{greeting.trim() === '' ? '无开场白' : greeting}</span>}
                   </button>
                   {active && <div style={{
-                    borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', maxHeight: 'min(42vh, 360px)',
-                    overflow: 'auto', padding: '10px 12px',
+                    borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', padding: '10px 12px',
                   }}>
                     {greeting.trim() === '' ? <span style={{ fontSize: '13px', opacity: .58 }}>无开场白</span>
                       : <CharacterDisplay
@@ -3498,7 +3501,7 @@ function CharacterLibraryDialog({
         </div>
         <footer style={{ alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '10px', justifyContent: 'flex-end', padding: '14px 20px' }}>
           {actionNotice !== undefined && <span role="status" style={{ fontSize: '12px', marginRight: 'auto', opacity: .62 }}>{actionNotice}</span>}
-          {actionNotice === undefined && collection === 'archived' && <span style={{ fontSize: '12px', marginRight: 'auto', opacity: .52 }}>恢复后可开始新的对话</span>}
+          {actionNotice === undefined && collection === 'archived' && <span style={{ fontSize: '12px', marginRight: 'auto', opacity: .52 }}>移回角色库后即可开始新对话</span>}
           <button type="button" onClick={onClose} style={{
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '9px',
             color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '8px 13px',
