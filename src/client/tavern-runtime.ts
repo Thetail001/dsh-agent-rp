@@ -666,7 +666,7 @@ export function tavernScriptFrameSource(
       : '',
   ].join('')
   const preloads = plan.preloads.map(preload => preload === 'zod'
-    ? `import(${safeJson(ZOD_MODULE_URL)}).then(function(module){window.z=module.z??module.default??module})`
+    ? `import(${safeJson(ZOD_MODULE_URL)}).then(function(module){window.z=module})`
     : `import(${safeJson(YAML_MODULE_URL)}).then(function(module){window.YAML=module.default??module})`)
   const execute = plan.mode === 'module'
     ? `var __dshModuleUrl=URL.createObjectURL(new Blob([${encoded}],{type:'text/javascript'}));try{await import(__dshModuleUrl)}finally{URL.revokeObjectURL(__dshModuleUrl)}`

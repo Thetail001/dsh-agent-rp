@@ -405,6 +405,7 @@ test('runs module plans through a Blob and reports ready only after evaluation',
   assert.match(source!, /var __dshDeclaredCompatibilityMarkers=\["__远程依赖_loaded__"\]/u)
   assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/yaml@2\.9\.0\/\+esm"\)/u)
   assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/zod@4\.4\.3\/\+esm"\)/u)
+  assert.match(source!, /then\(function\(module\)\{window\.z=module\}\)/u)
   assert.ok(source!.indexOf('await import(__dshModuleUrl)') < source!.lastIndexOf("__dshPost('ready',"))
 })
 
