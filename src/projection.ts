@@ -252,11 +252,15 @@ function worldInfoProjection(
     ...Object.values(state.standaloneWorldInfos),
   ], state.tavern)
   const messages = state.surface.flatMap(node => node.text === undefined ? [] : [node.text])
+  const transcript = state.surface.flatMap(node => node.text === undefined || node.role === undefined
+    ? []
+    : [{ role: node.role, content: node.text }])
   const templateOptions = ejsTemplateEngine === undefined ? {} : {
     renderTemplate: ejsTemplateEngine.createRenderer({
       characterName: state.character.characterName,
       userName: state.character.persona?.name ?? state.character.userName ?? '用户',
       messages,
+      transcript,
       variableScopes: state.tavern?.scopes ?? {},
       ...(state.mvu === undefined ? {} : { statData: state.mvu.statData }),
     }),

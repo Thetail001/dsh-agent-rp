@@ -84,6 +84,30 @@ test('reads nested merged variables and explicit scopes without allowing writes'
   assert.deepEqual(result, { ok: true, text: '3/calm/7/global/chat/9' })
 })
 
+test('exposes deterministic generation metadata and role-aware chat readers', () => {
+  const result = engine.render([
+    '<%= [charName, userName, runType, lastMessageId, lastUserMessageId, lastCharMessageId].join("|") %>\n',
+    '<%= [lastUserMessage, lastCharMessage, getChatMessage(-1), getChatMessage(1, "assistant")].join("|") %>\n',
+    '<%= getChatMessages(2).join(",") %>\n',
+    '<%= getChatMessages(3, "user").join(",") %>\n',
+    '<%= getChatMessages(1, 2).join(",") %>',
+  ].join(''), {
+    characterName: '角色',
+    userName: '用户',
+    messages: ['问一', '答一', '问二'],
+    transcript: [
+      { role: 'user', content: '问一' },
+      { role: 'assistant', content: '答一' },
+      { role: 'user', content: '问二' },
+    ],
+  })
+
+  assert.deepEqual(result, {
+    ok: true,
+    text: '角色|用户|generate|2|2|1\n问二|答一|问二|答一\n答一,问二\n问一,问二\n答一,问二',
+  })
+})
+
 test('supports EJS variable options and camel-case scope aliases as read-only snapshots', () => {
   const result = engine.render('<%= getvar("missing", { defaults: 5 }) %>/<%= typeof getvar("missing", { scope: "global" }) %>/<%= getvar("tone", { scope: "global" }) %>/<%= getLocalVar("tone") %>/<%= getCharacterVar("tone") %>', {
     characterName: '角色', userName: '用户', messages: [],

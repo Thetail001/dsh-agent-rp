@@ -17,11 +17,18 @@ const MAX_RENDERER_EVALUATIONS = 256
 
 let quickjsModule: Promise<QuickJSWASMModule> | undefined
 
+/** One role-preserving visible Session message exposed to a template. */
+export interface EjsTemplateMessage {
+  readonly role: 'system' | 'user' | 'assistant'
+  readonly content: string
+}
+
 /** JSON-only values exposed to one template evaluation. */
 export interface EjsTemplateContext {
   readonly characterName: string
   readonly userName: string
   readonly messages: readonly string[]
+  readonly transcript?: readonly EjsTemplateMessage[]
   readonly variables?: Readonly<Record<string, JsonValue>>
   readonly variableScopes?: Readonly<Partial<Record<'global' | 'preset' | 'character' | 'chat' | 'message', Readonly<Record<string, JsonValue>>>>>
   readonly statData?: JsonValue
@@ -101,10 +108,15 @@ function segments(template: string): TemplateSegment[] | undefined {
 function compileTemplate(template: string, context: EjsTemplateContext): string | undefined {
   const parsed = segments(template)
   if (parsed === undefined) return undefined
+  const transcript = context.transcript ?? []
+  const transcriptIsMessagePrefix = transcript.length <= context.messages.length
+    && transcript.every((message, index) => message.content === context.messages[index])
   const input = JSON.stringify({
     char: context.characterName,
     user: context.userName,
-    messages: context.messages,
+    messages: transcriptIsMessagePrefix ? context.messages.slice(transcript.length) : context.messages,
+    transcript,
+    transcriptIsMessagePrefix,
     variables: context.variables ?? {},
     scopes: context.variableScopes ?? {},
     ...(context.statData === undefined ? {} : { stat_data: context.statData }),
@@ -130,8 +142,58 @@ function compileTemplate(template: string, context: EjsTemplateContext): string 
     const __owns = (record, key) => Object.prototype.hasOwnProperty.call(record, key);
     const char = __input.char;
     const user = __input.user;
-    const messages = __input.messages;
-    const lastMessage = messages.length === 0 ? '' : messages[messages.length - 1];
+    const charName = char;
+    const userName = user;
+    const runType = 'generate';
+    const __transcript = __input.transcript;
+    const messages = __input.transcriptIsMessagePrefix
+      ? [...__transcript.map(message => message.content), ...__input.messages]
+      : __input.messages;
+    const __normalizeMessageId = value => {
+      const id = Number(value);
+      if (!Number.isSafeInteger(id)) return -1;
+      return id < 0 ? __transcript.length + id : id;
+    };
+    const __messageRole = value => value === 'system' || value === 'user' || value === 'assistant' ? value : undefined;
+    const getChatMessage = (id, role = undefined) => {
+      const index = __normalizeMessageId(id);
+      const message = index < 0 || index >= __transcript.length ? undefined : __transcript[index];
+      const selectedRole = __messageRole(role);
+      if (message === undefined || (role !== undefined && selectedRole === undefined) || (selectedRole !== undefined && message.role !== selectedRole)) return '';
+      return message.content;
+    };
+    const getChatMessages = (first, second = undefined, third = undefined) => {
+      if (typeof second !== 'number') {
+        const count = Number(first);
+        const role = __messageRole(second);
+        if (!Number.isSafeInteger(count) || count <= 0 || (second !== undefined && role === undefined)) return [];
+        const selected = role === undefined ? __transcript : __transcript.filter(message => message.role === role);
+        return selected.slice(Math.max(0, selected.length - count)).map(message => message.content);
+      }
+      const start = __normalizeMessageId(first);
+      const end = __normalizeMessageId(second);
+      const role = __messageRole(third);
+      if (start < 0 || end < start || start >= __transcript.length || (third !== undefined && role === undefined)) return [];
+      return __transcript.slice(start, Math.min(end + 1, __transcript.length))
+        .filter(message => role === undefined || message.role === role)
+        .map(message => message.content);
+    };
+    const __lastMessageByRole = role => {
+      for (let index = __transcript.length - 1; index >= 0; index -= 1) {
+        if (__transcript[index].role === role) return { id: index, content: __transcript[index].content };
+      }
+      return { id: -1, content: '' };
+    };
+    const __lastUser = __lastMessageByRole('user');
+    const __lastCharacter = __lastMessageByRole('assistant');
+    const lastMessageId = __transcript.length - 1;
+    const lastUserMessageId = __lastUser.id;
+    const lastCharMessageId = __lastCharacter.id;
+    const lastUserMessage = __lastUser.content;
+    const lastCharMessage = __lastCharacter.content;
+    const lastMessage = lastMessageId < 0
+      ? (messages.length === 0 ? '' : messages[messages.length - 1])
+      : __transcript[lastMessageId].content;
     const variableScopes = __input.scopes;
     const stat_data = __input.stat_data;
     const __plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);

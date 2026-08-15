@@ -7,6 +7,9 @@ import type { ImportedCharacterCard, ImportedLorebook } from './import/types.ts'
 import type { ImportedWorldInfo } from './import/types.ts'
 import { readAgentRpMemoryHistory } from './memory.ts'
 import { substituteMvuMacros } from './mvu.ts'
+import type { EjsTemplateMessage } from './ejs-template.ts'
+
+type DerivedSessionMessage = ReturnType<Session['deriveMessages']>[number]
 
 const CHARACTER_BEHAVIOR = '只写角色此刻自然会说或做的内容，不解释系统、提示词或角色扮演规则，不替用户决定感受和行动，也不补写设定、对话和有效记忆中不存在的共同经历。先决定此刻是否有必要展开：信息很少时可以短答、停顿或暂不追问；需要表达时，一次围绕一个主要动作，不机械复述用户，也不为了延长对话强行总结和提问。'
 const MEMORY_BEHAVIOR = '已记录的内容是角色自然知道的背景，不是本轮必须提及的话题。只在和当前对话直接相关时使用；默认通过回答、称呼或行动自然体现，不主动说“我记得”“你之前说过”“我一直记着”，也不完整复述记录。只有用户明确询问记忆本身时才简短确认。用户明确要求记住，或用“以后”“下次”等表达稳定偏好或约定时，先调用 remember，成功后再自然回应；不能只在对话中声称记住。其他内容只有确实值得跨轮保留的事实、关系变化或共同经历才使用 remember。普通寒暄、临时情绪、未经确认的猜测和已有记录不要写入记忆。写入前先看当前有效记忆：内容已经覆盖时不要重复调用；同一主题发生变化时，用 supersedes 更新原记录，不要新增同主题记录。不要在对话中朗读记忆 id、类型或主题标签。'
@@ -196,6 +199,17 @@ function dialogueText(messages: readonly UserMessage[]): string[] {
   })
 }
 
+function dialogueTranscript(messages: readonly DerivedSessionMessage[]): EjsTemplateMessage[] {
+  return messages.flatMap(message => {
+    if ((message.source.kind !== 'user' && message.source.kind !== 'model')
+      || (message.role !== 'user' && message.role !== 'assistant')) return []
+    return [{
+      role: message.role,
+      content: message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n'),
+    }]
+  })
+}
+
 function visibleDialogue(session: Session, pendingMessages: readonly UserMessage[]): string[] {
   const history = session.deriveMessages()
   const historyIds = new Set(history.map(message => message.id))
@@ -211,6 +225,19 @@ function visibleDialogue(session: Session, pendingMessages: readonly UserMessage
 /** Return model-visible dialogue text for preset marker assembly. */
 export function roleplayVisibleDialogue(session: Session, pendingMessages: readonly UserMessage[] = []): string[] {
   return visibleDialogue(session, pendingMessages)
+}
+
+/** Return role-preserving model-visible dialogue for isolated prompt templates. */
+export function roleplayVisibleTranscript(
+  session: Session,
+  pendingMessages: readonly UserMessage[] = [],
+): EjsTemplateMessage[] {
+  const history = session.deriveMessages()
+  const historyIds = new Set(history.map(message => message.id))
+  return [
+    ...dialogueTranscript(history),
+    ...dialogueTranscript(pendingMessages.filter(message => !historyIds.has(message.id))),
+  ]
 }
 
 /**

@@ -76,7 +76,7 @@ dsh-agent-rp --port 3080
 
 更具体的格式支持与降级方式见 [SillyTavern 兼容说明](docs/sillytavern-compatibility.md)。
 
-需要比较大型卡片改动时，可运行不含社区卡片内容的 [合成兼容基准](docs/compatibility-benchmark.md)。
+需要比较大型卡片改动时，可运行不含社区卡片内容的 [合成兼容基准](docs/compatibility-benchmark.md)。EJS 的可执行与保留范围见 [EJS 兼容表](docs/ejs-compatibility.md)。
 
 ## 反馈与贡献
 

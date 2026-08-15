@@ -22,7 +22,7 @@ Card `system_prompt` replaces the fallback identity instruction when non-empty a
 
 Enabled entries support constant activation, literal primary keys, selective secondary keys, case sensitivity, scan depth, insertion order, `before_char` and `after_char` placement, priority, and token budget. Each active entry enters the prompt once.
 
-EJS in an otherwise compatible active entry is rendered before token accounting. The current subset supports `<% %>`, `<%= %>`, `<%- %>`, comments, whitespace slurping, conditions, loops, `print`, `char`, `user`, `messages`, `lastMessage`, `variables`, `stat_data`, and read-only `getvar` aliases. Promises that settle entirely inside the isolated runtime may be awaited. The same renderer is used for model-facing character fields and imported preset modules. Host-backed async APIs, includes, variable writes, dynamic World Info activation, prompt injection, regex activation, and `@@` decorators remain preserved but inactive.
+EJS in an otherwise compatible active entry is rendered before token accounting. The current subset supports `<% %>`, `<%= %>`, `<%- %>`, comments, whitespace slurping, conditions, loops, `print`, character and user names, role-aware recent-message metadata and readers, `variables`, `stat_data`, and read-only `getvar` aliases. Promises that settle entirely inside the isolated runtime may be awaited. The same renderer is used for model-facing character fields and imported preset modules. Host-backed async APIs, includes, variable writes, dynamic World Info activation, prompt injection, regex activation, and `@@` decorators remain preserved but inactive. The exact matrix is documented in [EJS compatibility](ejs-compatibility.md).
 
 ## Independent World Info
 

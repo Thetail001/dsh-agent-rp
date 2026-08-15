@@ -73,6 +73,7 @@ import {
   renderImportedCharacterPrompt,
   renderMemoryContext,
   roleplayVisibleDialogue,
+  roleplayVisibleTranscript,
   renderSessionLorebooks,
   substituteCardMacros,
 } from './prompt.ts'
@@ -724,6 +725,7 @@ export function installAgentRp(
           characterName: importedChat?.characterName ?? config.characterName,
           userName: identity.userName ?? '用户',
           messages: [...roleplayVisibleDialogue(agent.session, pendingMessages), ...injectedScanText],
+          transcript: roleplayVisibleTranscript(agent.session, pendingMessages),
           variableScopes: ejsVariableScopes(tavern),
         })
         const { standalone: standaloneLore } = splitLore(renderSessionLorebooks({
@@ -758,6 +760,7 @@ export function installAgentRp(
         characterName: card.nickname?.trim() || card.name,
         userName: userName ?? '用户',
         messages: [...roleplayVisibleDialogue(agent.session, pendingMessages), ...injectedScanText],
+        transcript: roleplayVisibleTranscript(agent.session, pendingMessages),
         variableScopes: ejsVariableScopes(tavern),
         ...(mvu === undefined ? {} : { statData: mvu.statData }),
       })

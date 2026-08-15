@@ -260,7 +260,11 @@ try {
         {
           characterName: card.name,
           userName: 'Synthetic user',
-          messages: ['Synthetic message'],
+          messages: ['Synthetic user message', 'Synthetic assistant message'],
+          transcript: [
+            { role: 'user', content: 'Synthetic user message' },
+            { role: 'assistant', content: 'Synthetic assistant message' },
+          ],
           variableScopes: { chat: { state: { phase: 1 } } },
           statData: { phase: 1, score: 0 },
         },
