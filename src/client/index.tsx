@@ -36,6 +36,7 @@ import {
   BUILT_IN_TAVERN_SCRIPT_ORIGINS,
   readTavernExtensionSettings,
   resolveTavernScriptExecution,
+  tavernMessageDepth,
   tavernScriptFrameSource,
   validatedTavernCompatibilityMarkers,
   writeTavernExtensionSettings,
@@ -7151,7 +7152,7 @@ function roleplayComposerDockComponent(
         }
         const message = tavernMessageBySeq.get(seq)
         if (!hasDisplayRules || frontend === undefined || message?.role !== 'user' || message.text === '') continue
-        const depth = Math.max(0, activeChat.order.length - activeChat.order.indexOf(key) - 1)
+        const depth = tavernMessageDepth(activeProjection.tavern?.messages, message.messageId)
         const rendered = renderCharacterDisplay(message.text, {
           name: activeProjection.characterName,
           frontend,
@@ -7174,6 +7175,7 @@ function roleplayComposerDockComponent(
         const selected = generation?.versions.find(version => version.seq === generation.selectedVersionSeq)
         const messageId = (selected === undefined ? undefined : messageIdBySeq.get(selected.seq))
           ?? (finalSeq === undefined ? undefined : messageIdBySeq.get(finalSeq))
+        const depth = tavernMessageDepth(activeProjection.tavern?.messages, messageId)
         const override = messageId === undefined ? undefined : activeDisplayOverrides.get(messageId)
         const original = item.firstElementChild as HTMLElement | null
         if (override !== undefined && original !== null) {
@@ -7193,7 +7195,7 @@ function roleplayComposerDockComponent(
               frontend: activeProjection.frontend ?? {
                 regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {},
               },
-            }, AI_OUTPUT_PLACEMENT, 0, activeProjection.userName, activeProjection.preset?.regexScripts)
+            }, AI_OUTPUT_PLACEMENT, depth, activeProjection.userName, activeProjection.preset?.regexScripts)
             mountRenderedDisplay(
               item, original, compileCharacterDisplay(rendered), activeProjection, activeCharacterDetail,
               activeCompatibilityMarkers,
@@ -7210,7 +7212,6 @@ function roleplayComposerDockComponent(
         if (!hasDisplayRules || frontend === undefined) continue
         const raw = data.blocks?.flatMap(block => block.kind === 'text' && block.text !== undefined ? [block.text] : []).join('\n') ?? ''
         if (raw === '') continue
-        const depth = Math.max(0, activeChat.order.length - activeChat.order.indexOf(key) - 1)
         const rendered = renderCharacterDisplay(raw.replaceAll(statusPlaceholder, ''), {
           name: activeProjection.characterName,
           frontend,

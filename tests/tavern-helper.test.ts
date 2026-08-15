@@ -20,7 +20,7 @@ import {
   tavernChatCompletionsEndpoint,
 } from '../src/tavern-generation-http.ts'
 import { tavernModelListEndpoint } from '../src/tavern-model-list-http.ts'
-import { advanceTavernTranscript, type TavernScriptSnapshot } from '../src/client/tavern-runtime.ts'
+import { advanceTavernTranscript, tavernMessageDepth, type TavernScriptSnapshot } from '../src/client/tavern-runtime.ts'
 
 function runtimeMessage(
   messageId: number,
@@ -60,6 +60,15 @@ test('rebases transcript delivery after a rewrite instead of replaying visible h
 
   const next = runtimeMessage(2, 11, 'user', '继续')
   assert.deepEqual(advanceTavernTranscript(rewritten.cursor, [history[0]!, replacement, next]).appended, [next])
+})
+
+test('computes regex depth from Tavern messages rather than Host flow nodes', () => {
+  const messages = [{ messageId: 2 }, { messageId: 7 }, { messageId: 11 }]
+
+  assert.equal(tavernMessageDepth(messages, 11), 0)
+  assert.equal(tavernMessageDepth(messages, 7), 1)
+  assert.equal(tavernMessageDepth(messages, 2), 2)
+  assert.equal(tavernMessageDepth(messages, 99), undefined)
 })
 
 test('resolves OpenAI-compatible custom generation endpoints without retaining query credentials', () => {

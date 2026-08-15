@@ -85,6 +85,16 @@ export interface TavernTranscriptCursor {
   }
 }
 
+/** Resolve SillyTavern regex depth from transcript order without counting Host-only flow nodes. */
+export function tavernMessageDepth(
+  messages: readonly { readonly messageId: number }[] | undefined,
+  messageId: number | undefined,
+): number | undefined {
+  if (messages === undefined || messageId === undefined) return undefined
+  const index = messages.findIndex(message => message.messageId === messageId)
+  return index < 0 ? undefined : messages.length - index - 1
+}
+
 /** Browser execution plan for one isolated Tavern Helper script. */
 export interface TavernScriptExecution {
   readonly source: string
