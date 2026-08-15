@@ -19,7 +19,7 @@ import type { ImportedCharacterCard, ImportedRegexScript, TavernHelperImportSumm
 import { parseCharacterCardJson, parseCharacterCardJsonBytes, parseCharacterCardValue } from './import/character-card.ts'
 import { parseRegexScript } from './import/regex-script.ts'
 import { readCharacterCardPng } from './import/png.ts'
-import { charxImageAssets, parseCharx } from './import/charx.ts'
+import { charxAvatar, charxImageAssets, parseCharx, readCharxImageAsset } from './import/charx.ts'
 import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay, summarizeCharacterRegexScript } from './frontend-regex.ts'
 import type {
   CharacterLibraryDetail, CharacterLibraryDisplayExtension, CharacterLibraryImage, CharacterLibraryImportResult,
@@ -496,10 +496,10 @@ export class CharacterLibrary {
     const parsed = this.parseStored(entry.meta, entry.data)
     const worldInfo = worldInfoDetail(parsed.card)
     const detail: CharacterLibraryDetail = {
-      ...summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length),
+      ...summary(entry.meta, parsed.card, parsed.avatarAvailable, parsed.images.length),
       mediaType: entry.meta.mediaType,
       ...greetingDetail(parsed.card),
-      imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
+      imageAssets: parsed.images,
       ...(worldInfo === undefined ? {} : { worldInfo }),
       degradations: parsed.card.degradations,
       regexScripts: regexScriptDetail(parsed.card),
@@ -518,10 +518,10 @@ export class CharacterLibrary {
     const worldInfo = worldInfoDetail(parsed.card)
     return {
       detail: {
-        ...summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length),
+        ...summary(entry.meta, parsed.card, parsed.avatarAvailable, parsed.images.length),
         mediaType: entry.meta.mediaType,
         ...greetingDetail(parsed.card),
-        imageAssets: parsed.images.map(({ data: _data, ...image }) => image),
+        imageAssets: parsed.images,
         ...(worldInfo === undefined ? {} : { worldInfo }),
         degradations: parsed.card.degradations,
         regexScripts: regexScriptDetail(parsed.card),
@@ -547,7 +547,7 @@ export class CharacterLibrary {
     let cardSummary = entry.meta.index === undefined ? undefined : indexedSummary(entry.meta, entry.meta.index)
     if (cardSummary === undefined) {
       const parsed = this.parseStored(entry.meta, entry.data)
-      cardSummary = summary(entry.meta, parsed.card, parsed.avatar !== undefined, parsed.images.length)
+      cardSummary = summary(entry.meta, parsed.card, parsed.avatarAvailable, parsed.images.length)
       this.rememberIndex(entry.meta, cardSummary)
     }
     return {
@@ -561,6 +561,14 @@ export class CharacterLibrary {
   /** Load the primary inert avatar image without exposing the enclosing CHARX archive. */
   avatar(id: string): CharacterLibraryAvatar | undefined {
     const entry = this.readId(id)
+    if (entry.meta.transport === 'json') return undefined
+    if (entry.meta.transport === 'charx') {
+      const charx = parseCharx(entry.data)
+      const avatar = charxAvatar(charx)
+      return avatar === undefined
+        ? undefined
+        : { mediaType: avatar.mediaType, data: readCharxImageAsset(charx, avatar) }
+    }
     return this.parseStored(entry.meta, entry.data).avatar
   }
 
@@ -568,7 +576,17 @@ export class CharacterLibrary {
   image(id: string, index: number): CharacterLibraryImageAsset | undefined {
     if (!Number.isSafeInteger(index) || index < 0) return undefined
     const entry = this.readId(id)
-    return this.parseStored(entry.meta, entry.data).images.find(image => image.index === index)
+    if (entry.meta.transport !== 'charx') return undefined
+    const charx = parseCharx(entry.data)
+    const asset = charxImageAssets(charx).find(image => image.index === index)
+    return asset === undefined ? undefined : {
+      index: asset.index,
+      type: asset.type,
+      name: asset.name,
+      mediaType: asset.mediaType,
+      sourceUri: charx.card.assets?.[asset.index]?.uri ?? '',
+      data: readCharxImageAsset(charx, asset),
+    }
   }
 
   /** Save one already validated card, deduplicating exact original bytes. */
@@ -832,33 +850,31 @@ export class CharacterLibrary {
     readonly card: ImportedCharacterCard
     readonly sourceCard: ImportedCharacterCard
     readonly overlay: StoredCharacterOverlay
+    readonly avatarAvailable: boolean
     readonly avatar?: CharacterLibraryAvatar
-    readonly images: readonly CharacterLibraryImageAsset[]
+    readonly images: readonly CharacterLibraryImage[]
   } {
     const overlay = this.readOverlay(meta.id)
     if (meta.transport === 'json') {
       const sourceCard = parseCharacterCardJsonBytes(data)
-      return { card: applyOverlay(sourceCard, overlay), sourceCard, overlay, images: [] }
+      return { card: applyOverlay(sourceCard, overlay), sourceCard, overlay, avatarAvailable: false, images: [] }
     }
     if (meta.transport === 'charx') {
       const charx = parseCharx(data)
       const charxImages = charxImageAssets(charx)
-      const icons = charxImages.filter(image => image.type === 'icon')
-      const avatar = icons.find(image => image.name.trim().toLocaleLowerCase() === 'main') ?? icons[0]
       const images = charxImages.map(image => ({
         index: image.index,
         type: image.type,
         name: image.name,
         mediaType: image.mediaType,
         sourceUri: charx.card.assets?.[image.index]?.uri ?? '',
-        data: image.data,
       }))
       return {
         card: applyOverlay(charx.card, overlay),
         sourceCard: charx.card,
         overlay,
+        avatarAvailable: charxAvatar(charx) !== undefined,
         images,
-        ...(avatar === undefined ? {} : { avatar: { mediaType: avatar.mediaType, data: avatar.data } }),
       }
     }
     const payload = readCharacterCardPng(data)
@@ -866,6 +882,7 @@ export class CharacterLibrary {
     const sourceCard = parseCharacterCardJson(payload.json)
     return {
       card: applyOverlay(sourceCard, overlay), sourceCard, overlay,
+      avatarAvailable: true,
       avatar: { mediaType: 'image/png', data }, images: [],
     }
   }

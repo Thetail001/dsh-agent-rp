@@ -9,12 +9,19 @@ export const MAX_CHARX_BYTES = MAX_CHARACTER_CARD_FILE_BYTES
 /** Largest total uncompressed payload accepted from one CHARX archive. */
 export const MAX_CHARX_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
 /** Largest entry count accepted from one CHARX archive. */
-export const MAX_CHARX_ENTRIES = 512
+export const MAX_CHARX_ENTRIES = 4_096
+
+/** One validated archive entry that remains compressed until requested. */
+export interface CharxEntry {
+  readonly path: string
+  readonly bytes: number
+}
 
 /** Validated CHARX transport with the canonical root card. */
 export interface ImportedCharx {
   readonly card: ImportedCharacterCard
-  readonly entries: ReadonlyMap<string, Uint8Array>
+  readonly archive: Uint8Array
+  readonly entries: ReadonlyMap<string, CharxEntry>
 }
 
 const IMAGE_MEDIA_TYPES: Readonly<Record<string, string>> = {
@@ -33,7 +40,6 @@ export interface CharxImageAsset {
   readonly name: string
   readonly path: string
   readonly mediaType: string
-  readonly data: Uint8Array
 }
 
 /** Normalize a case-sensitive CHARX entry path without allowing an archive escape. */
@@ -53,7 +59,35 @@ export function normalizeCharxPath(value: string): string {
   return segments.join('/')
 }
 
-function archiveFilter(seen: Set<string>, totals: { entries: number; bytes: number }): (file: UnzipFileInfo) => boolean {
+interface ArchiveScan {
+  readonly entries: ReadonlyMap<string, CharxEntry>
+  readonly extracted: ReadonlyMap<string, Uint8Array>
+}
+
+function scanArchive(data: Uint8Array, requested: ReadonlySet<string>): ArchiveScan {
+  const seen = new Set<string>()
+  const entries = new Map<string, CharxEntry>()
+  const totals = { entries: 0, bytes: 0 }
+  let extracted: Record<string, Uint8Array>
+  try {
+    extracted = unzipSync(data, { filter: archiveFilter(seen, entries, totals, requested) })
+  } catch (error: unknown) {
+    if (error instanceof Error && error.message.startsWith('CHARX ')) throw error
+    throw new Error('CHARX is not a supported ZIP archive', { cause: error })
+  }
+  const selected = new Map<string, Uint8Array>()
+  for (const [sourcePath, bytes] of Object.entries(extracted)) {
+    selected.set(normalizeCharxPath(sourcePath), bytes)
+  }
+  return { entries, extracted: selected }
+}
+
+function archiveFilter(
+  seen: Set<string>,
+  entries: Map<string, CharxEntry>,
+  totals: { entries: number; bytes: number },
+  requested: ReadonlySet<string>,
+): (file: UnzipFileInfo) => boolean {
   return file => {
     const path = normalizeCharxPath(file.name)
     totals.entries += 1
@@ -65,31 +99,27 @@ function archiveFilter(seen: Set<string>, totals: { entries: number; bytes: numb
     }
     if (seen.has(path)) throw new Error(`CHARX contains duplicate path ${JSON.stringify(path)}`)
     seen.add(path)
-    return true
+    entries.set(path, { path, bytes: file.originalSize })
+    return requested.has(path)
   }
 }
 
-/** Parse one non-encrypted CHARX ZIP while bounding archive expansion. */
+/** Parse one non-encrypted CHARX ZIP without inflating unrequested media. */
 export function parseCharx(data: Uint8Array): ImportedCharx {
   if (data.byteLength > MAX_CHARX_BYTES) throw new Error(`CHARX exceeds ${MAX_CHARX_BYTES} bytes`)
-  const seen = new Set<string>()
-  const totals = { entries: 0, bytes: 0 }
-  let extracted: Record<string, Uint8Array>
-  try {
-    extracted = unzipSync(data, { filter: archiveFilter(seen, totals) })
-  } catch (error: unknown) {
-    if (error instanceof Error && error.message.startsWith('CHARX ')) throw error
-    throw new Error('CHARX is not a supported ZIP archive', { cause: error })
-  }
-  const entries = new Map<string, Uint8Array>()
-  for (const [sourcePath, bytes] of Object.entries(extracted)) {
-    entries.set(normalizeCharxPath(sourcePath), bytes)
-  }
-  const cardBytes = entries.get('card.json')
+  const scan = scanArchive(data, new Set(['card.json']))
+  const cardBytes = scan.extracted.get('card.json')
   if (cardBytes === undefined) throw new Error('CHARX must contain card.json at the archive root')
   const card = parseCharacterCardJsonBytes(cardBytes)
   if (card.version !== 3) throw new Error('CHARX card.json must contain Character Card V3')
-  return { card, entries }
+  return { card, archive: data, entries: scan.entries }
+}
+
+/** Inflate one validated entry while leaving every other archive payload compressed. */
+export function readCharxEntry(charx: ImportedCharx, sourcePath: string): Uint8Array | undefined {
+  const path = normalizeCharxPath(sourcePath)
+  if (!charx.entries.has(path)) return undefined
+  return scanArchive(charx.archive, new Set([path])).extracted.get(path)
 }
 
 function embeddedPath(uri: string): string | undefined {
@@ -105,17 +135,22 @@ export function charxImageAssets(charx: ImportedCharx): readonly CharxImageAsset
     const path = embeddedPath(asset.uri)
     const ext = asset.ext.trim().toLocaleLowerCase().replace(/^\./u, '')
     const mediaType = IMAGE_MEDIA_TYPES[ext]
-    const data = path === undefined ? undefined : charx.entries.get(path)
-    if (path === undefined || mediaType === undefined || data === undefined) return []
+    if (path === undefined || mediaType === undefined || !charx.entries.has(path)) return []
     return [{
       index,
       type: asset.type.trim().toLocaleLowerCase(),
       name: asset.name,
       path,
       mediaType,
-      data,
     } satisfies CharxImageAsset]
   })
+}
+
+/** Inflate one card-declared inert image selected from a parsed CHARX manifest. */
+export function readCharxImageAsset(charx: ImportedCharx, asset: CharxImageAsset): Uint8Array {
+  const data = readCharxEntry(charx, asset.path)
+  if (data === undefined) throw new Error(`CHARX image entry ${JSON.stringify(asset.path)} is missing`)
+  return data
 }
 
 /** Select the card's primary embedded icon according to Character Card V3 rules. */
