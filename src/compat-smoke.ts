@@ -59,6 +59,13 @@ export interface AgentRpCompatSmokeReport extends AgentRpCompatSmokeDecision {
   readonly browser: {
     readonly consoleErrors: number
     readonly consoleErrorKinds: Readonly<Record<AgentRpCompatSmokeConsoleErrorKind, number>>
+    readonly consoleErrorsByPhase: Readonly<Record<
+      AgentRpCompatSmokeConsolePhase,
+      Readonly<Record<AgentRpCompatSmokeConsoleErrorKind, number>>
+    >>
+    readonly securityPolicyReasons: Readonly<Record<AgentRpCompatSmokeSecurityPolicyReason, number>>
+    readonly consoleErrorSources: Readonly<Record<AgentRpCompatSmokeConsoleSource, number>>
+    readonly consoleSignal: AgentRpCompatSmokeConsoleSignal
     readonly pageErrors: number
     readonly failureScreenshot: boolean
   }
@@ -69,12 +76,81 @@ export interface AgentRpCompatSmokeReport extends AgentRpCompatSmokeDecision {
 /** Content-free categories retained for browser console errors. */
 export type AgentRpCompatSmokeConsoleErrorKind = 'resource-load' | 'security-policy' | 'runtime'
 
+/** Fixed lifecycle phase assigned to a browser console error before its text is discarded. */
+export type AgentRpCompatSmokeConsolePhase = 'client-load' | 'preflight' | 'runtime' | 'interaction' | 'teardown'
+
+/** Content-free interpretation of browser console and page-error counters. */
+export type AgentRpCompatSmokeConsoleSignal = 'clean' | 'security-policy-only' | 'errors-observed'
+
+/** Fixed reason retained for a security-policy console error after its text is discarded. */
+export type AgentRpCompatSmokeSecurityPolicyReason =
+  | 'sandbox-script'
+  | 'script-source'
+  | 'style-source'
+  | 'connect-source'
+  | 'image-source'
+  | 'font-source'
+  | 'media-source'
+  | 'frame-source'
+  | 'cross-origin'
+  | 'other'
+
+/** Fixed document class retained for a console error after its source URL is discarded. */
+export type AgentRpCompatSmokeConsoleSource =
+  | 'host-document'
+  | 'srcdoc-frame'
+  | 'data-frame'
+  | 'blob-frame'
+  | 'external-document'
+  | 'unknown'
+
 /** Classify a browser console error without retaining its text, URL, or arguments. */
 export function classifyAgentRpSmokeConsoleError(message: string): AgentRpCompatSmokeConsoleErrorKind {
   if (message.includes('Failed to load resource') || message.includes('net::ERR_')) return 'resource-load'
   if (message.includes('Content Security Policy') || message.includes('Refused to')
     || message.includes('blocked by CORS policy') || message.includes('Cross-Origin')) return 'security-policy'
   return 'runtime'
+}
+
+/** Classify a security-policy error into a fixed reason without retaining its text. */
+export function classifyAgentRpSmokeSecurityPolicyReason(
+  message: string,
+): AgentRpCompatSmokeSecurityPolicyReason {
+  if (message.includes('frame is sandboxed') && message.includes('allow-scripts')) return 'sandbox-script'
+  if (message.includes('script-src')) return 'script-source'
+  if (message.includes('style-src')) return 'style-source'
+  if (message.includes('connect-src')) return 'connect-source'
+  if (message.includes('img-src')) return 'image-source'
+  if (message.includes('font-src')) return 'font-source'
+  if (message.includes('media-src')) return 'media-source'
+  if (message.includes('frame-src') || message.includes('child-src')) return 'frame-source'
+  if (message.includes('blocked by CORS policy') || message.includes('Cross-Origin')) return 'cross-origin'
+  return 'other'
+}
+
+/** Classify a console location without retaining its URL or path. */
+export function classifyAgentRpSmokeConsoleSource(
+  value: string,
+  hostOrigin: string,
+): AgentRpCompatSmokeConsoleSource {
+  if (value === '' || value === 'about:blank') return 'unknown'
+  if (value.startsWith('about:srcdoc')) return 'srcdoc-frame'
+  if (value.startsWith('data:')) return 'data-frame'
+  if (value.startsWith('blob:')) return 'blob-frame'
+  try {
+    return new URL(value).origin === hostOrigin ? 'host-document' : 'external-document'
+  } catch {
+    return 'unknown'
+  }
+}
+
+/** Distinguish policy enforcement noise from resource, runtime, or page failures. */
+export function classifyAgentRpSmokeConsoleSignal(
+  kinds: Readonly<Record<AgentRpCompatSmokeConsoleErrorKind, number>>,
+  pageErrors: number,
+): AgentRpCompatSmokeConsoleSignal {
+  if (pageErrors > 0 || kinds['resource-load'] > 0 || kinds.runtime > 0) return 'errors-observed'
+  return kinds['security-policy'] > 0 ? 'security-policy-only' : 'clean'
 }
 
 /** Stable browser actions used by the smoke driver. */

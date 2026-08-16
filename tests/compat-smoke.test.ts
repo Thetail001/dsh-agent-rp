@@ -4,6 +4,9 @@ import {
   classifyAgentRpPreflight,
   classifyAgentRpRuntime,
   classifyAgentRpSmokeConsoleError,
+  classifyAgentRpSmokeConsoleSource,
+  classifyAgentRpSmokeSecurityPolicyReason,
+  classifyAgentRpSmokeConsoleSignal,
   runAgentRpBrowserCompatibilitySmoke,
   type AgentRpCompatSmokeAction,
   type AgentRpCompatSmokeDriver,
@@ -15,6 +18,38 @@ test('classifies browser console failures without retaining their private text',
   assert.equal(classifyAgentRpSmokeConsoleError('Failed to load resource: net::ERR_FAILED'), 'resource-load')
   assert.equal(classifyAgentRpSmokeConsoleError('Refused to connect because of Content Security Policy'), 'security-policy')
   assert.equal(classifyAgentRpSmokeConsoleError('Unhandled application failure'), 'runtime')
+  assert.equal(classifyAgentRpSmokeSecurityPolicyReason(
+    "Blocked script execution because the document's frame is sandboxed and the 'allow-scripts' permission is not set",
+  ), 'sandbox-script')
+  assert.equal(classifyAgentRpSmokeSecurityPolicyReason(
+    "Refused to load an image because it violates the following Content Security Policy directive: img-src 'none'",
+  ), 'image-source')
+  assert.equal(classifyAgentRpSmokeSecurityPolicyReason(
+    'Access was blocked by CORS policy',
+  ), 'cross-origin')
+  assert.equal(classifyAgentRpSmokeSecurityPolicyReason(
+    'Refused by an unknown browser security rule',
+  ), 'other')
+  assert.equal(classifyAgentRpSmokeConsoleSource('about:srcdoc', 'http://127.0.0.1:3091'), 'srcdoc-frame')
+  assert.equal(classifyAgentRpSmokeConsoleSource(
+    'http://127.0.0.1:3091/assets/client.js', 'http://127.0.0.1:3091',
+  ), 'host-document')
+  assert.equal(classifyAgentRpSmokeConsoleSource(
+    'https://example.invalid/private', 'http://127.0.0.1:3091',
+  ), 'external-document')
+  assert.equal(classifyAgentRpSmokeConsoleSource('', 'http://127.0.0.1:3091'), 'unknown')
+  assert.equal(classifyAgentRpSmokeConsoleSignal({
+    'resource-load': 0, 'security-policy': 0, runtime: 0,
+  }, 0), 'clean')
+  assert.equal(classifyAgentRpSmokeConsoleSignal({
+    'resource-load': 0, 'security-policy': 34, runtime: 0,
+  }, 0), 'security-policy-only')
+  assert.equal(classifyAgentRpSmokeConsoleSignal({
+    'resource-load': 1, 'security-policy': 34, runtime: 0,
+  }, 0), 'errors-observed')
+  assert.equal(classifyAgentRpSmokeConsoleSignal({
+    'resource-load': 0, 'security-policy': 0, runtime: 0,
+  }, 1), 'errors-observed')
 })
 
 function browserSnapshot(options: {

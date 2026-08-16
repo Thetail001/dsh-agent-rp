@@ -9,10 +9,16 @@ import { chromium, type BrowserContext, type Page } from 'playwright-core'
 import {
   AGENT_RP_COMPAT_SMOKE_EXIT,
   classifyAgentRpSmokeConsoleError,
+  classifyAgentRpSmokeConsoleSource,
+  classifyAgentRpSmokeSecurityPolicyReason,
+  classifyAgentRpSmokeConsoleSignal,
   runAgentRpBrowserCompatibilitySmoke,
   runnerFailure,
   type AgentRpCompatSmokeAction,
   type AgentRpCompatSmokeConsoleErrorKind,
+  type AgentRpCompatSmokeConsolePhase,
+  type AgentRpCompatSmokeConsoleSource,
+  type AgentRpCompatSmokeSecurityPolicyReason,
   type AgentRpCompatSmokeDecision,
   type AgentRpCompatSmokeDriver,
   type AgentRpCompatSmokePermissionDuration,
@@ -221,7 +227,13 @@ function resolveBrowserExecutable(explicit?: string): string {
 }
 
 class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
-  constructor(private readonly page: Page, private readonly timeoutMs: number) {}
+  private launched = false
+
+  constructor(
+    private readonly page: Page,
+    private readonly timeoutMs: number,
+    private readonly markConsolePhase: (phase: AgentRpCompatSmokeConsolePhase) => void,
+  ) {}
 
   delay(milliseconds: number): Promise<void> {
     return this.page.waitForTimeout(milliseconds)
@@ -252,6 +264,7 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
   }
 
   async clickAction(action: AgentRpCompatSmokeAction, sourceSessionId?: string): Promise<void> {
+    this.markConsolePhase(this.launched ? 'interaction' : 'preflight')
     const candidates = await this.page.locator(`[data-agent-rp-action="${action}"]`).all()
     for (const candidate of candidates) {
       if (sourceSessionId !== undefined
@@ -264,6 +277,7 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
   }
 
   async selectCharacter(characterId: string): Promise<void> {
+    this.markConsolePhase('preflight')
     await this.page.waitForFunction(expected => [...document.querySelectorAll('[data-agent-rp-character-id]')]
       .some(element => element.getAttribute('data-agent-rp-character-id') === expected), characterId, {
       timeout: this.timeoutMs,
@@ -280,6 +294,7 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
   }
 
   async selectPreset(presetId: string): Promise<void> {
+    this.markConsolePhase('preflight')
     await this.page.waitForFunction(expected => [...document.querySelectorAll('#agent-rp-session-preset option')]
       .some(option => option.getAttribute('value') === expected), presetId, { timeout: this.timeoutMs })
     await this.page.locator('#agent-rp-session-preset').selectOption(presetId, { timeout: this.timeoutMs })
@@ -288,6 +303,7 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
   }
 
   async selectPermissionDuration(duration: AgentRpCompatSmokePermissionDuration): Promise<void> {
+    this.markConsolePhase('preflight')
     await this.page.locator(`[data-agent-rp-permission-duration="${duration}"]`)
       .click({ timeout: this.timeoutMs })
     await this.page.waitForFunction(expected => document
@@ -298,6 +314,7 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
   }
 
   async startSession(): Promise<void> {
+    this.markConsolePhase('runtime')
     await this.page.locator(
       '[data-agent-rp-start-action="approve-and-start"], [data-agent-rp-start-action="start"]',
     ).click({ timeout: this.timeoutMs })
@@ -308,6 +325,7 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
     if (await this.page.locator('[data-agent-rp-surface="character-library"]').count() > 0) {
       throw new SmokeCommandError('session-launch-failed')
     }
+    this.launched = true
   }
 }
 
@@ -339,6 +357,40 @@ async function main(argv: readonly string[]): Promise<void> {
     'security-policy': 0,
     runtime: 0,
   }
+  const emptyConsoleKinds = (): Record<AgentRpCompatSmokeConsoleErrorKind, number> => ({
+    'resource-load': 0, 'security-policy': 0, runtime: 0,
+  })
+  const consoleErrorsByPhase: Record<
+    AgentRpCompatSmokeConsolePhase,
+    Record<AgentRpCompatSmokeConsoleErrorKind, number>
+  > = {
+    'client-load': emptyConsoleKinds(),
+    preflight: emptyConsoleKinds(),
+    runtime: emptyConsoleKinds(),
+    interaction: emptyConsoleKinds(),
+    teardown: emptyConsoleKinds(),
+  }
+  const securityPolicyReasons: Record<AgentRpCompatSmokeSecurityPolicyReason, number> = {
+    'sandbox-script': 0,
+    'script-source': 0,
+    'style-source': 0,
+    'connect-source': 0,
+    'image-source': 0,
+    'font-source': 0,
+    'media-source': 0,
+    'frame-source': 0,
+    'cross-origin': 0,
+    other: 0,
+  }
+  const consoleErrorSources: Record<AgentRpCompatSmokeConsoleSource, number> = {
+    'host-document': 0,
+    'srcdoc-frame': 0,
+    'data-frame': 0,
+    'blob-frame': 0,
+    'external-document': 0,
+    unknown: 0,
+  }
+  let consolePhase: AgentRpCompatSmokeConsolePhase = 'client-load'
   let pageErrors = 0
   let screenshot = false
   let snapshot: AgentRpBrowserCompatibilitySnapshot | undefined
@@ -375,13 +427,19 @@ async function main(argv: readonly string[]): Promise<void> {
     page = context.pages()[0] ?? await context.newPage()
     page.on('console', message => {
       if (message.type() !== 'error') return
+      const kind = classifyAgentRpSmokeConsoleError(message.text())
       consoleErrors += 1
-      consoleErrorKinds[classifyAgentRpSmokeConsoleError(message.text())] += 1
+      consoleErrorKinds[kind] += 1
+      consoleErrorsByPhase[consolePhase][kind] += 1
+      consoleErrorSources[classifyAgentRpSmokeConsoleSource(message.location().url, options.url.origin)] += 1
+      if (kind === 'security-policy') {
+        securityPolicyReasons[classifyAgentRpSmokeSecurityPolicyReason(message.text())] += 1
+      }
     })
     page.on('pageerror', () => { pageErrors += 1 })
     await page.goto(options.url.href, { waitUntil: 'domcontentloaded', timeout: options.timeoutMs })
     if (new URL(page.url()).origin !== options.url.origin) throw new SmokeCommandError('client-load-failed')
-    const driver = new PlaywrightSmokeDriver(page, options.timeoutMs)
+    const driver = new PlaywrightSmokeDriver(page, options.timeoutMs, phase => { consolePhase = phase })
     const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
       characterId: card.id,
       ...(preset === undefined ? {} : { presetId: preset.id }),
@@ -402,6 +460,7 @@ async function main(argv: readonly string[]): Promise<void> {
       else presetOutcome = 'failed'
     }
   } finally {
+    consolePhase = 'teardown'
     if (decision.status !== 'healthy') screenshot = await captureFailureScreenshot(page)
     try {
       await context?.close()
@@ -415,7 +474,16 @@ async function main(argv: readonly string[]): Promise<void> {
     ...decision,
     server: { mode: 'external', reachable },
     imports: { card: cardOutcome, preset: presetOutcome },
-    browser: { consoleErrors, consoleErrorKinds, pageErrors, failureScreenshot: screenshot },
+    browser: {
+      consoleErrors,
+      consoleErrorKinds,
+      consoleErrorsByPhase,
+      securityPolicyReasons,
+      consoleErrorSources,
+      consoleSignal: classifyAgentRpSmokeConsoleSignal(consoleErrorKinds, pageErrors),
+      pageErrors,
+      failureScreenshot: screenshot,
+    },
     timingsMs,
     ...(snapshot === undefined ? {} : { snapshot }),
   }
