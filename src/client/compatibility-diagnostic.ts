@@ -27,6 +27,7 @@ export type AgentRpBrowserCompatibilityIssue =
   | 'preflight-failed'
   | 'preflight-launch-mismatch'
   | 'preflight-request-failed'
+  | 'preset-count-mismatch'
   | 'tavern-permission-count-mismatch'
   | 'tavern-runtime-failed'
   | 'world-engine-degraded'
@@ -49,6 +50,10 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly presetManager: {
       readonly launchers: number
       readonly state: 'closed' | 'open'
+      /** Session-owned preset switches rendered inside the open manager. */
+      readonly toggleable: number
+      /** Save-control markers rendered inside the open manager. */
+      readonly save: number
     }
     readonly sessionSettings: {
       readonly launchers: number
@@ -93,6 +98,13 @@ export interface AgentRpBrowserCompatibilitySnapshot {
       readonly state: 'loading' | 'unconfigured' | 'ready' | 'error' | 'unknown'
       readonly approved: number
       readonly pending: number
+    }
+    readonly preset?: {
+      readonly revision: number
+      readonly promptCount: number
+      readonly enabledCount: number
+      readonly regexCount: number
+      readonly enabledRegexCount: number
     }
     readonly variables: {
       readonly surfaces: number
@@ -182,6 +194,7 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly interactiveEntriesPresent: boolean
     readonly preflightConsistent: boolean
     readonly preflightHealthy: boolean
+    readonly presetCountsConsistent: boolean
     readonly tavernPermissionsConsistent: boolean
     readonly tavernRuntimeHealthy: boolean
     readonly worldEngineHealthy: boolean
@@ -260,6 +273,8 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     ?.getAttribute('data-agent-rp-surface-state') === 'open'
   const presetManagerLaunchers = root.querySelectorAll('[data-agent-rp-action="open-preset-manager"]').length
   const presetManagerOpen = root.querySelector('[data-agent-rp-surface="preset-manager"]') !== null
+  const presetManagerToggleable = root.querySelectorAll('[data-agent-rp-preset-toggle]').length
+  const presetManagerSave = root.querySelectorAll('[data-agent-rp-action="save-session-preset"]').length
   const worldInfoManagerLaunchers = root.querySelectorAll('[data-agent-rp-action="open-world-info-manager"]').length
   const worldInfoManagerOpen = root.querySelector('[data-agent-rp-surface="world-info-manager"]') !== null
   const tavernPanelLaunchers = root.querySelectorAll('[data-agent-rp-action="open-tavern-panel"]').length
@@ -325,6 +340,13 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
         sharedScopes: integer(status, 'data-agent-rp-variable-shared-scopes'),
         scriptScopes: integer(status, 'data-agent-rp-variable-script-scopes'),
       },
+      ...(status.getAttribute('data-agent-rp-preset-prompt-count') === null ? {} : { preset: {
+        revision: integer(status, 'data-agent-rp-preset-revision'),
+        promptCount: integer(status, 'data-agent-rp-preset-prompt-count'),
+        enabledCount: integer(status, 'data-agent-rp-preset-enabled-count'),
+        regexCount: integer(status, 'data-agent-rp-preset-regex-count'),
+        enabledRegexCount: integer(status, 'data-agent-rp-preset-enabled-regex-count'),
+      } }),
       renderer: { inlineFrontendSanitizer },
       worldEngine: {
         engine: value(status, 'data-agent-rp-world-engine'),
@@ -404,6 +426,11 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     }
     if ((session.tavern?.failed ?? 0) > 0) issues.add('tavern-runtime-failed')
     if (Object.values(session.worldEngine.failures).some(count => count > 0)) issues.add('world-engine-degraded')
+    if (session.preset !== undefined
+      && (session.preset.enabledCount > session.preset.promptCount
+        || session.preset.enabledRegexCount > session.preset.regexCount)) {
+      issues.add('preset-count-mismatch')
+    }
   }
 
   const interactiveEntriesPresent = session === undefined || (
@@ -519,6 +546,8 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       presetManager: {
         launchers: presetManagerLaunchers,
         state: presetManagerOpen ? 'open' : 'closed',
+        toggleable: presetManagerToggleable,
+        save: presetManagerSave,
       },
       sessionSettings: {
         launchers: sessionSettingsLaunchers,
@@ -551,6 +580,7 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       interactiveEntriesPresent,
       preflightConsistent,
       preflightHealthy,
+      presetCountsConsistent: session === undefined || !issues.has('preset-count-mismatch'),
       tavernPermissionsConsistent,
       tavernRuntimeHealthy: session?.tavern === undefined || session.tavern.failed === 0,
       worldEngineHealthy: session === undefined || !issues.has('world-engine-degraded'),
@@ -616,6 +646,12 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-variable-surfaces',
       'data-agent-rp-variable-shared-scopes',
       'data-agent-rp-variable-script-scopes',
+      'data-agent-rp-preset-revision',
+      'data-agent-rp-preset-prompt-count',
+      'data-agent-rp-preset-enabled-count',
+      'data-agent-rp-preset-regex-count',
+      'data-agent-rp-preset-enabled-regex-count',
+      'data-agent-rp-preset-toggle',
       'data-agent-rp-world-engine',
       'data-agent-rp-world-engine-entries',
       'data-agent-rp-world-engine-active',

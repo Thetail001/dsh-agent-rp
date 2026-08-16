@@ -347,11 +347,26 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
 
   async clickAction(action: AgentRpCompatSmokeAction, sourceSessionId?: string): Promise<void> {
     this.markConsolePhase(this.launched ? 'interaction' : 'preflight')
+    if (action === 'toggle-session-preset-module') {
+      const switches = await this.page.locator('[data-agent-rp-preset-toggle]').all()
+      for (const candidate of switches) {
+        if (!await candidate.isVisible()) continue
+        await candidate.click({ timeout: this.timeoutMs })
+        return
+      }
+      throw new SmokeCommandError('interaction-missing')
+    }
     const candidates = await this.page.locator(`[data-agent-rp-action="${action}"]`).all()
     for (const candidate of candidates) {
       if (sourceSessionId !== undefined
         && await candidate.getAttribute('data-agent-rp-source-session') !== sourceSessionId) continue
       if (!await candidate.isVisible()) continue
+      if (action === 'save-session-preset') {
+        await this.page.waitForFunction(() => {
+          const button = document.querySelector('[data-agent-rp-action="save-session-preset"]')
+          return button instanceof HTMLElement && !(button as HTMLButtonElement).disabled
+        }, undefined, { timeout: this.timeoutMs })
+      }
       await candidate.click({ timeout: this.timeoutMs })
       return
     }

@@ -58,6 +58,15 @@ function browserSnapshot(options: {
   readonly runtime?: 'pending' | 'healthy' | 'empty' | 'failed'
   readonly characterLibrary?: 'closed' | 'open'
   readonly presetManager?: 'closed' | 'open'
+  readonly presetToggleable?: number
+  readonly presetSave?: number
+  readonly preset?: {
+    readonly revision: number
+    readonly promptCount: number
+    readonly enabledCount: number
+    readonly regexCount: number
+    readonly enabledRegexCount: number
+  }
   readonly sessionSettings?: 'closed' | 'open'
   readonly tavernPanel?: 'closed' | 'mobile' | 'script'
   readonly worldInfoManager?: 'closed' | 'open'
@@ -69,11 +78,17 @@ function browserSnapshot(options: {
   const issues = runtime === 'empty' ? ['card-frame-content-empty'] as const
     : runtime === 'failed' ? ['card-frame-runtime-failed'] as const : []
   const preflight = options.preflight
+  const preset = options.preset
   return {
     audit: 'agent-rp-browser-compat-v0',
     interactions: {
       characterLibrary: { launchers: 1, state: options.characterLibrary ?? 'closed' },
-      presetManager: { launchers: 1, state: options.presetManager ?? 'closed' },
+      presetManager: {
+        launchers: 1,
+        state: options.presetManager ?? 'closed',
+        toggleable: options.presetToggleable ?? 0,
+        save: options.presetSave ?? 0,
+      },
       sessionSettings: { launchers: 1, state: options.sessionSettings ?? 'closed' },
       tavernPanel: { launchers: 1, mobileLaunchers: 1, state: options.tavernPanel ?? 'closed' },
       tavernPermissions: { launchers: 0, state: 'closed' },
@@ -87,6 +102,7 @@ function browserSnapshot(options: {
       auxiliaryGenerations: { requests: 0, succeeded: 0, failed: 0, pending: 0, malformed: 0 },
       externalWindows: { phases: {} },
       nativeIdentity: { state: 'ready' as const, approved: 0, pending: 0 },
+      ...(preset === undefined ? {} : { preset }),
       variables: { surfaces: 2, sharedScopes: 5, scriptScopes: 1 },
       renderer: { inlineFrontendSanitizer: 'ready' },
       worldEngine: {
@@ -146,6 +162,7 @@ function browserSnapshot(options: {
       interactiveEntriesPresent: true,
       preflightConsistent: true,
       preflightHealthy: preflight !== 'error',
+      presetCountsConsistent: true,
       tavernPermissionsConsistent: true,
       tavernRuntimeHealthy: runtime !== 'failed',
       worldEngineHealthy: true,
@@ -185,6 +202,10 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
   private worldInfoManager: 'closed' | 'open' = 'closed'
   private selected = false
   private launched = false
+  private presetTogglePending = false
+  private presetRevision = 7
+  private presetEnabledCount = 3
+  private presetEnabledRegexCount = 2
   permissionDuration: AgentRpCompatSmokePermissionDuration = 'remember'
   readonly approvalAttempts: number[] = []
   onboardingAcknowledgements = 0
@@ -197,6 +218,8 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
     private readonly genericTavernPanel: 'script' | 'mobile' = 'script',
     private clientGateState: 'ready' | 'onboarding' = 'ready',
     private remainingRuntimeFonts = 0,
+    private readonly presetToggleable = 1,
+    private readonly presetSaveApplies = true,
   ) {}
 
   delay(): Promise<void> { return Promise.resolve() }
@@ -229,6 +252,17 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
           }
         : {}),
       ...(this.launched ? { runtime: 'healthy' as const } : {}),
+      ...(this.presetToggleable === 0 ? {} : {
+        presetToggleable: this.presetManager === 'open' ? this.presetToggleable : 0,
+        presetSave: this.presetManager === 'open' && this.presetSaveApplies ? 1 : 0,
+      }),
+      ...(this.launched ? { preset: {
+        revision: this.presetRevision,
+        promptCount: 4,
+        enabledCount: this.presetEnabledCount,
+        regexCount: 3,
+        enabledRegexCount: this.presetEnabledRegexCount,
+      } } : {}),
       blockedFonts: this.launched ? this.remainingRuntimeFonts : 0,
       characterLibrary: this.characterLibrary,
       presetManager: this.presetManager,
@@ -252,6 +286,15 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
         break
       case 'open-preset-manager': this.sessionSettings = 'closed'; this.presetManager = 'open'; break
       case 'close-preset-manager': this.presetManager = 'closed'; break
+      case 'toggle-session-preset-module': this.presetTogglePending = true; break
+      case 'save-session-preset':
+        this.presetRevision += 1
+        if (this.presetTogglePending && this.presetSaveApplies) {
+          this.presetEnabledCount = Math.max(0, this.presetEnabledCount - 1)
+          this.presetTogglePending = false
+          this.presetManager = 'closed'
+        }
+        break
       case 'open-world-info-manager': this.sessionSettings = 'closed'; this.worldInfoManager = 'open'; break
       case 'close-world-info-manager': this.worldInfoManager = 'closed'; break
       case 'open-tavern-panel': this.tavernPanel = this.genericTavernPanel; break
@@ -298,11 +341,49 @@ test('drives one content-free launch and all applicable stable interaction surfa
   assert.deepEqual(driver.actions, [
     'open-character-library',
     'open-character-library', 'close-character-library',
-    'toggle-session-settings', 'open-preset-manager', 'close-preset-manager',
+    'toggle-session-settings', 'open-preset-manager',
+    'toggle-session-preset-module', 'save-session-preset',
     'toggle-session-settings', 'open-world-info-manager', 'close-world-info-manager',
     'open-tavern-panel', 'close-tavern-panel',
     'open-mobile-surface', 'close-tavern-panel',
   ])
+})
+
+test('toggles one session-owned preset switch and verifies the content-free counts advance', async () => {
+  const driver = new FakeSmokeDriver()
+  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
+    characterId: 'character-id', timeoutMs: 100,
+  })
+
+  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
+  assert.equal(result.snapshot?.session?.preset?.revision, 8)
+  assert.equal(result.snapshot?.session?.preset?.enabledCount, 2)
+})
+
+test('skips the preset toggle when the manager has no toggleable switches', async () => {
+  const driver = new FakeSmokeDriver(false, true, 'script', 'ready', 0, 0)
+  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
+    characterId: 'character-id', timeoutMs: 100,
+  })
+
+  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
+  assert.equal(driver.actions.includes('toggle-session-preset-module'), false)
+  assert.equal(driver.actions.includes('save-session-preset'), false)
+  assert.equal(result.snapshot?.session?.preset?.revision, 7)
+})
+
+test('fails the interaction when a saved preset does not advance its counts', async () => {
+  const driver = new FakeSmokeDriver(false, true, 'script', 'ready', 0, 1, false)
+  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
+    characterId: 'character-id', timeoutMs: 5, pollMs: 1,
+  })
+
+  assert.deepEqual(result.decision, {
+    status: 'failed', stage: 'interaction-failed', exitCode: 3,
+  })
+  assert.deepEqual(driver.actions.filter(action =>
+    action === 'toggle-session-preset-module' || action === 'save-session-preset'),
+  ['toggle-session-preset-module', 'save-session-preset'])
 })
 
 test('keeps first-run acknowledgement explicit and continues after authorization', async () => {

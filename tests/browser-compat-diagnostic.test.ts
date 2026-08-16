@@ -134,6 +134,7 @@ test('collects one content-free healthy browser snapshot with expected permissio
     interactiveEntriesPresent: true,
     preflightConsistent: true,
     preflightHealthy: true,
+    presetCountsConsistent: true,
     tavernPermissionsConsistent: true,
     tavernRuntimeHealthy: true,
     worldEngineHealthy: true,
@@ -152,7 +153,7 @@ test('collects one content-free healthy browser snapshot with expected permissio
   assert.deepEqual(report.session?.nativeIdentity, { state: 'ready', approved: 3, pending: 3 })
   assert.deepEqual(report.interactions, {
     characterLibrary: { launchers: 1, state: 'closed' },
-    presetManager: { launchers: 1, state: 'closed' },
+    presetManager: { launchers: 1, state: 'closed', toggleable: 0, save: 0 },
     sessionSettings: { launchers: 1, state: 'closed' },
     tavernPanel: { launchers: 1, mobileLaunchers: 1, state: 'closed' },
     tavernPermissions: { launchers: 1, state: 'closed' },
@@ -232,6 +233,7 @@ test('reports stable issue codes for expanded sandboxes and inconsistent lifecyc
     interactiveEntriesPresent: true,
     preflightConsistent: false,
     preflightHealthy: false,
+    presetCountsConsistent: true,
     tavernPermissionsConsistent: true,
     tavernRuntimeHealthy: false,
     worldEngineHealthy: true,
@@ -388,7 +390,7 @@ test('reports missing stable interaction entries without reading labels or conte
   assert.equal(report.checks.interactiveEntriesPresent, false)
   assert.deepEqual(report.interactions, {
     characterLibrary: { launchers: 0, state: 'closed' },
-    presetManager: { launchers: 0, state: 'closed' },
+    presetManager: { launchers: 0, state: 'closed', toggleable: 0, save: 0 },
     sessionSettings: { launchers: 0, state: 'closed' },
     tavernPanel: { launchers: 0, mobileLaunchers: 0, state: 'closed' },
     tavernPermissions: { launchers: 0, state: 'closed' },
@@ -414,7 +416,7 @@ test('reports open interaction surfaces through stable content-free states', () 
 
   assert.deepEqual(report.interactions, {
     characterLibrary: { launchers: 1, state: 'open' },
-    presetManager: { launchers: 1, state: 'open' },
+    presetManager: { launchers: 1, state: 'open', toggleable: 0, save: 0 },
     sessionSettings: { launchers: 1, state: 'open' },
     tavernPanel: { launchers: 1, mobileLaunchers: 1, state: 'mobile' },
     tavernPermissions: { launchers: 1, state: 'open' },
@@ -498,6 +500,66 @@ test('classifies runtime-discovered font permission as an interaction', () => {
   assert.equal(report.checks.tavernPermissionsConsistent, true)
   assert.equal(report.session?.tavern?.permissions.font, 1)
   assert.deepEqual(report.issues, [])
+})
+
+test('collects content-free session preset counts and preset-manager interaction markers', () => {
+  const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    '[data-agent-rp-status]': [new DiagnosticElement({
+      ...capabilityAttributes,
+      'data-agent-rp-preset-revision': '4',
+      'data-agent-rp-preset-prompt-count': '6',
+      'data-agent-rp-preset-enabled-count': '4',
+      'data-agent-rp-preset-regex-count': '3',
+      'data-agent-rp-preset-enabled-regex-count': '2',
+      'data-private-preset-name': 'must not appear',
+    })],
+    ...stableInteractionSelectors,
+    '[data-agent-rp-surface="preset-manager"]': [new DiagnosticElement({})],
+    '[data-agent-rp-preset-toggle]': [
+      new DiagnosticElement({ 'data-agent-rp-preset-toggle': 'on' }),
+      new DiagnosticElement({ 'data-agent-rp-preset-toggle': 'off' }),
+      new DiagnosticElement({ 'data-agent-rp-preset-toggle': 'on' }),
+    ],
+    '[data-agent-rp-action="save-session-preset"]': [new DiagnosticElement({})],
+  }))
+
+  assert.deepEqual(report.session?.preset, {
+    revision: 4,
+    promptCount: 6,
+    enabledCount: 4,
+    regexCount: 3,
+    enabledRegexCount: 2,
+  })
+  assert.deepEqual(report.interactions.presetManager, {
+    launchers: 1, state: 'open', toggleable: 3, save: 1,
+  })
+  assert.equal(report.checks.presetCountsConsistent, true)
+  assert.deepEqual(report.issues, [])
+  assert.doesNotMatch(JSON.stringify(report), /private|preset-name|must not appear/u)
+})
+
+test('reports preset-count-mismatch when enabled counts exceed their totals', () => {
+  const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    '[data-agent-rp-status]': [new DiagnosticElement({
+      ...capabilityAttributes,
+      'data-agent-rp-preset-revision': '4',
+      'data-agent-rp-preset-prompt-count': '6',
+      'data-agent-rp-preset-enabled-count': '7',
+      'data-agent-rp-preset-regex-count': '3',
+      'data-agent-rp-preset-enabled-regex-count': '4',
+    })],
+    ...stableInteractionSelectors,
+  }))
+
+  assert.equal(report.checks.presetCountsConsistent, false)
+  assert.deepEqual(report.session?.preset, {
+    revision: 4,
+    promptCount: 6,
+    enabledCount: 7,
+    regexCount: 3,
+    enabledRegexCount: 4,
+  })
+  assert.deepEqual(report.issues, ['preset-count-mismatch'])
 })
 
 test('uses Host runtime facts while retaining DOM-owned sandbox checks', () => {

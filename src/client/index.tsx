@@ -4938,7 +4938,7 @@ function PresetManagerDialog({
         <button type="button" disabled={saving} onClick={exportCopy} title={preset.omittedExtensions.length === 0 ? '导出当前配置' : `不包含未执行扩展：${preset.omittedExtensions.join('、')}`} style={secondaryButtonStyle}>导出副本</button>
         <button type="button" disabled={saving} onClick={() => { void saveToLibrary() }} style={secondaryButtonStyle}>另存为预设</button>
         <button type="button" disabled={saving} onClick={onClose} style={secondaryButtonStyle}>取消</button>
-        <button type="button" disabled={saving} onClick={() => { void save() }} style={primaryButtonStyle}>{saving ? '保存中…' : '保存到此会话'}</button>
+        <button type="button" disabled={saving} onClick={() => { void save() }} data-agent-rp-action="save-session-preset" style={primaryButtonStyle}>{saving ? '保存中…' : '保存到此会话'}</button>
       </footer>
     </section>
     {editingPrompt !== undefined && <PresetPromptEditorDialog
@@ -8813,6 +8813,13 @@ function roleplayComposerDockComponent(
     data-agent-rp-chat-write-surfaces={hasTavernVariableSurface ? 1 : 0}
     data-agent-rp-prompt-injection-surfaces={hasTavernVariableSurface ? 1 : 0}
     data-agent-rp-prompt-preview-surfaces={hasTavernVariableSurface ? 1 : 0}
+    {...(projection.preset === undefined ? {} : {
+      'data-agent-rp-preset-revision': projection.preset.revision,
+      'data-agent-rp-preset-prompt-count': projection.preset.promptCount,
+      'data-agent-rp-preset-enabled-count': projection.preset.enabledCount,
+      'data-agent-rp-preset-regex-count': projection.preset.regexScriptCount,
+      'data-agent-rp-preset-enabled-regex-count': projection.preset.enabledRegexScriptCount,
+    })}
     data-agent-rp-world-engine={projection.worldInfoCount === 0 ? 'inactive' : 'native-v0'}
     data-agent-rp-world-engine-entries={projection.worldInfoCount}
     data-agent-rp-world-engine-active={projection.worldInfo.activeCount}

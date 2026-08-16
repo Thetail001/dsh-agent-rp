@@ -161,6 +161,8 @@ export type AgentRpCompatSmokeAction =
   | 'toggle-session-settings'
   | 'open-preset-manager'
   | 'close-preset-manager'
+  | 'toggle-session-preset-module'
+  | 'save-session-preset'
   | 'open-world-info-manager'
   | 'close-world-info-manager'
   | 'open-tavern-panel'
@@ -347,7 +349,8 @@ function surfaceState(snapshot: AgentRpBrowserCompatibilitySnapshot, action: Age
   switch (action) {
     case 'open-character-library': case 'close-character-library': return snapshot.interactions.characterLibrary.state
     case 'toggle-session-settings': return snapshot.interactions.sessionSettings.state
-    case 'open-preset-manager': case 'close-preset-manager': return snapshot.interactions.presetManager.state
+    case 'open-preset-manager': case 'close-preset-manager':
+    case 'toggle-session-preset-module': case 'save-session-preset': return snapshot.interactions.presetManager.state
     case 'open-world-info-manager': case 'close-world-info-manager': return snapshot.interactions.worldInfoManager.state
     case 'open-tavern-panel': case 'open-mobile-surface': case 'close-tavern-panel': return snapshot.interactions.tavernPanel.state
   }
@@ -389,6 +392,48 @@ async function exerciseInteraction(
   return closed !== undefined && surfaceState(closed, close) === 'closed'
 }
 
+/** Content-free session preset counts used to verify one save round trip. */
+function presetCounts(snapshot: AgentRpBrowserCompatibilitySnapshot):
+  { readonly revision: number; readonly enabledCount: number; readonly enabledRegexCount: number } | undefined {
+  const preset = snapshot.session?.preset
+  if (preset === undefined) return undefined
+  return { revision: preset.revision, enabledCount: preset.enabledCount, enabledRegexCount: preset.enabledRegexCount }
+}
+
+/**
+ * Flip one session-owned preset switch, save it, and wait for the content-free
+ * counts to advance. A manager with no toggleable switches is a successful no-op.
+ */
+async function exerciseSessionPresetToggle(
+  driver: AgentRpCompatSmokeDriver,
+  snapshot: AgentRpBrowserCompatibilitySnapshot,
+  timeoutMs: number,
+  pollMs: number,
+): Promise<boolean> {
+  const baseline = presetCounts(snapshot)
+  if (snapshot.interactions.presetManager.toggleable === 0 || baseline === undefined) return true
+  try {
+    await driver.clickAction('toggle-session-preset-module')
+    await driver.clickAction('save-session-preset')
+  } catch {
+    return false
+  }
+  const deadline = Date.now() + timeoutMs
+  while (true) {
+    const current = await driver.snapshot()
+    const counts = current === undefined ? undefined : presetCounts(current)
+    if (counts !== undefined && counts.revision > baseline.revision) {
+      const enabledChanged = counts.enabledCount === baseline.enabledCount + 1
+        || counts.enabledCount === baseline.enabledCount - 1
+      const regexChanged = counts.enabledRegexCount === baseline.enabledRegexCount + 1
+        || counts.enabledRegexCount === baseline.enabledRegexCount - 1
+      if (enabledChanged !== regexChanged) return true
+    }
+    if (Date.now() >= deadline) return false
+    await driver.delay(Math.min(pollMs, Math.max(1, deadline - Date.now())))
+  }
+}
+
 async function exerciseStableInteractions(
   driver: AgentRpCompatSmokeDriver,
   snapshot: AgentRpBrowserCompatibilitySnapshot,
@@ -405,8 +450,22 @@ async function exerciseStableInteractions(
     if (settingsForPreset === undefined || settingsForPreset.interactions.sessionSettings.state !== 'open') {
       return failed('interaction-failed')
     }
-    if (!await exerciseInteraction(driver, 'open-preset-manager', 'open', 'close-preset-manager', timeoutMs, pollMs)) {
+    await driver.clickAction('open-preset-manager')
+    const presetManagerOpened = await waitForSurface(driver, 'open-preset-manager', 'open', timeoutMs, pollMs)
+    if (presetManagerOpened === undefined || presetManagerOpened.interactions.presetManager.state !== 'open') {
       return failed('interaction-failed')
+    }
+    if (!await exerciseSessionPresetToggle(driver, presetManagerOpened, timeoutMs, pollMs)) {
+      return failed('interaction-failed')
+    }
+    // A successful product save closes the manager itself; only close it when it stayed open.
+    const afterPresetSave = await driver.snapshot()
+    if (afterPresetSave !== undefined && afterPresetSave.interactions.presetManager.state !== 'closed') {
+      await driver.clickAction('close-preset-manager')
+      const presetManagerClosed = await waitForSurface(driver, 'close-preset-manager', 'closed', timeoutMs, pollMs)
+      if (presetManagerClosed === undefined || presetManagerClosed.interactions.presetManager.state !== 'closed') {
+        return failed('interaction-failed')
+      }
     }
     await driver.clickAction('toggle-session-settings')
     const settingsForWorldInfo = await waitForSurface(driver, 'toggle-session-settings', 'open', timeoutMs, pollMs)
