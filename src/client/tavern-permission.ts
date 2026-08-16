@@ -13,6 +13,39 @@ const tavernScriptModelApprovalsKey = 'dsh.agent-rp.tavern-script-model-approval
 /** Script-tree namespace that owns one isolated Tavern Helper script. */
 export type TavernPermissionScope = 'global' | 'preset' | 'character'
 
+/** Resource kinds whose grants can be planned before script execution. */
+export type TavernScriptResourcePermissionKind = 'script' | 'image' | 'frame'
+
+/** Static resources declared by one scoped script. */
+export interface TavernScriptResourcePlanEntry {
+  readonly scope: TavernPermissionScope
+  readonly scriptId: string
+  readonly scriptOrigins?: readonly string[]
+  readonly imageOrigins?: readonly string[]
+  readonly frameOrigins?: readonly string[]
+}
+
+/** One exact resource grant still required by a preflight or active Session. */
+export interface TavernScriptResourcePermission {
+  readonly kind: TavernScriptResourcePermissionKind
+  readonly scope: TavernPermissionScope
+  readonly scriptId: string
+  readonly origin: string
+  readonly approvalKey: string
+}
+
+/** Resolve the stable library owner shared by preflight and an active Session. */
+export function tavernPermissionOwnerId(
+  libraryId: string | undefined,
+  sourceId: string | undefined,
+): string | undefined {
+  if (libraryId !== undefined) return libraryId
+  if (sourceId?.startsWith('library:') && sourceId.length > 'library:'.length) {
+    return sourceId.slice('library:'.length)
+  }
+  return sourceId
+}
+
 /** Whether a future Session can start without bypassing its resource preflight. */
 export type TavernPreflightLaunchPhase = 'checking' | 'approval-required' | 'ready'
 
@@ -210,4 +243,45 @@ export function tavernScriptFrameApprovalKey(
   origin: string,
 ): string {
   return JSON.stringify([characterId, presetId ?? null, scope, scriptId, origin])
+}
+
+/** Resolve pending script resources through the same keys before and after Session launch. */
+export function pendingTavernScriptResourcePermissions(input: {
+  readonly characterId: string
+  readonly presetId?: string
+  readonly entries: readonly TavernScriptResourcePlanEntry[]
+  readonly approvedScripts: ReadonlySet<string>
+  readonly approvedImages: ReadonlySet<string>
+  readonly approvedFrames: ReadonlySet<string>
+  readonly trustedScriptOrigins?: readonly string[]
+}): readonly TavernScriptResourcePermission[] {
+  const trustedScripts = new Set(input.trustedScriptOrigins ?? [])
+  const permissions = new Map<string, TavernScriptResourcePermission>()
+  const add = (
+    entry: TavernScriptResourcePlanEntry,
+    kind: TavernScriptResourcePermissionKind,
+    origins: readonly string[],
+    approvals: ReadonlySet<string>,
+  ): void => {
+    for (const origin of origins) {
+      if (kind === 'script' && trustedScripts.has(origin)) continue
+      const approvalKey = kind === 'script'
+        ? tavernScriptOriginApprovalKey(input.characterId, input.presetId, entry.scope, entry.scriptId, origin)
+        : kind === 'image'
+          ? tavernScriptImageApprovalKey(input.characterId, input.presetId, entry.scope, entry.scriptId, origin)
+          : tavernScriptFrameApprovalKey(input.characterId, input.presetId, entry.scope, entry.scriptId, origin)
+      if (!approvals.has(approvalKey)) {
+        permissions.set(`${kind}\u0000${approvalKey}`, {
+          kind, scope: entry.scope, scriptId: entry.scriptId, origin, approvalKey,
+        })
+      }
+    }
+  }
+  for (const entry of input.entries) {
+    add(entry, 'script', entry.scriptOrigins ?? [], input.approvedScripts)
+    add(entry, 'image', entry.imageOrigins ?? [], input.approvedImages)
+    add(entry, 'frame', entry.frameOrigins ?? [], input.approvedFrames)
+  }
+  return [...permissions.values()].sort((left, right) =>
+    `${left.kind}\u0000${left.approvalKey}`.localeCompare(`${right.kind}\u0000${right.approvalKey}`))
 }

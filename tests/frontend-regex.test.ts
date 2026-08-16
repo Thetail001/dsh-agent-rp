@@ -27,8 +27,10 @@ import { inspectTavernPreflight } from '../src/tavern-preflight.ts'
 import {
   approvedTavernScriptOrigins,
   parseTavernScriptOriginApprovalKey,
+  pendingTavernScriptResourcePermissions,
   tavernPreflightApprovals,
   tavernPreflightLaunchPhase,
+  tavernPermissionOwnerId,
   tavernScriptFrameApprovalKey,
   tavernScriptImageApprovalKey,
   tavernScriptOriginApprovalKey,
@@ -853,6 +855,43 @@ test('scopes Tavern resource grants to one card, preset, script scope, and scrip
     tavernScriptImageApprovalKey('card-a', 'preset-a', 'character', 'shared-script', 'https://images.example.test'),
     tavernScriptImageApprovalKey('card-b', 'preset-a', 'character', 'shared-script', 'https://images.example.test'),
   )
+})
+
+test('uses one library permission owner before and after Session launch', () => {
+  assert.equal(tavernPermissionOwnerId('card-a', 'library:card-a'), 'card-a')
+  assert.equal(tavernPermissionOwnerId(undefined, 'library:card-a'), 'card-a')
+  assert.equal(tavernPermissionOwnerId(undefined, 'attachment-a'), 'attachment-a')
+  assert.equal(tavernPermissionOwnerId(undefined, undefined), undefined)
+})
+
+test('shares one pending resource plan between preflight and active scripts', () => {
+  const scriptApproval = tavernScriptOriginApprovalKey(
+    'card-a', 'preset-a', 'character', 'resource-script', 'https://scripts.example.test',
+  )
+  const imageApproval = tavernScriptImageApprovalKey(
+    'card-a', 'preset-a', 'character', 'resource-script', 'https://images.example.test',
+  )
+  const input = {
+    characterId: 'card-a', presetId: 'preset-a',
+    entries: [{
+      scope: 'character' as const,
+      scriptId: 'resource-script',
+      scriptOrigins: ['https://scripts.example.test'],
+      imageOrigins: ['https://images.example.test'],
+      frameOrigins: ['https://frames.example.test'],
+    }],
+    approvedScripts: new Set([scriptApproval]),
+    approvedImages: new Set([imageApproval]),
+    approvedFrames: new Set<string>(),
+  }
+
+  assert.deepEqual(pendingTavernScriptResourcePermissions(input), [{
+    kind: 'frame', scope: 'character', scriptId: 'resource-script',
+    origin: 'https://frames.example.test',
+    approvalKey: tavernScriptFrameApprovalKey(
+      'card-a', 'preset-a', 'character', 'resource-script', 'https://frames.example.test',
+    ),
+  }])
 })
 
 test('keeps Session launch behind resource discovery and exact approvals', () => {

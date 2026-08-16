@@ -159,7 +159,8 @@ export function classifyAgentRpRuntime(
   }
   if (issues.has('card-frame-runtime-failed') || issues.has('tavern-runtime-failed')
     || issues.has('capability-required-unavailable') || issues.has('iframe-sandbox-expanded')
-    || issues.has('inline-frontend-sanitizer-degraded') || issues.has('world-engine-degraded')) {
+    || issues.has('inline-frontend-sanitizer-degraded') || issues.has('world-engine-degraded')
+    || issues.has('tavern-permission-count-mismatch')) {
     return failed('runtime-failed')
   }
   if (issues.has('card-frame-content-empty')) {
@@ -217,14 +218,16 @@ function surfaceState(snapshot: AgentRpBrowserCompatibilitySnapshot, action: Age
 async function waitForSurface(
   driver: AgentRpCompatSmokeDriver,
   action: AgentRpCompatSmokeAction,
-  expected: string,
+  expected: string | readonly string[],
   timeoutMs: number,
   pollMs: number,
 ): Promise<AgentRpBrowserCompatibilitySnapshot | undefined> {
   const deadline = Date.now() + timeoutMs
   while (true) {
     const snapshot = await driver.snapshot()
-    if (snapshot !== undefined && surfaceState(snapshot, action) === expected) return snapshot
+    if (snapshot !== undefined && (typeof expected === 'string'
+      ? surfaceState(snapshot, action) === expected
+      : expected.includes(surfaceState(snapshot, action)))) return snapshot
     if (Date.now() >= deadline) return snapshot
     await driver.delay(Math.min(pollMs, Math.max(1, deadline - Date.now())))
   }
@@ -233,14 +236,16 @@ async function waitForSurface(
 async function exerciseInteraction(
   driver: AgentRpCompatSmokeDriver,
   open: AgentRpCompatSmokeAction,
-  opened: string,
+  opened: string | readonly string[],
   close: AgentRpCompatSmokeAction,
   timeoutMs: number,
   pollMs: number,
 ): Promise<boolean> {
   await driver.clickAction(open)
   const openedSnapshot = await waitForSurface(driver, open, opened, timeoutMs, pollMs)
-  if (openedSnapshot === undefined || surfaceState(openedSnapshot, open) !== opened) return false
+  if (openedSnapshot === undefined || !(typeof opened === 'string'
+    ? surfaceState(openedSnapshot, open) === opened
+    : opened.includes(surfaceState(openedSnapshot, open)))) return false
   await driver.clickAction(close)
   const closed = await waitForSurface(driver, close, 'closed', timeoutMs, pollMs)
   return closed !== undefined && surfaceState(closed, close) === 'closed'
@@ -274,7 +279,7 @@ async function exerciseStableInteractions(
       return failed('interaction-failed')
     }
     if ((snapshot.session?.tavern?.scripts ?? 0) > 0
-      && !await exerciseInteraction(driver, 'open-tavern-panel', 'script', 'close-tavern-panel', timeoutMs, pollMs)) {
+      && !await exerciseInteraction(driver, 'open-tavern-panel', ['script', 'mobile'], 'close-tavern-panel', timeoutMs, pollMs)) {
       return failed('interaction-failed')
     }
     if (snapshot.interactions.tavernPanel.mobileLaunchers > 0

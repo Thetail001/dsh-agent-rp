@@ -52,6 +52,10 @@ function browserSnapshot(options: {
       tavern: {
         scripts: 1, frames: 1, ready: runtime === 'pending' ? 0 : 1, failed: 0,
         pendingPermissions: 0, queuedGenerations: 0, queuedModelLists: 0,
+        permissions: {
+          script: 0, image: 0, frame: 0, identity: 0, externalWindow: 0,
+          generation: 0, customGeneration: 0, modelList: 0,
+        },
         phases: { [runtime === 'pending' ? 'booting' : 'ready']: 1 }, scopes: { character: 1 },
       },
       cardFrames: {
@@ -73,6 +77,9 @@ function browserSnapshot(options: {
       cardResources: 2,
       pendingCardPermissions: preflight === 'approval-required' ? 1 : 0,
       pendingScriptPermissions: 0,
+      pendingScriptOrigins: 0,
+      pendingImageOrigins: 0,
+      pendingFrameOrigins: 0,
       pendingPermissions: preflight === 'approval-required' ? 1 : 0,
       failed: preflight === 'error' ? 1 : 0,
     } }),
@@ -84,6 +91,7 @@ function browserSnapshot(options: {
       interactiveEntriesPresent: true,
       preflightConsistent: true,
       preflightHealthy: preflight !== 'error',
+      tavernPermissionsConsistent: true,
       tavernRuntimeHealthy: runtime !== 'failed',
       worldEngineHealthy: true,
     },
@@ -128,6 +136,7 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
   constructor(
     private readonly preflightNeedsApproval = false,
     private readonly approvalClears = true,
+    private readonly genericTavernPanel: 'script' | 'mobile' = 'script',
   ) {}
 
   delay(): Promise<void> { return Promise.resolve() }
@@ -164,7 +173,7 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
       case 'close-preset-manager': this.presetManager = 'closed'; break
       case 'open-world-info-manager': this.sessionSettings = 'closed'; this.worldInfoManager = 'open'; break
       case 'close-world-info-manager': this.worldInfoManager = 'closed'; break
-      case 'open-tavern-panel': this.tavernPanel = 'script'; break
+      case 'open-tavern-panel': this.tavernPanel = this.genericTavernPanel; break
       case 'open-mobile-surface': this.tavernPanel = 'mobile'; break
       case 'close-tavern-panel': this.tavernPanel = 'closed'; break
     }
@@ -243,4 +252,13 @@ test('explicit preflight approval is attempted only once when permission remains
     status: 'manual-required', stage: 'approval-required', exitCode: 2,
   })
   assert.equal(driver.approvalAttempts.length, 1)
+})
+
+test('accepts a mobile script as the first visible generic Tavern panel', async () => {
+  const driver = new FakeSmokeDriver(false, true, 'mobile')
+  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
+    characterId: 'character-id', timeoutMs: 100,
+  })
+
+  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
 })

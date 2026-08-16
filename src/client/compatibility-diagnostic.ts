@@ -22,6 +22,7 @@ export type AgentRpBrowserCompatibilityIssue =
   | 'preflight-failed'
   | 'preflight-launch-mismatch'
   | 'preflight-request-failed'
+  | 'tavern-permission-count-mismatch'
   | 'tavern-runtime-failed'
   | 'world-engine-degraded'
 
@@ -110,6 +111,16 @@ export interface AgentRpBrowserCompatibilitySnapshot {
       readonly ready: number
       readonly failed: number
       readonly pendingPermissions: number
+      readonly permissions: {
+        readonly script: number
+        readonly image: number
+        readonly frame: number
+        readonly identity: number
+        readonly externalWindow: number
+        readonly generation: number
+        readonly customGeneration: number
+        readonly modelList: number
+      }
       readonly queuedGenerations: number
       readonly queuedModelLists: number
       readonly phases: Counter
@@ -134,6 +145,9 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly cardResources: number
     readonly pendingCardPermissions: number
     readonly pendingScriptPermissions: number
+    readonly pendingScriptOrigins: number
+    readonly pendingImageOrigins: number
+    readonly pendingFrameOrigins: number
     readonly pendingPermissions: number
     readonly failed: number
   }
@@ -145,6 +159,7 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly interactiveEntriesPresent: boolean
     readonly preflightConsistent: boolean
     readonly preflightHealthy: boolean
+    readonly tavernPermissionsConsistent: boolean
     readonly tavernRuntimeHealthy: boolean
     readonly worldEngineHealthy: boolean
   }
@@ -317,6 +332,16 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
         ready: integer(tavern, 'data-agent-rp-tavern-ready'),
         failed: tavernFailed,
         pendingPermissions: integer(tavern, 'data-agent-rp-tavern-permissions'),
+        permissions: {
+          script: integer(tavern, 'data-agent-rp-tavern-permission-script'),
+          image: integer(tavern, 'data-agent-rp-tavern-permission-image'),
+          frame: integer(tavern, 'data-agent-rp-tavern-permission-frame'),
+          identity: integer(tavern, 'data-agent-rp-tavern-permission-identity'),
+          externalWindow: integer(tavern, 'data-agent-rp-tavern-permission-external-window'),
+          generation: integer(tavern, 'data-agent-rp-tavern-permission-generation'),
+          customGeneration: integer(tavern, 'data-agent-rp-tavern-permission-custom-generation'),
+          modelList: integer(tavern, 'data-agent-rp-tavern-permission-model-list'),
+        },
         queuedGenerations: integer(tavern, 'data-agent-rp-tavern-generation-queued'),
         queuedModelLists: integer(tavern, 'data-agent-rp-tavern-model-list-queued'),
         phases: counter(tavernFrames, 'data-agent-rp-tavern-phase'),
@@ -344,6 +369,10 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     && (session.tavern === undefined || session.tavern.pendingPermissions === 0 || tavernPermissionLaunchers > 0)
   )
   if (!interactiveEntriesPresent) issues.add('interactive-entry-missing')
+  const tavernPermissionsConsistent = session?.tavern === undefined
+    || Object.values(session.tavern.permissions).reduce((total, count) => total + count, 0)
+      === session.tavern.pendingPermissions
+  if (!tavernPermissionsConsistent) issues.add('tavern-permission-count-mismatch')
 
   let preflight: AgentRpBrowserCompatibilitySnapshot['preflight']
   let preflightConsistent = true
@@ -351,12 +380,16 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
   if (preflightElement !== null) {
     const pendingCardPermissions = integer(preflightElement, 'data-agent-rp-resource-preflight-card-permissions')
     const pendingScriptPermissions = integer(preflightElement, 'data-agent-rp-resource-preflight-script-permissions')
+    const pendingScriptOrigins = integer(preflightElement, 'data-agent-rp-resource-preflight-script-origins')
+    const pendingImageOrigins = integer(preflightElement, 'data-agent-rp-resource-preflight-image-origins')
+    const pendingFrameOrigins = integer(preflightElement, 'data-agent-rp-resource-preflight-frame-origins')
     const pendingPermissions = integer(preflightElement, 'data-agent-rp-resource-preflight-permissions')
     const statusValue = value(preflightElement, 'data-agent-rp-resource-preflight')
     const launch = value(preflightElement, 'data-agent-rp-resource-launch')
     const failed = integer(preflightElement, 'data-agent-rp-resource-preflight-failed')
     const startReadiness = startElement?.getAttribute('data-agent-rp-start-readiness') ?? undefined
     preflightConsistent = pendingPermissions === pendingCardPermissions + pendingScriptPermissions
+      && pendingScriptPermissions === pendingScriptOrigins + pendingImageOrigins + pendingFrameOrigins
     if (!preflightConsistent) issues.add('preflight-count-mismatch')
     const expectedLaunch = statusValue === 'loading' ? 'checking'
       : pendingPermissions > 0 ? 'approval-required' : 'ready'
@@ -380,6 +413,9 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       cardResources: integer(preflightElement, 'data-agent-rp-resource-preflight-card-resources'),
       pendingCardPermissions,
       pendingScriptPermissions,
+      pendingScriptOrigins,
+      pendingImageOrigins,
+      pendingFrameOrigins,
       pendingPermissions,
       failed,
     }
@@ -428,6 +464,7 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       interactiveEntriesPresent,
       preflightConsistent,
       preflightHealthy,
+      tavernPermissionsConsistent,
       tavernRuntimeHealthy: session?.tavern === undefined || session.tavern.failed === 0,
       worldEngineHealthy: session === undefined || !issues.has('world-engine-degraded'),
     },
@@ -502,6 +539,14 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-tavern-ready',
       'data-agent-rp-tavern-failed',
       'data-agent-rp-tavern-permissions',
+      'data-agent-rp-tavern-permission-script',
+      'data-agent-rp-tavern-permission-image',
+      'data-agent-rp-tavern-permission-frame',
+      'data-agent-rp-tavern-permission-identity',
+      'data-agent-rp-tavern-permission-external-window',
+      'data-agent-rp-tavern-permission-generation',
+      'data-agent-rp-tavern-permission-custom-generation',
+      'data-agent-rp-tavern-permission-model-list',
       'data-agent-rp-tavern-generation-queued',
       'data-agent-rp-tavern-model-list-queued',
       'data-agent-rp-tavern-phase',
@@ -518,6 +563,9 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-resource-preflight-card-resources',
       'data-agent-rp-resource-preflight-card-permissions',
       'data-agent-rp-resource-preflight-script-permissions',
+      'data-agent-rp-resource-preflight-script-origins',
+      'data-agent-rp-resource-preflight-image-origins',
+      'data-agent-rp-resource-preflight-frame-origins',
       'data-agent-rp-resource-preflight-permissions',
       'data-agent-rp-resource-preflight-failed',
       'data-agent-rp-start-readiness',

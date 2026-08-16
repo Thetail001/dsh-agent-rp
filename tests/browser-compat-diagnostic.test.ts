@@ -79,6 +79,7 @@ test('collects one content-free healthy browser snapshot with expected permissio
       'data-agent-rp-tavern-ready': '2',
       'data-agent-rp-tavern-failed': '0',
       'data-agent-rp-tavern-permissions': '1',
+      'data-agent-rp-tavern-permission-frame': '1',
       'data-agent-rp-native-identity-pending': '2',
       'data-agent-rp-tavern-generation-queued': '0',
       'data-agent-rp-tavern-model-list-queued': '0',
@@ -104,6 +105,9 @@ test('collects one content-free healthy browser snapshot with expected permissio
       'data-agent-rp-resource-preflight-card-resources': '7',
       'data-agent-rp-resource-preflight-card-permissions': '1',
       'data-agent-rp-resource-preflight-script-permissions': '1',
+      'data-agent-rp-resource-preflight-script-origins': '0',
+      'data-agent-rp-resource-preflight-image-origins': '0',
+      'data-agent-rp-resource-preflight-frame-origins': '1',
       'data-agent-rp-resource-preflight-permissions': '2',
       'data-agent-rp-resource-preflight-failed': '0',
     })],
@@ -121,11 +125,16 @@ test('collects one content-free healthy browser snapshot with expected permissio
     interactiveEntriesPresent: true,
     preflightConsistent: true,
     preflightHealthy: true,
+    tavernPermissionsConsistent: true,
     tavernRuntimeHealthy: true,
     worldEngineHealthy: true,
   })
   assert.deepEqual(report.issues, [])
   assert.equal(report.session?.tavern?.pendingPermissions, 1)
+  assert.deepEqual(report.session?.tavern?.permissions, {
+    script: 0, image: 0, frame: 1, identity: 0, externalWindow: 0,
+    generation: 0, customGeneration: 0, modelList: 0,
+  })
   assert.deepEqual(report.session?.nativeIdentity, { state: 'ready', approved: 3, pending: 3 })
   assert.deepEqual(report.interactions, {
     characterLibrary: { launchers: 1, state: 'closed' },
@@ -147,6 +156,11 @@ test('collects one content-free healthy browser snapshot with expected permissio
     blockedResourceClasses: {},
   })
   assert.equal(report.preflight?.pendingPermissions, 2)
+  assert.deepEqual(report.preflight === undefined ? undefined : {
+    script: report.preflight.pendingScriptOrigins,
+    image: report.preflight.pendingImageOrigins,
+    frame: report.preflight.pendingFrameOrigins,
+  }, { script: 0, image: 0, frame: 1 })
   assert.doesNotMatch(JSON.stringify(report), /private|example|card-name|must not appear/u)
 })
 
@@ -199,6 +213,7 @@ test('reports stable issue codes for expanded sandboxes and inconsistent lifecyc
     interactiveEntriesPresent: true,
     preflightConsistent: false,
     preflightHealthy: false,
+    tavernPermissionsConsistent: true,
     tavernRuntimeHealthy: false,
     worldEngineHealthy: true,
   })
@@ -401,4 +416,20 @@ test('distinguishes a failed preflight request from consistent permission waitin
   assert.equal(report.checks.preflightConsistent, true)
   assert.equal(report.checks.preflightHealthy, false)
   assert.deepEqual(report.issues, ['preflight-request-failed'])
+})
+
+test('rejects a runtime permission total without matching content-free categories', () => {
+  const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    '[data-agent-rp-status]': [new DiagnosticElement(capabilityAttributes)],
+    '[data-agent-rp-tavern-total]': [new DiagnosticElement({
+      'data-agent-rp-tavern-total': '1',
+      'data-agent-rp-tavern-ready': '0',
+      'data-agent-rp-tavern-failed': '0',
+      'data-agent-rp-tavern-permissions': '1',
+    })],
+    ...stableInteractionSelectors,
+  }))
+
+  assert.equal(report.checks.tavernPermissionsConsistent, false)
+  assert.deepEqual(report.issues, ['tavern-permission-count-mismatch'])
 })

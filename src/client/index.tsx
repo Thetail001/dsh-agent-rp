@@ -136,6 +136,7 @@ import {
   normalizedTavernModelOrigin,
   normalizedTavernScriptOrigin,
   parseTavernScriptOriginApprovalKey,
+  pendingTavernScriptResourcePermissions,
   readApprovedTavernScriptCustomGenerations,
   readApprovedTavernScriptFrames,
   readApprovedTavernScriptGenerations,
@@ -144,6 +145,7 @@ import {
   readApprovedTavernScriptOrigins,
   tavernPreflightApprovals,
   tavernPreflightLaunchPhase,
+  tavernPermissionOwnerId,
   tavernScriptFrameApprovalKey,
   tavernScriptImageApprovalKey,
   tavernScriptOriginApprovalKey,
@@ -3729,24 +3731,31 @@ function CharacterLibraryDialog({
     .map(entry => entry.displayName))
   const greetingSummaries = useMemo(() => selected?.greetings.map((greeting, index) =>
     compactCharacterDisplayText(selected.renderedGreetings[index] ?? greeting)) ?? [], [selected])
-  const pendingPreflightScripts = tavernPreflight?.entries.filter(entry =>
-    entry.status === 'permission-required' && entry.requestedScriptOrigin !== undefined) ?? []
-  const pendingPreflightImages = selected === undefined ? [] : tavernPreflight?.entries.flatMap(entry =>
-    entry.remoteImageOrigins.filter(origin => !approvedScriptImages.has(tavernScriptImageApprovalKey(
-      selected.id, selectedPresetId, entry.scope, entry.scriptId, origin,
-    ))).map(origin => ({ entry, origin }))) ?? []
-  const pendingPreflightFrames = selected === undefined ? [] : tavernPreflight?.entries.flatMap(entry =>
-    entry.remoteFrameOrigins.filter(origin => !approvedScriptFrames.has(tavernScriptFrameApprovalKey(
-      selected.id, selectedPresetId, entry.scope, entry.scriptId, origin,
-    ))).map(origin => ({ entry, origin }))) ?? []
+  const pendingPreflightScriptResources = selected === undefined ? []
+    : pendingTavernScriptResourcePermissions({
+      characterId: selected.id,
+      ...(selectedPresetId === undefined ? {} : { presetId: selectedPresetId }),
+      entries: tavernPreflight?.entries.map(entry => ({
+        scope: entry.scope,
+        scriptId: entry.scriptId,
+        scriptOrigins: entry.requestedScriptOrigin === undefined ? [] : [entry.requestedScriptOrigin],
+        imageOrigins: entry.remoteImageOrigins,
+        frameOrigins: entry.remoteFrameOrigins,
+      })) ?? [],
+      approvedScripts: approvedScriptOrigins,
+      approvedImages: approvedScriptImages,
+      approvedFrames: approvedScriptFrames,
+      trustedScriptOrigins: BUILT_IN_TAVERN_SCRIPT_ORIGINS,
+    })
+  const pendingPreflightScripts = pendingPreflightScriptResources.filter(permission => permission.kind === 'script')
+  const pendingPreflightImages = pendingPreflightScriptResources.filter(permission => permission.kind === 'image')
+  const pendingPreflightFrames = pendingPreflightScriptResources.filter(permission => permission.kind === 'frame')
   const pendingCardResources = selected === undefined
     ? [] : blockedCardFrameResources(selected.remoteResources, selected)
   const pendingPreflightPermissions = pendingPreflightScripts.length
     + pendingPreflightImages.length + pendingPreflightFrames.length + pendingCardResources.length
   const pendingPreflightHosts = [...new Set([
-    ...pendingPreflightScripts.map(entry => new URL(entry.requestedScriptOrigin!).hostname),
-    ...pendingPreflightImages.map(item => new URL(item.origin).hostname),
-    ...pendingPreflightFrames.map(item => new URL(item.origin).hostname),
+    ...pendingPreflightScriptResources.map(item => new URL(item.origin).hostname),
     ...pendingCardResources.map(resource => new URL(resource.origin).hostname),
   ])].sort()
   const preflightLaunchPhase = tavernPreflightLaunchPhase({
@@ -3763,25 +3772,19 @@ function CharacterLibraryDialog({
     if (selected === undefined || approvingPreflight) return
     if (pendingPreflightScripts.length > 0) {
       const next = new Set(approvedScriptOrigins)
-      for (const entry of pendingPreflightScripts) next.add(tavernScriptOriginApprovalKey(
-        selected.id, selectedPresetId, entry.scope, entry.scriptId, entry.requestedScriptOrigin!,
-      ))
+      for (const permission of pendingPreflightScripts) next.add(permission.approvalKey)
       writeApprovedTavernScriptOrigins(next)
       setApprovedScriptOrigins(next)
     }
     if (pendingPreflightImages.length > 0) {
       const next = new Set(approvedScriptImages)
-      for (const { entry, origin } of pendingPreflightImages) next.add(tavernScriptImageApprovalKey(
-        selected.id, selectedPresetId, entry.scope, entry.scriptId, origin,
-      ))
+      for (const permission of pendingPreflightImages) next.add(permission.approvalKey)
       writeApprovedTavernScriptImages(next)
       setApprovedScriptImages(next)
     }
     if (pendingPreflightFrames.length > 0) {
       const next = new Set(approvedScriptFrames)
-      for (const { entry, origin } of pendingPreflightFrames) next.add(tavernScriptFrameApprovalKey(
-        selected.id, selectedPresetId, entry.scope, entry.scriptId, origin,
-      ))
+      for (const permission of pendingPreflightFrames) next.add(permission.approvalKey)
       writeApprovedTavernScriptFrames(next)
       setApprovedScriptFrames(next)
     }
@@ -3974,6 +3977,9 @@ function CharacterLibraryDialog({
               data-agent-rp-resource-preflight-card-resources={selected.remoteResources.length}
               data-agent-rp-resource-preflight-card-permissions={pendingCardResources.length}
               data-agent-rp-resource-preflight-script-permissions={pendingPreflightScripts.length + pendingPreflightImages.length + pendingPreflightFrames.length}
+              data-agent-rp-resource-preflight-script-origins={pendingPreflightScripts.length}
+              data-agent-rp-resource-preflight-image-origins={pendingPreflightImages.length}
+              data-agent-rp-resource-preflight-frame-origins={pendingPreflightFrames.length}
               data-agent-rp-resource-preflight-permissions={pendingPreflightPermissions}
               data-agent-rp-resource-preflight-failed={tavernPreflight?.failed ?? 0}
               data-agent-rp-resource-launch={preflightLaunchPhase}
@@ -6002,8 +6008,12 @@ function TavernScriptRuntime({
   const [approvedImages, setApprovedImages] = useState(readApprovedTavernScriptImages)
   const [approvedFrames, setApprovedFrames] = useState(readApprovedTavernScriptFrames)
   const nativeIdentityState = useNativeIdentityDiagnosticState()
-  const characterApprovalId = projection.tavern?.characterSourceId ?? projection.avatarLibraryId ?? projection.characterName
-  const presetApprovalId = projection.tavern?.presetSourceId
+  const characterApprovalId = tavernPermissionOwnerId(
+    projection.avatarLibraryId, projection.tavern?.characterSourceId,
+  ) ?? projection.characterName
+  const presetApprovalId = tavernPermissionOwnerId(
+    projection.preset?.libraryId, projection.tavern?.presetSourceId,
+  )
   const scriptOrigins = (entry: Pick<TavernScriptFrame, 'scope' | 'script'>): readonly string[] => [...new Set([
     ...BUILT_IN_TAVERN_SCRIPT_ORIGINS,
     ...approvedTavernScriptOrigins(
@@ -7178,12 +7188,52 @@ function TavernScriptRuntime({
     color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', lineHeight: 1.45, padding: '9px 11px',
     textAlign: 'left', width: '100%',
   } as const
+  const frameByScriptKey = new Map(frames.map(frame => [frame.key, frame] as const))
+  const runtimeResourcePermissions = pendingTavernScriptResourcePermissions({
+    characterId: characterApprovalId,
+    ...(presetApprovalId === undefined ? {} : { presetId: presetApprovalId }),
+    entries: scopedScripts.map(entry => {
+      const frame = frameByScriptKey.get(entry.key)
+      const requestedOrigin = externalScriptRequests.get(entry.key)
+      return {
+        scope: entry.scope,
+        scriptId: entry.script.id,
+        scriptOrigins: requestedOrigin === undefined ? [] : [requestedOrigin],
+        imageOrigins: frame?.remoteImageOrigins ?? [],
+        frameOrigins: frame?.remoteFrameOrigins ?? [],
+      }
+    }),
+    approvedScripts: approvedOrigins,
+    approvedImages,
+    approvedFrames,
+    trustedScriptOrigins: BUILT_IN_TAVERN_SCRIPT_ORIGINS,
+  })
+  const approveRuntimeResource = (permission: typeof runtimeResourcePermissions[number]): void => {
+    if (permission.kind === 'script') {
+      const next = new Set(approvedOrigins)
+      next.add(permission.approvalKey)
+      writeApprovedTavernScriptOrigins(next)
+      setApprovedOrigins(next)
+      return
+    }
+    if (permission.kind === 'image') {
+      const next = new Set(approvedImages)
+      next.add(permission.approvalKey)
+      writeApprovedTavernScriptImages(next)
+      setApprovedImages(next)
+      return
+    }
+    const next = new Set(approvedFrames)
+    next.add(permission.approvalKey)
+    writeApprovedTavernScriptFrames(next)
+    setApprovedFrames(next)
+  }
   const permissionActions = [
     ...[...nativeIdentityRequests.values()].map(request => {
       const approval = nativeIdentityApprovalKey(
         request.application, request.audience, request.includeDisplayName,
       )
-      return <button type="button" key={`identity:${request.key}`}
+      return <button type="button" key={`identity:${request.key}`} data-agent-rp-permission-kind="identity"
         disabled={nativeIdentityState !== 'ready'}
         title={nativeIdentityState === 'ready'
           ? `允许这个隔离脚本向 ${request.audience} 出示五分钟有效的 DSH 本机身份证明；私钥不会离开 Host`
@@ -7206,6 +7256,7 @@ function TavernScriptRuntime({
           证明本机身份{request.includeDisplayName ? '并分享显示名称' : ''}</button>
     }),
     ...[...externalWindowRequests.values()].map(request => <button type="button" key={`external:${request.key}`}
+      data-agent-rp-permission-kind="external-window"
       title={`打开只连接 ${request.hostname} 的隔离登录面板`} onClick={() => {
         const broker = openExternalWindowBroker({
           hostWindow: window,
@@ -7243,47 +7294,24 @@ function TavernScriptRuntime({
         }, '*')
         setPermissionOpen(false)
       }} style={permissionActionStyle}>打开 {request.hostname} 登录页（{request.scriptName || '酒馆脚本'}）</button>),
-    ...[...externalScriptRequests].map(([scriptKey, origin]) => <button type="button" key={`script:${scriptKey}:${origin}`}
-      title={`允许隔离脚本从 ${origin} 加载 JavaScript`} onClick={() => {
-        const entry = scopedScriptByKey.get(scriptKey)
-        if (entry === undefined) return
-        const next = new Set(approvedOrigins)
-        next.add(tavernScriptOriginApprovalKey(
-          characterApprovalId, presetApprovalId, entry.scope, entry.script.id, origin,
-        ))
-        writeApprovedTavernScriptOrigins(next)
-        setApprovedOrigins(next)
-      }} style={permissionActionStyle}>允许 {scopedScriptByKey.get(scriptKey)?.script.name || '脚本'} 加载 {new URL(origin).hostname} 脚本</button>),
-    ...frames.flatMap(entry => (entry.remoteImageOrigins ?? []).flatMap(origin => {
-      const approvalKey = tavernScriptImageApprovalKey(
-        characterApprovalId, presetApprovalId, entry.scope, entry.script.id, origin,
-      )
-      if (approvedImages.has(approvalKey)) return []
-      return [<button type="button" key={`image:${approvalKey}`}
-        title={`允许这个隔离脚本显示来自 ${origin} 的图片；不会开放脚本网络请求`} onClick={() => {
-          const next = new Set(approvedImages)
-          next.add(approvalKey)
-          writeApprovedTavernScriptImages(next)
-          setApprovedImages(next)
-      }} style={permissionActionStyle}>允许 {entry.script.name || '脚本'} 显示 {new URL(origin).hostname} 图片</button>]
-    })),
-    ...frames.flatMap(entry => (entry.remoteFrameOrigins ?? []).flatMap(origin => {
-      const approvalKey = tavernScriptFrameApprovalKey(
-        characterApprovalId, presetApprovalId, entry.scope, entry.script.id, origin,
-      )
-      if (approvedFrames.has(approvalKey)) return []
-      return [<button type="button" key={`frame:${approvalKey}`}
-        title={`允许这个隔离脚本嵌入 ${origin}；远端页面保留自己的 HTTPS 来源和存储`}
-        onClick={() => {
-          const next = new Set(approvedFrames)
-          next.add(approvalKey)
-          writeApprovedTavernScriptFrames(next)
-          setApprovedFrames(next)
-        }} style={permissionActionStyle}>允许 {entry.script.name || '脚本'} 嵌入 {new URL(origin).hostname}</button>]
-    })),
+    ...runtimeResourcePermissions.map(permission => {
+      const entry = scopedScriptByKey.get(tavernScriptIdentity(permission.scope, permission.scriptId))
+      const action = permission.kind === 'script' ? '加载' : permission.kind === 'image' ? '显示' : '嵌入'
+      const resource = permission.kind === 'script' ? '脚本' : permission.kind === 'image' ? '图片' : ''
+      const title = permission.kind === 'script'
+        ? `允许隔离脚本从 ${permission.origin} 加载 JavaScript`
+        : permission.kind === 'image'
+          ? `允许这个隔离脚本显示来自 ${permission.origin} 的图片；不会开放脚本网络请求`
+          : `允许这个隔离脚本嵌入 ${permission.origin}；远端页面保留自己的 HTTPS 来源和存储`
+      return <button type="button" key={`resource:${permission.kind}:${permission.approvalKey}`}
+        data-agent-rp-permission-kind={permission.kind} title={title}
+        onClick={() => { approveRuntimeResource(permission) }} style={permissionActionStyle}>
+        允许 {entry?.script.name || '脚本'} {action} {new URL(permission.origin).hostname}{resource === '' ? '' : ` ${resource}`}
+      </button>
+    }),
     ...[...generationRequests].map(([scriptKey, count]) => {
       const script = scopedScriptByKey.get(scriptKey)?.script
-      return <button type="button" key={`generation:${scriptKey}`}
+      return <button type="button" key={`generation:${scriptKey}`} data-agent-rp-permission-kind="generation"
         title="允许这个隔离脚本使用当前 DSH 模型生成文本；生成会消耗模型额度" onClick={() => {
           const next = new Set(approvedGenerations)
           next.add(generationApprovalKey(scriptKey))
@@ -7302,6 +7330,7 @@ function TavernScriptRuntime({
     ...[...customGenerationRequests].map(([approvalKey, request]) => {
       const script = scopedScriptByKey.get(request.scriptKey)?.script
       return <button type="button" key={`custom-generation:${approvalKey}`}
+        data-agent-rp-permission-kind="custom-generation"
         title={`允许这个隔离脚本连接 ${request.origin} 并生成文本；生成会消耗该 API 的额度，密钥只转发给该地址`} onClick={() => {
           const next = new Set(approvedCustomGenerations)
           next.add(approvalKey)
@@ -7319,7 +7348,7 @@ function TavernScriptRuntime({
     }),
     ...[...modelListRequests].map(([approvalKey, request]) => {
       const script = scopedScriptByKey.get(request.scriptKey)?.script
-      return <button type="button" key={`models:${approvalKey}`}
+      return <button type="button" key={`models:${approvalKey}`} data-agent-rp-permission-kind="model-list"
         title={`允许这个隔离脚本连接 ${request.origin} 并读取模型名称；API 密钥只转发给该地址`} onClick={() => {
           const next = new Set(approvedModels)
           next.add(approvalKey)
@@ -7401,6 +7430,14 @@ function TavernScriptRuntime({
       data-agent-rp-tavern-total={scripts.length} data-agent-rp-tavern-ready={readyScriptCount}
       data-agent-rp-tavern-failed={failedScriptCount} data-agent-rp-tavern-permissions={permissionActions.length}
       data-agent-rp-tavern-awaiting-authorization={permissionActions.length}
+      data-agent-rp-tavern-permission-script={runtimeResourcePermissions.filter(permission => permission.kind === 'script').length}
+      data-agent-rp-tavern-permission-image={runtimeResourcePermissions.filter(permission => permission.kind === 'image').length}
+      data-agent-rp-tavern-permission-frame={runtimeResourcePermissions.filter(permission => permission.kind === 'frame').length}
+      data-agent-rp-tavern-permission-identity={nativeIdentityRequests.size}
+      data-agent-rp-tavern-permission-external-window={externalWindowRequests.size}
+      data-agent-rp-tavern-permission-generation={generationRequests.size}
+      data-agent-rp-tavern-permission-custom-generation={customGenerationRequests.size}
+      data-agent-rp-tavern-permission-model-list={modelListRequests.size}
       data-agent-rp-native-identity-pending={nativeIdentityRequests.size}
       {...(externalWindowPhase === undefined ? {} : { 'data-agent-rp-external-window-phase': externalWindowPhase })}
       data-agent-rp-tavern-generation-queued={queuedGenerationCount}
