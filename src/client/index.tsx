@@ -1888,7 +1888,8 @@ function BlankRoleplayLauncher({
   const workspace = workspaceSnapshot.items.find(item => item.sessionIds.includes(sessionId))
   if (!session.blank || !allowsAgentRpEntry(settingsSnapshot.value, workspace?.workspaceId)) return null
   return <>
-    <button type="button" onClick={() => { setLibraryOpen(true) }} style={{
+    <button type="button" data-agent-rp-action="open-character-library"
+      data-agent-rp-source-session={sessionId} onClick={() => { setLibraryOpen(true) }} style={{
       alignItems: 'center', background: `color-mix(in srgb, ${color} 14%, transparent)`,
       border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`, borderRadius: '8px',
       color: 'inherit', cursor: 'pointer', display: 'inline-flex', font: 'inherit', fontSize: '12px',
@@ -2680,6 +2681,7 @@ function RoleplayHeader({
         color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', marginLeft: '8px', padding: '6px 10px',
       }}>角色信息</button>
       <button className="agent-rp-header-primary-action" type="button" data-agent-rp-action="open-character-library"
+        data-agent-rp-source-session={sessionId}
         onClick={() => { setSettingsOpen(false); setLibraryOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 10%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
@@ -2705,6 +2707,7 @@ function RoleplayHeader({
         }}>
           <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setOpen(true) }} style={headerMenuItemStyle}>角色信息</button>
           <button className="agent-rp-mobile-only" type="button" role="menuitem" data-agent-rp-action="open-character-library"
+            data-agent-rp-source-session={sessionId}
             onClick={() => { setSettingsOpen(false); setLibraryOpen(true) }} style={headerMenuItemStyle}>角色库</button>
           <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setPersonaOpen(true) }} style={headerMenuItemStyle}>你的身份</button>
           {statusSource !== undefined && <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setStatusOpen(true) }} style={headerMenuItemStyle}>当前状态</button>}
@@ -3805,6 +3808,8 @@ function CharacterLibraryDialog({
     })
   }
   return <div className="agent-rp-character-library-overlay" data-agent-rp-dialog
+    data-agent-rp-selected-character-id={selected?.id ?? ''}
+    data-agent-rp-selected-preset-id={selectedPresetId ?? ''}
     data-agent-rp-surface="character-library" role="dialog" aria-modal="true" aria-label="角色库" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.52)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: 'clamp(8px, 3vw, 24px)', position: 'fixed', zIndex: 1001,
@@ -3888,6 +3893,7 @@ function CharacterLibraryDialog({
             没有找到匹配的角色
           </div>}
           {visibleEntries.map(entry => <button key={entry.id} type="button" aria-pressed={selected?.id === entry.id}
+            data-agent-rp-character-id={entry.id}
             onClick={() => { choose(entry) }} style={{
               alignItems: 'center',
               background: selected?.id === entry.id ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
@@ -3997,7 +4003,8 @@ function CharacterLibraryDialog({
                 <div title={pendingPreflightHosts.join('\n')} style={{
                   marginTop: '5px', opacity: .66, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>{pendingPreflightHosts.join('、')}</div>
-                <button type="button" disabled={approvingPreflight} onClick={approvePreflightResources} style={{
+                <button type="button" data-agent-rp-action="approve-preflight-resources"
+                  disabled={approvingPreflight} onClick={approvePreflightResources} style={{
                   background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)',
                   borderRadius: '7px', color: 'inherit', cursor: approvingPreflight ? 'wait' : 'pointer', font: 'inherit', fontSize: '11px',
                   marginTop: '7px', padding: '5px 9px',

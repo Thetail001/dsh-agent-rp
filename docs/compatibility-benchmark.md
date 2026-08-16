@@ -44,6 +44,34 @@ pnpm run benchmark:charx
 
 社区推荐的 Chat Completion 预设可以独立运行 `pnpm run audit:preset -- <本地预设.json>`。报告只包含提示模块与挂载数量、开关数量、角色/标记/注入计数、格式覆盖、已配置生成字段名、扩展兼容状态和解析耗时；不会输出文件路径、预设名、模块名、提示词、正则表达式、脚本源码或生成设置值。无效输入只返回稳定失败类别。
 
+### 一键浏览器 smoke
+
+先启动本机 DSH Web，再运行：
+
+```sh
+pnpm run smoke:compat -- --card <本地角色卡> --preset <本地预设>
+```
+
+命令只接受 loopback DSH 地址，默认连接 `http://127.0.0.1:3091/`，不会重启或接管已经运行的 DSH。它幂等导入角色卡和可选预设，使用 DSH 当前选择的空白会话或角色会话，只加载页面一次，然后按稳定的 `data-agent-rp-*` 标记完成选择、开聊、运行时收敛以及角色库、会话设置、预设、世界书、酒馆脚本和适用的小手机入口检查。命令不填写输入框、不发送模型消息、不连续刷新页面，也不根据角色名、脚本名或界面文案定位控件。
+
+默认使用独立的持久 Chromium 配置目录，不读取日常浏览器的账号、Cookie 或存储。预检需要本机资源许可或运行时需要身份许可时，headless 运行返回 `approval-required` 和退出码 2；它不会自动放行来源。调用方已经审阅并同意本次角色卡及预设声明的静态界面资源时，可以显式运行：
+
+```sh
+pnpm run smoke:compat -- --card <本地角色卡> --preset <本地预设> --approve-preflight
+```
+
+`--approve-preflight` 只按一次现有的“允许所列界面资源”操作，并复用产品按角色卡、预设、脚本、资源类别与来源保存的许可；它不确认 Discord/OAuth 或其他身份操作，不确认模型调用或任意外部 API，也不会循环接受批准后新出现的权限。需要人工确认其他权限时可运行：
+
+```sh
+pnpm run smoke:compat -- --card <本地角色卡> --preset <本地预设> --headed --timeout-ms 300000
+```
+
+可见窗口会停在 DSH 自己的许可界面等待确认，确认状态保存在这条 smoke 专用配置中，后续运行可复用。`--profile` 可以指定另一条专用配置路径，`--browser` 可以指定本机 Chromium 可执行文件，`--url` 可以修改 loopback 端口。
+
+输出格式为 `agent-rp-compat-smoke-v0`。退出码 0 表示本地运行时与稳定交互入口健康；2 表示必须由用户完成许可或 OAuth；3 表示确定性的产品兼容失败；4 表示 DSH 不可达、浏览器不可用或运行器设置错误。稳定阶段会区分服务不可达、插件缺失、导入、预检、会话启动、iframe 登记、空内容、脚本运行、远端回执和交互入口，不用“页面白了”概括不同故障。
+
+报告只包含阶段、计数、固定问题码和耗时，不包含文件路径、角色或预设名称、卡片正文、脚本名称或源码、提示词、表达式、URL、错误详情、身份数据或模型响应。失败截图只写入系统临时目录，不进入报告、仓库或构建产物。
+
 酒馆脚本容器用 `data-agent-rp-tavern-total`、`data-agent-rp-tavern-ready`、`data-agent-rp-tavern-failed` 和 `data-agent-rp-tavern-permissions` 汇总当前执行计划；`data-agent-rp-tavern-awaiting-authorization`、`data-agent-rp-tavern-generation-queued` 与 `data-agent-rp-tavern-model-list-queued` 分别记录等待许可、排队生成和排队读取模型目录的数量。每个脚本 iframe 的 `data-agent-rp-tavern-script-scope` 标出 `global`、`preset` 或 `character`，`data-agent-rp-tavern-phase` 进一步区分 `preparing`、`permission-required`、`load-error`、`booting`、`ready` 与 `runtime-error`。这些字段只暴露作用域、数量和生命周期，不读取卡片正文、脚本源码或错误详情；因此应先用它们确定失败阶段，再决定是否需要打开界面或检查单条错误。
 
 角色库的开聊前资源区用 `data-agent-rp-resource-preflight` 区分 `loading`、`permission-required`、`ready` 与 `error`，并用 `data-agent-rp-resource-preflight-scripts`、`data-agent-rp-resource-preflight-card-resources`、`data-agent-rp-resource-preflight-card-permissions`、`data-agent-rp-resource-preflight-script-permissions`、`data-agent-rp-resource-preflight-permissions` 和 `data-agent-rp-resource-preflight-failed` 输出内容无关计数。`data-agent-rp-resource-launch` 与开始按钮的 `data-agent-rp-start-readiness` 输出 `checking`、`approval-required` 或 `ready`；前两种状态不会创建会话。静态预检覆盖轻前端直接声明的七类资源，以及选中角色卡与预设的 Tavern Helper 模块、图片和子 iframe 来源；它不执行脚本。一次确认分别按角色卡资源类别，或角色卡、预设、脚本范围、脚本标识、资源类别与来源保存。每个异步结果与角色卡、预设和已批准来源的精确快照绑定，过时结果不会替换当前选择。模型生成和外部 API 调用不纳入批量许可。
@@ -58,4 +86,4 @@ pnpm run benchmark:charx
 
 世界书安全执行器还用 `data-agent-rp-world-engine-regex-runtime-unavailable`、`data-agent-rp-world-engine-regex-invalid`、`data-agent-rp-world-engine-regex-execution-limit`、`data-agent-rp-world-engine-regex-resource-limit`、`data-agent-rp-world-engine-decorator-unsupported`、`data-agent-rp-world-engine-template-unsupported` 与 `data-agent-rp-world-engine-template-error` 输出失败计数。普通关键词未命中、关闭条目、空正文和预算排除不属于执行失败；任一失败计数大于零时，统一报告加入 `world-engine-degraded`，且不包含书名、条目名、关键词、正文、表达式或错误详情。
 
-`interactiveEntriesPresent` 证明当前会话具备适用的稳定入口。有 Tavern 脚本时必须存在脚本面板入口，有待确认脚本权限时必须存在权限入口；没有小手机脚本或没有待确认权限的角色卡不会因此失败。每次 smoke 不发送消息、不修改角色卡，也不自动授予权限。
+`interactiveEntriesPresent` 证明当前会话具备适用的稳定入口。有 Tavern 脚本时必须存在脚本面板入口，有待确认脚本权限时必须存在权限入口；没有小手机脚本或没有待确认权限的角色卡不会因此失败。每次 smoke 不发送消息、不修改角色卡；只有显式的 `--approve-preflight` 才能批准一次已列出的静态界面资源。

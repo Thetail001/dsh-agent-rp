@@ -8,6 +8,7 @@ export const AGENT_RP_BROWSER_COMPATIBILITY_ATTRIBUTE = 'data-agent-rp-compatibi
 /** Stable issue codes emitted by the browser compatibility snapshot. */
 export type AgentRpBrowserCompatibilityIssue =
   | 'capability-required-unavailable'
+  | 'card-frame-content-empty'
   | 'card-frame-runtime-failed'
   | 'card-frame-unregistered'
   | 'external-window-callback-rejected'
@@ -265,6 +266,7 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     ).length
     if (unregisteredCardFrames > 0) issues.add('card-frame-unregistered')
     const runtimePhases = counter(scriptCardFrames, 'data-agent-rp-runtime-phase')
+    if ((runtimePhases['content-empty'] ?? 0) > 0) issues.add('card-frame-content-empty')
     if ((runtimePhases['runtime-error'] ?? 0) + (runtimePhases['runtime-rejection'] ?? 0) > 0) {
       issues.add('card-frame-runtime-failed')
     }

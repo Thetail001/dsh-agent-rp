@@ -214,6 +214,22 @@ test('reports stable issue codes for expanded sandboxes and inconsistent lifecyc
   ])
 })
 
+test('reports an empty executable card frame without copying its content', () => {
+  const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    '[data-agent-rp-status]': [new DiagnosticElement(capabilityAttributes)],
+    ...stableInteractionSelectors,
+    'iframe[data-agent-rp-frame]': [new DiagnosticElement({
+      sandbox: 'allow-scripts',
+      'data-agent-rp-frame-registered': 'true',
+      'data-agent-rp-runtime-phase': 'content-empty',
+      'data-private-card-text': 'must not appear',
+    })],
+  }))
+
+  assert.deepEqual(report.issues, ['card-frame-content-empty'])
+  assert.doesNotMatch(JSON.stringify(report), /private|must not appear/u)
+})
+
 test('reports a failed inline-frontend sanitizer probe without exposing probe markup', () => {
   const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
     '[data-agent-rp-status]': [new DiagnosticElement({
