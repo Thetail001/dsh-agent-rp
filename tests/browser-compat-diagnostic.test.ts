@@ -146,7 +146,7 @@ test('collects one content-free healthy browser snapshot with expected permissio
     state: report.session.tavern.permissionState,
   }, { startup: 1, interaction: 0, state: 'startup-blocked' })
   assert.deepEqual(report.session?.tavern?.permissions, {
-    script: 0, image: 0, frame: 1, identity: 0, externalWindow: 0,
+    script: 0, image: 0, style: 0, font: 0, frame: 1, identity: 0, externalWindow: 0,
     generation: 0, customGeneration: 0, modelList: 0,
   })
   assert.deepEqual(report.session?.nativeIdentity, { state: 'ready', approved: 3, pending: 3 })
@@ -479,6 +479,27 @@ test('rejects permission lifecycle totals that disguise an interaction as startu
   assert.deepEqual(report.issues, ['tavern-permission-count-mismatch'])
 })
 
+test('classifies runtime-discovered font permission as an interaction', () => {
+  const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    '[data-agent-rp-status]': [new DiagnosticElement(capabilityAttributes)],
+    '[data-agent-rp-tavern-total]': [new DiagnosticElement({
+      'data-agent-rp-tavern-total': '1',
+      'data-agent-rp-tavern-ready': '1',
+      'data-agent-rp-tavern-failed': '0',
+      'data-agent-rp-tavern-permissions': '1',
+      'data-agent-rp-tavern-permission-font': '1',
+      'data-agent-rp-tavern-startup-permissions': '0',
+      'data-agent-rp-tavern-interaction-permissions': '1',
+      'data-agent-rp-tavern-permission-state': 'interaction-pending',
+    })],
+    ...stableInteractionSelectors,
+  }))
+
+  assert.equal(report.checks.tavernPermissionsConsistent, true)
+  assert.equal(report.session?.tavern?.permissions.font, 1)
+  assert.deepEqual(report.issues, [])
+})
+
 test('uses Host runtime facts while retaining DOM-owned sandbox checks', () => {
   const registry = new AgentRpRuntimeDiagnosticRegistry(() => 123)
   registry.publish(createAgentRpRuntimeDiagnosticSource('session'), {
@@ -509,7 +530,7 @@ test('uses Host runtime facts while retaining DOM-owned sandbox checks', () => {
       status: 'ready', launch: 'ready', startReadiness: 'ready', startAction: 'start',
       permissionDuration: 'session', scripts: 0, cardResources: 1,
       pendingCardPermissions: 0, pendingScriptPermissions: 0, pendingScriptOrigins: 0,
-      pendingImageOrigins: 0, pendingFrameOrigins: 0, pendingPermissions: 0, failed: 0,
+      pendingImageOrigins: 0, pendingStyleOrigins: 0, pendingFrameOrigins: 0, pendingPermissions: 0, failed: 0,
     },
   })
   const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({

@@ -12,11 +12,16 @@ const sessionResourcePermissionPrefix = 'dsh.agent-rp.session-resource-permissio
 const maximumPermissionCount = 4_096
 const maximumPermissionKeyLength = 4_096
 
+/** Same-window notification emitted after Session-only resource permissions change. */
+export const agentRpSessionResourcePermissionsChangedEvent = 'dsh-agent-rp-session-resource-permissions-changed'
+
 /** Exact resource permissions that expire with one browser tab. */
 export interface AgentRpSessionResourcePermissions {
   readonly tavern: {
     readonly scripts: readonly string[]
     readonly images: readonly string[]
+    readonly styles: readonly string[]
+    readonly fonts: readonly string[]
     readonly frames: readonly string[]
   }
   readonly card: readonly CharacterRemoteResourceApproval[]
@@ -73,6 +78,8 @@ export function readAgentRpSessionResourcePermissions(
     tavern: {
       scripts: stringArray(tavern.scripts),
       images: stringArray(tavern.images),
+      styles: stringArray(tavern.styles),
+      fonts: stringArray(tavern.fonts),
       frames: stringArray(tavern.frames),
     },
     card: cardApprovals(record.card),
@@ -84,16 +91,20 @@ export function writeAgentRpSessionResourcePermissions(
   storage: ApprovalStorage,
   sessionId: string,
   permissions: AgentRpSessionResourcePermissions,
+  notificationTarget?: EventTarget,
 ): void {
   const value = {
     tavern: {
       scripts: stringArray(permissions.tavern.scripts),
       images: stringArray(permissions.tavern.images),
+      styles: stringArray(permissions.tavern.styles),
+      fonts: stringArray(permissions.tavern.fonts),
       frames: stringArray(permissions.tavern.frames),
     },
     card: cardApprovals(permissions.card),
   }
   storage.setItem(permissionKey(sessionId), JSON.stringify(value))
+  notificationTarget?.dispatchEvent(new Event(agentRpSessionResourcePermissionsChangedEvent))
 }
 
 /** Merge Session-only Character Card grants without mutating the library record. */

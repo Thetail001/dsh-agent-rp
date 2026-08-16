@@ -24,6 +24,7 @@ export interface AgentRpRuntimePreflightFacts {
   readonly pendingScriptPermissions: number
   readonly pendingScriptOrigins: number
   readonly pendingImageOrigins: number
+  readonly pendingStyleOrigins: number
   readonly pendingFrameOrigins: number
   readonly pendingPermissions: number
   readonly failed: number
@@ -92,6 +93,8 @@ export interface AgentRpRuntimeTavernFacts {
   readonly permissions: {
     readonly script: number
     readonly image: number
+    readonly style: number
+    readonly font: number
     readonly frame: number
     readonly identity: number
     readonly externalWindow: number
@@ -101,6 +104,9 @@ export interface AgentRpRuntimeTavernFacts {
   }
   readonly queuedGenerations: number
   readonly queuedModelLists: number
+  readonly blockedResources: number
+  readonly blockedResourceOrigins: number
+  readonly blockedResourceClasses: readonly CharacterRemoteResourceType[]
   readonly phases: readonly TavernScriptRuntimePhase[]
   readonly scopes: readonly TavernScriptTreeScope[]
   readonly externalWindowPhases: readonly ExternalWindowPhase[]
@@ -130,6 +136,9 @@ export interface AgentRpRuntimeTavernSnapshot {
   readonly permissions: AgentRpRuntimeTavernFacts['permissions']
   readonly queuedGenerations: number
   readonly queuedModelLists: number
+  readonly blockedResources: number
+  readonly blockedResourceOrigins: number
+  readonly blockedResourceClasses: Counter
   readonly phases: Counter
   readonly scopes: Counter
 }
@@ -250,6 +259,7 @@ function normalizePreflight(facts: AgentRpRuntimePreflightFacts): AgentRpRuntime
     pendingScriptPermissions: count(facts.pendingScriptPermissions),
     pendingScriptOrigins: count(facts.pendingScriptOrigins),
     pendingImageOrigins: count(facts.pendingImageOrigins),
+    pendingStyleOrigins: count(facts.pendingStyleOrigins),
     pendingFrameOrigins: count(facts.pendingFrameOrigins),
     pendingPermissions: count(facts.pendingPermissions),
     failed: count(facts.failed),
@@ -307,12 +317,15 @@ function normalizeTavern(facts: AgentRpRuntimeTavernFacts): AgentRpRuntimeTavern
       facts.permissionState, ['settled', 'startup-blocked', 'interaction-pending', 'unknown'] as const, 'unknown',
     ),
     permissions: {
-      script: count(facts.permissions.script), image: count(facts.permissions.image), frame: count(facts.permissions.frame),
+      script: count(facts.permissions.script), image: count(facts.permissions.image),
+      style: count(facts.permissions.style), font: count(facts.permissions.font), frame: count(facts.permissions.frame),
       identity: count(facts.permissions.identity), externalWindow: count(facts.permissions.externalWindow),
       generation: count(facts.permissions.generation), customGeneration: count(facts.permissions.customGeneration),
       modelList: count(facts.permissions.modelList),
     },
     queuedGenerations: count(facts.queuedGenerations), queuedModelLists: count(facts.queuedModelLists),
+    blockedResources: count(facts.blockedResources), blockedResourceOrigins: count(facts.blockedResourceOrigins),
+    blockedResourceClasses: filtered(facts.blockedResourceClasses, resourceClasses),
     phases: filtered(facts.phases, tavernRuntimePhases), scopes: filtered(facts.scopes, tavernScopes),
     externalWindowPhases: filtered(facts.externalWindowPhases, externalWindowPhases),
     nativeIdentityPending: count(facts.nativeIdentityPending),
@@ -455,7 +468,9 @@ export class AgentRpRuntimeDiagnosticRegistry {
         pendingPermissions: tavern.pendingPermissions, startupPermissions: tavern.startupPermissions,
         interactionPermissions: tavern.interactionPermissions, permissionState: tavern.permissionState,
         permissions: tavern.permissions, queuedGenerations: tavern.queuedGenerations,
-        queuedModelLists: tavern.queuedModelLists,
+        queuedModelLists: tavern.queuedModelLists, blockedResources: tavern.blockedResources,
+        blockedResourceOrigins: tavern.blockedResourceOrigins,
+        blockedResourceClasses: counter(tavern.blockedResourceClasses, resourceClasses),
         phases: counter(tavern.phases, tavernRuntimePhases), scopes: counter(tavern.scopes, tavernScopes),
       } }),
       cardFrames,

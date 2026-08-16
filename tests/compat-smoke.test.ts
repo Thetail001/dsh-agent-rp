@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  bootstrapAgentRpCompatSmokeSourceSession,
   classifyAgentRpPreflight,
   classifyAgentRpRuntime,
   classifyAgentRpSmokeConsoleError,
@@ -61,8 +62,10 @@ function browserSnapshot(options: {
   readonly tavernPanel?: 'closed' | 'mobile' | 'script'
   readonly worldInfoManager?: 'closed' | 'open'
   readonly permissionDuration?: AgentRpCompatSmokePermissionDuration
+  readonly blockedFonts?: number
 } = {}): AgentRpBrowserCompatibilitySnapshot {
   const runtime = options.runtime
+  const blockedFonts = options.blockedFonts ?? 0
   const issues = runtime === 'empty' ? ['card-frame-content-empty'] as const
     : runtime === 'failed' ? ['card-frame-runtime-failed'] as const : []
   const preflight = options.preflight
@@ -95,10 +98,13 @@ function browserSnapshot(options: {
       },
       tavern: {
         scripts: 1, frames: 1, ready: runtime === 'pending' ? 0 : 1, failed: 0,
-        pendingPermissions: 0, queuedGenerations: 0, queuedModelLists: 0,
-        startupPermissions: 0, interactionPermissions: 0, permissionState: 'settled',
+        pendingPermissions: blockedFonts, queuedGenerations: 0, queuedModelLists: 0,
+        blockedResources: blockedFonts, blockedResourceOrigins: blockedFonts,
+        blockedResourceClasses: blockedFonts === 0 ? {} : { font: blockedFonts },
+        startupPermissions: 0, interactionPermissions: blockedFonts,
+        permissionState: blockedFonts === 0 ? 'settled' : 'interaction-pending',
         permissions: {
-          script: 0, image: 0, frame: 0, identity: 0, externalWindow: 0,
+          script: 0, image: 0, style: 0, font: blockedFonts, frame: 0, identity: 0, externalWindow: 0,
           generation: 0, customGeneration: 0, modelList: 0,
         },
         phases: { [runtime === 'pending' ? 'booting' : 'ready']: 1 }, scopes: { character: 1 },
@@ -127,6 +133,7 @@ function browserSnapshot(options: {
       pendingScriptPermissions: 0,
       pendingScriptOrigins: 0,
       pendingImageOrigins: 0,
+      pendingStyleOrigins: 0,
       pendingFrameOrigins: 0,
       pendingPermissions: preflight === 'approval-required' ? 1 : 0,
       failed: preflight === 'error' ? 1 : 0,
@@ -180,15 +187,36 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
   private launched = false
   permissionDuration: AgentRpCompatSmokePermissionDuration = 'remember'
   readonly approvalAttempts: number[] = []
+  onboardingAcknowledgements = 0
+  runtimeFontApprovals = 0
   readonly actions: AgentRpCompatSmokeAction[] = []
 
   constructor(
     private readonly preflightNeedsApproval = false,
     private readonly approvalClears = true,
     private readonly genericTavernPanel: 'script' | 'mobile' = 'script',
+    private clientGateState: 'ready' | 'onboarding' = 'ready',
+    private remainingRuntimeFonts = 0,
   ) {}
 
   delay(): Promise<void> { return Promise.resolve() }
+
+  clientGate(): Promise<'ready' | 'onboarding'> { return Promise.resolve(this.clientGateState) }
+
+  acknowledgeOnboarding(): Promise<void> {
+    this.onboardingAcknowledgements += 1
+    this.clientGateState = 'ready'
+    return Promise.resolve()
+  }
+
+  approveRuntimeFont(): Promise<boolean> {
+    if (this.remainingRuntimeFonts === 0) return Promise.resolve(false)
+    this.remainingRuntimeFonts -= 1
+    this.runtimeFontApprovals += 1
+    return Promise.resolve(true)
+  }
+
+  closeRuntimePermissions(): Promise<void> { return Promise.resolve() }
 
   snapshot(): Promise<AgentRpBrowserCompatibilitySnapshot> {
     const approvalRequired = this.preflightNeedsApproval
@@ -201,6 +229,7 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
           }
         : {}),
       ...(this.launched ? { runtime: 'healthy' as const } : {}),
+      blockedFonts: this.launched ? this.remainingRuntimeFonts : 0,
       characterLibrary: this.characterLibrary,
       presetManager: this.presetManager,
       sessionSettings: this.sessionSettings,
@@ -274,6 +303,67 @@ test('drives one content-free launch and all applicable stable interaction surfa
     'open-tavern-panel', 'close-tavern-panel',
     'open-mobile-surface', 'close-tavern-panel',
   ])
+})
+
+test('keeps first-run acknowledgement explicit and continues after authorization', async () => {
+  const pending = new FakeSmokeDriver(false, true, 'script', 'onboarding')
+  const manual = await runAgentRpBrowserCompatibilitySmoke(pending, {
+    characterId: 'character-id', timeoutMs: 100,
+  })
+  assert.deepEqual(manual.decision, {
+    status: 'manual-required', stage: 'onboarding-required', exitCode: 2,
+  })
+  assert.equal(pending.onboardingAcknowledgements, 0)
+  assert.deepEqual(pending.actions, [])
+
+  const authorized = new FakeSmokeDriver(false, true, 'script', 'onboarding')
+  const healthy = await runAgentRpBrowserCompatibilitySmoke(authorized, {
+    characterId: 'character-id', timeoutMs: 100, acknowledgeOnboarding: true,
+  })
+  assert.deepEqual(healthy.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
+  assert.equal(authorized.onboardingAcknowledgements, 1)
+})
+
+test('explicitly approves runtime-discovered fonts until the sandbox settles', async () => {
+  const driver = new FakeSmokeDriver(false, true, 'script', 'ready', 2)
+  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
+    characterId: 'character-id', timeoutMs: 100, pollMs: 1, approveRuntimeFonts: true,
+  })
+  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
+  assert.equal(driver.runtimeFontApprovals, 2)
+  assert.equal(result.snapshot?.session?.tavern?.blockedResources, 0)
+})
+
+test('bootstraps an isolated source Session through the public RPCs', async () => {
+  const calls: Array<{ method: string; payload: Readonly<Record<string, string>> }> = []
+  const sourceSessionId = await bootstrapAgentRpCompatSmokeSourceSession({
+    call: (method, payload) => {
+      calls.push({ method, payload })
+      return Promise.resolve(method === 'workspace.create'
+        ? { workspace: { workspaceId: 'workspace-id' }, created: true }
+        : { sessionId: 'source-session' })
+    },
+  }, '/isolated/workspace')
+
+  assert.equal(sourceSessionId, 'source-session')
+  assert.deepEqual(calls, [
+    { method: 'workspace.create', payload: { path: '/isolated/workspace' } },
+    { method: 'session.create', payload: { workspaceId: 'workspace-id' } },
+  ])
+  await assert.rejects(
+    bootstrapAgentRpCompatSmokeSourceSession({ call: () => Promise.resolve({}) }, '/isolated/workspace'),
+    /workspace id/,
+  )
+})
+
+test('distinguishes a missing requested source Session from an unloaded client', async () => {
+  const driver = new FakeSmokeDriver()
+  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
+    sourceSessionId: 'missing-source', characterId: 'character-id', timeoutMs: 1, pollMs: 1,
+  })
+  assert.deepEqual(result.decision, {
+    status: 'failed', stage: 'source-session-failed', exitCode: 3,
+  })
 })
 
 test('leaves preflight approval manual unless the caller explicitly authorizes it', async () => {

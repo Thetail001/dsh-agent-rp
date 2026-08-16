@@ -129,6 +129,8 @@ export interface AgentRpBrowserCompatibilitySnapshot {
       readonly permissions: {
         readonly script: number
         readonly image: number
+        readonly style: number
+        readonly font: number
         readonly frame: number
         readonly identity: number
         readonly externalWindow: number
@@ -138,6 +140,9 @@ export interface AgentRpBrowserCompatibilitySnapshot {
       }
       readonly queuedGenerations: number
       readonly queuedModelLists: number
+      readonly blockedResources: number
+      readonly blockedResourceOrigins: number
+      readonly blockedResourceClasses: Counter
       readonly phases: Counter
       readonly scopes: Counter
     }
@@ -164,6 +169,7 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly pendingScriptPermissions: number
     readonly pendingScriptOrigins: number
     readonly pendingImageOrigins: number
+    readonly pendingStyleOrigins: number
     readonly pendingFrameOrigins: number
     readonly pendingPermissions: number
     readonly failed: number
@@ -339,6 +345,8 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
         permissions: {
           script: integer(tavern, 'data-agent-rp-tavern-permission-script'),
           image: integer(tavern, 'data-agent-rp-tavern-permission-image'),
+          style: integer(tavern, 'data-agent-rp-tavern-permission-style'),
+          font: integer(tavern, 'data-agent-rp-tavern-permission-font'),
           frame: integer(tavern, 'data-agent-rp-tavern-permission-frame'),
           identity: integer(tavern, 'data-agent-rp-tavern-permission-identity'),
           externalWindow: integer(tavern, 'data-agent-rp-tavern-permission-external-window'),
@@ -348,6 +356,14 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
         },
         queuedGenerations: integer(tavern, 'data-agent-rp-tavern-generation-queued'),
         queuedModelLists: integer(tavern, 'data-agent-rp-tavern-model-list-queued'),
+        blockedResources: integer(tavern, 'data-agent-rp-tavern-resource-blocked'),
+        blockedResourceOrigins: integer(tavern, 'data-agent-rp-tavern-resource-blocked-origins'),
+        blockedResourceClasses: Object.fromEntries(
+          (['connect', 'font', 'frame', 'image', 'media', 'script', 'style'] as const).flatMap(type => {
+            const total = integer(tavern, `data-agent-rp-tavern-resource-blocked-${type}`)
+            return total === 0 ? [] : [[type, total] as const]
+          }),
+        ),
         phases: counter(tavernFrames, 'data-agent-rp-tavern-phase'),
         scopes: counter(tavernFrames, 'data-agent-rp-tavern-script-scope'),
       } }),
@@ -403,9 +419,10 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     : session.tavern.startupPermissions > 0 ? 'startup-blocked'
       : session.tavern.interactionPermissions > 0 ? 'interaction-pending' : 'settled'
   const expectedTavernStartupPermissions = session?.tavern === undefined ? undefined
-    : session.tavern.permissions.script + session.tavern.permissions.image + session.tavern.permissions.frame
+    : session.tavern.permissions.script + session.tavern.permissions.image
+      + session.tavern.permissions.style + session.tavern.permissions.frame
   const expectedTavernInteractionPermissions = session?.tavern === undefined ? undefined
-    : session.tavern.permissions.identity + session.tavern.permissions.externalWindow
+    : session.tavern.permissions.font + session.tavern.permissions.identity + session.tavern.permissions.externalWindow
       + session.tavern.permissions.generation + session.tavern.permissions.customGeneration
       + session.tavern.permissions.modelList
   const tavernPermissionsConsistent = session?.tavern === undefined
@@ -426,6 +443,7 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     const pendingScriptPermissions = integer(preflightElement, 'data-agent-rp-resource-preflight-script-permissions')
     const pendingScriptOrigins = integer(preflightElement, 'data-agent-rp-resource-preflight-script-origins')
     const pendingImageOrigins = integer(preflightElement, 'data-agent-rp-resource-preflight-image-origins')
+    const pendingStyleOrigins = integer(preflightElement, 'data-agent-rp-resource-preflight-style-origins')
     const pendingFrameOrigins = integer(preflightElement, 'data-agent-rp-resource-preflight-frame-origins')
     const pendingPermissions = integer(preflightElement, 'data-agent-rp-resource-preflight-permissions')
     const statusValue = value(preflightElement, 'data-agent-rp-resource-preflight')
@@ -448,6 +466,7 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       pendingScriptPermissions,
       pendingScriptOrigins,
       pendingImageOrigins,
+      pendingStyleOrigins,
       pendingFrameOrigins,
       pendingPermissions,
       failed,
@@ -458,7 +477,8 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     preflightConsistent = preflight.pendingPermissions
         === preflight.pendingCardPermissions + preflight.pendingScriptPermissions
       && preflight.pendingScriptPermissions
-        === preflight.pendingScriptOrigins + preflight.pendingImageOrigins + preflight.pendingFrameOrigins
+        === preflight.pendingScriptOrigins + preflight.pendingImageOrigins
+          + preflight.pendingStyleOrigins + preflight.pendingFrameOrigins
       && preflight.permissionDuration !== 'unknown'
     if (!preflightConsistent) issues.add('preflight-count-mismatch')
     const expectedLaunch = preflight.status === 'loading' ? 'checking'
@@ -616,6 +636,7 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-tavern-permission-state',
       'data-agent-rp-tavern-permission-script',
       'data-agent-rp-tavern-permission-image',
+      'data-agent-rp-tavern-permission-style',
       'data-agent-rp-tavern-permission-frame',
       'data-agent-rp-tavern-permission-identity',
       'data-agent-rp-tavern-permission-external-window',
@@ -624,6 +645,15 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-tavern-permission-model-list',
       'data-agent-rp-tavern-generation-queued',
       'data-agent-rp-tavern-model-list-queued',
+      'data-agent-rp-tavern-resource-blocked',
+      'data-agent-rp-tavern-resource-blocked-origins',
+      'data-agent-rp-tavern-resource-blocked-connect',
+      'data-agent-rp-tavern-resource-blocked-font',
+      'data-agent-rp-tavern-resource-blocked-frame',
+      'data-agent-rp-tavern-resource-blocked-image',
+      'data-agent-rp-tavern-resource-blocked-media',
+      'data-agent-rp-tavern-resource-blocked-script',
+      'data-agent-rp-tavern-resource-blocked-style',
       'data-agent-rp-tavern-phase',
       'data-agent-rp-tavern-script-scope',
       'data-agent-rp-frame',
@@ -640,6 +670,7 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-resource-preflight-script-permissions',
       'data-agent-rp-resource-preflight-script-origins',
       'data-agent-rp-resource-preflight-image-origins',
+      'data-agent-rp-resource-preflight-style-origins',
       'data-agent-rp-resource-preflight-frame-origins',
       'data-agent-rp-resource-preflight-permissions',
       'data-agent-rp-resource-preflight-failed',

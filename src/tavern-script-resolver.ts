@@ -31,6 +31,8 @@ export interface TavernScriptExecution {
   readonly compatibilityMarkers: readonly string[]
   /** Static HTTPS image origins declared by the entry script and inspected dependencies. */
   readonly remoteImageOrigins?: readonly string[]
+  /** Static HTTPS stylesheet origins declared by the entry script and inspected dependencies. */
+  readonly remoteStyleOrigins?: readonly string[]
   /** Static HTTPS frame origins declared by the entry script and inspected dependencies. */
   readonly remoteFrameOrigins?: readonly string[]
 }
@@ -188,6 +190,51 @@ export function declaredTavernImageOrigins(source: string): readonly string[] {
   return [...origins].sort()
 }
 
+/** Find static HTTPS stylesheet origins without evaluating script source. */
+export function declaredTavernStyleOrigins(source: string): readonly string[] {
+  const origins = new Set<string>()
+  const literals = new Map<string, string>()
+  const linkVariables = new Set<string>()
+  const add = (value: string): void => {
+    try {
+      const url = new URL(value.replace(/[),.;]+$/u, ''))
+      if (url.protocol === 'https:' && url.username === '' && url.password === '') origins.add(url.origin)
+    } catch {
+      // Template fragments and URL-like script text are not static browser resources.
+    }
+  }
+  for (const match of source.matchAll(/\b(?:const|let|var)\s+([\p{L}_$][\p{L}\p{N}_$]*)\s*=\s*(['"])(https:\/\/[^\s"'<>`\\)]+)\2/giu)) {
+    literals.set(match[1]!, match[3]!)
+  }
+  for (const match of source.matchAll(/https:\/\/[^\s"'<>`\\)]+/giu)) {
+    try {
+      const url = new URL(match[0].replace(/[),.;]+$/u, ''))
+      if (/\.css$/iu.test(url.pathname)) add(url.href)
+    } catch {
+      // Template fragments and URL-like script text are not static browser resources.
+    }
+  }
+  for (const match of source.matchAll(/@import\s+(?:url\(\s*)?(['"])(https:\/\/[^\s"'<>`\\)]+)\1/giu)) add(match[2]!)
+  for (const match of source.matchAll(/<link\b[^>]*>/giu)) {
+    if (!/\brel\s*=\s*(['"])stylesheet\1/iu.test(match[0])) continue
+    const href = match[0].match(/\bhref\s*=\s*(['"])(https:\/\/[^\s"'<>`\\)]+)\1/iu)?.[2]
+    if (href !== undefined) add(href)
+  }
+  for (const match of source.matchAll(/\b(?:const|let|var)\s+([\p{L}_$][\p{L}\p{N}_$]*)\s*=\s*document\.createElement\(\s*(['"])link\2\s*\)/giu)) {
+    linkVariables.add(match[1]!)
+  }
+  for (const variable of linkVariables) {
+    const escaped = variable.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+    const assignment = new RegExp(`\\b${escaped}\\s*\\.\\s*href\\s*=\\s*(?:(['"])(https:\\/\\/[^\\s"'<>\\x60\\\\)]+)\\1|([\\p{L}_$][\\p{L}\\p{N}_$]*))`, 'giu')
+    const setter = new RegExp(`\\b${escaped}\\s*\\.\\s*(?:setAttribute|attr)\\(\\s*['"]href['"]\\s*,\\s*(?:(['"])(https:\\/\\/[^\\s"'<>\\x60\\\\)]+)\\1|([\\p{L}_$][\\p{L}\\p{N}_$]*))`, 'giu')
+    for (const pattern of [assignment, setter]) for (const match of source.matchAll(pattern)) {
+      const value = match[2] ?? literals.get(match[3]!)
+      if (value !== undefined) add(value)
+    }
+  }
+  return [...origins].sort()
+}
+
 /** Find static HTTPS iframe origins without executing script source. */
 export function declaredTavernFrameOrigins(source: string): readonly string[] {
   if (!/(?:<iframe\b|createElement\(\s*['"]iframe['"]\s*\))/iu.test(source)) return []
@@ -279,6 +326,7 @@ export async function resolveTavernScriptExecution(
     needsFuse: /\bFuse\b/u.test(dependencySource),
     compatibilityMarkers: declaredTavernCompatibilityMarkers(dependencySource),
     remoteImageOrigins: declaredTavernImageOrigins(dependencySource),
+    remoteStyleOrigins: declaredTavernStyleOrigins(dependencySource),
     remoteFrameOrigins: declaredTavernFrameOrigins(dependencySource),
   }
 }

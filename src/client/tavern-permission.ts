@@ -5,6 +5,8 @@ import { readApprovalSet, writeApprovalSet } from './approval-storage.ts'
 
 const tavernScriptOriginsKey = 'dsh.agent-rp.tavern-script-origin-approvals-v1'
 const tavernScriptImageApprovalsKey = 'dsh.agent-rp.tavern-script-image-approvals-v1'
+const tavernScriptStyleApprovalsKey = 'dsh.agent-rp.tavern-script-style-approvals-v1'
+const tavernScriptFontApprovalsKey = 'dsh.agent-rp.tavern-script-font-approvals-v1'
 const tavernScriptFrameApprovalsKey = 'dsh.agent-rp.tavern-script-frame-approvals-v1'
 const tavernScriptGenerationApprovalsKey = 'dsh.agent-rp.tavern-script-generation-approvals'
 const tavernScriptCustomGenerationApprovalsKey = 'dsh.agent-rp.tavern-script-custom-generation-approvals'
@@ -17,6 +19,8 @@ export type TavernPermissionScope = 'global' | 'preset' | 'character'
 export const TAVERN_PERMISSION_KINDS = [
   'script',
   'image',
+  'style',
+  'font',
   'frame',
   'identity',
   'external-window',
@@ -52,7 +56,7 @@ export interface TavernPermissionPlanSummary {
 }
 
 /** Resource kinds whose grants can be planned before script execution. */
-export type TavernScriptResourcePermissionKind = 'script' | 'image' | 'frame'
+export type TavernScriptResourcePermissionKind = 'script' | 'image' | 'style' | 'font' | 'frame'
 
 /** Static resources declared by one scoped script. */
 export interface TavernScriptResourcePlanEntry {
@@ -60,6 +64,8 @@ export interface TavernScriptResourcePlanEntry {
   readonly scriptId: string
   readonly scriptOrigins?: readonly string[]
   readonly imageOrigins?: readonly string[]
+  readonly styleOrigins?: readonly string[]
+  readonly fontOrigins?: readonly string[]
   readonly frameOrigins?: readonly string[]
 }
 
@@ -86,7 +92,7 @@ export function tavernPermissionOwnerId(
 
 /** Classify whether one permission can prevent a script from starting. */
 export function tavernPermissionLifecycle(kind: TavernPermissionKind): TavernPermissionLifecycle {
-  return kind === 'script' || kind === 'image' || kind === 'frame' ? 'startup' : 'interaction'
+  return kind === 'script' || kind === 'image' || kind === 'style' || kind === 'frame' ? 'startup' : 'interaction'
 }
 
 /** Deduplicate pending permissions and attach their lifecycle in deterministic order. */
@@ -110,6 +116,8 @@ export function summarizeTavernPermissionPlan(
   const counts: Record<TavernPermissionKind, number> = {
     script: 0,
     image: 0,
+    style: 0,
+    font: 0,
     frame: 0,
     identity: 0,
     'external-window': 0,
@@ -188,6 +196,26 @@ export function readApprovedTavernScriptImages(): ReadonlySet<string> {
 /** Persist approved image origins. */
 export function writeApprovedTavernScriptImages(approvals: ReadonlySet<string>): void {
   writeApprovalSet(localStorage, tavernScriptImageApprovalsKey, approvals)
+}
+
+/** Read approved stylesheet origins from browser storage. */
+export function readApprovedTavernScriptStyles(): ReadonlySet<string> {
+  return readApprovalSet(localStorage, tavernScriptStyleApprovalsKey, 3_072)
+}
+
+/** Persist approved stylesheet origins. */
+export function writeApprovedTavernScriptStyles(approvals: ReadonlySet<string>): void {
+  writeApprovalSet(localStorage, tavernScriptStyleApprovalsKey, approvals)
+}
+
+/** Read approved font origins from browser storage. */
+export function readApprovedTavernScriptFonts(): ReadonlySet<string> {
+  return readApprovalSet(localStorage, tavernScriptFontApprovalsKey, 3_072)
+}
+
+/** Persist approved font origins. */
+export function writeApprovedTavernScriptFonts(approvals: ReadonlySet<string>): void {
+  writeApprovalSet(localStorage, tavernScriptFontApprovalsKey, approvals)
 }
 
 /** Read approved nested-frame origins from browser storage. */
@@ -321,6 +349,28 @@ export function tavernScriptImageApprovalKey(
   return JSON.stringify([characterId, presetId ?? null, scope, scriptId, origin])
 }
 
+/** Serialize one stylesheet grant without allowing it to load scripts, images, fonts, or frames. */
+export function tavernScriptStyleApprovalKey(
+  characterId: string,
+  presetId: string | undefined,
+  scope: TavernPermissionScope,
+  scriptId: string,
+  origin: string,
+): string {
+  return JSON.stringify([characterId, presetId ?? null, scope, scriptId, origin])
+}
+
+/** Serialize one font grant without allowing the stylesheet that referenced it. */
+export function tavernScriptFontApprovalKey(
+  characterId: string,
+  presetId: string | undefined,
+  scope: TavernPermissionScope,
+  scriptId: string,
+  origin: string,
+): string {
+  return JSON.stringify([characterId, presetId ?? null, scope, scriptId, origin])
+}
+
 /** Serialize one nested-frame grant without allowing an image grant to activate executable content. */
 export function tavernScriptFrameApprovalKey(
   characterId: string,
@@ -350,6 +400,8 @@ export function pendingTavernScriptResourcePermissions(input: {
   readonly entries: readonly TavernScriptResourcePlanEntry[]
   readonly approvedScripts: ReadonlySet<string>
   readonly approvedImages: ReadonlySet<string>
+  readonly approvedStyles: ReadonlySet<string>
+  readonly approvedFonts: ReadonlySet<string>
   readonly approvedFrames: ReadonlySet<string>
   readonly trustedScriptOrigins?: readonly string[]
 }): readonly TavernScriptResourcePermission[] {
@@ -367,7 +419,11 @@ export function pendingTavernScriptResourcePermissions(input: {
         ? tavernScriptOriginApprovalKey(input.characterId, input.presetId, entry.scope, entry.scriptId, origin)
         : kind === 'image'
           ? tavernScriptImageApprovalKey(input.characterId, input.presetId, entry.scope, entry.scriptId, origin)
-          : tavernScriptFrameApprovalKey(input.characterId, input.presetId, entry.scope, entry.scriptId, origin)
+          : kind === 'style'
+            ? tavernScriptStyleApprovalKey(input.characterId, input.presetId, entry.scope, entry.scriptId, origin)
+            : kind === 'font'
+              ? tavernScriptFontApprovalKey(input.characterId, input.presetId, entry.scope, entry.scriptId, origin)
+              : tavernScriptFrameApprovalKey(input.characterId, input.presetId, entry.scope, entry.scriptId, origin)
       if (!approvals.has(approvalKey)) {
         permissions.set(`${kind}\u0000${approvalKey}`, {
           kind, scope: entry.scope, scriptId: entry.scriptId, origin, approvalKey,
@@ -378,6 +434,8 @@ export function pendingTavernScriptResourcePermissions(input: {
   for (const entry of input.entries) {
     add(entry, 'script', entry.scriptOrigins ?? [], input.approvedScripts)
     add(entry, 'image', entry.imageOrigins ?? [], input.approvedImages)
+    add(entry, 'style', entry.styleOrigins ?? [], input.approvedStyles)
+    add(entry, 'font', entry.fontOrigins ?? [], input.approvedFonts)
     add(entry, 'frame', entry.frameOrigins ?? [], input.approvedFrames)
   }
   return [...permissions.values()].sort((left, right) =>

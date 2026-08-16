@@ -49,10 +49,11 @@ test('assembles multiple Host publishers without serializing their scope or extr
       pendingPermissions: 1, startupPermissions: 1, interactionPermissions: 0,
       permissionState: 'startup-blocked',
       permissions: {
-        script: 0, image: 0, frame: 1, identity: 0, externalWindow: 0,
+        script: 0, image: 0, style: 0, font: 0, frame: 1, identity: 0, externalWindow: 0,
         generation: 0, customGeneration: 0, modelList: 0,
       },
       queuedGenerations: 0, queuedModelLists: 0,
+      blockedResources: 2, blockedResourceOrigins: 1, blockedResourceClasses: ['style', 'style'],
       phases: ['ready', 'ready'], scopes: ['character', 'preset'],
       externalWindowPhases: ['external-opened'], nativeIdentityPending: 2,
       scriptName: 'must not appear',
@@ -78,7 +79,7 @@ test('assembles multiple Host publishers without serializing their scope or extr
       status: 'permission-required', launch: 'approval-required', startReadiness: 'approval-required',
       startAction: 'approve-and-start', permissionDuration: 'session', scripts: 2, cardResources: 7,
       pendingCardPermissions: 1, pendingScriptPermissions: 1, pendingScriptOrigins: 0,
-      pendingImageOrigins: 0, pendingFrameOrigins: 1, pendingPermissions: 2, failed: 0,
+      pendingImageOrigins: 0, pendingStyleOrigins: 0, pendingFrameOrigins: 1, pendingPermissions: 2, failed: 0,
     },
   })
 
@@ -93,6 +94,9 @@ test('assembles multiple Host publishers without serializing their scope or extr
   assert.deepEqual(snapshot.session?.nativeIdentity, { state: 'ready', approved: 2, pending: 3 })
   assert.deepEqual(snapshot.session?.tavern?.phases, { ready: 2 })
   assert.deepEqual(snapshot.session?.tavern?.scopes, { preset: 1, character: 1 })
+  assert.equal(snapshot.session?.tavern?.blockedResources, 2)
+  assert.equal(snapshot.session?.tavern?.blockedResourceOrigins, 1)
+  assert.deepEqual(snapshot.session?.tavern?.blockedResourceClasses, { style: 2 })
   assert.deepEqual(snapshot.session?.cardFrames, {
     total: 2, scriptEnabled: 1, inert: 1, registered: 2, resized: 1,
     runtimePhases: { 'content-present': 1 }, resourceMonitors: { 'listener-restored': 1 },

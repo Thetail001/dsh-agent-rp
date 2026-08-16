@@ -41,6 +41,7 @@ import {
 import {
   advanceTavernTranscript,
   BUILT_IN_TAVERN_SCRIPT_ORIGINS,
+  parseTavernResourceBlockedReport,
   resolveTavernScriptExecution,
   shouldResetTavernScriptRuntime,
   tavernMessageDepth,
@@ -50,6 +51,7 @@ import {
   validatedTavernCompatibilityMarkers,
   TavernScriptOriginApprovalError,
   type TavernTranscriptCursor,
+  type TavernResourceBlockedReport,
   type TavernScriptSnapshot,
 } from './tavern-runtime.ts'
 import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
@@ -147,10 +149,12 @@ import {
   pendingTavernScriptResourcePermissions,
   readApprovedTavernScriptCustomGenerations,
   readApprovedTavernScriptFrames,
+  readApprovedTavernScriptFonts,
   readApprovedTavernScriptGenerations,
   readApprovedTavernScriptImages,
   readApprovedTavernScriptModels,
   readApprovedTavernScriptOrigins,
+  readApprovedTavernScriptStyles,
   tavernPreflightApprovals,
   tavernPreflightLaunchPhase,
   tavernPermissionPlan,
@@ -159,17 +163,21 @@ import {
   tavernScriptImageApprovalKey,
   tavernScriptInteractionApprovalKey,
   tavernScriptOriginApprovalKey,
+  tavernScriptStyleApprovalKey,
   summarizeTavernPermissionPlan,
   writeApprovedTavernScriptCustomGenerations,
   writeApprovedTavernScriptFrames,
+  writeApprovedTavernScriptFonts,
   writeApprovedTavernScriptGenerations,
   writeApprovedTavernScriptImages,
   writeApprovedTavernScriptModels,
   writeApprovedTavernScriptOrigins,
+  writeApprovedTavernScriptStyles,
   type TavernScriptResourcePermission,
 } from './tavern-permission.ts'
 import { fetchTavernPreflight } from './tavern-preflight.ts'
 import {
+  agentRpSessionResourcePermissionsChangedEvent,
   readAgentRpSessionResourcePermissions,
   withAgentRpSessionCardPermissions,
   writeAgentRpSessionResourcePermissions,
@@ -2633,9 +2641,7 @@ function RoleplayHeader({
   const [renaming, setRenaming] = useState(false)
   const viewMode = useRoleplayViewMode(sessionId)
   const storedCharacterDetail = useCharacterDetail(projection?.avatarLibraryId)
-  const sessionResourcePermissions = useMemo(() => readAgentRpSessionResourcePermissions(
-    window.sessionStorage, String(sessionId),
-  ), [sessionId])
+  const sessionResourcePermissions = useAgentRpSessionResourcePermissions(sessionId)
   const characterDetail = useMemo(() => storedCharacterDetail === undefined ? undefined
     : withAgentRpSessionCardPermissions(storedCharacterDetail, sessionResourcePermissions),
   [sessionResourcePermissions, storedCharacterDetail])
@@ -3579,6 +3585,7 @@ function CharacterLibraryDialog({
   const [starting, setStarting] = useState(false)
   const [approvedScriptOrigins, setApprovedScriptOrigins] = useState(readApprovedTavernScriptOrigins)
   const [approvedScriptImages, setApprovedScriptImages] = useState(readApprovedTavernScriptImages)
+  const [approvedScriptStyles, setApprovedScriptStyles] = useState(readApprovedTavernScriptStyles)
   const [approvedScriptFrames, setApprovedScriptFrames] = useState(readApprovedTavernScriptFrames)
   const [tavernPreflightState, setTavernPreflightState] = useState<TavernPreflightLoadState>()
   const [approvingPreflight, setApprovingPreflight] = useState(false)
@@ -3794,20 +3801,25 @@ function CharacterLibraryDialog({
         scriptId: entry.scriptId,
         scriptOrigins: entry.requestedScriptOrigin === undefined ? [] : [entry.requestedScriptOrigin],
         imageOrigins: entry.remoteImageOrigins,
+        styleOrigins: entry.remoteStyleOrigins,
         frameOrigins: entry.remoteFrameOrigins,
       })) ?? [],
       approvedScripts: approvedScriptOrigins,
       approvedImages: approvedScriptImages,
+      approvedStyles: approvedScriptStyles,
+      approvedFonts: new Set<string>(),
       approvedFrames: approvedScriptFrames,
       trustedScriptOrigins: BUILT_IN_TAVERN_SCRIPT_ORIGINS,
     })
   const pendingPreflightScripts = pendingPreflightScriptResources.filter(permission => permission.kind === 'script')
   const pendingPreflightImages = pendingPreflightScriptResources.filter(permission => permission.kind === 'image')
+  const pendingPreflightStyles = pendingPreflightScriptResources.filter(permission => permission.kind === 'style')
   const pendingPreflightFrames = pendingPreflightScriptResources.filter(permission => permission.kind === 'frame')
   const pendingCardResources = selected === undefined
     ? [] : blockedCardFrameResources(selected.remoteResources, selected)
   const pendingPreflightPermissions = pendingPreflightScripts.length
-    + pendingPreflightImages.length + pendingPreflightFrames.length + pendingCardResources.length
+    + pendingPreflightImages.length + pendingPreflightStyles.length + pendingPreflightFrames.length
+    + pendingCardResources.length
   const pendingPreflightHosts = [...new Set([
     ...pendingPreflightScriptResources.map(item => new URL(item.origin).hostname),
     ...pendingCardResources.map(resource => new URL(resource.origin).hostname),
@@ -3838,9 +3850,10 @@ function CharacterLibraryDialog({
         cardResources: selected.remoteResources.length,
         pendingCardPermissions: pendingCardResources.length,
         pendingScriptPermissions: pendingPreflightScripts.length
-          + pendingPreflightImages.length + pendingPreflightFrames.length,
+          + pendingPreflightImages.length + pendingPreflightStyles.length + pendingPreflightFrames.length,
         pendingScriptOrigins: pendingPreflightScripts.length,
         pendingImageOrigins: pendingPreflightImages.length,
+        pendingStyleOrigins: pendingPreflightStyles.length,
         pendingFrameOrigins: pendingPreflightFrames.length,
         pendingPermissions: pendingPreflightPermissions,
         failed: tavernPreflight?.failed ?? 0,
@@ -3860,6 +3873,8 @@ function CharacterLibraryDialog({
             tavern: {
               scripts: pendingPreflightScripts.map(permission => permission.approvalKey),
               images: pendingPreflightImages.map(permission => permission.approvalKey),
+              styles: pendingPreflightStyles.map(permission => permission.approvalKey),
+              fonts: [],
               frames: pendingPreflightFrames.map(permission => permission.approvalKey),
             },
             card: pendingCardResources,
@@ -3877,6 +3892,12 @@ function CharacterLibraryDialog({
         for (const permission of pendingPreflightImages) next.add(permission.approvalKey)
         writeApprovedTavernScriptImages(next)
         setApprovedScriptImages(next)
+      }
+      if (pendingPreflightStyles.length > 0) {
+        const next = new Set(approvedScriptStyles)
+        for (const permission of pendingPreflightStyles) next.add(permission.approvalKey)
+        writeApprovedTavernScriptStyles(next)
+        setApprovedScriptStyles(next)
       }
       if (pendingPreflightFrames.length > 0) {
         const next = new Set(approvedScriptFrames)
@@ -4088,9 +4109,10 @@ function CharacterLibraryDialog({
               data-agent-rp-resource-preflight-scripts={tavernPreflight?.scripts ?? 0}
               data-agent-rp-resource-preflight-card-resources={selected.remoteResources.length}
               data-agent-rp-resource-preflight-card-permissions={pendingCardResources.length}
-              data-agent-rp-resource-preflight-script-permissions={pendingPreflightScripts.length + pendingPreflightImages.length + pendingPreflightFrames.length}
+              data-agent-rp-resource-preflight-script-permissions={pendingPreflightScripts.length + pendingPreflightImages.length + pendingPreflightStyles.length + pendingPreflightFrames.length}
               data-agent-rp-resource-preflight-script-origins={pendingPreflightScripts.length}
               data-agent-rp-resource-preflight-image-origins={pendingPreflightImages.length}
+              data-agent-rp-resource-preflight-style-origins={pendingPreflightStyles.length}
               data-agent-rp-resource-preflight-frame-origins={pendingPreflightFrames.length}
               data-agent-rp-resource-preflight-permissions={pendingPreflightPermissions}
               data-agent-rp-resource-preflight-failed={tavernPreflight?.failed ?? 0}
@@ -5867,6 +5889,8 @@ function tavernScriptSnapshot(
   approvedScriptOrigins: readonly string[],
   sessionId: SessionId,
   approvedImageOrigins: readonly string[] = [],
+  approvedStyleOrigins: readonly string[] = [],
+  approvedFontOrigins: readonly string[] = [],
   approvedFrameOrigins: readonly string[] = [],
   extensionSettings: Readonly<Record<string, JsonValue>> = {},
 ): TavernScriptSnapshot {
@@ -5900,6 +5924,8 @@ function tavernScriptSnapshot(
     extensionSettings,
     approvedScriptOrigins,
     approvedImageOrigins,
+    approvedStyleOrigins,
+    approvedFontOrigins,
     approvedFrameOrigins,
     scopes: {
       global: state?.scopes.global ?? {},
@@ -6113,8 +6139,11 @@ interface TavernScriptFrame {
   readonly requestedOrigin?: string
   readonly compatibilityMarkers?: readonly string[]
   readonly remoteImageOrigins?: readonly string[]
+  readonly remoteStyleOrigins?: readonly string[]
   readonly remoteFrameOrigins?: readonly string[]
 }
+
+type TavernBlockedResource = Pick<TavernResourceBlockedReport, 'origin' | 'type'>
 
 function TavernScriptToast({ toast, onClose }: {
   readonly toast: TavernToastMessage
@@ -6164,18 +6193,31 @@ function TavernScriptRuntime({
   ).filter(entry => entry.script.enabled && entry.script.content.trim() !== '')
   const scripts = scopedScripts.map(entry => entry.script)
   const scopedScriptByKey = new Map(scopedScripts.map(entry => [entry.key, entry] as const))
-  const sessionResourcePermissions = useMemo(() => readAgentRpSessionResourcePermissions(
-    window.sessionStorage, String(sessionId),
-  ), [sessionId])
+  const sessionResourcePermissions = useAgentRpSessionResourcePermissions(sessionId)
   const [approvedOrigins, setApprovedOrigins] = useState(() => new Set([
     ...readApprovedTavernScriptOrigins(), ...sessionResourcePermissions.tavern.scripts,
   ]))
   const [approvedImages, setApprovedImages] = useState(() => new Set([
     ...readApprovedTavernScriptImages(), ...sessionResourcePermissions.tavern.images,
   ]))
+  const [approvedStyles, setApprovedStyles] = useState(() => new Set([
+    ...readApprovedTavernScriptStyles(), ...sessionResourcePermissions.tavern.styles,
+  ]))
+  const [approvedFonts, setApprovedFonts] = useState(() => new Set([
+    ...readApprovedTavernScriptFonts(), ...sessionResourcePermissions.tavern.fonts,
+  ]))
   const [approvedFrames, setApprovedFrames] = useState(() => new Set([
     ...readApprovedTavernScriptFrames(), ...sessionResourcePermissions.tavern.frames,
   ]))
+  useEffect(() => {
+    const merge = (current: ReadonlySet<string>, granted: readonly string[]): Set<string> =>
+      new Set([...current, ...granted])
+    setApprovedOrigins(current => merge(current, sessionResourcePermissions.tavern.scripts))
+    setApprovedImages(current => merge(current, sessionResourcePermissions.tavern.images))
+    setApprovedStyles(current => merge(current, sessionResourcePermissions.tavern.styles))
+    setApprovedFonts(current => merge(current, sessionResourcePermissions.tavern.fonts))
+    setApprovedFrames(current => merge(current, sessionResourcePermissions.tavern.frames))
+  }, [sessionResourcePermissions])
   const nativeIdentityState = useNativeIdentityDiagnosticState()
   const characterApprovalId = tavernPermissionOwnerId(
     projection.avatarLibraryId, projection.tavern?.characterSourceId,
@@ -6194,13 +6236,16 @@ function TavernScriptRuntime({
     return value?.characterId === characterApprovalId && value.presetId === presetApprovalId
   }).sort()
   const planSignature = `${scopedScripts.map(entry => JSON.stringify([entry.scope, entry.script])).join('\u0001')}\u0002${relevantOriginApprovals.join('\u0001')}`
-  const signature = `${planSignature}\u0002${[...approvedImages].sort().join('\u0001')}\u0002${[...approvedFrames].sort().join('\u0001')}`
+  const signature = `${planSignature}\u0002${[...approvedImages].sort().join('\u0001')}\u0002${[...approvedStyles].sort().join('\u0001')}\u0002${[...approvedFonts].sort().join('\u0001')}\u0002${[...approvedFrames].sort().join('\u0001')}`
   const [frames, setFrames] = useState<readonly TavernScriptFrame[]>([])
   const [readyScriptIds, setReadyScriptIds] = useState<ReadonlySet<string>>(() => new Set())
   const [compatibilityMarkersByScript, setCompatibilityMarkersByScript] = useState<ReadonlyMap<string, readonly string[]>>(
     () => new Map(),
   )
   const [runtimeErrors, setRuntimeErrors] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const [blockedResourcesByScript, setBlockedResourcesByScript] = useState<ReadonlyMap<
+    string, readonly TavernBlockedResource[]
+  >>(() => new Map())
   const [runtimeButtons, setRuntimeButtons] = useState<ReadonlyMap<string, readonly {
     readonly name: string
     readonly visible: boolean
@@ -6307,6 +6352,7 @@ function TavernScriptRuntime({
       setReadyScriptIds(new Set())
       setCompatibilityMarkersByScript(new Map())
       setRuntimeErrors(new Map())
+      setBlockedResourcesByScript(new Map())
       setRuntimeButtons(new Map())
       setExternalScriptRequests(new Map())
       generationQueue.current.clear()
@@ -6363,6 +6409,12 @@ function TavernScriptRuntime({
           next.delete(entry.key)
           return next
         })
+        setBlockedResourcesByScript(current => {
+          if (!current.has(entry.key)) return current
+          const next = new Map(current)
+          next.delete(entry.key)
+          return next
+        })
       }
       setFrames(current => {
         const next = new Map(current.map(frame => [frame.key, frame] as const))
@@ -6407,9 +6459,17 @@ function TavernScriptRuntime({
               characterApprovalId, presetApprovalId, scope, script.id, origin,
             ),
           ))
+          const approvedStyleOrigins = (execution.remoteStyleOrigins ?? []).filter(origin => approvedStyles.has(
+            tavernScriptStyleApprovalKey(
+              characterApprovalId, presetApprovalId, scope, script.id, origin,
+            ),
+          ))
+          const approvedFontOrigins = approvedTavernScriptOrigins(
+            approvedFonts, characterApprovalId, presetApprovalId, scope, script.id,
+          )
           const snapshot = tavernScriptSnapshot(
             projectionRef.current, script, scope, approvedScriptOrigins, sessionId, approvedImageOrigins,
-            approvedFrameOrigins, extensionSettings,
+            approvedStyleOrigins, approvedFontOrigins, approvedFrameOrigins, extensionSettings,
           )
           const documentSource = tavernScriptFrameSource(
             script,
@@ -6423,6 +6483,7 @@ function TavernScriptRuntime({
             source: execution.source,
             compatibilityMarkers: execution.compatibilityMarkers,
             remoteImageOrigins: execution.remoteImageOrigins ?? [],
+            remoteStyleOrigins: execution.remoteStyleOrigins ?? [],
             remoteFrameOrigins: execution.remoteFrameOrigins ?? [],
             src: navigation.url,
             bootSource: navigation.program,
@@ -6686,6 +6747,7 @@ function TavernScriptRuntime({
         readonly eventType?: unknown
         readonly args?: unknown
         readonly origin?: unknown
+        readonly type?: unknown
         readonly visible?: unknown
         readonly mode?: unknown
         readonly config?: unknown
@@ -6718,6 +6780,17 @@ function TavernScriptRuntime({
         return
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
+      if (message.action === 'resource-blocked') {
+        const report = parseTavernResourceBlockedReport(message)
+        if (report === undefined || report.scriptId !== entry.script.id) return
+        setBlockedResourcesByScript(current => {
+          const resources = current.get(entry.key) ?? []
+          if (resources.length >= 64 || resources.some(resource =>
+            resource.type === report.type && resource.origin === report.origin)) return current
+          return new Map(current).set(entry.key, [...resources, { type: report.type, origin: report.origin }])
+        })
+        return
+      }
       if (message.action === 'ready') {
         const bootstrapTimer = scriptBootstrapTimers.current.get(entry.key)
         if (bootstrapTimer !== undefined) window.clearTimeout(bootstrapTimer)
@@ -7359,11 +7432,16 @@ function TavernScriptRuntime({
         scriptId: entry.script.id,
         scriptOrigins: requestedOrigin === undefined ? [] : [requestedOrigin],
         imageOrigins: frame?.remoteImageOrigins ?? [],
+        styleOrigins: frame?.remoteStyleOrigins ?? [],
+        fontOrigins: (blockedResourcesByScript.get(entry.key) ?? [])
+          .filter(resource => resource.type === 'font').map(resource => resource.origin),
         frameOrigins: frame?.remoteFrameOrigins ?? [],
       }
     }),
     approvedScripts: approvedOrigins,
     approvedImages,
+    approvedStyles,
+    approvedFonts,
     approvedFrames,
     trustedScriptOrigins: BUILT_IN_TAVERN_SCRIPT_ORIGINS,
   })
@@ -7380,6 +7458,20 @@ function TavernScriptRuntime({
       next.add(permission.approvalKey)
       writeApprovedTavernScriptImages(next)
       setApprovedImages(next)
+      return
+    }
+    if (permission.kind === 'style') {
+      const next = new Set(approvedStyles)
+      next.add(permission.approvalKey)
+      writeApprovedTavernScriptStyles(next)
+      setApprovedStyles(next)
+      return
+    }
+    if (permission.kind === 'font') {
+      const next = new Set(approvedFonts)
+      next.add(permission.approvalKey)
+      writeApprovedTavernScriptFonts(next)
+      setApprovedFonts(next)
       return
     }
     const next = new Set(approvedFrames)
@@ -7427,20 +7519,30 @@ function TavernScriptRuntime({
     switch (permission.kind) {
       case 'script':
       case 'image':
+      case 'style':
+      case 'font':
       case 'frame': {
         const resourcePermission = permission.resource
         const entry = scopedScriptByKey.get(tavernScriptIdentity(
           resourcePermission.scope, resourcePermission.scriptId,
         ))
         const action = resourcePermission.kind === 'script' ? '加载'
-          : resourcePermission.kind === 'image' ? '显示' : '嵌入'
+          : resourcePermission.kind === 'image' ? '显示'
+            : resourcePermission.kind === 'style' ? '使用'
+              : resourcePermission.kind === 'font' ? '加载' : '嵌入'
         const resource = resourcePermission.kind === 'script' ? '脚本'
-          : resourcePermission.kind === 'image' ? '图片' : ''
+          : resourcePermission.kind === 'image' ? '图片'
+            : resourcePermission.kind === 'style' ? '样式'
+              : resourcePermission.kind === 'font' ? '字体' : ''
         const title = resourcePermission.kind === 'script'
           ? `允许隔离脚本从 ${resourcePermission.origin} 加载 JavaScript`
           : resourcePermission.kind === 'image'
             ? `允许这个隔离脚本显示来自 ${resourcePermission.origin} 的图片；不会开放脚本网络请求`
-            : `允许这个隔离脚本嵌入 ${resourcePermission.origin}；远端页面保留自己的 HTTPS 来源和存储`
+            : resourcePermission.kind === 'style'
+              ? `允许这个隔离脚本使用来自 ${resourcePermission.origin} 的样式；不会同时开放字体、图片或脚本`
+              : resourcePermission.kind === 'font'
+                ? `允许这个隔离脚本加载来自 ${resourcePermission.origin} 的字体；不会开放样式、图片或脚本`
+              : `允许这个隔离脚本嵌入 ${resourcePermission.origin}；远端页面保留自己的 HTTPS 来源和存储`
         return <button type="button" key={`${permission.kind}:${permission.key}`}
           data-agent-rp-permission-kind={permission.kind} data-agent-rp-permission-lifecycle={permission.lifecycle}
           title={title} onClick={() => { approveRuntimeResource(resourcePermission) }} style={permissionActionStyle}>
@@ -7604,6 +7706,9 @@ function TavernScriptRuntime({
   const queuedGenerationCount = [...generationRequests.values()].reduce((total, count) => total + count, 0)
     + [...customGenerationRequests.values()].reduce((total, value) => total + value.count, 0)
   const queuedModelListCount = [...modelListRequests.values()].reduce((total, value) => total + value.count, 0)
+  const blockedResources = [...blockedResourcesByScript.values()].flat()
+  const blockedResourceCounts = (['connect', 'font', 'frame', 'image', 'media', 'script', 'style'] as const)
+    .map(type => [type, blockedResources.filter(resource => resource.type === type).length] as const)
   useAgentRpRuntimeDiagnosticContribution(runtimeDiagnostics, 'tavern-runtime', {
     kind: 'tavern',
     scope: String(sessionId),
@@ -7619,6 +7724,8 @@ function TavernScriptRuntime({
       permissions: {
         script: permissionSummary.counts.script,
         image: permissionSummary.counts.image,
+        style: permissionSummary.counts.style,
+        font: permissionSummary.counts.font,
         frame: permissionSummary.counts.frame,
         identity: permissionSummary.counts.identity,
         externalWindow: permissionSummary.counts['external-window'],
@@ -7628,6 +7735,9 @@ function TavernScriptRuntime({
       },
       queuedGenerations: queuedGenerationCount,
       queuedModelLists: queuedModelListCount,
+      blockedResources: blockedResources.length,
+      blockedResourceOrigins: new Set(blockedResources.map(resource => resource.origin)).size,
+      blockedResourceClasses: blockedResources.map(resource => resource.type),
       phases: [...scriptPhases.values()],
       scopes: frames.map(entry => entry.scope),
       externalWindowPhases: externalWindowPhase === undefined ? [] : [externalWindowPhase],
@@ -7701,6 +7811,8 @@ function TavernScriptRuntime({
       data-agent-rp-tavern-permission-state={permissionSummary.state}
       data-agent-rp-tavern-permission-script={permissionSummary.counts.script}
       data-agent-rp-tavern-permission-image={permissionSummary.counts.image}
+      data-agent-rp-tavern-permission-style={permissionSummary.counts.style}
+      data-agent-rp-tavern-permission-font={permissionSummary.counts.font}
       data-agent-rp-tavern-permission-frame={permissionSummary.counts.frame}
       data-agent-rp-tavern-permission-identity={permissionSummary.counts.identity}
       data-agent-rp-tavern-permission-external-window={permissionSummary.counts['external-window']}
@@ -7711,6 +7823,11 @@ function TavernScriptRuntime({
       {...(externalWindowPhase === undefined ? {} : { 'data-agent-rp-external-window-phase': externalWindowPhase })}
       data-agent-rp-tavern-generation-queued={queuedGenerationCount}
       data-agent-rp-tavern-model-list-queued={queuedModelListCount}
+      data-agent-rp-tavern-resource-blocked={blockedResources.length}
+      data-agent-rp-tavern-resource-blocked-origins={new Set(blockedResources.map(resource => resource.origin)).size}
+      {...Object.fromEntries(blockedResourceCounts.map(([type, count]) => [
+        `data-agent-rp-tavern-resource-blocked-${type}`, count,
+      ]))}
       {...panelOpen ? { role: 'dialog', 'aria-modal': true, 'aria-label': '酒馆脚本面板' } : {}}
       style={panelOpen ? {
         alignItems: 'center', background: 'rgba(0,0,0,.68)', display: 'flex', inset: 0,
@@ -7893,9 +8010,7 @@ function roleplayComposerDockComponent(
   const cardFrameDiagnosticSourcesRef = useRef(new Map<string, AgentRpRuntimeDiagnosticSource>())
   const cardFrameDiagnosticFactsRef = useRef(new Map<string, AgentRpRuntimeCardFrameFacts>())
   const storedCharacterDetail = useCharacterDetail(projection?.avatarLibraryId)
-  const sessionResourcePermissions = useMemo(() => readAgentRpSessionResourcePermissions(
-    window.sessionStorage, String(sessionId),
-  ), [sessionId])
+  const sessionResourcePermissions = useAgentRpSessionResourcePermissions(sessionId)
   const characterDetail = useMemo(() => storedCharacterDetail === undefined ? undefined
     : withAgentRpSessionCardPermissions(storedCharacterDetail, sessionResourcePermissions),
   [sessionResourcePermissions, storedCharacterDetail])
@@ -9102,12 +9217,14 @@ export function apply(ctx: ClientContext): void {
       throw new Error(value.error ?? `角色会话创建失败（${response.status}）`)
     }
     const sessionId = value.sessionId as SessionId
+    if (resourcePermissions !== undefined) {
+      writeAgentRpSessionResourcePermissions(
+        window.sessionStorage, String(sessionId), resourcePermissions, window,
+      )
+    }
     await (ctx.sessions as unknown as { refresh(): Promise<void> }).refresh()
     if (ctx.sessions.list.getSnapshot().byId[sessionId] === undefined) {
       throw new Error('角色会话已创建，但客户端尚未收到它；请刷新页面后重试')
-    }
-    if (resourcePermissions !== undefined) {
-      writeAgentRpSessionResourcePermissions(window.sessionStorage, String(sessionId), resourcePermissions)
     }
     ctx.sessions.open(sessionId)
     return sessionId
@@ -9619,4 +9736,17 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock', id: 'agent-rp-sillytavern-import-hint', order: -10,
   }, importHintComponent(ctx, migrateSillyTavernDraft, listPresets)))
+}
+function useAgentRpSessionResourcePermissions(sessionId: SessionId): AgentRpSessionResourcePermissions {
+  const read = (): AgentRpSessionResourcePermissions => readAgentRpSessionResourcePermissions(
+    window.sessionStorage, String(sessionId),
+  )
+  const [permissions, setPermissions] = useState(read)
+  useEffect(() => {
+    const synchronize = (): void => { setPermissions(read()) }
+    window.addEventListener(agentRpSessionResourcePermissionsChangedEvent, synchronize)
+    synchronize()
+    return () => { window.removeEventListener(agentRpSessionResourcePermissionsChangedEvent, synchronize) }
+  }, [sessionId])
+  return permissions
 }

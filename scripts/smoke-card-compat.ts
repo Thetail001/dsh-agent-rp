@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url'
 import { chromium, type BrowserContext, type Page } from 'playwright-core'
 import {
   AGENT_RP_COMPAT_SMOKE_EXIT,
+  bootstrapAgentRpCompatSmokeSourceSession,
   classifyAgentRpSmokeConsoleError,
   classifyAgentRpSmokeConsoleSource,
   classifyAgentRpSmokeSecurityPolicyReason,
@@ -30,9 +31,13 @@ import type { AgentRpBrowserCompatibilitySnapshot } from '../src/client/compatib
 interface CliOptions {
   readonly cardPath: string
   readonly presetPath?: string
+  readonly sourceSessionId?: string
+  readonly workspacePath?: string
   readonly url: URL
   readonly timeoutMs: number
   readonly headed: boolean
+  readonly acknowledgeOnboarding: boolean
+  readonly approveRuntimeFonts: boolean
   readonly approvePreflight: boolean
   readonly permissionDuration: AgentRpCompatSmokePermissionDuration
   readonly browserPath?: string
@@ -56,6 +61,8 @@ function usage(): string {
     'Usage: pnpm run smoke:compat -- --card <card.png|json|charx> [--preset <preset.json>]',
     '       [--url http://127.0.0.1:3091/] [--timeout-ms 90000] [--headed] [--approve-preflight]',
     '       [--permission-duration session|remember]',
+    '       [--source-session <id> | --workspace <existing host-local directory>] [--acknowledge-onboarding]',
+    '       [--approve-runtime-fonts]',
     '       [--browser <chromium executable>] [--profile <dedicated browser profile>]',
   ].join('\n')
 }
@@ -87,6 +94,9 @@ function parseArgs(argv: readonly string[]): CliOptions {
     throw new SmokeCommandError('runner-failed')
   }
   const presetPath = argument(argv, '--preset')
+  const sourceSessionId = argument(argv, '--source-session')
+  const workspacePath = argument(argv, '--workspace')
+  if (sourceSessionId !== undefined && workspacePath !== undefined) throw new SmokeCommandError('runner-failed')
   const rawPermissionDuration = argument(argv, '--permission-duration') ?? 'session'
   if (rawPermissionDuration !== 'session' && rawPermissionDuration !== 'remember') {
     throw new SmokeCommandError('runner-failed')
@@ -97,9 +107,13 @@ function parseArgs(argv: readonly string[]): CliOptions {
   return {
     cardPath: resolve(cardPath),
     ...(presetPath === undefined ? {} : { presetPath: resolve(presetPath) }),
+    ...(sourceSessionId === undefined ? {} : { sourceSessionId }),
+    ...(workspacePath === undefined ? {} : { workspacePath: resolve(workspacePath) }),
     url,
     timeoutMs,
     headed: argv.includes('--headed'),
+    acknowledgeOnboarding: argv.includes('--acknowledge-onboarding'),
+    approveRuntimeFonts: argv.includes('--approve-runtime-fonts'),
     approvePreflight: argv.includes('--approve-preflight'),
     permissionDuration: rawPermissionDuration,
     ...(argument(argv, '--browser') === undefined ? {} : { browserPath: resolve(argument(argv, '--browser')!) }),
@@ -153,6 +167,33 @@ async function probePlugin(options: CliOptions): Promise<void> {
   }, options.timeoutMs)
   if (response.status === 404) throw new SmokeCommandError('plugin-unavailable')
   await responseJson(response, 'plugin-unavailable')
+}
+
+async function bootstrapSourceSession(options: CliOptions): Promise<string | undefined> {
+  if (options.workspacePath === undefined) return options.sourceSessionId
+  try {
+    return await bootstrapAgentRpCompatSmokeSourceSession({
+      call: async (method, payload): Promise<unknown> => {
+        const response = await localFetch(new URL(`/api/${method}`, options.url), {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/json' },
+          body: JSON.stringify({
+            type: 'client-request',
+            rpcId: `agent-rp-smoke-${method}`,
+            method,
+            payload,
+          }),
+        }, options.timeoutMs)
+        const envelope = record(await responseJson(response, 'source-session-failed'))
+        const result = record(envelope?.result)
+        if (result?.ok !== true) throw new SmokeCommandError('source-session-failed')
+        return result.value
+      },
+    }, options.workspacePath)
+  } catch (error: unknown) {
+    if (error instanceof SmokeCommandError) throw error
+    throw new SmokeCommandError('source-session-failed')
+  }
 }
 
 async function importCard(options: CliOptions): Promise<{ readonly id: string; readonly outcome: CardImportOutcome }> {
@@ -237,6 +278,47 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
 
   delay(milliseconds: number): Promise<void> {
     return this.page.waitForTimeout(milliseconds)
+  }
+
+  async clientGate(): Promise<'ready' | 'onboarding'> {
+    await this.page.waitForFunction(() => document.querySelector(
+      '[data-agent-rp-action="open-character-library"], section[role="region"][aria-labelledby="welcome-notice-title"]',
+    ) !== null, undefined, { timeout: this.timeoutMs })
+    return await this.page.locator(
+      'section[role="region"][aria-labelledby="welcome-notice-title"]',
+    ).count() === 0 ? 'ready' : 'onboarding'
+  }
+
+  async acknowledgeOnboarding(): Promise<void> {
+    const welcome = this.page.locator(
+      'section[role="region"][aria-labelledby="welcome-notice-title"]',
+    )
+    if (await welcome.count() !== 1 || await welcome.getByRole('button').count() !== 1) {
+      throw new SmokeCommandError('client-load-failed')
+    }
+    await welcome.getByRole('button').click({ timeout: this.timeoutMs })
+    await welcome.waitFor({ state: 'detached', timeout: this.timeoutMs })
+  }
+
+  async approveRuntimeFont(): Promise<boolean> {
+    const selector = '[data-agent-rp-permission-kind="font"]'
+    let permission = this.page.locator(selector).first()
+    if (!await permission.isVisible()) {
+      const launcher = this.page.locator('[data-agent-rp-action="open-tavern-permissions"]').first()
+      if (!await launcher.isVisible()) return false
+      await launcher.click({ timeout: this.timeoutMs })
+      await this.page.locator('[data-agent-rp-surface="tavern-permissions"]')
+        .waitFor({ state: 'visible', timeout: this.timeoutMs })
+      permission = this.page.locator(selector).first()
+    }
+    if (!await permission.isVisible()) return false
+    await permission.click({ timeout: this.timeoutMs })
+    return true
+  }
+
+  async closeRuntimePermissions(): Promise<void> {
+    const close = this.page.locator('[data-agent-rp-action="close-tavern-permissions"]').first()
+    if (await close.isVisible()) await close.click({ timeout: this.timeoutMs })
   }
 
   async snapshot(): Promise<AgentRpBrowserCompatibilitySnapshot | undefined> {
@@ -417,6 +499,10 @@ async function main(argv: readonly string[]): Promise<void> {
       timingsMs.presetImport = roundedDuration(presetStarted)
     }
 
+    const sourceStarted = performance.now()
+    const sourceSessionId = await bootstrapSourceSession(options)
+    if (sourceSessionId !== undefined) timingsMs.sourceSession = roundedDuration(sourceStarted)
+
     await mkdir(options.profilePath, { recursive: true })
     const browserStarted = performance.now()
     context = await chromium.launchPersistentContext(options.profilePath, {
@@ -441,10 +527,13 @@ async function main(argv: readonly string[]): Promise<void> {
     if (new URL(page.url()).origin !== options.url.origin) throw new SmokeCommandError('client-load-failed')
     const driver = new PlaywrightSmokeDriver(page, options.timeoutMs, phase => { consolePhase = phase })
     const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
+      ...(sourceSessionId === undefined ? {} : { sourceSessionId }),
       characterId: card.id,
       ...(preset === undefined ? {} : { presetId: preset.id }),
       timeoutMs: options.timeoutMs,
       waitForManualApproval: options.headed,
+      acknowledgeOnboarding: options.acknowledgeOnboarding,
+      approveRuntimeFonts: options.approveRuntimeFonts,
       approvePreflight: options.approvePreflight,
       permissionDuration: options.permissionDuration,
     })

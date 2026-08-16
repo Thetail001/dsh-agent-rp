@@ -11,9 +11,11 @@ import {
 } from '@fortawesome/free-solid-svg-icons'
 import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/types.ts'
 import type { SessionPersonaSnapshot } from '../persona-library-protocol.ts'
+import { characterRemoteResourceOrigin, isCharacterRemoteResourceType } from '../card-remote-resource.ts'
+import type { CharacterRemoteResourceType } from '../character-library-protocol.ts'
 import {
   BUILT_IN_TAVERN_SCRIPT_ORIGINS, declaredTavernCompatibilityMarkers, declaredTavernFrameOrigins,
-  declaredTavernImageOrigins,
+  declaredTavernImageOrigins, declaredTavernStyleOrigins,
   type TavernScriptExecution,
 } from '../tavern-script-resolver.ts'
 import type {
@@ -28,6 +30,36 @@ export {
 export type { TavernScriptExecution } from '../tavern-script-resolver.ts'
 
 type JsonRecord = Readonly<Record<string, JsonValue>>
+
+/** One bounded CSP resource observation from an isolated Tavern Helper frame. */
+export interface TavernResourceBlockedReport {
+  readonly source: 'dsh-agent-rp-tavern-script'
+  readonly action: 'resource-blocked'
+  readonly scriptId: string
+  readonly origin: string
+  readonly type: CharacterRemoteResourceType
+}
+
+/** Parse a content-free resource observation without accepting paths, credentials, or extra fields. */
+export function parseTavernResourceBlockedReport(value: unknown): TavernResourceBlockedReport | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const fields = new Set(['source', 'action', 'scriptId', 'origin', 'type'])
+  if (Object.keys(record).some(key => !fields.has(key))
+    || record.source !== 'dsh-agent-rp-tavern-script' || record.action !== 'resource-blocked'
+    || typeof record.scriptId !== 'string' || record.scriptId.length === 0 || record.scriptId.length > 512
+    || typeof record.origin !== 'string' || !isCharacterRemoteResourceType(record.type)) return undefined
+  try {
+    const origin = characterRemoteResourceOrigin(record.origin)
+    if (origin !== record.origin) return undefined
+    return {
+      source: 'dsh-agent-rp-tavern-script', action: 'resource-blocked', scriptId: record.scriptId,
+      origin, type: record.type,
+    }
+  } catch {
+    return undefined
+  }
+}
 
 /** Decide whether a script execution plan needs a complete Host runtime reset. */
 export function shouldResetTavernScriptRuntime(
@@ -165,6 +197,10 @@ export interface TavernScriptSnapshot {
   readonly approvedScriptOrigins: readonly string[]
   /** Player-approved HTTPS origins available only to image elements and CSS images. */
   readonly approvedImageOrigins?: readonly string[]
+  /** Player-approved HTTPS origins available only to external stylesheets. */
+  readonly approvedStyleOrigins?: readonly string[]
+  /** Player-approved HTTPS origins available only to font files. */
+  readonly approvedFontOrigins?: readonly string[]
   /** Player-approved HTTPS origins available only to nested browsing contexts. */
   readonly approvedFrameOrigins?: readonly string[]
   readonly scopes: {
@@ -292,6 +328,10 @@ function __dshPlain(value){return value!==null&&typeof value==='object'&&!Array.
 function __dshMerge(target){for(var source of Array.prototype.slice.call(arguments,1)){if(!__dshPlain(source))continue;for(var key of Object.keys(source)){var value=source[key];if(__dshPlain(value)){if(!__dshPlain(target[key]))target[key]={};__dshMerge(target[key],value)}else target[key]=__dshClone(value)}}return target}
 function __dshScope(option){var type=option?.type??'chat';if(type==='script')return 'script';if(type==='message')return 'message';return ['global','preset','character','chat'].includes(type)?type:'chat'}
 function __dshPost(action,data){parent.postMessage(Object.assign({source:'dsh-agent-rp-tavern-script',scriptId:__dshSnapshot.scriptId,action:action},data??{}),'*')}
+var __dshBlockedResources=new Set();
+function __dshBlockedResourceType(value){var directive=String(value??'').trim().toLowerCase();if(directive.startsWith('connect-src'))return 'connect';if(directive.startsWith('font-src'))return 'font';if(directive.startsWith('frame-src')||directive==='child-src')return 'frame';if(directive.startsWith('img-src'))return 'image';if(directive.startsWith('media-src'))return 'media';if(directive.startsWith('script-src'))return 'script';if(directive.startsWith('style-src'))return 'style'}
+function __dshReportBlockedResource(event){var type=__dshBlockedResourceType(event?.effectiveDirective||event?.violatedDirective);if(type===undefined)return;var url;try{url=new URL(String(event?.blockedURI??''))}catch(error){return}if(url.protocol!=='https:'||url.username||url.password)return;var key=type+'\u0000'+url.origin;if(__dshBlockedResources.has(key)||__dshBlockedResources.size>=64)return;__dshBlockedResources.add(key);__dshPost('resource-blocked',{type:type,origin:url.origin})}
+addEventListener('securitypolicyviolation',__dshReportBlockedResource);
 var __dshExternalWindows=new Map();
 var __dshDeliveredExternalWindowRequests=new Set();
 function __dshOpenExternalWindow(url,target,features){var parsed;try{parsed=new URL(String(url))}catch(error){return null}if(parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.href.length>4096)return null;target=String(target??'');features=String(features??'');if(target.length>200||features.length>2000)return null;var requestId=String(++__dshRequest);var handle={closed:false,close:function(){if(handle.closed)return;handle.closed=true;__dshExternalWindows.delete(requestId);__dshPost('external-window-close',{requestId:requestId})},focus:function(){__dshPost('external-window-focus',{requestId:requestId})}};__dshExternalWindows.set(requestId,handle);__dshPost('capability-request',{requestId:requestId,capability:'ui.external-window.open',payload:{url:parsed.href,target:target,features:features}});return handle}
@@ -646,6 +686,7 @@ export function tavernScriptFrameSource(
     needsFuse: /\bFuse\b/u.test(execution),
     compatibilityMarkers: declaredTavernCompatibilityMarkers(execution),
     remoteImageOrigins: declaredTavernImageOrigins(execution),
+    remoteStyleOrigins: declaredTavernStyleOrigins(execution),
     remoteFrameOrigins: declaredTavernFrameOrigins(execution),
   } : execution
   const source = plan.source
@@ -681,6 +722,24 @@ export function tavernScriptFrameSource(
     }
   })
   const imageSource = mobileCompatibility ? ['data:', ...new Set(approvedImageOrigins)].join(' ') : "'none'"
+  const approvedStyleOrigins = (snapshot.approvedStyleOrigins ?? []).flatMap(origin => {
+    try {
+      const url = new URL(origin)
+      return url.protocol === 'https:' && url.origin === origin ? [url.origin] : []
+    } catch {
+      return []
+    }
+  })
+  const styleSource = ["'unsafe-inline'", ...new Set(approvedStyleOrigins)].join(' ')
+  const approvedFontOrigins = (snapshot.approvedFontOrigins ?? []).flatMap(origin => {
+    try {
+      const url = new URL(origin)
+      return url.protocol === 'https:' && url.origin === origin ? [url.origin] : []
+    } catch {
+      return []
+    }
+  })
+  const fontSource = approvedFontOrigins.length === 0 ? "'none'" : [...new Set(approvedFontOrigins)].join(' ')
   const approvedFrameOrigins = (snapshot.approvedFrameOrigins ?? []).flatMap(origin => {
     try {
       const url = new URL(origin)
@@ -691,7 +750,7 @@ export function tavernScriptFrameSource(
   })
   const frameSource = approvedFrameOrigins.length === 0 ? "'none'" : [...new Set(approvedFrameOrigins)].join(' ')
   const bootstrap = `void (async function(){try{${preload}${compatibilitySetup}${dependencies}${dependencies === '' ? '' : ';'}${execute};__dshPost('ready',{markers:__dshCompatibilityMarkers()})}catch(error){console.error(error);__dshPost('runtime-error',{value:__dshRuntimeError(error)})}})();`
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: ${origins}; connect-src 'none'; img-src ${imageSource}; style-src 'unsafe-inline'; font-src 'none'; frame-src ${frameSource}">${libraries}<style>html,body{background:transparent;color-scheme:dark}${compatibilityStyle}</style></head><body><script>${runtimeSource(snapshot, plan.compatibilityMarkers, option.externalBootstrap === true)}\n${bootstrap}</script></body></html>`
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: ${origins}; connect-src 'none'; img-src ${imageSource}; style-src ${styleSource}; font-src ${fontSource}; frame-src ${frameSource}">${libraries}<style>html,body{background:transparent;color-scheme:dark}${compatibilityStyle}</style></head><body><script>${runtimeSource(snapshot, plan.compatibilityMarkers, option.externalBootstrap === true)}\n${bootstrap}</script></body></html>`
 }
 
 /** Opaque navigation shell plus the runtime program delivered after the shell proves its origin. */

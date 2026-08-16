@@ -4,6 +4,7 @@ import { runInNewContext } from 'node:vm'
 import type { ImportedRegexScript } from '../src/import/types.ts'
 import {
   resolveTavernScriptExecution,
+  parseTavernResourceBlockedReport,
   shouldResetTavernScriptRuntime,
   TavernScriptOriginApprovalError,
   tavernScriptFrameNavigation,
@@ -33,9 +34,11 @@ import {
   tavernPermissionPlan,
   tavernPermissionOwnerId,
   tavernScriptFrameApprovalKey,
+  tavernScriptFontApprovalKey,
   tavernScriptImageApprovalKey,
   tavernScriptInteractionApprovalKey,
   tavernScriptOriginApprovalKey,
+  tavernScriptStyleApprovalKey,
   summarizeTavernPermissionPlan,
 } from '../src/client/tavern-permission.ts'
 import {
@@ -97,6 +100,23 @@ test('reports content-free Tavern script lifecycle phases for browser acceptance
   assert.equal(tavernScriptRuntimePhase({
     hasDocument: true, permissionRequired: false, loadError: false, ready: true, runtimeError: true,
   }), 'runtime-error')
+})
+
+test('accepts only bounded, exact-origin Tavern CSP resource reports', () => {
+  const valid = {
+    source: 'dsh-agent-rp-tavern-script', action: 'resource-blocked', scriptId: 'phone',
+    origin: 'https://styles.example.test', type: 'style',
+  }
+  assert.deepEqual(parseTavernResourceBlockedReport(valid), valid)
+  for (const value of [
+    { ...valid, origin: 'http://styles.example.test' },
+    { ...valid, origin: 'https://user:secret@styles.example.test' },
+    { ...valid, origin: 'https://styles.example.test/theme.css' },
+    { ...valid, type: 'worker' },
+    { ...valid, privateSource: 'must not be accepted' },
+    { ...valid, scriptId: '' },
+    { ...valid, scriptId: 'x'.repeat(513) },
+  ]) assert.equal(parseTavernResourceBlockedReport(value), undefined)
 })
 
 test('summarizes character regex compatibility without exposing its source', () => {
@@ -513,6 +533,25 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   })
   assert.equal(context.__renderedMarkdown,
     '<p><strong>粗体</strong></p><pre><code class="language-yaml">key: value</code></pre>')
+  const dispatchWindow = context.dispatchWindow as (type: string, event: unknown) => void
+  dispatchWindow('securitypolicyviolation', {
+    effectiveDirective: 'style-src-elem', blockedURI: 'https://styles.example.test/theme.css',
+  })
+  dispatchWindow('securitypolicyviolation', {
+    violatedDirective: 'style-src', blockedURI: 'https://styles.example.test/duplicate.css',
+  })
+  dispatchWindow('securitypolicyviolation', {
+    effectiveDirective: 'worker-src', blockedURI: 'https://worker.example.test/worker.js',
+  })
+  dispatchWindow('securitypolicyviolation', {
+    effectiveDirective: 'style-src', blockedURI: 'https://user:secret@styles.example.test/private.css',
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(
+    (context.posted as Record<string, unknown>[]).filter(message => message.action === 'resource-blocked'),
+  )), [{
+    source: 'dsh-agent-rp-tavern-script', action: 'resource-blocked', scriptId: 'travel',
+    type: 'style', origin: 'https://styles.example.test',
+  }])
 })
 
 test('preserves authorized ESM imports and plans their required public globals', async () => {
@@ -787,6 +826,7 @@ test('preflights selected character and preset resources without executing scrip
       script('remote-ui', "import 'https://preflight.example.test/runtime.js';"),
       script('local-ui', [
         "window.wallpaper='https://images.example.test/cover.webp';",
+        "const theme=document.createElement('link');theme.rel='stylesheet';theme.href='https://styles.example.test/theme.css';",
         "const PANEL='https://panel.example.test/?embed=1';",
         "document.createElement('iframe').src=PANEL;",
       ].join('\n')),
@@ -806,14 +846,15 @@ test('preflights selected character and preset resources without executing scrip
     entries: [{
       scope: 'character', scriptId: 'remote-ui', scriptName: 'remote-ui',
       status: 'permission-required', requestedScriptOrigin: 'https://preflight.example.test',
-      remoteImageOrigins: [], remoteFrameOrigins: [],
+      remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
     }, {
       scope: 'character', scriptId: 'local-ui', scriptName: 'local-ui',
       status: 'ready', remoteImageOrigins: ['https://images.example.test'],
+      remoteStyleOrigins: ['https://styles.example.test'],
       remoteFrameOrigins: ['https://panel.example.test'],
     }, {
       scope: 'preset', scriptId: 'invalid-ui', scriptName: 'invalid-ui',
-      status: 'resolution-error', remoteImageOrigins: [], remoteFrameOrigins: [],
+      status: 'resolution-error', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
     }],
   })
 
@@ -881,18 +922,34 @@ test('shares one pending resource plan between preflight and active scripts', ()
       scriptId: 'resource-script',
       scriptOrigins: ['https://scripts.example.test'],
       imageOrigins: ['https://images.example.test'],
+      styleOrigins: ['https://styles.example.test'],
+      fontOrigins: ['https://fonts.example.test'],
       frameOrigins: ['https://frames.example.test'],
     }],
     approvedScripts: new Set([scriptApproval]),
     approvedImages: new Set([imageApproval]),
+    approvedStyles: new Set<string>(),
+    approvedFonts: new Set<string>(),
     approvedFrames: new Set<string>(),
   }
 
   assert.deepEqual(pendingTavernScriptResourcePermissions(input), [{
+    kind: 'font', scope: 'character', scriptId: 'resource-script',
+    origin: 'https://fonts.example.test',
+    approvalKey: tavernScriptFontApprovalKey(
+      'card-a', 'preset-a', 'character', 'resource-script', 'https://fonts.example.test',
+    ),
+  }, {
     kind: 'frame', scope: 'character', scriptId: 'resource-script',
     origin: 'https://frames.example.test',
     approvalKey: tavernScriptFrameApprovalKey(
       'card-a', 'preset-a', 'character', 'resource-script', 'https://frames.example.test',
+    ),
+  }, {
+    kind: 'style', scope: 'character', scriptId: 'resource-script',
+    origin: 'https://styles.example.test',
+    approvalKey: tavernScriptStyleApprovalKey(
+      'card-a', 'preset-a', 'character', 'resource-script', 'https://styles.example.test',
     ),
   }])
 })
@@ -915,7 +972,7 @@ test('derives one deduplicated startup and interaction permission lifecycle', ()
     startup: 1,
     interaction: 2,
     counts: {
-      script: 0, image: 0, frame: 1, identity: 1, 'external-window': 0,
+      script: 0, image: 0, style: 0, font: 0, frame: 1, identity: 1, 'external-window': 0,
       generation: 1, 'custom-generation': 0, 'model-list': 0,
     },
     state: 'startup-blocked',
@@ -1025,9 +1082,10 @@ test('provides the isolated trigger required by the public mobile-phone module',
     activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
     displayRegexScripts: [],
     approvedImageOrigins: ['https://images.example.test'],
+    approvedFontOrigins: ['https://fonts.example.test'],
   })
   assert.match(html, /img-src data: https:\/\/images\.example\.test/u)
-  assert.match(html, /font-src 'none'/u)
+  assert.match(html, /font-src https:\/\/fonts\.example\.test/u)
   assert.match(html, /\.fa-cloud::before/u)
   assert.match(html, /data:image\/svg\+xml/u)
   assert.match(html, /#mobile-phone-overlay#mobile-phone-overlay\{color-scheme:light\}/u)

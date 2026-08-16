@@ -6,6 +6,7 @@ import {
   type ApprovalStorage,
 } from '../src/client/approval-storage.ts'
 import {
+  agentRpSessionResourcePermissionsChangedEvent,
   readAgentRpSessionResourcePermissions,
   withAgentRpSessionCardPermissions,
   writeAgentRpSessionResourcePermissions,
@@ -42,25 +43,38 @@ test('writes deterministic permission sets without changing their exact keys', (
 
 test('keeps exact one-Session resources separate from durable card approvals', () => {
   const storage = new MemoryApprovalStorage()
+  const target = new EventTarget()
+  let notifications = 0
+  let permissionsAtNotification: ReturnType<typeof readAgentRpSessionResourcePermissions> | undefined
+  target.addEventListener(agentRpSessionResourcePermissionsChangedEvent, () => {
+    notifications++
+    permissionsAtNotification = readAgentRpSessionResourcePermissions(storage, 'session-a')
+  })
   writeAgentRpSessionResourcePermissions(storage, 'session-a', {
     tavern: {
       scripts: ['script-b', 'script-a', 'script-a'],
       images: ['image-a'],
+      styles: ['style-a'],
+      fonts: ['font-a'],
       frames: [],
     },
     card: [
       { origin: 'https://images.example.test', type: 'image' },
       { origin: 'https://images.example.test', type: 'image' },
     ],
-  })
+  }, target)
+
+  assert.equal(notifications, 1)
+  assert.deepEqual(permissionsAtNotification?.tavern.styles, ['style-a'])
+  assert.deepEqual(permissionsAtNotification?.tavern.fonts, ['font-a'])
 
   const permissions = readAgentRpSessionResourcePermissions(storage, 'session-a')
   assert.deepEqual(permissions, {
-    tavern: { scripts: ['script-a', 'script-b'], images: ['image-a'], frames: [] },
+    tavern: { scripts: ['script-a', 'script-b'], images: ['image-a'], styles: ['style-a'], fonts: ['font-a'], frames: [] },
     card: [{ origin: 'https://images.example.test', type: 'image' }],
   })
   assert.deepEqual(readAgentRpSessionResourcePermissions(storage, 'session-b'), {
-    tavern: { scripts: [], images: [], frames: [] }, card: [],
+    tavern: { scripts: [], images: [], styles: [], fonts: [], frames: [] }, card: [],
   })
   assert.deepEqual(withAgentRpSessionCardPermissions({
     id: 'card-a',
@@ -77,7 +91,7 @@ test('keeps exact one-Session resources separate from durable card approvals', (
 test('ignores malformed browser-tab resource permissions', () => {
   const storage = new MemoryApprovalStorage()
   storage.setItem('dsh.agent-rp.session-resource-permissions-v1:session-a', JSON.stringify({
-    tavern: { scripts: ['ok', 3], images: 'wrong', frames: [] },
+    tavern: { scripts: ['ok', 3], images: 'wrong', styles: ['style-ok'], fonts: ['font-ok'], frames: [] },
     card: [
       { origin: 'http://unsafe.example.test', type: 'image' },
       { origin: 'https://safe.example.test', type: 'unknown' },
@@ -85,6 +99,6 @@ test('ignores malformed browser-tab resource permissions', () => {
   }))
 
   assert.deepEqual(readAgentRpSessionResourcePermissions(storage, 'session-a'), {
-    tavern: { scripts: ['ok'], images: [], frames: [] }, card: [],
+    tavern: { scripts: ['ok'], images: [], styles: ['style-ok'], fonts: ['font-ok'], frames: [] }, card: [],
   })
 })

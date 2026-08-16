@@ -18,7 +18,7 @@ function approvalKey(scope: TavernPreflightScope, scriptId: string): string {
   return JSON.stringify([scope, scriptId])
 }
 
-/** Inspect static dependencies and image origins without evaluating script code. */
+/** Inspect static module, image, stylesheet, and child-frame origins without evaluating script code. */
 export async function inspectTavernPreflight(
   sources: readonly TavernPreflightSource[],
   approvals: readonly TavernPreflightScriptApproval[],
@@ -42,6 +42,7 @@ export async function inspectTavernPreflight(
         scriptName: script.name,
         status: 'ready',
         remoteImageOrigins: execution.remoteImageOrigins ?? [],
+        remoteStyleOrigins: execution.remoteStyleOrigins ?? [],
         remoteFrameOrigins: execution.remoteFrameOrigins ?? [],
       })
     } catch (reason: unknown) {
@@ -52,6 +53,7 @@ export async function inspectTavernPreflight(
         status: reason instanceof TavernScriptOriginApprovalError ? 'permission-required' : 'resolution-error',
         ...(reason instanceof TavernScriptOriginApprovalError ? { requestedScriptOrigin: reason.origin } : {}),
         remoteImageOrigins: [],
+        remoteStyleOrigins: [],
         remoteFrameOrigins: [],
       })
     }

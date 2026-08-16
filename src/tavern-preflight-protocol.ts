@@ -32,6 +32,7 @@ export interface TavernPreflightEntry {
   readonly status: TavernPreflightStatus
   readonly requestedScriptOrigin?: string
   readonly remoteImageOrigins: readonly string[]
+  readonly remoteStyleOrigins: readonly string[]
   readonly remoteFrameOrigins: readonly string[]
 }
 

@@ -299,13 +299,13 @@ test('returns only the static resource plan, never script source, card content, 
     failed: 2,
     entries: [{
       scope: 'character', scriptId: 'ready-script', scriptName: 'script-ready-script',
-      status: 'ready', remoteImageOrigins: [], remoteFrameOrigins: [],
+      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
     }, {
       scope: 'character', scriptId: 'failed-script', scriptName: 'script-failed-script',
-      status: 'resolution-error', remoteImageOrigins: [], remoteFrameOrigins: [],
+      status: 'resolution-error', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
     }, {
       scope: 'character', scriptId: 'remote-failed-script', scriptName: 'script-remote-failed-script',
-      status: 'resolution-error', remoteImageOrigins: [], remoteFrameOrigins: [],
+      status: 'resolution-error', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
     }],
   })
   for (const privateValue of [PRIVATE_SCRIPT_SOURCE, PRIVATE_CARD_BODY, PRIVATE_PROMPT, resolverError, PRIVATE_PATH]) {

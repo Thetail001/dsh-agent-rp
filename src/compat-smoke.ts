@@ -16,6 +16,7 @@ export const AGENT_RP_COMPAT_SMOKE_EXIT = {
 export type AgentRpCompatSmokeStage =
   | 'healthy'
   | 'approval-required'
+  | 'onboarding-required'
   | 'server-unreachable'
   | 'plugin-unavailable'
   | 'import-failed'
@@ -166,9 +167,16 @@ export type AgentRpCompatSmokeAction =
   | 'close-tavern-panel'
   | 'open-mobile-surface'
 
+/** Product shell state observed before Agent RP mounts its Session launcher. */
+export type AgentRpCompatSmokeClientGate = 'ready' | 'onboarding'
+
 /** Browser operations required by the lifecycle runner. */
 export interface AgentRpCompatSmokeDriver {
   readonly delay: (milliseconds: number) => Promise<void>
+  readonly clientGate: () => Promise<AgentRpCompatSmokeClientGate>
+  readonly acknowledgeOnboarding: () => Promise<void>
+  readonly approveRuntimeFont: () => Promise<boolean>
+  readonly closeRuntimePermissions: () => Promise<void>
   readonly snapshot: () => Promise<AgentRpBrowserCompatibilitySnapshot | undefined>
   readonly sourceLauncherCount: (sourceSessionId?: string) => Promise<number>
   readonly clickAction: (action: AgentRpCompatSmokeAction, sourceSessionId?: string) => Promise<void>
@@ -186,6 +194,8 @@ export interface AgentRpCompatSmokeBrowserInput {
   readonly timeoutMs: number
   readonly pollMs?: number
   readonly waitForManualApproval?: boolean
+  readonly acknowledgeOnboarding?: boolean
+  readonly approveRuntimeFonts?: boolean
   readonly approvePreflight?: boolean
   readonly permissionDuration?: AgentRpCompatSmokePermissionDuration
 }
@@ -194,8 +204,41 @@ const healthyDecision: AgentRpCompatSmokeDecision = {
   status: 'healthy', stage: 'healthy', exitCode: AGENT_RP_COMPAT_SMOKE_EXIT.healthy,
 }
 
-function manual(stage: 'approval-required'): AgentRpCompatSmokeDecision {
+function manual(stage: 'approval-required' | 'onboarding-required'): AgentRpCompatSmokeDecision {
   return { status: 'manual-required', stage, exitCode: AGENT_RP_COMPAT_SMOKE_EXIT.manualRequired }
+}
+
+/** RPC methods used only when a smoke command explicitly bootstraps an isolated Workspace. */
+export interface AgentRpCompatSmokeSourceRpc {
+  readonly call: (method: 'workspace.create' | 'session.create', payload: Readonly<Record<string, string>>)
+    => Promise<unknown>
+}
+
+function smokeRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined
+}
+
+/**
+ * Create a blank source Session through the public Workspace and Session RPCs.
+ * @param rpc - RPC transport connected to the isolated Host under test.
+ * @param workspacePath - Existing Host-local directory to register or reuse.
+ * @returns The new blank Session id; neither path nor id enters the smoke report.
+ */
+export async function bootstrapAgentRpCompatSmokeSourceSession(
+  rpc: AgentRpCompatSmokeSourceRpc,
+  workspacePath: string,
+): Promise<string> {
+  const workspaceValue = smokeRecord(await rpc.call('workspace.create', { path: workspacePath }))
+  const workspace = smokeRecord(workspaceValue?.workspace)
+  if (typeof workspace?.workspaceId !== 'string' || workspace.workspaceId === '') {
+    throw new Error('workspace.create returned no workspace id')
+  }
+  const sessionValue = smokeRecord(await rpc.call('session.create', { workspaceId: workspace.workspaceId }))
+  if (typeof sessionValue?.sessionId !== 'string' || sessionValue.sessionId === '') {
+    throw new Error('session.create returned no session id')
+  }
+  return sessionValue.sessionId
 }
 
 function failed(stage: Exclude<AgentRpCompatSmokeStage,
@@ -235,6 +278,7 @@ export function classifyAgentRpPreflight(
 export function classifyAgentRpRuntime(
   snapshot: AgentRpBrowserCompatibilitySnapshot | undefined,
   timedOut = false,
+  approveRuntimeFonts = false,
 ): PollDecision {
   if (snapshot === undefined) return timedOut ? failed('diagnostic-unavailable') : 'pending'
   const session = snapshot.session
@@ -246,7 +290,9 @@ export function classifyAgentRpRuntime(
   if (issues.has('external-window-open-unconfirmed')) {
     return timedOut ? failed('remote-pending') : 'pending'
   }
-  if (session.nativeIdentity.pending > 0 || (session.tavern?.pendingPermissions ?? 0) > 0) {
+  const pendingTavernPermissions = session.tavern?.pendingPermissions ?? 0
+  const pendingFontPermissions = approveRuntimeFonts ? session.tavern?.permissions.font ?? 0 : 0
+  if (session.nativeIdentity.pending > 0 || pendingTavernPermissions > pendingFontPermissions) {
     return manual('approval-required')
   }
   if (issues.has('card-frame-runtime-failed') || issues.has('tavern-runtime-failed')
@@ -390,9 +436,25 @@ export async function runAgentRpBrowserCompatibilitySmoke(
   input: AgentRpCompatSmokeBrowserInput,
 ): Promise<{ readonly decision: AgentRpCompatSmokeDecision; readonly snapshot?: AgentRpBrowserCompatibilitySnapshot }> {
   const pollMs = input.pollMs ?? 100
+  let clientGate: AgentRpCompatSmokeClientGate
+  try {
+    clientGate = await driver.clientGate()
+  } catch {
+    return { decision: failed('client-load-failed') }
+  }
+  if (clientGate === 'onboarding') {
+    if (!input.acknowledgeOnboarding) return { decision: manual('onboarding-required') }
+    try {
+      await driver.acknowledgeOnboarding()
+    } catch {
+      return { decision: failed('client-load-failed') }
+    }
+  }
   const launcherDeadline = Date.now() + input.timeoutMs
   while (await driver.sourceLauncherCount(input.sourceSessionId) === 0) {
-    if (Date.now() >= launcherDeadline) return { decision: failed('client-load-failed') }
+    if (Date.now() >= launcherDeadline) {
+      return { decision: failed(input.sourceSessionId === undefined ? 'client-load-failed' : 'source-session-failed') }
+    }
     await driver.delay(Math.min(pollMs, Math.max(1, launcherDeadline - Date.now())))
   }
   try {
@@ -432,12 +494,58 @@ export async function runAgentRpBrowserCompatibilitySmoke(
     }
   }
   const runtime = await poll(
-    driver, input.timeoutMs, pollMs, classifyAgentRpRuntime, input.waitForManualApproval,
+    driver, input.timeoutMs, pollMs,
+    (snapshot, timedOut) => classifyAgentRpRuntime(snapshot, timedOut, input.approveRuntimeFonts),
+    input.waitForManualApproval,
   )
   if (runtime.decision.status !== 'healthy' || runtime.snapshot === undefined) return runtime
+  let runtimeSnapshot = runtime.snapshot
+  if (input.approveRuntimeFonts) {
+    const deadline = Date.now() + input.timeoutMs
+    let quietMs = 0
+    let previous = Date.now()
+    try {
+      await driver.delay(Math.min(750, input.timeoutMs))
+      while (Date.now() < deadline) {
+        const snapshot = await driver.snapshot()
+        if (snapshot === undefined) {
+          quietMs = 0
+        } else {
+          const tavern = snapshot.session?.tavern
+          const pendingFonts = tavern?.permissions.font ?? 0
+          const blockedFonts = tavern?.blockedResourceClasses.font ?? 0
+          const scriptsReady = tavern !== undefined && tavern.ready === tavern.scripts && tavern.failed === 0
+          if (pendingFonts > 0) {
+            if (!await driver.approveRuntimeFont()) return { decision: failed('interaction-failed'), snapshot }
+            quietMs = 0
+          } else if (blockedFonts > 0 || !scriptsReady) {
+            quietMs = 0
+          } else {
+            const now = Date.now()
+            quietMs += Math.max(pollMs, now - previous)
+            if (quietMs >= 1_500) {
+              runtimeSnapshot = snapshot
+              break
+            }
+          }
+        }
+        previous = Date.now()
+        await driver.delay(Math.min(pollMs, Math.max(1, deadline - Date.now())))
+      }
+      if (quietMs < 1_500) return { decision: failed('interaction-failed'), snapshot: runtimeSnapshot }
+    } catch {
+      return { decision: failed('interaction-failed'), snapshot: runtimeSnapshot }
+    } finally {
+      try {
+        await driver.closeRuntimePermissions()
+      } catch {
+        // The lifecycle decision retains the primary failure; closing an optional permission panel adds no signal.
+      }
+    }
+  }
   const interaction = await exerciseStableInteractions(
-    driver, runtime.snapshot, input.timeoutMs, pollMs,
+    driver, runtimeSnapshot, input.timeoutMs, pollMs,
   )
   const finalSnapshot = await driver.snapshot()
-  return { decision: interaction, ...(finalSnapshot === undefined ? { snapshot: runtime.snapshot } : { snapshot: finalSnapshot }) }
+  return { decision: interaction, snapshot: finalSnapshot ?? runtimeSnapshot }
 }
