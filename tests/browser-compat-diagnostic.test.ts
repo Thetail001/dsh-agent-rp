@@ -152,7 +152,7 @@ test('collects one content-free healthy browser snapshot with expected permissio
   })
   assert.deepEqual(report.session?.nativeIdentity, { state: 'ready', approved: 3, pending: 3 })
   assert.deepEqual(report.interactions, {
-    characterLibrary: { launchers: 1, state: 'closed' },
+    characterLibrary: { launchers: 1, state: 'closed', collection: 'unknown', entries: 0, archiveToggle: 0 },
     presetManager: { launchers: 1, state: 'closed', toggleable: 0, save: 0 },
     sessionSettings: { launchers: 1, state: 'closed' },
     tavernPanel: { launchers: 1, mobileLaunchers: 1, state: 'closed' },
@@ -389,7 +389,7 @@ test('reports missing stable interaction entries without reading labels or conte
 
   assert.equal(report.checks.interactiveEntriesPresent, false)
   assert.deepEqual(report.interactions, {
-    characterLibrary: { launchers: 0, state: 'closed' },
+    characterLibrary: { launchers: 0, state: 'closed', collection: 'unknown', entries: 0, archiveToggle: 0 },
     presetManager: { launchers: 0, state: 'closed', toggleable: 0, save: 0 },
     sessionSettings: { launchers: 0, state: 'closed' },
     tavernPanel: { launchers: 0, mobileLaunchers: 0, state: 'closed' },
@@ -415,7 +415,7 @@ test('reports open interaction surfaces through stable content-free states', () 
   }))
 
   assert.deepEqual(report.interactions, {
-    characterLibrary: { launchers: 1, state: 'open' },
+    characterLibrary: { launchers: 1, state: 'open', collection: 'unknown', entries: 0, archiveToggle: 0 },
     presetManager: { launchers: 1, state: 'open', toggleable: 0, save: 0 },
     sessionSettings: { launchers: 1, state: 'open' },
     tavernPanel: { launchers: 1, mobileLaunchers: 1, state: 'mobile' },
@@ -585,6 +585,25 @@ test('collects the world-info configuration revision and world-info entry contro
   })
   assert.deepEqual(report.issues, [])
   assert.doesNotMatch(JSON.stringify(report), /private|book-name|must not appear/u)
+})
+
+test('collects the character-library collection, entries, and archive control', () => {
+  const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    ...stableInteractionSelectors,
+    '[data-agent-rp-surface="character-library"]': [new DiagnosticElement({
+      'data-agent-rp-character-collection': 'archived',
+    })],
+    '[data-agent-rp-character-id]': [
+      new DiagnosticElement({}),
+      new DiagnosticElement({}),
+    ],
+    '[data-agent-rp-character-archive-toggle]': [new DiagnosticElement({})],
+  }))
+
+  assert.deepEqual(report.interactions.characterLibrary, {
+    launchers: 1, state: 'open', collection: 'archived', entries: 2, archiveToggle: 1,
+  })
+  assert.deepEqual(report.issues, [])
 })
 
 test('uses Host runtime facts while retaining DOM-owned sandbox checks', () => {

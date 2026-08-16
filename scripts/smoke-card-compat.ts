@@ -371,6 +371,20 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
       await this.page.locator('[data-agent-rp-world-entry-toggle]').click({ timeout: this.timeoutMs })
       return
     }
+    if (action === 'open-archived-collection' || action === 'open-active-collection') {
+      const value = action === 'open-archived-collection' ? 'archived' : 'active'
+      await this.page.locator(`[data-agent-rp-collection-tab-value="${value}"]`)
+        .click({ timeout: this.timeoutMs })
+      return
+    }
+    if (action === 'toggle-character-archived') {
+      await this.page.waitForFunction(() => {
+        const button = document.querySelector('[data-agent-rp-character-archive-toggle]')
+        return button instanceof HTMLElement && !(button as HTMLButtonElement).disabled
+      }, undefined, { timeout: this.timeoutMs })
+      await this.page.locator('[data-agent-rp-character-archive-toggle]').click({ timeout: this.timeoutMs })
+      return
+    }
     const candidates = await this.page.locator(`[data-agent-rp-action="${action}"]`).all()
     for (const candidate of candidates) {
       if (sourceSessionId !== undefined

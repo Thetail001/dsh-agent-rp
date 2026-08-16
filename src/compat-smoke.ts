@@ -158,6 +158,9 @@ export function classifyAgentRpSmokeConsoleSignal(
 export type AgentRpCompatSmokeAction =
   | 'open-character-library'
   | 'close-character-library'
+  | 'open-archived-collection'
+  | 'open-active-collection'
+  | 'toggle-character-archived'
   | 'toggle-session-settings'
   | 'open-preset-manager'
   | 'close-preset-manager'
@@ -349,7 +352,9 @@ async function poll(
 
 function surfaceState(snapshot: AgentRpBrowserCompatibilitySnapshot, action: AgentRpCompatSmokeAction): string {
   switch (action) {
-    case 'open-character-library': case 'close-character-library': return snapshot.interactions.characterLibrary.state
+    case 'open-character-library': case 'close-character-library':
+    case 'open-archived-collection': case 'open-active-collection':
+    case 'toggle-character-archived': return snapshot.interactions.characterLibrary.state
     case 'toggle-session-settings': return snapshot.interactions.sessionSettings.state
     case 'open-preset-manager': case 'close-preset-manager':
     case 'toggle-session-preset-module': case 'save-session-preset': return snapshot.interactions.presetManager.state
@@ -465,15 +470,148 @@ async function exerciseWorldInfoToggle(
   }
 }
 
+/** Content-free character-library facts used to verify one archive round trip. */
+function libraryFacts(snapshot: AgentRpBrowserCompatibilitySnapshot): {
+  readonly collection: AgentRpBrowserCompatibilitySnapshot['interactions']['characterLibrary']['collection']
+  readonly entries: number
+  readonly archiveToggle: number
+} {
+  return snapshot.interactions.characterLibrary
+}
+
+async function waitForLibraryFacts(
+  driver: AgentRpCompatSmokeDriver,
+  predicate: (snapshot: AgentRpBrowserCompatibilitySnapshot) => boolean,
+  timeoutMs: number,
+  pollMs: number,
+): Promise<AgentRpBrowserCompatibilitySnapshot | undefined> {
+  const deadline = Date.now() + timeoutMs
+  while (true) {
+    const snapshot = await driver.snapshot()
+    if (snapshot !== undefined && predicate(snapshot)) return snapshot
+    if (Date.now() >= deadline) return undefined
+    await driver.delay(Math.min(pollMs, Math.max(1, deadline - Date.now())))
+  }
+}
+
+/**
+ * Archive the selected character into the collection box and restore it, waiting
+ * for the content-free entry counts and collection to round-trip.
+ */
+async function exerciseCharacterArchive(
+  driver: AgentRpCompatSmokeDriver,
+  snapshot: AgentRpBrowserCompatibilitySnapshot,
+  characterId: string,
+  timeoutMs: number,
+  pollMs: number,
+): Promise<boolean> {
+  const baseline = libraryFacts(snapshot)
+  if (baseline.collection !== 'active') return false
+  try {
+    await driver.selectCharacter(characterId)
+  } catch {
+    return false
+  }
+  const selectedActive = await waitForLibraryFacts(
+    driver, value => libraryFacts(value).archiveToggle >= 1, timeoutMs, pollMs,
+  )
+  if (selectedActive === undefined) return false
+  try {
+    await driver.clickAction('open-archived-collection')
+  } catch {
+    return false
+  }
+  const archivedBaseline = await waitForLibraryFacts(
+    driver, value => libraryFacts(value).collection === 'archived', timeoutMs, pollMs,
+  )
+  if (archivedBaseline === undefined) return false
+  const archivedEntries = libraryFacts(archivedBaseline).entries
+  try {
+    await driver.clickAction('open-active-collection')
+    const active = await waitForLibraryFacts(
+      driver, value => libraryFacts(value).collection === 'active', timeoutMs, pollMs,
+    )
+    if (active === undefined) return false
+    await driver.selectCharacter(characterId)
+  } catch {
+    return false
+  }
+  const reselected = await waitForLibraryFacts(
+    driver, value => libraryFacts(value).archiveToggle >= 1, timeoutMs, pollMs,
+  )
+  if (reselected === undefined) return false
+  try {
+    await driver.clickAction('toggle-character-archived')
+  } catch {
+    return false
+  }
+  const movedAway = await waitForLibraryFacts(
+    driver, value => libraryFacts(value).collection === 'active'
+      && libraryFacts(value).entries === baseline.entries - 1, timeoutMs, pollMs,
+  )
+  if (movedAway === undefined) return false
+  try {
+    await driver.clickAction('open-archived-collection')
+  } catch {
+    return false
+  }
+  const movedIn = await waitForLibraryFacts(
+    driver, value => libraryFacts(value).collection === 'archived'
+      && libraryFacts(value).entries === archivedEntries + 1, timeoutMs, pollMs,
+  )
+  if (movedIn === undefined) return false
+  try {
+    await driver.selectCharacter(characterId)
+  } catch {
+    return false
+  }
+  const selectedArchived = await waitForLibraryFacts(
+    driver, value => libraryFacts(value).archiveToggle >= 1, timeoutMs, pollMs,
+  )
+  if (selectedArchived === undefined) return false
+  try {
+    await driver.clickAction('toggle-character-archived')
+  } catch {
+    return false
+  }
+  const restoredAway = await waitForLibraryFacts(
+    driver, value => libraryFacts(value).collection === 'archived'
+      && libraryFacts(value).entries === archivedEntries, timeoutMs, pollMs,
+  )
+  if (restoredAway === undefined) return false
+  try {
+    await driver.clickAction('open-active-collection')
+  } catch {
+    return false
+  }
+  const restoredActive = await waitForLibraryFacts(
+    driver, value => libraryFacts(value).collection === 'active'
+      && libraryFacts(value).entries === baseline.entries, timeoutMs, pollMs,
+  )
+  return restoredActive !== undefined
+}
+
 async function exerciseStableInteractions(
   driver: AgentRpCompatSmokeDriver,
   snapshot: AgentRpBrowserCompatibilitySnapshot,
   timeoutMs: number,
   pollMs: number,
+  characterId?: string,
 ): Promise<AgentRpCompatSmokeDecision> {
   if (!snapshot.checks.interactiveEntriesPresent) return failed('interaction-missing')
   try {
-    if (!await exerciseInteraction(driver, 'open-character-library', 'open', 'close-character-library', timeoutMs, pollMs)) {
+    await driver.clickAction('open-character-library')
+    const libraryOpened = await waitForSurface(driver, 'open-character-library', 'open', timeoutMs, pollMs)
+    if (libraryOpened === undefined || libraryOpened.interactions.characterLibrary.state !== 'open') {
+      return failed('interaction-failed')
+    }
+    if (characterId !== undefined
+      && !await exerciseCharacterArchive(driver, libraryOpened, characterId, timeoutMs, pollMs)) {
+      return failed('interaction-failed')
+    }
+    await driver.clickAction('close-character-library')
+    const libraryClosed = await waitForSurface(driver, 'close-character-library', 'closed', timeoutMs, pollMs)
+    if (libraryClosed === undefined || libraryClosed.interactions.characterLibrary.state !== 'closed') {
       return failed('interaction-failed')
     }
     await driver.clickAction('toggle-session-settings')
@@ -644,7 +782,7 @@ export async function runAgentRpBrowserCompatibilitySmoke(
     }
   }
   const interaction = await exerciseStableInteractions(
-    driver, runtimeSnapshot, input.timeoutMs, pollMs,
+    driver, runtimeSnapshot, input.timeoutMs, pollMs, input.characterId,
   )
   const finalSnapshot = await driver.snapshot()
   return { decision: interaction, snapshot: finalSnapshot ?? runtimeSnapshot }

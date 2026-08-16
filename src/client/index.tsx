@@ -3946,6 +3946,7 @@ function CharacterLibraryDialog({
   return <div className="agent-rp-character-library-overlay" data-agent-rp-dialog
     data-agent-rp-selected-character-id={selected?.id ?? ''}
     data-agent-rp-selected-preset-id={selectedPresetId ?? ''}
+    data-agent-rp-character-collection={collection}
     data-agent-rp-surface="character-library" role="dialog" aria-modal="true" aria-label="角色库" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.52)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: 'clamp(8px, 3vw, 24px)', position: 'fixed', zIndex: 1001,
@@ -3968,6 +3969,7 @@ function CharacterLibraryDialog({
           <div role="tablist" aria-label="角色库分区" style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '9px', display: 'grid', gap: '3px', gridTemplateColumns: '1fr 1fr', marginTop: '12px', padding: '3px' }}>
             {([['active', '角色卡'], ['archived', '收纳箱']] as const).map(([value, label]) => <button
               key={value} type="button" role="tab" aria-selected={collection === value}
+              data-agent-rp-collection-tab data-agent-rp-collection-tab-value={value}
               onClick={() => { setCollection(value); setCharacterQuery('') }} style={{
                 background: collection === value ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
                 border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px',
@@ -4061,7 +4063,7 @@ function CharacterLibraryDialog({
             <strong style={{ display: 'block', fontSize: '17px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected?.displayName ?? '选择角色'}</strong>
             {selected !== undefined && <span title={selected.originalFilename} style={{ display: 'block', fontSize: '11px', marginTop: '3px', opacity: .46, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected.originalFilename}</span>}
           </div>
-          {selected !== undefined && <button type="button" disabled={updating} onClick={updateArchiveState} style={{
+          {selected !== undefined && <button type="button" data-agent-rp-character-archive-toggle disabled={updating} onClick={updateArchiveState} style={{
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
             color: 'inherit', cursor: updating ? 'wait' : 'pointer', font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: '6px 10px',
           }}>{updating ? '处理中…' : collection === 'active' ? '移到收纳箱' : '移回角色库'}</button>}

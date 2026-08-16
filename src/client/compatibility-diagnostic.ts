@@ -46,6 +46,12 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly characterLibrary: {
       readonly launchers: number
       readonly state: 'closed' | 'open'
+      /** Active role-library collection displayed inside the open dialog. */
+      readonly collection: 'active' | 'archived' | 'unknown'
+      /** Character entries rendered in the displayed collection. */
+      readonly entries: number
+      /** Archive/restore controls rendered for the selected entry. */
+      readonly archiveToggle: number
     }
     readonly presetManager: {
       readonly launchers: number
@@ -273,7 +279,13 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
   const preflightElement = root.querySelector('[data-agent-rp-resource-preflight]')
   const startElement = root.querySelector('[data-agent-rp-start-readiness]')
   const characterLibraryLaunchers = root.querySelectorAll('[data-agent-rp-action="open-character-library"]').length
-  const characterLibraryOpen = root.querySelector('[data-agent-rp-surface="character-library"]') !== null
+  const characterLibraryElement = root.querySelector('[data-agent-rp-surface="character-library"]')
+  const characterLibraryOpen = characterLibraryElement !== null
+  const characterLibraryCollectionValue = characterLibraryElement?.getAttribute('data-agent-rp-character-collection')
+  const characterLibraryCollection = characterLibraryCollectionValue === 'active' || characterLibraryCollectionValue === 'archived'
+    ? characterLibraryCollectionValue : 'unknown'
+  const characterLibraryEntries = root.querySelectorAll('[data-agent-rp-character-id]').length
+  const characterLibraryArchiveToggle = root.querySelectorAll('[data-agent-rp-character-archive-toggle]').length
   const sessionSettingsLaunchers = root.querySelectorAll('[data-agent-rp-action="toggle-session-settings"]').length
   const sessionSettingsOpen = root.querySelector('[data-agent-rp-surface="session-settings"]')
     ?.getAttribute('data-agent-rp-surface-state') === 'open'
@@ -552,6 +564,9 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       characterLibrary: {
         launchers: characterLibraryLaunchers,
         state: characterLibraryOpen ? 'open' : 'closed',
+        collection: characterLibraryOpen ? characterLibraryCollection : 'unknown',
+        entries: characterLibraryEntries,
+        archiveToggle: characterLibraryArchiveToggle,
       },
       presetManager: {
         launchers: presetManagerLaunchers,
@@ -729,6 +744,10 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-action',
       'data-agent-rp-surface',
       'data-agent-rp-surface-state',
+      'data-agent-rp-character-collection',
+      'data-agent-rp-collection-tab',
+      'data-agent-rp-collection-tab-value',
+      'data-agent-rp-character-archive-toggle',
       'data-agent-rp-world-entry',
       'data-agent-rp-world-entry-toggle',
     ],
