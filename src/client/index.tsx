@@ -3330,7 +3330,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
             <div style={{ display: 'grid', gap: '5px' }}>
               {item.entries.map(candidate => {
                 const key = `${item.id}\u0000${candidate.index}`
-                return <button key={key} type="button" aria-current={key === selectedKey} onClick={() => {
+                return <button key={key} type="button" data-agent-rp-world-entry aria-current={key === selectedKey} onClick={() => {
                   setSelectedKey(key); setEditing(false); setError(undefined)
                 }} style={{
                   alignItems: 'center', background: key === selectedKey ? `color-mix(in srgb, ${color} 14%, transparent)` : 'transparent',
@@ -3388,7 +3388,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
               ].filter(Boolean).join('\n')}</div>
             </details>}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '22px' }}>
-              {!entry.deleted && <button type="button" disabled={saving} onClick={() => {
+              {!entry.deleted && <button type="button" data-agent-rp-world-entry-toggle disabled={saving} onClick={() => {
                 mutate({ operation: 'toggle', revision: worldInfo.revision, bookId: book.id, entryIndex: entry.index, enabled: !entry.enabled })
               }} style={generationButtonStyle}>{entry.enabled ? '关闭条目' : '打开条目'}</button>}
               {!entry.deleted && <button type="button" disabled={saving} onClick={() => { setDraft(editableFromProjection(entry)); setEditing(true) }} style={generationButtonStyle}>编辑</button>}
@@ -8768,6 +8768,13 @@ function roleplayComposerDockComponent(
           approved: approvedCardNativeIdentities.size,
           pending: cardNativeIdentityRequests.size,
         },
+        ...(projection.preset === undefined ? {} : { preset: {
+          revision: projection.preset.revision,
+          promptCount: projection.preset.promptCount,
+          enabledCount: projection.preset.enabledCount,
+          regexCount: projection.preset.regexScriptCount,
+          enabledRegexCount: projection.preset.enabledRegexScriptCount,
+        } }),
         variables: {
           surfaces: hasTavernVariableSurface ? 2 : 1,
           sharedScopes: 5,
@@ -8779,6 +8786,7 @@ function roleplayComposerDockComponent(
           entries: projection.worldInfoCount,
           active: projection.worldInfo.activeCount,
           budgetExcluded: projection.worldInfo.budgetExcludedCount,
+          revision: projection.worldInfo.revision,
           failures: worldEngineFailures,
         },
       },
@@ -8821,6 +8829,7 @@ function roleplayComposerDockComponent(
       'data-agent-rp-preset-enabled-regex-count': projection.preset.enabledRegexScriptCount,
     })}
     data-agent-rp-world-engine={projection.worldInfoCount === 0 ? 'inactive' : 'native-v0'}
+    data-agent-rp-world-info-revision={projection.worldInfo.revision}
     data-agent-rp-world-engine-entries={projection.worldInfoCount}
     data-agent-rp-world-engine-active={projection.worldInfo.activeCount}
     data-agent-rp-world-engine-budget-excluded={projection.worldInfo.budgetExcludedCount}

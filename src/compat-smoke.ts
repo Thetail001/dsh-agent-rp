@@ -165,6 +165,8 @@ export type AgentRpCompatSmokeAction =
   | 'save-session-preset'
   | 'open-world-info-manager'
   | 'close-world-info-manager'
+  | 'select-world-info-entry'
+  | 'toggle-world-info-entry'
   | 'open-tavern-panel'
   | 'close-tavern-panel'
   | 'open-mobile-surface'
@@ -351,7 +353,8 @@ function surfaceState(snapshot: AgentRpBrowserCompatibilitySnapshot, action: Age
     case 'toggle-session-settings': return snapshot.interactions.sessionSettings.state
     case 'open-preset-manager': case 'close-preset-manager':
     case 'toggle-session-preset-module': case 'save-session-preset': return snapshot.interactions.presetManager.state
-    case 'open-world-info-manager': case 'close-world-info-manager': return snapshot.interactions.worldInfoManager.state
+    case 'open-world-info-manager': case 'close-world-info-manager':
+    case 'select-world-info-entry': case 'toggle-world-info-entry': return snapshot.interactions.worldInfoManager.state
     case 'open-tavern-panel': case 'open-mobile-surface': case 'close-tavern-panel': return snapshot.interactions.tavernPanel.state
   }
 }
@@ -434,6 +437,34 @@ async function exerciseSessionPresetToggle(
   }
 }
 
+/**
+ * Select one world-info entry, toggle it, and wait for the durable world-info
+ * configuration revision to advance. A manager with no entries is a successful no-op.
+ */
+async function exerciseWorldInfoToggle(
+  driver: AgentRpCompatSmokeDriver,
+  snapshot: AgentRpBrowserCompatibilitySnapshot,
+  timeoutMs: number,
+  pollMs: number,
+): Promise<boolean> {
+  const baseline = snapshot.session?.worldEngine.revision
+  if (snapshot.interactions.worldInfoManager.entries === 0 || baseline === undefined) return true
+  try {
+    await driver.clickAction('select-world-info-entry')
+    await driver.clickAction('toggle-world-info-entry')
+  } catch {
+    return false
+  }
+  const deadline = Date.now() + timeoutMs
+  while (true) {
+    const current = await driver.snapshot()
+    const revision = current?.session?.worldEngine.revision
+    if (revision !== undefined && revision > baseline) return true
+    if (Date.now() >= deadline) return false
+    await driver.delay(Math.min(pollMs, Math.max(1, deadline - Date.now())))
+  }
+}
+
 async function exerciseStableInteractions(
   driver: AgentRpCompatSmokeDriver,
   snapshot: AgentRpBrowserCompatibilitySnapshot,
@@ -472,7 +503,17 @@ async function exerciseStableInteractions(
     if (settingsForWorldInfo === undefined || settingsForWorldInfo.interactions.sessionSettings.state !== 'open') {
       return failed('interaction-failed')
     }
-    if (!await exerciseInteraction(driver, 'open-world-info-manager', 'open', 'close-world-info-manager', timeoutMs, pollMs)) {
+    await driver.clickAction('open-world-info-manager')
+    const worldInfoOpened = await waitForSurface(driver, 'open-world-info-manager', 'open', timeoutMs, pollMs)
+    if (worldInfoOpened === undefined || worldInfoOpened.interactions.worldInfoManager.state !== 'open') {
+      return failed('interaction-failed')
+    }
+    if (!await exerciseWorldInfoToggle(driver, worldInfoOpened, timeoutMs, pollMs)) {
+      return failed('interaction-failed')
+    }
+    await driver.clickAction('close-world-info-manager')
+    const worldInfoClosed = await waitForSurface(driver, 'close-world-info-manager', 'closed', timeoutMs, pollMs)
+    if (worldInfoClosed === undefined || worldInfoClosed.interactions.worldInfoManager.state !== 'closed') {
       return failed('interaction-failed')
     }
     if ((snapshot.session?.tavern?.scripts ?? 0) > 0

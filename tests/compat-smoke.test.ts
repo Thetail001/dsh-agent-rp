@@ -70,6 +70,9 @@ function browserSnapshot(options: {
   readonly sessionSettings?: 'closed' | 'open'
   readonly tavernPanel?: 'closed' | 'mobile' | 'script'
   readonly worldInfoManager?: 'closed' | 'open'
+  readonly worldInfoEntries?: number
+  readonly worldInfoToggle?: number
+  readonly worldEngineRevision?: number
   readonly permissionDuration?: AgentRpCompatSmokePermissionDuration
   readonly blockedFonts?: number
 } = {}): AgentRpBrowserCompatibilitySnapshot {
@@ -92,7 +95,12 @@ function browserSnapshot(options: {
       sessionSettings: { launchers: 1, state: options.sessionSettings ?? 'closed' },
       tavernPanel: { launchers: 1, mobileLaunchers: 1, state: options.tavernPanel ?? 'closed' },
       tavernPermissions: { launchers: 0, state: 'closed' },
-      worldInfoManager: { launchers: 1, state: options.worldInfoManager ?? 'closed' },
+      worldInfoManager: {
+        launchers: 1,
+        state: options.worldInfoManager ?? 'closed',
+        entries: options.worldInfoEntries ?? 0,
+        toggle: options.worldInfoToggle ?? 0,
+      },
     },
     ...(runtime === undefined ? {} : { session: {
       capabilities: {
@@ -107,6 +115,7 @@ function browserSnapshot(options: {
       renderer: { inlineFrontendSanitizer: 'ready' },
       worldEngine: {
         engine: 'native-v0', entries: 611, active: 12, budgetExcluded: 0,
+        ...(options.worldEngineRevision === undefined ? {} : { revision: options.worldEngineRevision }),
         failures: {
           regexRuntimeUnavailable: 0, regexInvalid: 0, regexExecutionLimit: 0,
           regexResourceLimit: 0, decoratorUnsupported: 0, templateUnsupported: 0, templateError: 0,
@@ -206,6 +215,7 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
   private presetRevision = 7
   private presetEnabledCount = 3
   private presetEnabledRegexCount = 2
+  private worldInfoRevision = 5
   permissionDuration: AgentRpCompatSmokePermissionDuration = 'remember'
   readonly approvalAttempts: number[] = []
   onboardingAcknowledgements = 0
@@ -220,6 +230,8 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
     private remainingRuntimeFonts = 0,
     private readonly presetToggleable = 1,
     private readonly presetSaveApplies = true,
+    private readonly worldInfoEntries = 3,
+    private readonly worldInfoToggleApplies = true,
   ) {}
 
   delay(): Promise<void> { return Promise.resolve() }
@@ -269,6 +281,11 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
       sessionSettings: this.sessionSettings,
       tavernPanel: this.tavernPanel,
       worldInfoManager: this.worldInfoManager,
+      ...(this.worldInfoEntries === 0 ? {} : {
+        worldInfoEntries: this.worldInfoManager === 'open' ? this.worldInfoEntries : 0,
+        worldInfoToggle: this.worldInfoManager === 'open' ? 1 : 0,
+      }),
+      ...(this.launched ? { worldEngineRevision: this.worldInfoRevision } : {}),
     }))
   }
 
@@ -297,6 +314,10 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
         break
       case 'open-world-info-manager': this.sessionSettings = 'closed'; this.worldInfoManager = 'open'; break
       case 'close-world-info-manager': this.worldInfoManager = 'closed'; break
+      case 'select-world-info-entry': break
+      case 'toggle-world-info-entry':
+        if (this.worldInfoToggleApplies) this.worldInfoRevision += 1
+        break
       case 'open-tavern-panel': this.tavernPanel = this.genericTavernPanel; break
       case 'open-mobile-surface': this.tavernPanel = 'mobile'; break
       case 'close-tavern-panel': this.tavernPanel = 'closed'; break
@@ -343,7 +364,9 @@ test('drives one content-free launch and all applicable stable interaction surfa
     'open-character-library', 'close-character-library',
     'toggle-session-settings', 'open-preset-manager',
     'toggle-session-preset-module', 'save-session-preset',
-    'toggle-session-settings', 'open-world-info-manager', 'close-world-info-manager',
+    'toggle-session-settings', 'open-world-info-manager',
+    'select-world-info-entry', 'toggle-world-info-entry',
+    'close-world-info-manager',
     'open-tavern-panel', 'close-tavern-panel',
     'open-mobile-surface', 'close-tavern-panel',
   ])
@@ -384,6 +407,44 @@ test('fails the interaction when a saved preset does not advance its counts', as
   assert.deepEqual(driver.actions.filter(action =>
     action === 'toggle-session-preset-module' || action === 'save-session-preset'),
   ['toggle-session-preset-module', 'save-session-preset'])
+})
+
+test('toggles one world-info entry and verifies the durable configuration revision advances', async () => {
+  const driver = new FakeSmokeDriver()
+  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
+    characterId: 'character-id', timeoutMs: 100,
+  })
+
+  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
+  assert.equal(result.snapshot?.session?.worldEngine.revision, 6)
+  assert.equal(driver.actions.includes('select-world-info-entry'), true)
+  assert.equal(driver.actions.includes('toggle-world-info-entry'), true)
+})
+
+test('skips the world-info toggle when the manager has no entries', async () => {
+  const driver = new FakeSmokeDriver(false, true, 'script', 'ready', 0, 1, true, 0)
+  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
+    characterId: 'character-id', timeoutMs: 100,
+  })
+
+  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
+  assert.equal(driver.actions.includes('select-world-info-entry'), false)
+  assert.equal(driver.actions.includes('toggle-world-info-entry'), false)
+  assert.equal(result.snapshot?.session?.worldEngine.revision, 5)
+})
+
+test('fails the interaction when a world-info toggle does not advance the revision', async () => {
+  const driver = new FakeSmokeDriver(false, true, 'script', 'ready', 0, 1, true, 3, false)
+  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
+    characterId: 'character-id', timeoutMs: 5, pollMs: 1,
+  })
+
+  assert.deepEqual(result.decision, {
+    status: 'failed', stage: 'interaction-failed', exitCode: 3,
+  })
+  assert.deepEqual(driver.actions.filter(action =>
+    action === 'select-world-info-entry' || action === 'toggle-world-info-entry'),
+  ['select-world-info-entry', 'toggle-world-info-entry'])
 })
 
 test('keeps first-run acknowledgement explicit and continues after authorization', async () => {

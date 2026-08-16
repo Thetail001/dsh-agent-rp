@@ -71,6 +71,10 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly worldInfoManager: {
       readonly launchers: number
       readonly state: 'closed' | 'open'
+      /** World-info entries rendered inside the open manager. */
+      readonly entries: number
+      /** Entry-toggle controls rendered inside the open manager. */
+      readonly toggle: number
     }
   }
   readonly session?: {
@@ -119,6 +123,8 @@ export interface AgentRpBrowserCompatibilitySnapshot {
       readonly entries: number
       readonly active: number
       readonly budgetExcluded: number
+      /** Durable session world-info configuration revision when the client publishes it. */
+      readonly revision?: number
       readonly failures: {
         readonly regexRuntimeUnavailable: number
         readonly regexInvalid: number
@@ -277,6 +283,8 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
   const presetManagerSave = root.querySelectorAll('[data-agent-rp-action="save-session-preset"]').length
   const worldInfoManagerLaunchers = root.querySelectorAll('[data-agent-rp-action="open-world-info-manager"]').length
   const worldInfoManagerOpen = root.querySelector('[data-agent-rp-surface="world-info-manager"]') !== null
+  const worldInfoManagerEntries = root.querySelectorAll('[data-agent-rp-world-entry]').length
+  const worldInfoManagerToggle = root.querySelectorAll('[data-agent-rp-world-entry-toggle]').length
   const tavernPanelLaunchers = root.querySelectorAll('[data-agent-rp-action="open-tavern-panel"]').length
   const mobileLaunchers = root.querySelectorAll('[data-agent-rp-action="open-mobile-surface"]').length
   const tavernPermissionLaunchers = root.querySelectorAll('[data-agent-rp-action="open-tavern-permissions"]').length
@@ -353,6 +361,8 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
         entries: integer(status, 'data-agent-rp-world-engine-entries'),
         active: integer(status, 'data-agent-rp-world-engine-active'),
         budgetExcluded: integer(status, 'data-agent-rp-world-engine-budget-excluded'),
+        ...(status.getAttribute('data-agent-rp-world-info-revision') === null
+          ? {} : { revision: integer(status, 'data-agent-rp-world-info-revision') }),
         failures: worldEngineFailures,
       },
       ...(tavern === null ? {} : { tavern: {
@@ -565,6 +575,8 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       worldInfoManager: {
         launchers: worldInfoManagerLaunchers,
         state: worldInfoManagerOpen ? 'open' : 'closed',
+        entries: worldInfoManagerEntries,
+        toggle: worldInfoManagerToggle,
       },
     },
     ...(session === undefined ? {} : { session }),
@@ -653,6 +665,7 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-preset-enabled-regex-count',
       'data-agent-rp-preset-toggle',
       'data-agent-rp-world-engine',
+      'data-agent-rp-world-info-revision',
       'data-agent-rp-world-engine-entries',
       'data-agent-rp-world-engine-active',
       'data-agent-rp-world-engine-budget-excluded',
@@ -716,6 +729,8 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-action',
       'data-agent-rp-surface',
       'data-agent-rp-surface-state',
+      'data-agent-rp-world-entry',
+      'data-agent-rp-world-entry-toggle',
     ],
     childList: true,
     subtree: true,

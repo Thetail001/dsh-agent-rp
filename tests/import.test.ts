@@ -360,6 +360,20 @@ test('keeps the manual standalone JSON card fixture importable', () => {
   })
 })
 
+test('keeps the synthetic lorebook card fixture importable with its character book', () => {
+  const data = readFileSync('tests/fixtures/manual-lorebook-card.json')
+  const card = parseCharacterCardJsonBytes(data)
+
+  assert.equal(card.name, '炉边旅人')
+  assert.equal(card.lorebook?.entries.length, 3)
+  assert.equal(card.lorebook?.entries[0]?.constant, true)
+  const active = activateLorebook(card.lorebook!, ['炉边的位置还空着，钟刚敲过九下。'])
+  assert.equal(active.beforeCharacter.length, 3)
+  assert.ok(active.beforeCharacter.some(text => text.includes('北边的山路')))
+  assert.ok(active.beforeCharacter.some(text => text.includes('唯一的光源')))
+  assert.ok(active.beforeCharacter.some(text => text.includes('整点敲九下')))
+})
+
 test('honors zero lorebook scan depth and token budget', () => {
   const card = parseCharacterCardJson(JSON.stringify({
     spec: 'chara_card_v2',

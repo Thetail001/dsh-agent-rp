@@ -356,6 +356,21 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
       }
       throw new SmokeCommandError('interaction-missing')
     }
+    if (action === 'select-world-info-entry') {
+      const entries = await this.page.locator('[data-agent-rp-world-entry]').all()
+      for (const candidate of entries) {
+        if (!await candidate.isVisible()) continue
+        await candidate.click({ timeout: this.timeoutMs })
+        return
+      }
+      throw new SmokeCommandError('interaction-missing')
+    }
+    if (action === 'toggle-world-info-entry') {
+      await this.page.locator('[data-agent-rp-world-entry-toggle]')
+        .waitFor({ state: 'visible', timeout: this.timeoutMs })
+      await this.page.locator('[data-agent-rp-world-entry-toggle]').click({ timeout: this.timeoutMs })
+      return
+    }
     const candidates = await this.page.locator(`[data-agent-rp-action="${action}"]`).all()
     for (const candidate of candidates) {
       if (sourceSessionId !== undefined

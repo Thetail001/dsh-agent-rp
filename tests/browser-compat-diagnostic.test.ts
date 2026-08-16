@@ -157,7 +157,7 @@ test('collects one content-free healthy browser snapshot with expected permissio
     sessionSettings: { launchers: 1, state: 'closed' },
     tavernPanel: { launchers: 1, mobileLaunchers: 1, state: 'closed' },
     tavernPermissions: { launchers: 1, state: 'closed' },
-    worldInfoManager: { launchers: 1, state: 'closed' },
+    worldInfoManager: { launchers: 1, state: 'closed', entries: 0, toggle: 0 },
   })
   assert.deepEqual(report.session?.tavern?.phases, { ready: 2 })
   assert.deepEqual(report.session?.cardFrames, {
@@ -394,7 +394,7 @@ test('reports missing stable interaction entries without reading labels or conte
     sessionSettings: { launchers: 0, state: 'closed' },
     tavernPanel: { launchers: 0, mobileLaunchers: 0, state: 'closed' },
     tavernPermissions: { launchers: 0, state: 'closed' },
-    worldInfoManager: { launchers: 0, state: 'closed' },
+    worldInfoManager: { launchers: 0, state: 'closed', entries: 0, toggle: 0 },
   })
   assert.deepEqual(report.issues, ['interactive-entry-missing'])
 })
@@ -420,7 +420,7 @@ test('reports open interaction surfaces through stable content-free states', () 
     sessionSettings: { launchers: 1, state: 'open' },
     tavernPanel: { launchers: 1, mobileLaunchers: 1, state: 'mobile' },
     tavernPermissions: { launchers: 1, state: 'open' },
-    worldInfoManager: { launchers: 1, state: 'open' },
+    worldInfoManager: { launchers: 1, state: 'open', entries: 0, toggle: 0 },
   })
   assert.deepEqual(report.issues, [])
 })
@@ -562,6 +562,31 @@ test('reports preset-count-mismatch when enabled counts exceed their totals', ()
   assert.deepEqual(report.issues, ['preset-count-mismatch'])
 })
 
+test('collects the world-info configuration revision and world-info entry controls', () => {
+  const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    '[data-agent-rp-status]': [new DiagnosticElement({
+      ...capabilityAttributes,
+      'data-agent-rp-world-info-revision': '9',
+      'data-private-book-name': 'must not appear',
+    })],
+    ...stableInteractionSelectors,
+    '[data-agent-rp-surface="world-info-manager"]': [new DiagnosticElement({})],
+    '[data-agent-rp-world-entry]': [
+      new DiagnosticElement({}),
+      new DiagnosticElement({}),
+      new DiagnosticElement({}),
+    ],
+    '[data-agent-rp-world-entry-toggle]': [new DiagnosticElement({})],
+  }))
+
+  assert.equal(report.session?.worldEngine.revision, 9)
+  assert.deepEqual(report.interactions.worldInfoManager, {
+    launchers: 1, state: 'open', entries: 3, toggle: 1,
+  })
+  assert.deepEqual(report.issues, [])
+  assert.doesNotMatch(JSON.stringify(report), /private|book-name|must not appear/u)
+})
+
 test('uses Host runtime facts while retaining DOM-owned sandbox checks', () => {
   const registry = new AgentRpRuntimeDiagnosticRegistry(() => 123)
   registry.publish(createAgentRpRuntimeDiagnosticSource('session'), {
@@ -575,10 +600,13 @@ test('uses Host runtime facts while retaining DOM-owned sandbox checks', () => {
       auxiliaryGenerations: { requests: 0, succeeded: 0, failed: 0, pending: 0, malformed: 0 },
       externalWindowPhases: [],
       nativeIdentity: { state: 'ready', approved: 0, pending: 0 },
+      preset: {
+        revision: 4, promptCount: 6, enabledCount: 4, regexCount: 3, enabledRegexCount: 2,
+      },
       variables: { surfaces: 1, sharedScopes: 5, scriptScopes: 0 },
       renderer: { inlineFrontendSanitizer: 'ready' },
       worldEngine: {
-        engine: 'inactive', entries: 0, active: 0, budgetExcluded: 0,
+        engine: 'inactive', entries: 0, active: 0, budgetExcluded: 0, revision: 11,
         failures: {
           regexRuntimeUnavailable: 0, regexInvalid: 0, regexExecutionLimit: 0,
           regexResourceLimit: 0, decoratorUnsupported: 0, templateUnsupported: 0, templateError: 0,
@@ -621,6 +649,14 @@ test('uses Host runtime facts while retaining DOM-owned sandbox checks', () => {
   assert.equal(report.runtime?.revision, 2)
   assert.equal(report.session?.renderer.inlineFrontendSanitizer, 'ready')
   assert.equal(report.session?.worldEngine.engine, 'inactive')
+  assert.equal(report.session?.worldEngine.revision, 11)
+  assert.deepEqual(report.session?.preset, {
+    revision: 4,
+    promptCount: 6,
+    enabledCount: 4,
+    regexCount: 3,
+    enabledRegexCount: 2,
+  })
   assert.equal(report.preflight?.status, 'ready')
   assert.doesNotMatch(JSON.stringify(report), /private|session-id|must not appear/u)
 })

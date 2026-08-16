@@ -55,6 +55,14 @@ export interface AgentRpRuntimeSessionFacts {
     readonly approved: number
     readonly pending: number
   }
+  /** Content-free session-owned preset counts published by the roleplay client. */
+  readonly preset?: {
+    readonly revision: number
+    readonly promptCount: number
+    readonly enabledCount: number
+    readonly regexCount: number
+    readonly enabledRegexCount: number
+  }
   readonly variables: {
     readonly surfaces: number
     readonly sharedScopes: number
@@ -68,6 +76,8 @@ export interface AgentRpRuntimeSessionFacts {
     readonly entries: number
     readonly active: number
     readonly budgetExcluded: number
+    /** Durable session world-info configuration revision advanced by each applied overlay. */
+    readonly revision?: number
     readonly failures: {
       readonly regexRuntimeUnavailable: number
       readonly regexInvalid: number
@@ -284,6 +294,13 @@ function normalizeSession(facts: AgentRpRuntimeSessionFacts): AgentRpRuntimeSess
       state: oneOf(facts.nativeIdentity.state, ['loading', 'unconfigured', 'ready', 'error', 'unknown'] as const, 'unknown'),
       approved: count(facts.nativeIdentity.approved), pending: count(facts.nativeIdentity.pending),
     },
+    ...(facts.preset === undefined ? {} : { preset: {
+      revision: count(facts.preset.revision),
+      promptCount: count(facts.preset.promptCount),
+      enabledCount: count(facts.preset.enabledCount),
+      regexCount: count(facts.preset.regexCount),
+      enabledRegexCount: count(facts.preset.enabledRegexCount),
+    } }),
     variables: {
       surfaces: count(facts.variables.surfaces), sharedScopes: count(facts.variables.sharedScopes),
       scriptScopes: count(facts.variables.scriptScopes),
@@ -295,6 +312,7 @@ function normalizeSession(facts: AgentRpRuntimeSessionFacts): AgentRpRuntimeSess
       engine: oneOf(facts.worldEngine.engine, ['inactive', 'native-v0', 'unknown'] as const, 'unknown'),
       entries: count(facts.worldEngine.entries), active: count(facts.worldEngine.active),
       budgetExcluded: count(facts.worldEngine.budgetExcluded),
+      ...(facts.worldEngine.revision === undefined ? {} : { revision: count(facts.worldEngine.revision) }),
       failures: {
         regexRuntimeUnavailable: count(facts.worldEngine.failures.regexRuntimeUnavailable),
         regexInvalid: count(facts.worldEngine.failures.regexInvalid),
@@ -460,6 +478,7 @@ export class AgentRpRuntimeDiagnosticRegistry {
         ...session.nativeIdentity,
         pending: session.nativeIdentity.pending + (tavern?.nativeIdentityPending ?? 0),
       },
+      ...(session.preset === undefined ? {} : { preset: session.preset }),
       variables: session.variables,
       renderer: session.renderer,
       worldEngine: session.worldEngine,
