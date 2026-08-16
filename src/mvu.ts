@@ -1,6 +1,6 @@
 /** Minimal persistent MVU state for imported Character Cards. */
 
-import { snapshotJsonValue, type JsonValue, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { snapshotJsonValue, type JsonValue, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { ImportedCharacterCard } from './import/types.ts'
 import { decodeTavernHelperState } from './tavern-helper.ts'
@@ -100,6 +100,16 @@ export function readCurrentMvuState(
   }
   if (statData === undefined) return undefined
   return { statData, updateCount, ...(lastError === undefined ? {} : { lastError }) }
+}
+
+/** Fold MVU updates from the current model-visible Session surface plus durable script mutations. */
+export function readCurrentSessionMvuState(
+  card: ImportedCharacterCard,
+  session: Session,
+): ReturnType<typeof readCurrentMvuState> {
+  const surface = new Set(session.surface.nodes)
+  return readCurrentMvuState(card, session.events.filter(event =>
+    event.type !== 'assistant/message' || surface.has(event.seq)))
 }
 
 function pointerSegments(pointer: string): string[] {

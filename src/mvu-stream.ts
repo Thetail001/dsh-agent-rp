@@ -15,7 +15,7 @@ import { cardFromImportMeta, readActiveSessionCharacter } from './import/session
 import {
   normalizeChoiceSupplement,
   normalizeMvuSupplement,
-  readCurrentMvuState,
+  readCurrentSessionMvuState,
   renderChoiceInstructions,
   renderMvuUpdateInstructions,
 } from './mvu.ts'
@@ -103,7 +103,7 @@ export function installMvuStreamCompletion(
     const active = readActiveSessionCharacter(agent.session.events)
     if (active === undefined) return next()
     const card = cardFromImportMeta(active.meta)
-    const current = readCurrentMvuState(card, agent.session.events)
+    const current = readCurrentSessionMvuState(card, agent.session)
     if (current === undefined) return next()
     const mvuRules = renderMvuUpdateInstructions(card, current.statData)
     const choiceRules = renderChoiceInstructions(card)

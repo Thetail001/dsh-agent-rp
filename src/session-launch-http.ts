@@ -1,13 +1,18 @@
 /** Same-origin creation of complete seeded Agent RP Sessions on public DSH. */
 
 import { randomUUID } from 'node:crypto'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingMessage } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from './character-library.ts'
-import type { AgentRpHttpServer } from './host-http.ts'
+import {
+  jsonResponse as json,
+  readJsonRequest,
+  trustedBrowserRequest,
+  type AgentRpHttpServer,
+} from './host-http.ts'
 import {
   prepareAgentRpRewriteSession,
   prepareAgentRpSession,
@@ -64,46 +69,13 @@ interface SessionModelsGateway {
   }
 }
 
-function trustedBrowserRequest(request: IncomingMessage): boolean {
-  const host = request.headers.host
-  if (host === undefined || host.trim() === '' || request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    const parsed = new URL(origin)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
-  } catch {
-    return false
-  }
-}
-
-function json(response: ServerResponse, status: number, value: unknown): void {
-  const body = Buffer.from(JSON.stringify(value), 'utf8')
-  response.writeHead(status, {
-    'cache-control': 'no-store',
-    'content-length': String(body.byteLength),
-    'content-type': 'application/json; charset=utf-8',
-  })
-  response.end(body)
-}
-
 async function readJson(request: IncomingMessage): Promise<unknown> {
-  const declared = Number(request.headers['content-length'])
-  if (Number.isFinite(declared) && declared > MAX_REQUEST_BYTES) throw new Error('角色会话启动请求过大')
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk as Uint8Array)
-    bytes += data.byteLength
-    if (bytes > MAX_REQUEST_BYTES) throw new Error('角色会话启动请求过大')
-    chunks.push(data)
-  }
-  if (bytes === 0) throw new Error('角色会话启动请求为空')
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
-  } catch (error: unknown) {
-    throw new Error('角色会话启动请求不是有效 JSON', { cause: error })
-  }
+  return readJsonRequest(request, {
+    limit: MAX_REQUEST_BYTES,
+    emptyMessage: '角色会话启动请求为空',
+    tooLargeMessage: '角色会话启动请求过大',
+    invalidMessage: '角色会话启动请求不是有效 JSON',
+  })
 }
 
 /** Create an Agent whose constructor sees the complete imported history. */

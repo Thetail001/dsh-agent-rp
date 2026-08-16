@@ -1,6 +1,6 @@
 /** Same-origin HTTP surface for generated image jobs and their credential. */
 
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingMessage } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef, type CredentialProvider } from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -13,7 +13,12 @@ import {
   isImageJobId,
   type ImageGenerationProvider,
 } from './image-generation-protocol.ts'
-import type { AgentRpHttpServer } from './host-http.ts'
+import {
+  jsonResponse as json,
+  readJsonRequest as readBoundedJsonRequest,
+  trustedBrowserRequest,
+  type AgentRpHttpServer,
+} from './host-http.ts'
 import { AGENT_RP_IMAGE_PROVIDERS, normalizeImageGenerationSettings } from './workspace-settings.ts'
 
 const MAX_CREDENTIAL_REQUEST_BYTES = 16 * 1024
@@ -25,43 +30,13 @@ function requestProvider(request: IncomingMessage): ImageGenerationProvider {
   return value as ImageGenerationProvider
 }
 
-function trustedBrowserRequest(request: IncomingMessage, sandboxedImage: boolean): boolean {
-  const host = request.headers.host
-  if (host === undefined || host.trim() === '') return false
-  if (request.headers['sec-fetch-site'] === 'cross-site') {
-    return sandboxedImage && request.headers['sec-fetch-dest'] === 'image'
-      && request.headers['sec-fetch-mode'] === 'no-cors' && request.headers.origin === undefined
-  }
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    const parsed = new URL(origin)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
-  } catch {
-    return false
-  }
-}
-
-function json(response: ServerResponse, status: number, value: unknown): void {
-  const body = Buffer.from(JSON.stringify(value), 'utf8')
-  response.writeHead(status, {
-    'cache-control': 'no-store',
-    'content-length': String(body.byteLength),
-    'content-type': 'application/json; charset=utf-8',
-  })
-  response.end(body)
-}
-
 async function readJsonRequest(request: IncomingMessage, limit: number): Promise<unknown> {
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk as Uint8Array)
-    bytes += data.byteLength
-    if (bytes > limit) throw new Error('图片服务请求过大')
-    chunks.push(data)
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+  return readBoundedJsonRequest(request, {
+    limit,
+    emptyMessage: '图片服务请求为空',
+    tooLargeMessage: '图片服务请求过大',
+    invalidMessage: '图片服务请求不是有效 JSON',
+  })
 }
 
 async function readCredentialRequest(request: IncomingMessage): Promise<{ readonly value?: string; readonly clear?: true }> {

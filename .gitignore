@@ -3,6 +3,7 @@ node_modules/
 .test-dist-*/
 .test-*
 .benchmark-dist/
+.audit-dist/
 .preset-smoke/
 .runtime/
 .runtime-web-*.log

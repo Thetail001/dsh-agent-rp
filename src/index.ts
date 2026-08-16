@@ -81,7 +81,7 @@ import { createEjsWorldInfoBooks, EjsTemplateEngine, type EjsTemplateContext } f
 import { installBundledAgentRpPreset } from './preset.ts'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { createAgentRpProjectionDefinition } from './projection.ts'
-import { readCurrentMvuState } from './mvu.ts'
+import { readCurrentSessionMvuState } from './mvu.ts'
 import { installMvuStreamCompletion } from './mvu-stream.ts'
 import { installPromptRegexStream } from './prompt-regex-stream.ts'
 import { assembleSillyTavernPreset, type SillyTavernInChatPrompt } from './preset-prompt.ts'
@@ -89,6 +89,7 @@ import { configurePresetFromCommand } from './preset-configuration.ts'
 import { PresetLibrary } from './preset-library.ts'
 import { installPresetLibraryHttp } from './preset-library-http.ts'
 import { executePresetLibraryCommand } from './preset-library-command.ts'
+import { installTavernPreflightHttp } from './tavern-preflight-http.ts'
 import { CharacterLibrary } from './character-library.ts'
 import { executeCharacterLibraryCommand } from './character-library-command.ts'
 import { installCharacterLibraryHttp } from './character-library-http.ts'
@@ -133,11 +134,18 @@ import { executeTavernTrigger } from './tavern-trigger.ts'
 import { installTavernGenerationHttp } from './tavern-generation-http.ts'
 import { installTavernModelListHttp } from './tavern-model-list-http.ts'
 import { installRpDistributionBridgeHttp } from './rp-distribution-bridge-http.ts'
+import { NativeIdentityStore } from './native-identity.ts'
+import { installNativeIdentityHttp } from './native-identity-http.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
 export { Config }
-export const inject = ['attachments', 'commands', 'credentials', 'llm', 'systemPrompt', 'tools']
+export { AGENT_RP_EMBEDDED_IDENTITY_CHANNEL } from './embedded-identity-protocol.ts'
+export type {
+  EmbeddedNativeIdentityFailure,
+  EmbeddedNativeIdentityRequest,
+} from './embedded-identity-protocol.ts'
+export const inject = ['attachments', 'commands', 'credentials', 'llm', 'sessions', 'systemPrompt', 'tools']
 
 interface PromptAttachmentGateway {
   registerPromptAttachmentConsumer?(
@@ -763,7 +771,7 @@ export function installAgentRp(
         readSillyTavernChatIdentity(agent.session.events)?.userName,
       )
       const { persona, userName } = identity
-      const mvu = readCurrentMvuState(card, agent.session.events)
+      const mvu = readCurrentSessionMvuState(card, agent.session)
       const templateOptions = ejsLorebookOptions(options.ejsTemplateEngine, {
         characterName: card.nickname?.trim() || card.name,
         userName: userName ?? '用户',
@@ -1141,12 +1149,14 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         installCharacterLibraryHttp(webCtx, characterLibrary, server)
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
         installPresetLibraryHttp(webCtx, presetLibrary, server)
+        installTavernPreflightHttp(webCtx, characterLibrary, presetLibrary, server)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)
         installSillyTavernChatExportHttp(webCtx, ctx, server)
         installAgentRpMemoryHttp(webCtx, ctx, server)
         installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, server)
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
+        installNativeIdentityHttp(webCtx, new NativeIdentityStore(webCtx.credentials), server)
         installImageGenerationHttp(webCtx, generatedImageLibrary, webCtx.credentials, server)
         installTavernGenerationHttp(webCtx, server)
         installTavernModelListHttp(webCtx, server)

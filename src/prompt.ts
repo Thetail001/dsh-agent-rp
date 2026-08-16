@@ -2,12 +2,14 @@
 
 import type { Session, SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
 import type { ResolvedConfig } from './config.ts'
-import { activateLorebook, inspectLorebooks, type LorebookActivationOptions } from './import/lorebook.ts'
+import { activateLorebook, type LorebookActivationOptions } from './import/lorebook.ts'
 import type { ImportedCharacterCard, ImportedLorebook } from './import/types.ts'
 import type { ImportedWorldInfo } from './import/types.ts'
 import { readAgentRpMemoryHistory } from './memory.ts'
 import { substituteMvuMacros } from './mvu.ts'
 import type { EjsTemplateMessage } from './ejs-template.ts'
+import { substituteSillyTavernIdentityMacros } from './sillytavern-identity-macro.ts'
+import { createNativeWorldEngine } from './world-engine.ts'
 
 type DerivedSessionMessage = ReturnType<Session['deriveMessages']>[number]
 
@@ -106,11 +108,12 @@ export function renderSessionLorebooks(input: {
   readonly tokenBudget: number
 }) {
   const scanText = input.scanText ?? []
-  const inspected = inspectLorebooks(
-    input.books,
-    [...visibleDialogue(input.session, input.pendingMessages ?? []), ...scanText],
-    { ...(input.templateOptions ?? {}), tokenBudget: input.tokenBudget },
-  )
+  const inspected = createNativeWorldEngine(input.templateOptions).evaluate({
+    format: 0,
+    books: input.books,
+    messages: [...visibleDialogue(input.session, input.pendingMessages ?? []), ...scanText],
+    tokenBudget: input.tokenBudget,
+  })
   const render = (values: readonly string[]) => values.map(value => substituteMvuMacros(value, input.statData))
   return {
     ...inspected,
@@ -140,9 +143,7 @@ export function substituteCardMacros(
   userName = '用户',
 ): string {
   const name = card.nickname?.trim() || card.name
-  return value
-    .replace(/\{\{char\}\}|<char>|<bot>/giu, name)
-    .replace(/\{\{user\}\}|<user>/giu, userName)
+  return substituteSillyTavernIdentityMacros(value, { characterName: name, userName })
 }
 
 /**

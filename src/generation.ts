@@ -8,7 +8,7 @@ import {
   type ContentBlock,
 } from '@deepseek-ai/dsh-llm'
 import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
-import { readCurrentMvuState } from './mvu.ts'
+import { readCurrentSessionMvuState } from './mvu.ts'
 import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
 
 /** A complete reply-version group snapshot stored after every mutation. */
@@ -220,8 +220,7 @@ function latestReply(
 function mvuSnapshot(agent: Agent): GenerationStateRecord['mvu'] {
   const active = readActiveSessionCharacter(agent.session.events)
   if (active === undefined) return undefined
-  const surfaceEvents = agent.session.surface.nodes.map(seq => agent.session.events[seq]!).filter(event => event.type === 'assistant/message')
-  return readCurrentMvuState(cardFromImportMeta(active.meta), surfaceEvents)
+  return readCurrentSessionMvuState(cardFromImportMeta(active.meta), agent.session)
 }
 
 function appendState(
@@ -306,7 +305,17 @@ export async function executeGenerationCommand(invocation: {
   }
 
   let generatedSeq: number | undefined
+  let replacementStartSeq = current.surfaceSeq
   try {
+    if (request.operation === 'regenerate') {
+      const selected = assistantEvent(invocation.agent.session.events, current.selectedSeq)
+      replacementStartSeq = appendCurrentReplySurface(
+        invocation.agent,
+        current.surfaceSeq,
+        selected,
+        [],
+      ).seq
+    }
     generatedSeq = await generate(invocation.agent, request.operation, invocation.signal)
     const generated = assistantEvent(invocation.agent.session.events, generatedSeq)
     assistantSeqs.push(generatedSeq)
@@ -315,14 +324,14 @@ export async function executeGenerationCommand(invocation: {
     if (request.operation === 'continue') {
       const selected = assistantEvent(invocation.agent.session.events, current.selectedSeq)
       const content = continuedContent(selected.data.message.content, generated.data.message.content)
-      surface = appendCurrentReplySurface(invocation.agent, current.surfaceSeq, generated, content)
+      surface = appendCurrentReplySurface(invocation.agent, replacementStartSeq, generated, content)
       selectedSeq = surface.seq
       versions.push({
         seq: selectedSeq,
         text: content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim(),
       })
     } else {
-      surface = appendCurrentReplySurface(invocation.agent, current.surfaceSeq, generated)
+      surface = appendCurrentReplySurface(invocation.agent, replacementStartSeq, generated)
       versions.push({ seq: selectedSeq, text: visibleText(generated) })
     }
     const state = appendState(invocation.agent, {
@@ -333,9 +342,11 @@ export async function executeGenerationCommand(invocation: {
     return { kind: 'success', text: encodeGenerationState(state), sourceEventSeq: state.surfaceSeq }
   } catch (error: unknown) {
     const surfaceNodes = invocation.agent.session.surface.nodes
-    if (surfaceNodes.includes(current.surfaceSeq) && surfaceNodes.at(-1) !== current.surfaceSeq) {
+    const restoreRequired = replacementStartSeq !== current.surfaceSeq
+      || surfaceNodes.at(-1) !== replacementStartSeq
+    if (restoreRequired && surfaceNodes.includes(replacementStartSeq)) {
       const selected = assistantEvent(invocation.agent.session.events, current.selectedSeq)
-      appendCurrentReplySurface(invocation.agent, current.surfaceSeq, selected)
+      appendCurrentReplySurface(invocation.agent, replacementStartSeq, selected)
     }
     throw error
   }

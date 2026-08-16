@@ -32,6 +32,12 @@ interface MutableDiagnostics {
   readonly unknownWrapperTags: Set<string>
 }
 
+interface HtmlTagToken {
+  readonly start: number
+  readonly end: number
+  readonly name: string
+}
+
 const HTML_DISPLAY_TAGS = new Set([
   'a', 'abbr', 'address', 'area', 'article', 'aside', 'audio', 'b', 'base', 'bdi', 'bdo',
   'blockquote', 'body', 'br', 'button', 'canvas', 'caption', 'center', 'cite', 'code', 'col', 'colgroup',
@@ -46,64 +52,56 @@ const HTML_DISPLAY_TAGS = new Set([
   'tr', 'track', 'u', 'ul', 'var', 'video', 'wbr',
 ])
 
+function htmlTagsOutsideCode(value: string): readonly HtmlTagToken[] {
+  const tags: HtmlTagToken[] = []
+  let cursor = 0
+  let codeTicks = 0
+  while (cursor < value.length) {
+    if (value[cursor] === '`') {
+      let end = cursor + 1
+      while (value[end] === '`') end += 1
+      const ticks = end - cursor
+      if (codeTicks === 0) codeTicks = ticks
+      else if (ticks === codeTicks) codeTicks = 0
+      cursor = end
+      continue
+    }
+    if (codeTicks === 0 && value[cursor] === '<') {
+      const tag = value.slice(cursor).match(/^<\/?([A-Za-z][A-Za-z0-9:_-]*)(?:\s[^<>]*?)?\s*\/?>/u)
+      const name = tag?.[1]?.toLowerCase()
+      if (tag?.[0] !== undefined && name !== undefined) {
+        tags.push({ start: cursor, end: cursor + tag[0].length, name })
+        cursor += tag[0].length
+        continue
+      }
+    }
+    cursor += 1
+  }
+  return tags
+}
+
 function stripUnknownTagsOutsideCode(value: string): {
   readonly text: string
   readonly removedCount: number
   readonly removedTags: readonly string[]
 } {
   let result = ''
-  let cursor = 0
-  let codeTicks = 0
+  let retainedFrom = 0
   let removedCount = 0
   const removedTags = new Set<string>()
-  while (cursor < value.length) {
-    if (value[cursor] === '`') {
-      let end = cursor + 1
-      while (value[end] === '`') end += 1
-      const ticks = end - cursor
-      if (codeTicks === 0) codeTicks = ticks
-      else if (ticks === codeTicks) codeTicks = 0
-      result += value.slice(cursor, end)
-      cursor = end
-      continue
-    }
-    if (codeTicks === 0 && value[cursor] === '<') {
-      const tag = value.slice(cursor).match(/^<\/?([A-Za-z][A-Za-z0-9:_-]*)(?:\s[^<>]*?)?\s*\/?>/u)
-      const name = tag?.[1]?.toLowerCase()
-      if (tag?.[0] !== undefined && name !== undefined && !HTML_DISPLAY_TAGS.has(name)) {
-        removedCount += 1
-        removedTags.add(name)
-        cursor += tag[0].length
-        continue
-      }
-    }
-    result += value[cursor]
-    cursor += 1
+  for (const tag of htmlTagsOutsideCode(value)) {
+    if (HTML_DISPLAY_TAGS.has(tag.name)) continue
+    result += value.slice(retainedFrom, tag.start)
+    retainedFrom = tag.end
+    removedCount += 1
+    removedTags.add(tag.name)
   }
+  result += value.slice(retainedFrom)
   return { text: result, removedCount, removedTags: [...removedTags].sort() }
 }
 
 function hasDisplayHtmlOutsideCode(value: string): boolean {
-  let cursor = 0
-  let codeTicks = 0
-  while (cursor < value.length) {
-    if (value[cursor] === '`') {
-      let end = cursor + 1
-      while (value[end] === '`') end += 1
-      const ticks = end - cursor
-      if (codeTicks === 0) codeTicks = ticks
-      else if (ticks === codeTicks) codeTicks = 0
-      cursor = end
-      continue
-    }
-    if (codeTicks === 0 && value[cursor] === '<') {
-      const tag = value.slice(cursor).match(/^<\/?([A-Za-z][A-Za-z0-9:_-]*)(?:\s[^<>]*?)?\s*\/?>/u)
-      const name = tag?.[1]?.toLowerCase()
-      if (name !== undefined && HTML_DISPLAY_TAGS.has(name)) return true
-    }
-    cursor += 1
-  }
-  return false
+  return htmlTagsOutsideCode(value).some(tag => HTML_DISPLAY_TAGS.has(tag.name))
 }
 
 function sourceLines(value: string): SourceLine[] {
@@ -165,21 +163,28 @@ function appendMarkdown(
   diagnostics: MutableDiagnostics,
   text: string,
 ): void {
+  if (hasDisplayHtmlOutsideCode(text)) {
+    diagnostics.inlineHtml += 1
+    segments.push({ kind: 'inline-html', source: text })
+    return
+  }
   const normalized = normalizeMarkdown(text)
   diagnostics.unknownWrapperCount += normalized.removedCount
   normalized.removedTags.forEach(tag => { diagnostics.unknownWrapperTags.add(tag) })
   if (normalized.text === '') return
-  if (hasDisplayHtmlOutsideCode(normalized.text)) {
-    diagnostics.inlineHtml += 1
-    segments.push({ kind: 'inline-html', source: normalized.text })
-    return
-  }
   const previous = segments.at(-1)
   if (previous?.kind === 'markdown') {
     segments[segments.length - 1] = { kind: 'markdown', text: previous.text + normalized.text }
     return
   }
   segments.push({ kind: 'markdown', text: normalized.text })
+}
+
+/** List inert custom wrapper elements that an inline frontend may style. */
+export function cardDisplayCustomElementTags(value: string): readonly string[] {
+  return [...new Set(htmlTagsOutsideCode(value)
+    .filter(tag => /^[a-z][a-z0-9_-]{0,63}$/u.test(tag.name) && !HTML_DISPLAY_TAGS.has(tag.name))
+    .map(tag => tag.name))].sort()
 }
 
 /** Compile display output into ordered native-Markdown and isolated-HTML segments. */

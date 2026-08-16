@@ -3,16 +3,36 @@ import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import type { ImportedRegexScript } from '../src/import/types.ts'
 import {
-  readTavernExtensionSettings,
   resolveTavernScriptExecution,
-  TAVERN_EXTENSION_SETTINGS_KEY,
+  shouldResetTavernScriptRuntime,
   TavernScriptOriginApprovalError,
+  tavernScriptFrameNavigation,
   tavernScriptFrameSource,
+  tavernScriptFrameUrl,
+  tavernScriptRuntimePhase,
   validatedTavernCompatibilityMarkers,
-  writeTavernExtensionSettings,
   type TavernScriptSnapshot,
 } from '../src/client/tavern-runtime.ts'
 import { parseTavernSlashCommand } from '../src/client/tavern-slash.ts'
+import {
+  parseTavernExternalWindowCapabilityRequest,
+  parseTavernExtensionSettingsCapabilityRequest,
+  parseTavernNativeIdentityCapabilityRequest,
+  parseTavernPopupCapabilityRequest,
+  parseTavernStorageCapabilityRequest,
+  validTavernStorageCapabilityResult,
+} from '../src/client/tavern-capability.ts'
+import { validExternalWindowMessage } from '../src/client/external-window.ts'
+import { inspectTavernPreflight } from '../src/tavern-preflight.ts'
+import {
+  approvedTavernScriptOrigins,
+  parseTavernScriptOriginApprovalKey,
+  tavernPreflightApprovals,
+  tavernPreflightLaunchPhase,
+  tavernScriptFrameApprovalKey,
+  tavernScriptImageApprovalKey,
+  tavernScriptOriginApprovalKey,
+} from '../src/client/tavern-permission.ts'
 import {
   AI_OUTPUT_PLACEMENT,
   hasCharacterDisplayFrontend,
@@ -44,6 +64,35 @@ const character = {
   name: '白露',
   frontend: { regexScripts: [base], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {} },
 }
+
+test('keeps unrelated Tavern scripts ready when only image approvals change', () => {
+  const scope = { sessionId: 'session-a', planSignature: 'scripts-a' }
+  assert.equal(shouldResetTavernScriptRuntime(undefined, scope), true)
+  assert.equal(shouldResetTavernScriptRuntime(scope, { ...scope }), false)
+  assert.equal(shouldResetTavernScriptRuntime(scope, { ...scope, sessionId: 'session-b' }), true)
+  assert.equal(shouldResetTavernScriptRuntime(scope, { ...scope, planSignature: 'scripts-b' }), true)
+})
+
+test('reports content-free Tavern script lifecycle phases for browser acceptance', () => {
+  assert.equal(tavernScriptRuntimePhase({
+    hasDocument: false, permissionRequired: false, loadError: false, ready: false, runtimeError: false,
+  }), 'preparing')
+  assert.equal(tavernScriptRuntimePhase({
+    hasDocument: false, permissionRequired: true, loadError: true, ready: false, runtimeError: false,
+  }), 'permission-required')
+  assert.equal(tavernScriptRuntimePhase({
+    hasDocument: false, permissionRequired: false, loadError: true, ready: false, runtimeError: false,
+  }), 'load-error')
+  assert.equal(tavernScriptRuntimePhase({
+    hasDocument: true, permissionRequired: false, loadError: false, ready: false, runtimeError: false,
+  }), 'booting')
+  assert.equal(tavernScriptRuntimePhase({
+    hasDocument: true, permissionRequired: false, loadError: false, ready: true, runtimeError: false,
+  }), 'ready')
+  assert.equal(tavernScriptRuntimePhase({
+    hasDocument: true, permissionRequired: false, loadError: false, ready: true, runtimeError: true,
+  }), 'runtime-error')
+})
 
 test('summarizes character regex compatibility without exposing its source', () => {
   assert.deepEqual(summarizeCharacterRegexScript(base), {
@@ -93,35 +142,102 @@ test('distinguishes Tavern draft updates, triggered drafts, and a bare trigger',
 })
 
 class RuntimeElement {
+  readonly attributes = new Map<string, string>()
   readonly children: RuntimeElement[] = []
-  readonly classList = { add() {}, remove() {}, toggle() {} }
+  private readonly classes = new Set<string>()
+  readonly classList = {
+    add: (...names: string[]) => { for (const name of names) this.classes.add(name) },
+    remove: (...names: string[]) => { for (const name of names) this.classes.delete(name) },
+    toggle: (name: string, force?: boolean) => {
+      const enabled = force ?? !this.classes.has(name)
+      if (enabled) this.classes.add(name)
+      else this.classes.delete(name)
+      return enabled
+    },
+    contains: (name: string) => this.classes.has(name),
+  }
   readonly dataset: Record<string, string> = {}
   readonly style = { setProperty() {} }
   readonly tagName: string
+  contentWindow: object | undefined
   hidden = false
+  id = ''
   innerHTML = ''
+  parentElement: RuntimeElement | undefined
+  textContent = ''
+  private readonly listeners = new Map<string, Set<(event: {
+    currentTarget?: RuntimeElement
+    readonly target?: RuntimeElement
+    readonly type: string
+  }) => void>>()
 
   constructor(tagName = 'div') {
     this.tagName = tagName.toUpperCase()
   }
 
   appendChild(child: RuntimeElement): RuntimeElement {
+    child.parentElement = this
     this.children.push(child)
     return child
   }
 
-  append(...children: RuntimeElement[]): void { this.children.push(...children) }
-  prepend(...children: RuntimeElement[]): void { this.children.unshift(...children) }
+  append(...children: RuntimeElement[]): void {
+    for (const child of children) child.parentElement = this
+    this.children.push(...children)
+  }
+  prepend(...children: RuntimeElement[]): void {
+    for (const child of children) child.parentElement = this
+    this.children.unshift(...children)
+  }
   insertBefore(child: RuntimeElement): RuntimeElement { return this.appendChild(child) }
-  addEventListener(): void {}
-  removeAttribute(): void {}
-  setAttribute(): void {}
-  getAttribute(): null { return null }
+  addEventListener(type: string, listener: (event: {
+    currentTarget?: RuntimeElement
+    readonly target?: RuntimeElement
+    readonly type: string
+  }) => void): void {
+    const listeners = this.listeners.get(type) ?? new Set()
+    listeners.add(listener)
+    this.listeners.set(type, listeners)
+  }
+  removeEventListener(type: string, listener: (event: {
+    currentTarget?: RuntimeElement
+    readonly target?: RuntimeElement
+    readonly type: string
+  }) => void): void {
+    this.listeners.get(type)?.delete(listener)
+  }
+  dispatchEvent(event: { currentTarget?: RuntimeElement; target?: RuntimeElement; readonly type: string }): boolean {
+    event.currentTarget = this
+    event.target ??= this
+    for (const listener of this.listeners.get(event.type) ?? []) listener(event)
+    return true
+  }
+  click(): void {
+    this.dispatchEvent({ target: this, type: 'click' })
+  }
+  getBoundingClientRect(): { readonly height: number; readonly left: number; readonly top: number; readonly width: number } {
+    return { height: 40, left: 20, top: 30, width: 40 }
+  }
+  removeAttribute(name: string): void { this.attributes.delete(name) }
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value)
+    if (name === 'id') this.id = value
+  }
+  getAttribute(name: string): string | null { return this.attributes.get(name) ?? null }
   querySelectorAll(): RuntimeElement[] { return [] }
   closest(): undefined { return undefined }
-  contains(): boolean { return false }
-  remove(): void {}
-  replaceChildren(): void { this.children.length = 0 }
+  contains(target: RuntimeElement): boolean {
+    return this === target || this.children.some(child => child.contains(target))
+  }
+  remove(): void {
+    const index = this.parentElement?.children.indexOf(this) ?? -1
+    if (index >= 0) this.parentElement!.children.splice(index, 1)
+    this.parentElement = undefined
+  }
+  replaceChildren(): void {
+    for (const child of this.children) child.parentElement = undefined
+    this.children.length = 0
+  }
   cloneNode(): RuntimeElement { return new RuntimeElement(this.tagName) }
   get outerHTML(): string { return `<${this.tagName.toLowerCase()}>${this.innerHTML}</${this.tagName.toLowerCase()}>` }
 }
@@ -155,38 +271,43 @@ function runtimeAcceptanceContext(preview: readonly unknown[]) {
         })
         return
       }
-      if (message.action === 'extension-settings-save' && typeof message.requestId === 'string') {
+      if (message.action === 'capability-request' && message.capability === 'settings.extension.persist'
+        && typeof message.requestId === 'string') {
         queueMicrotask(() => {
           for (const listener of listeners.get('message') ?? []) listener({
             source: parent,
             data: {
-              source: 'dsh-agent-rp-host', action: 'settings-result', requestId: message.requestId, ok: true,
+              source: 'dsh-agent-rp-host', action: 'capability-result',
+              capability: 'settings.extension.persist', requestId: message.requestId, ok: true,
             },
           })
         })
         return
       }
-      if (message.action === 'storage-request' && typeof message.requestId === 'string'
-        && typeof message.namespace === 'string' && typeof message.operation === 'string') {
-        const prefix = `${message.namespace}\u0000`
-        const itemKey = `${prefix}${String(message.key ?? '')}`
+      if (message.action === 'capability-request' && message.capability === 'storage.script.persist'
+        && typeof message.requestId === 'string' && typeof message.payload === 'object'
+        && message.payload !== null && !Array.isArray(message.payload)) {
+        const payload = message.payload as Record<string, unknown>
+        const prefix = `${String(payload.namespace)}\u0000`
+        const itemKey = `${prefix}${String(payload.key ?? '')}`
         let value: unknown
-        if (message.operation === 'get') value = stored.get(itemKey) ?? null
-        else if (message.operation === 'set') { stored.set(itemKey, message.value); value = message.value }
-        else if (message.operation === 'remove') stored.delete(itemKey)
+        if (payload.operation === 'get') value = stored.get(itemKey) ?? null
+        else if (payload.operation === 'set') { stored.set(itemKey, payload.value); value = payload.value }
+        else if (payload.operation === 'remove') stored.delete(itemKey)
         else {
           const keys = [...stored.keys()].filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length))
-          if (message.operation === 'clear') {
+          if (payload.operation === 'clear') {
             for (const key of keys) stored.delete(`${prefix}${key}`)
-          } else if (message.operation === 'keys') value = keys
-          else if (message.operation === 'length') value = keys.length
-          else if (message.operation === 'key') value = keys[Number(message.index)] ?? null
+          } else if (payload.operation === 'keys') value = keys
+          else if (payload.operation === 'length') value = keys.length
+          else if (payload.operation === 'key') value = keys[Number(payload.index)] ?? null
         }
         queueMicrotask(() => {
           for (const listener of listeners.get('message') ?? []) listener({
             source: parent,
             data: {
-              source: 'dsh-agent-rp-host', action: 'storage-result', requestId: message.requestId, ok: true, value,
+              source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'storage.script.persist',
+              requestId: message.requestId, ok: true, value,
             },
           })
         })
@@ -212,6 +333,17 @@ function runtimeAcceptanceContext(preview: readonly unknown[]) {
     AbortController,
     AbortSignal,
     Element: RuntimeElement,
+    MessageEvent: class {
+      readonly source = null
+      readonly type: string
+      readonly data: unknown
+      readonly origin: string
+      constructor(type: string, init: { readonly data?: unknown; readonly origin?: string } = {}) {
+        this.type = type
+        this.data = init.data
+        this.origin = init.origin ?? ''
+      }
+    },
     Node: RuntimeElement,
     MutationObserver: class { observe() {} },
     Response,
@@ -223,14 +355,51 @@ function runtimeAcceptanceContext(preview: readonly unknown[]) {
       readyState: 'complete',
       createElement(tagName: string) {
         const element = new RuntimeElement(tagName) as RuntimeElement & { content?: { childNodes: RuntimeElement[] } }
-        if (tagName === 'template') element.content = { childNodes: [] }
+        if (tagName === 'template') {
+          element.content = { childNodes: [] }
+          Object.defineProperty(element, 'innerHTML', {
+            configurable: true,
+            get: () => '',
+            set: (value: string) => {
+              const match = value.match(/^<([a-z][a-z0-9-]*)/iu)
+              element.content!.childNodes = match === null ? [] : [new RuntimeElement(match[1])]
+            },
+          })
+        }
         return element
       },
-      querySelectorAll() { return [] },
+      getElementById(id: string) {
+        const visit = (element: RuntimeElement): RuntimeElement | undefined => {
+          if ((element as RuntimeElement & { readonly id?: string }).id === id) return element
+          for (const child of element.children) {
+            const found = visit(child)
+            if (found !== undefined) return found
+          }
+        }
+        return visit(body)
+      },
+      querySelectorAll(selector: string) {
+        if (selector.startsWith('#')) {
+          const found = (this as { getElementById(id: string): RuntimeElement | undefined }).getElementById(selector.slice(1))
+          return found === undefined ? [] : [found]
+        }
+        if (selector === 'iframe') {
+          const result: RuntimeElement[] = []
+          const visit = (element: RuntimeElement): void => {
+            if (element.tagName === 'IFRAME') result.push(element)
+            for (const child of element.children) visit(child)
+          }
+          visit(body)
+          return result
+        }
+        return []
+      },
       addEventListener() {},
     },
     fetch() { throw new Error('unexpected native fetch') },
     getComputedStyle() { return { display: 'block', visibility: 'visible', getPropertyValue() { return '' } } },
+    innerHeight: 768,
+    innerWidth: 1024,
     parent,
     posted,
     dispatchHost(data: Record<string, unknown>) {
@@ -238,6 +407,13 @@ function runtimeAcceptanceContext(preview: readonly unknown[]) {
         source: parent,
         data: { source: 'dsh-agent-rp-host', ...data },
       })
+    },
+    dispatchWindow(type: string, event: unknown) {
+      for (const listener of listeners.get(type) ?? []) listener(event)
+    },
+    dispatchEvent(event: { readonly type: string }) {
+      for (const listener of listeners.get(event.type) ?? []) listener(event)
+      return true
     },
     queueMicrotask,
     setTimeout,
@@ -257,6 +433,7 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
     id: 'travel', name: '地点选择', content: '', info: '测试', enabled: true,
     buttonEnabled: true, buttons: [{ name: '开始', visible: true }], data: {},
   }, 'window.__personaSnapshot={name:getCurrentPersonaName(),id:getCurrentPersonaId()}; window.__renderedMarkdown=builtin.renderMarkdown("**粗体**\\n\\n```yaml\\nkey: value\\n```"); window.__runtimeLibraries={domPurify:"DOMPurify" in SillyTavern.libs,fuse:"Fuse" in SillyTavern.libs,uuid:SillyTavern.getContext().uuidv4()}; replaceScriptButtons([{name:"学校",visible:true}])', {
+    scriptScope: 'character',
     scriptId: 'travel', scriptName: '地点选择', scriptInfo: '测试',
     buttons: [{ name: '开始', visible: true }], characterName: '白露', characterId: 'bailu.png',
     chatId: 'session-test', approvedScriptOrigins: [], persona: {
@@ -291,6 +468,8 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(html, /integrity="sha384-\+qi1h9Ene5uYXijovnRnDpm2TZiNyVFgYjKIqjw6id8zLdWYt\+tCPG9\/1u6yLaNj"/u)
   assert.match(html, /src="https:\/\/cdn\.jsdelivr\.net\/npm\/fuse\.js@7\.1\.0\/dist\/fuse\.min\.js"/u)
   assert.match(html, /integrity="sha384-P\/y\/5cwqUn6MDvJ9lCHJSaAi2EoH3JSeEdyaORsQMPgbpvA\+NvvUqik7XH2YGBjb"/u)
+  assert.match(html, /img-src 'none'/u)
+  assert.doesNotMatch(html, /data:image\/svg\+xml/u)
   assert.match(source!, /window\.getPreset=/u)
   assert.match(source!, /window\.updatePresetWith=/u)
   assert.match(source!, /window\.setPreset=/u)
@@ -358,6 +537,217 @@ test('preserves authorized ESM imports and plans their required public globals',
   }
 })
 
+test('runs classic side-effect dependencies behind an isolated window facade', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = () => Promise.resolve(new Response([
+    'var core=window.parent||window;',
+    'window.__classicCore=core;',
+    'window.__classicDependency=true;',
+    "window.__wallpaper='https://images.example.test/wallpaper.webp';",
+  ].join('\n')))
+  try {
+    const plan = await resolveTavernScriptExecution([
+      "import 'https://cdn.jsdelivr.net/gh/example/classic-facade@1.0.0/bundle.js';",
+      'window.__classicEntry=true;',
+    ].join('\n'), AbortSignal.timeout(5_000))
+    assert.equal(plan.mode, 'classic')
+    assert.equal(plan.source, 'window.__classicEntry=true;')
+    assert.equal(plan.inlineDependencies?.length, 1)
+    assert.deepEqual(plan.remoteImageOrigins, ['https://images.example.test'])
+    const html = tavernScriptFrameSource({
+      id: 'classic-runtime', name: '经典依赖', content: '', info: '', enabled: true,
+      buttonEnabled: false, buttons: [], data: {},
+    }, plan, {
+      scriptScope: 'character',
+      scriptId: 'classic-runtime', scriptName: '经典依赖', scriptInfo: '', buttons: [],
+      characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+      scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+      worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+      activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+      displayRegexScripts: [],
+    })
+    const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+    assert.notEqual(source, undefined)
+    const context = runtimeAcceptanceContext([])
+    runInNewContext(source!, context)
+    const core = context.__classicCore as { readonly parent?: unknown }
+    assert.equal(core.parent, core)
+    assert.equal((context.document as { readonly defaultView?: unknown }).defaultView, core)
+    assert.equal(context.__classicDependency, true)
+    assert.equal(context.__classicEntry, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('keeps an approved nested web frame on its own HTTPS origin inside an opaque script container', async () => {
+  const execution = await resolveTavernScriptExecution([
+    "const TARGET_URL='https://workshop.example.test/?embed=1';",
+    "const iframe=document.createElement('iframe');",
+    "$(iframe).attr('src',TARGET_URL);",
+  ].join('\n'), AbortSignal.timeout(5_000))
+  assert.deepEqual(execution.remoteFrameOrigins, ['https://workshop.example.test'])
+  const html = tavernScriptFrameSource({
+    id: 'web-frame', name: '远端面板', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, execution, {
+    scriptScope: 'character',
+    scriptId: 'web-frame', scriptName: '远端面板', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    approvedFrameOrigins: ['https://workshop.example.test'],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  })
+  assert.match(html, /base-uri 'none'; object-src 'none'; form-action 'none'/u)
+  assert.match(html, /frame-src https:\/\/workshop\.example\.test/u)
+  const url = tavernScriptFrameUrl(html)
+  assert.match(url, /^data:text\/html;charset=utf-8;base64,/u)
+  const decoded = new TextDecoder().decode(Uint8Array.from(atob(url.slice(url.indexOf(',') + 1)), value => value.charCodeAt(0)))
+  assert.equal(decoded, html)
+  assert.notEqual(
+    tavernScriptFrameApprovalKey('card-a', undefined, 'character', 'web-frame', 'https://workshop.example.test'),
+    tavernScriptFrameApprovalKey('card-b', undefined, 'character', 'web-frame', 'https://workshop.example.test'),
+  )
+  const externalDocument = tavernScriptFrameSource({
+    id: 'web-frame', name: '远端面板', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, execution, {
+    scriptScope: 'character',
+    scriptId: 'web-frame', scriptName: '远端面板', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', characterCard: { privatePayload: '__PRIVATE_CARD_PAYLOAD__' },
+    chatId: 'session-test', approvedScriptOrigins: [], approvedFrameOrigins: ['https://workshop.example.test'],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  }, { externalBootstrap: true })
+  const navigation = tavernScriptFrameNavigation(externalDocument)
+  assert.doesNotMatch(navigation.url, /__PRIVATE_CARD_PAYLOAD__/u)
+  assert.doesNotMatch(navigation.program, /__PRIVATE_CARD_PAYLOAD__/u)
+  assert.match(navigation.program, /globalThis\.__dshBootSnapshot/u)
+  const navigationShell = new TextDecoder().decode(Uint8Array.from(
+    atob(navigation.url.slice(navigation.url.indexOf(',') + 1)), value => value.charCodeAt(0),
+  ))
+  assert.match(navigationShell, /dsh-agent-rp-tavern-loader/u)
+  assert.doesNotMatch(navigationShell, /__PRIVATE_CARD_PAYLOAD__/u)
+})
+
+test('shares one in-flight dependency across concurrent Tavern script plans', async () => {
+  const originalFetch = globalThis.fetch
+  const dependency = 'https://cdn.jsdelivr.net/gh/dsh-agent-rp/concurrent-resolver@1.0.0/shared.js'
+  let fetches = 0
+  let release: (() => void) | undefined
+  const gate = new Promise<void>(resolve => { release = resolve })
+  globalThis.fetch = async () => {
+    fetches += 1
+    await gate
+    return new Response('window.__sharedDependency=true;')
+  }
+  try {
+    const source = `import '${dependency}';window.__entry=true;`
+    const first = resolveTavernScriptExecution(source, AbortSignal.timeout(5_000))
+    const second = resolveTavernScriptExecution(source, AbortSignal.timeout(5_000))
+    assert.equal(fetches, 1)
+    assert.ok(release)
+    release()
+    const plans = await Promise.all([first, second])
+    assert.equal(fetches, 1)
+    assert.deepEqual(plans.map(plan => plan.inlineDependencies?.length), [1, 1])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('cancels one shared dependency waiter without aborting the remaining script plan', async () => {
+  const originalFetch = globalThis.fetch
+  const dependency = 'https://cdn.jsdelivr.net/gh/dsh-agent-rp/concurrent-resolver@1.0.0/cancellable.js'
+  let fetches = 0
+  let fetchSignal: AbortSignal | undefined
+  let release: (() => void) | undefined
+  const gate = new Promise<void>(resolve => { release = resolve })
+  globalThis.fetch = async (_input, init) => {
+    fetches += 1
+    fetchSignal = init?.signal ?? undefined
+    await gate
+    return new Response('window.__cancellableDependency=true;')
+  }
+  const firstController = new AbortController()
+  const secondController = new AbortController()
+  try {
+    const source = `import '${dependency}';window.__entry=true;`
+    const first = resolveTavernScriptExecution(source, firstController.signal)
+    const second = resolveTavernScriptExecution(source, secondController.signal)
+    const firstRejected = assert.rejects(first, error => error === firstController.signal.reason)
+    firstController.abort(new Error('first caller cancelled'))
+    await firstRejected
+    assert.equal(fetches, 1)
+    assert.equal(fetchSignal?.aborted, false)
+    assert.ok(release)
+    release()
+    assert.equal((await second).inlineDependencies?.length, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('aborts the shared dependency request after every script plan cancels', async () => {
+  const originalFetch = globalThis.fetch
+  const dependency = 'https://cdn.jsdelivr.net/gh/dsh-agent-rp/concurrent-resolver@1.0.0/all-cancelled.js'
+  let fetchSignal: AbortSignal | undefined
+  globalThis.fetch = async (_input, init) => {
+    fetchSignal = init?.signal ?? undefined
+    await new Promise<never>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => { reject(init.signal?.reason) }, { once: true })
+    })
+    throw new Error('unreachable')
+  }
+  const firstController = new AbortController()
+  const secondController = new AbortController()
+  try {
+    const source = `import '${dependency}';window.__entry=true;`
+    const first = resolveTavernScriptExecution(source, firstController.signal)
+    const second = resolveTavernScriptExecution(source, secondController.signal)
+    const firstRejected = assert.rejects(first, error => error === firstController.signal.reason)
+    const secondRejected = assert.rejects(second, error => error === secondController.signal.reason)
+    firstController.abort(new Error('first caller cancelled'))
+    await firstRejected
+    assert.equal(fetchSignal?.aborted, false)
+    secondController.abort(new Error('second caller cancelled'))
+    await secondRejected
+    assert.equal(fetchSignal?.aborted, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('retries a shared dependency after its previous request fails', async () => {
+  const originalFetch = globalThis.fetch
+  const dependency = 'https://cdn.jsdelivr.net/gh/dsh-agent-rp/concurrent-resolver@1.0.0/retry.js'
+  let fetches = 0
+  globalThis.fetch = async () => {
+    fetches += 1
+    if (fetches === 1) throw new Error('temporary dependency failure')
+    return new Response('window.__retriedDependency=true;')
+  }
+  try {
+    const source = `import '${dependency}';window.__entry=true;`
+    const failed = await Promise.allSettled([
+      resolveTavernScriptExecution(source, AbortSignal.timeout(5_000)),
+      resolveTavernScriptExecution(source, AbortSignal.timeout(5_000)),
+    ])
+    assert.deepEqual(failed.map(result => result.status), ['rejected', 'rejected'])
+    assert.equal(fetches, 1)
+    assert.equal((await resolveTavernScriptExecution(
+      source, AbortSignal.timeout(5_000),
+    )).inlineDependencies?.length, 1)
+    assert.equal(fetches, 2)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('adapts the public MagVarUpdate side-effect bundle to the Host Mvu capability', async () => {
   const plan = await resolveTavernScriptExecution([
     "import 'https://cdn.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate@beta/artifact/bundle.js';",
@@ -382,6 +772,107 @@ test('rejects module references that cannot be authorized before execution', asy
   )
 })
 
+test('preflights selected character and preset resources without executing scripts', async () => {
+  const script = (id: string, content: string, enabled = true) => ({
+    id, name: id, content, info: '', enabled, buttonEnabled: false, buttons: [], data: {},
+  })
+  const sources = [{
+    scope: 'character' as const,
+    scripts: [
+      script('remote-ui', "import 'https://preflight.example.test/runtime.js';"),
+      script('local-ui', [
+        "window.wallpaper='https://images.example.test/cover.webp';",
+        "const PANEL='https://panel.example.test/?embed=1';",
+        "document.createElement('iframe').src=PANEL;",
+      ].join('\n')),
+      script('disabled-ui', 'throw new Error("must stay inert")', false),
+    ],
+  }, {
+    scope: 'preset' as const,
+    scripts: [script('invalid-ui', 'const path = location.hash; import(path);')],
+  }]
+  const first = await inspectTavernPreflight(sources, [], AbortSignal.timeout(5_000))
+  assert.deepEqual(first, {
+    format: 0,
+    scripts: 3,
+    ready: 1,
+    permissionRequired: 1,
+    failed: 1,
+    entries: [{
+      scope: 'character', scriptId: 'remote-ui', scriptName: 'remote-ui',
+      status: 'permission-required', requestedScriptOrigin: 'https://preflight.example.test',
+      remoteImageOrigins: [], remoteFrameOrigins: [],
+    }, {
+      scope: 'character', scriptId: 'local-ui', scriptName: 'local-ui',
+      status: 'ready', remoteImageOrigins: ['https://images.example.test'],
+      remoteFrameOrigins: ['https://panel.example.test'],
+    }, {
+      scope: 'preset', scriptId: 'invalid-ui', scriptName: 'invalid-ui',
+      status: 'resolution-error', remoteImageOrigins: [], remoteFrameOrigins: [],
+    }],
+  })
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = () => Promise.resolve(new Response(
+    "window.cover='https://assets.example.test/cover.png';",
+  ))
+  try {
+    const approved = await inspectTavernPreflight(sources, [{
+      scope: 'character', scriptId: 'remote-ui', origins: ['https://preflight.example.test'],
+    }], AbortSignal.timeout(5_000))
+    assert.equal(approved.ready, 2)
+    assert.equal(approved.permissionRequired, 0)
+    assert.deepEqual(approved.entries[0]?.remoteImageOrigins, ['https://assets.example.test'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scopes Tavern resource grants to one card, preset, script scope, and script id', () => {
+  const exact = tavernScriptOriginApprovalKey(
+    'card-a', 'preset-a', 'character', 'shared-script', 'https://modules.example.test',
+  )
+  const approvals = new Set([
+    exact,
+    tavernScriptOriginApprovalKey('card-b', 'preset-a', 'character', 'shared-script', 'https://other-card.test'),
+    tavernScriptOriginApprovalKey('card-a', 'preset-b', 'character', 'shared-script', 'https://other-preset.test'),
+    tavernScriptOriginApprovalKey('card-a', 'preset-a', 'preset', 'shared-script', 'https://preset-script.test'),
+    tavernScriptOriginApprovalKey('card-a', 'preset-a', 'global', 'global-script', 'https://global-script.test'),
+    'https://legacy-global-origin.test',
+  ])
+  assert.deepEqual(approvedTavernScriptOrigins(
+    approvals, 'card-a', 'preset-a', 'character', 'shared-script',
+  ), ['https://modules.example.test'])
+  assert.deepEqual(tavernPreflightApprovals(approvals, 'card-a', 'preset-a'), [{
+    scope: 'character', scriptId: 'shared-script', origins: ['https://modules.example.test'],
+  }, {
+    scope: 'preset', scriptId: 'shared-script', origins: ['https://preset-script.test'],
+  }])
+  assert.equal(parseTavernScriptOriginApprovalKey('https://legacy-global-origin.test'), undefined)
+  assert.notEqual(
+    tavernScriptImageApprovalKey('card-a', 'preset-a', 'character', 'shared-script', 'https://images.example.test'),
+    tavernScriptImageApprovalKey('card-b', 'preset-a', 'character', 'shared-script', 'https://images.example.test'),
+  )
+})
+
+test('keeps Session launch behind resource discovery and exact approvals', () => {
+  assert.equal(tavernPreflightLaunchPhase({
+    expected: false, loading: false, settled: false, pendingPermissions: 0,
+  }), 'ready')
+  assert.equal(tavernPreflightLaunchPhase({
+    expected: true, loading: true, settled: false, pendingPermissions: 0,
+  }), 'checking')
+  assert.equal(tavernPreflightLaunchPhase({
+    expected: true, loading: false, settled: false, pendingPermissions: 0,
+  }), 'checking')
+  assert.equal(tavernPreflightLaunchPhase({
+    expected: true, loading: false, settled: true, pendingPermissions: 2,
+  }), 'approval-required')
+  assert.equal(tavernPreflightLaunchPhase({
+    expected: true, loading: false, settled: true, pendingPermissions: 0,
+  }), 'ready')
+})
+
 test('runs module plans through a Blob and reports ready only after evaluation', () => {
   const html = tavernScriptFrameSource({
     id: 'module-runtime', name: '模块兼容', content: '', info: '', enabled: true,
@@ -390,6 +881,7 @@ test('runs module plans through a Blob and reports ready only after evaluation',
     source: 'export const ready = true;', mode: 'module', preloads: ['yaml', 'zod'],
     needsDomPurify: false, needsFuse: false, compatibilityMarkers: ['__远程依赖_loaded__'],
   }, {
+    scriptScope: 'character',
     scriptId: 'module-runtime', scriptName: '模块兼容', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -414,6 +906,7 @@ test('reports only bounded true compatibility markers after startup and on reque
     id: 'marker-runtime', name: '依赖标记', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, 'window.__辅助计算脚本_loaded__=true;window.__小手机脚本_loaded__=false;window.__invalid=true;', {
+    scriptScope: 'character',
     scriptId: 'marker-runtime', scriptName: '依赖标记', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -439,6 +932,209 @@ test('reports only bounded true compatibility markers after startup and on reque
   assert.deepEqual(validatedTavernCompatibilityMarkers([
     '__辅助计算脚本_loaded__', '__辅助计算脚本_loaded__', '__invalid marker_loaded__', true,
   ]), ['__辅助计算脚本_loaded__'])
+})
+
+test('provides the isolated trigger required by the public mobile-phone module', () => {
+  const html = tavernScriptFrameSource({
+    id: 'mobile-runtime', name: '小手机', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, {
+    source: "window.__mobileOpened=0;$('#mobile-trigger-btn').remove();$('<button>',{id:'mobile-trigger-btn',title:'手机入口',text:'手机',click:function(){window.__mobileOpened+=1}}).appendTo(document.body);window.__mobileTriggerFound=$('#mobile-trigger-btn').length;window.__小手机脚本_loaded__=true;", mode: 'classic', preloads: [], inlineDependencies: [],
+    needsDomPurify: false, needsFuse: false, compatibilityMarkers: ['__小手机脚本_loaded__'],
+  }, {
+    scriptScope: 'character',
+    scriptId: 'mobile-runtime', scriptName: '小手机', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+    approvedImageOrigins: ['https://images.example.test'],
+  })
+  assert.match(html, /img-src data: https:\/\/images\.example\.test/u)
+  assert.match(html, /font-src 'none'/u)
+  assert.match(html, /\.fa-cloud::before/u)
+  assert.match(html, /data:image\/svg\+xml/u)
+  assert.match(html, /#mobile-phone-overlay#mobile-phone-overlay\{color-scheme:light\}/u)
+  assert.match(html, /\.phone-size-reset-btn\{align-items:center!important;color:#2d3748!important/u)
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const trigger = (context.document as { getElementById(id: string): RuntimeElement | undefined })
+    .getElementById('mobile-trigger-btn') as RuntimeElement & { readonly textContent?: string }
+  assert.equal(trigger.textContent, '手机')
+  assert.equal(trigger.getAttribute('title'), '手机入口')
+  assert.equal(context.__mobileTriggerFound, 1)
+  assert.equal(context.__mobileOpened, 0)
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'compatibility-surface-open', surface: 'mobile-trigger',
+  })
+  assert.equal(context.__mobileOpened, 1)
+})
+
+test('opens a draggable mobile trigger through its pointer gesture', () => {
+  const html = tavernScriptFrameSource({
+    id: 'pointer-mobile-runtime', name: '手势小手机', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, {
+    source: [
+      'window.__pointerMobileOpened=0;',
+      "var trigger=document.getElementById('mobile-trigger-btn');",
+      "trigger.addEventListener('pointerdown',function(event){",
+      'event.preventDefault();event.stopPropagation();event.currentTarget.setPointerCapture(event.pointerId);',
+      'var startX=event.clientX,startY=event.clientY;',
+      "window.addEventListener('pointerup',function(up){trigger.releasePointerCapture(up.pointerId);if(Math.abs(up.clientX-startX)<2&&Math.abs(up.clientY-startY)<2)window.__pointerMobileOpened+=1})",
+      '});',
+      'window.__小手机脚本_loaded__=true;',
+    ].join(''),
+    mode: 'classic', preloads: [], inlineDependencies: [], needsDomPurify: false, needsFuse: false,
+    compatibilityMarkers: ['__小手机脚本_loaded__'],
+  }, {
+    scriptScope: 'character',
+    scriptId: 'pointer-mobile-runtime', scriptName: '手势小手机', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  class RuntimePointerEvent {
+    currentTarget: RuntimeElement | undefined
+    defaultPrevented = false
+    target: RuntimeElement | undefined
+    readonly type: string
+    readonly bubbles: boolean
+    readonly cancelable: boolean
+    readonly clientX: number
+    readonly clientY: number
+    readonly pointerId: number
+
+    constructor(type: string, init: Record<string, unknown>) {
+      this.type = type
+      this.target = undefined
+      this.bubbles = init.bubbles === true
+      this.cancelable = init.cancelable === true
+      this.clientX = Number(init.clientX)
+      this.clientY = Number(init.clientY)
+      this.pointerId = Number(init.pointerId)
+    }
+
+    preventDefault(): void { if (this.cancelable) this.defaultPrevented = true }
+    stopPropagation(): void {}
+  }
+  context.PointerEvent = RuntimePointerEvent
+  context.dispatchEvent = (event: RuntimePointerEvent): boolean => {
+    ;(context.dispatchWindow as (type: string, value: unknown) => void)(event.type, event)
+    return !event.defaultPrevented
+  }
+  runInNewContext(source!, context)
+
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'compatibility-surface-open', surface: 'mobile-trigger',
+  })
+  assert.equal(context.__pointerMobileOpened, 1)
+})
+
+test('keeps an already-open public mobile surface open when the Host panel returns', () => {
+  const html = tavernScriptFrameSource({
+    id: 'reopen-mobile-runtime', name: '重开小手机', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, {
+    source: [
+      'window.__mobileOpenCalls=0;',
+      "var overlay=document.createElement('div');overlay.id='mobile-phone-overlay';document.body.appendChild(overlay);",
+      "window.openMobilePhone=function(){window.__mobileOpenCalls+=1;overlay.classList.add('active')};",
+      'window.__小手机脚本_loaded__=true;',
+    ].join(''),
+    mode: 'classic', preloads: [], inlineDependencies: [], needsDomPurify: false, needsFuse: false,
+    compatibilityMarkers: ['__小手机脚本_loaded__'], remoteImageOrigins: [],
+  }, {
+    scriptScope: 'character',
+    scriptId: 'reopen-mobile-runtime', scriptName: '重开小手机', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+
+  const open = (): void => {
+    ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+      action: 'compatibility-surface-open', surface: 'mobile-trigger',
+    })
+  }
+  open()
+  open()
+  assert.equal(context.__mobileOpenCalls, 1)
+})
+
+test('reports bounded script error positions without exposing source locations', () => {
+  const html = tavernScriptFrameSource({
+    id: 'error-runtime', name: '错误定位', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, '', {
+    scriptScope: 'character',
+    scriptId: 'error-runtime', scriptName: '错误定位', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+
+  ;(context.dispatchWindow as (type: string, event: unknown) => void)('error', {
+    error: { name: 'TypeError', message: '缺少目标', stack: 'TypeError: 缺少目标\n    at run (https://private.example/card.js:27:14)' },
+    lineno: 27,
+    colno: 14,
+  })
+  const reported = (context.posted as Record<string, unknown>[]).findLast(message => message.action === 'runtime-error')
+  assert.equal(reported?.value, 'TypeError: 缺少目标（行 27，列 14）')
+  assert.equal(JSON.stringify(reported).includes('private.example'), false)
+})
+
+test('exposes jQuery-compatible numeric collection access to isolated scripts', () => {
+  const script = [
+    "var first=document.createElement('button'),second=document.createElement('button'),child=document.createElement('span');",
+    'first.appendChild(child);',
+    'var buttons=$([first,second]);',
+    'var listener=function(){}; buttons.bind("click.compat",listener).off("click.compat",listener).toggle(false).toggle(true).data("ready",true);',
+    "buttons[0].style.setProperty('display','block');",
+    "buttons[0].addEventListener('click',function(){});",
+    'window.__miniCollection={length:buttons.length,first:buttons[0]===first,last:buttons.get(-1)===second,eq:buttons.eq(1)[0]===second,array:buttons.toArray().length,data:buttons.data("ready"),parentWindow:$(window.parent).length,parentWidth:$(window.parent).width(),parentHeight:$(window.parent).height(),add:buttons.add(child).length,has:$(first).has(child).length,map:buttons.map(function(){return this}).length,slice:buttons.slice(1).length};',
+  ].join('\n')
+  const html = tavernScriptFrameSource({
+    id: 'mini-runtime', name: '集合兼容', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptScope: 'character',
+    scriptId: 'mini-runtime', scriptName: '集合兼容', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+
+  assert.deepEqual(JSON.parse(JSON.stringify(context.__miniCollection)), {
+    length: 2, first: true, last: true, eq: true, array: 2, data: true, parentWindow: 1,
+    parentWidth: 1024, parentHeight: 768, add: 3, has: 1, map: 2, slice: 1,
+  })
 })
 
 test('provides the common Tavern Helper lodash surface without opening network access', () => {
@@ -473,6 +1169,7 @@ window.__lodashSurface = {
     id: 'lodash-runtime', name: '工具兼容', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'lodash-runtime', scriptName: '工具兼容', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -494,6 +1191,254 @@ window.__lodashSurface = {
   })
 })
 
+test('bridges external OAuth windows without relaxing the Tavern script sandbox', () => {
+  const script = String.raw`
+window.__externalLoginMessage = null;
+window.__externalLoginMessages = 0;
+window.addEventListener('message', event => {
+  if (event.data?.channel === 'workshop:auth') {
+    window.__externalLoginMessages += 1;
+    window.__externalLoginMessage = { origin: event.origin, value: event.data };
+  }
+});
+window.__externalWindow = window.open(
+  'https://discord.com/oauth2/authorize?client_id=public-test',
+  'discord_login',
+  'width=600,height=800',
+);
+window.__blockedExternalWindow = window.open('http://unsafe.example.test/login');
+`
+  const html = tavernScriptFrameSource({
+    id: 'external-login', name: '外部登录', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptScope: 'character',
+    scriptId: 'external-login', scriptName: '外部登录', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const request = (context.posted as Record<string, unknown>[]).find(message => (
+    message.action === 'capability-request' && message.capability === 'ui.external-window.open'
+  ))
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), {
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'external-login', action: 'capability-request', requestId: '1',
+    capability: 'ui.external-window.open',
+    payload: {
+      url: 'https://discord.com/oauth2/authorize?client_id=public-test',
+      target: 'discord_login', features: 'width=600,height=800',
+    },
+  })
+  assert.equal(context.__blockedExternalWindow, null)
+  const handle = context.__externalWindow as { closed: boolean; close(): void }
+  assert.equal(handle.closed, false)
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'capability-result', capability: 'ui.external-window.open', requestId: '1', ok: true,
+  })
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'external-window-message', requestId: '1', origin: 'https://workshop.example.test',
+    value: { channel: 'workshop:auth', action: 'loginSuccess', hash: 'test-result' },
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(context.__externalLoginMessage)), {
+    origin: 'https://workshop.example.test',
+    value: { channel: 'workshop:auth', action: 'loginSuccess', hash: 'test-result' },
+  })
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'external-window-message', requestId: '1', origin: 'https://workshop.example.test',
+    value: { channel: 'workshop:auth', action: 'loginSuccess', hash: 'test-result' },
+  })
+  assert.equal(context.__externalLoginMessages, 1)
+  assert.equal((context.posted as Record<string, unknown>[]).filter(message => (
+    message.action === 'external-window-delivered' && message.requestId === '1'
+  )).length, 2)
+  assert.ok((context.posted as Record<string, unknown>[]).some(message => (
+    message.action === 'external-window-delivered' && message.requestId === '1'
+  )))
+  handle.close()
+  assert.equal(handle.closed, true)
+  assert.ok((context.posted as Record<string, unknown>[]).some(message => (
+    message.action === 'external-window-close' && message.requestId === '1'
+  )))
+})
+
+test('requests and receives a Host-owned native identity attestation without opening a window', async () => {
+  const script = String.raw`
+window.__identityResult = dshIdentity.request({
+  audience: 'https://workshop.example.test',
+  nonce: 'abcdefghijklmnop',
+  includeDisplayName: true,
+});
+`
+  const html = tavernScriptFrameSource({
+    id: 'native-identity', name: '原生身份', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptScope: 'character',
+    scriptId: 'native-identity', scriptName: '原生身份', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const request = (context.posted as Record<string, unknown>[]).find(message => (
+    message.action === 'capability-request' && message.capability === 'identity.native.attest'
+  ))
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), {
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'native-identity', action: 'capability-request',
+    requestId: '1', capability: 'identity.native.attest', payload: {
+      audience: 'https://workshop.example.test', nonce: 'abcdefghijklmnop', includeDisplayName: true,
+    },
+  })
+  const result = {
+    format: 0, provider: 'dsh-native', attestation: 'header.payload.signature',
+    expiresAt: 1_800_000_300_000, keyId: 'public-key-id',
+    publicKey: { kty: 'EC', crv: 'P-256', x: 'public-x', y: 'public-y' },
+  }
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'capability-result', capability: 'identity.native.attest', requestId: '1', ok: true, value: result,
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(await context.__identityResult)), result)
+})
+
+test('relays an embedded HTTPS service identity request without changing the containing card script', async () => {
+  const html = tavernScriptFrameSource({
+    id: 'workshop-host', name: '工坊容器', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, '', {
+    scriptScope: 'character',
+    scriptId: 'workshop-host', scriptName: '工坊容器', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+
+  const child = {}
+  const frame = (context.document as { createElement(tag: string): RuntimeElement }).createElement('iframe')
+  frame.contentWindow = child
+  frame.setAttribute('src', 'https://workshop.example.test/?embed=1')
+  ;(context.document as { body: RuntimeElement }).body.appendChild(frame)
+  const replies: unknown[] = []
+  let closed = 0
+  const port = { postMessage(value: unknown) { replies.push(value) }, close() { closed += 1 } }
+  ;(context.dispatchWindow as (type: string, event: unknown) => void)('message', {
+    source: child,
+    ports: [port],
+    data: {
+      channel: 'dsh-agent-rp:identity', action: 'request', format: 0, requestId: 'workshop-1',
+      audience: 'https://workshop.example.test', nonce: 'abcdefghijklmnop', includeDisplayName: false,
+    },
+  })
+  const request = (context.posted as Record<string, unknown>[]).find(message => (
+    message.action === 'capability-request' && message.capability === 'identity.native.attest'
+  ))
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), {
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'workshop-host', action: 'capability-request',
+    requestId: '1', capability: 'identity.native.attest', payload: {
+      audience: 'https://workshop.example.test', nonce: 'abcdefghijklmnop', includeDisplayName: false,
+    },
+  })
+  const result = {
+    format: 0, provider: 'dsh-native', attestation: 'header.payload.signature', expiresAt: 1_800_000_300_000,
+    keyId: 'public-key-id', publicKey: { kty: 'EC', crv: 'P-256', x: 'public-x', y: 'public-y' },
+  }
+  ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
+    action: 'capability-result', capability: 'identity.native.attest', requestId: '1', ok: true, value: result,
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(JSON.parse(JSON.stringify(replies)), [{
+    channel: 'dsh-agent-rp:identity', action: 'result', format: 0, requestId: 'workshop-1', ok: true,
+    value: result,
+  }])
+  assert.equal(closed, 1)
+
+  const mismatchedReplies: unknown[] = []
+  ;(context.dispatchWindow as (type: string, event: unknown) => void)('message', {
+    source: child,
+    ports: [{ postMessage(value: unknown) { mismatchedReplies.push(value) }, close() {} }],
+    data: {
+      channel: 'dsh-agent-rp:identity', action: 'request', format: 0, requestId: 'workshop-2',
+      audience: 'https://other.example.test', nonce: 'abcdefghijklmnop', includeDisplayName: false,
+    },
+  })
+  assert.deepEqual(mismatchedReplies, [])
+  assert.equal((context.posted as Record<string, unknown>[]).filter(message => (
+    message.action === 'capability-request' && message.capability === 'identity.native.attest'
+  )).length, 1)
+})
+
+test('validates native identity requests at the opaque Tavern frame boundary', () => {
+  const valid = {
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'native-identity',
+    action: 'capability-request', capability: 'identity.native.attest', requestId: 'identity-1',
+    payload: {
+      audience: 'https://workshop.example.test', nonce: 'abcdefghijklmnop', includeDisplayName: false,
+    },
+  }
+  assert.deepEqual(parseTavernNativeIdentityCapabilityRequest(valid), {
+    requestId: 'identity-1', audience: 'https://workshop.example.test',
+    nonce: 'abcdefghijklmnop', includeDisplayName: false,
+  })
+  for (const invalid of [
+    { ...valid, payload: { ...valid.payload, audience: 'http://workshop.example.test' } },
+    { ...valid, payload: { ...valid.payload, audience: 'https://workshop.example.test/path' } },
+    { ...valid, payload: { ...valid.payload, nonce: 'short' } },
+    { ...valid, payload: { ...valid.payload, sourceText: 'not accepted' } },
+    { ...valid, ignored: 'not accepted' },
+    { ...valid, ignored: '猫'.repeat(8_000) },
+  ]) assert.equal(parseTavernNativeIdentityCapabilityRequest(invalid), undefined)
+})
+
+test('validates external-window requests and bounded callback messages at the opaque-frame boundary', () => {
+  const valid = {
+    action: 'capability-request', capability: 'ui.external-window.open', requestId: 'external-1',
+    payload: {
+      url: 'https://discord.com/oauth2/authorize?client_id=public-test',
+      target: 'discord_login', features: 'width=600,height=800',
+    },
+  }
+  assert.deepEqual(parseTavernExternalWindowCapabilityRequest(valid), {
+    requestId: 'external-1', url: 'https://discord.com/oauth2/authorize?client_id=public-test',
+    target: 'discord_login', features: 'width=600,height=800',
+  })
+  assert.equal(parseTavernExternalWindowCapabilityRequest({
+    ...valid, payload: { ...valid.payload, url: 'http://discord.com/oauth2/authorize' },
+  }), undefined)
+  assert.equal(parseTavernExternalWindowCapabilityRequest({
+    ...valid, payload: { ...valid.payload, url: 'https://user:password@example.test/login' },
+  }), undefined)
+  assert.equal(parseTavernExternalWindowCapabilityRequest({
+    ...valid, payload: { ...valid.payload, target: 'x'.repeat(201) },
+  }), undefined)
+  assert.equal(parseTavernExternalWindowCapabilityRequest({ ...valid, ignored: '猫'.repeat(8_000) }), undefined)
+  assert.equal(validExternalWindowMessage('tavern-script-frame-v0',
+    'https://workshop.example.test', { channel: 'workshop:auth', action: 'loginSuccess' },
+  ), true)
+  assert.equal(validExternalWindowMessage('tavern-script-frame-v0', 'null', { action: 'loginSuccess' }), false)
+  assert.equal(validExternalWindowMessage(
+    'tavern-script-frame-v0', 'https://workshop.example.test/path', { action: 'loginSuccess' },
+  ), false)
+  assert.equal(validExternalWindowMessage(
+    'tavern-script-frame-v0', 'https://workshop.example.test', '猫'.repeat(70_000),
+  ), false)
+})
+
 test('bridges Tavern confirmation popups to the Host and returns custom results', async () => {
   const script = String.raw`
 window.__popupResult = SillyTavern.callGenericPopup(
@@ -508,6 +1453,7 @@ toastr.success('已打开确认框');
     id: 'popup', name: '确认保存', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'popup', scriptName: '确认保存', scriptInfo: '', buttons: [],
     characterName: '白露', characterId: 'bailu.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -519,13 +1465,16 @@ toastr.success('已打开确认框');
   assert.notEqual(source, undefined)
   const context = runtimeAcceptanceContext([])
   runInNewContext(source!, context)
-  const popup = (context.posted as Record<string, unknown>[]).find(message => message.action === 'popup-request')
+  const popup = (context.posted as Record<string, unknown>[]).find(message => message.action === 'capability-request')
   assert.deepEqual(JSON.parse(JSON.stringify(popup)), {
-    source: 'dsh-agent-rp-tavern-script', scriptId: 'popup', action: 'popup-request', requestId: '1',
-    popupType: 2, content: '<p><strong>要保存吗？</strong></p>', inputValue: '',
-    options: {
-      okButton: '保存', cancelButton: '放弃',
-      customButtons: [{ text: '稍后', result: 2 }],
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'popup', action: 'capability-request', requestId: '1',
+    capability: 'ui.popup.open',
+    payload: {
+      popupType: 2, content: '<p><strong>要保存吗？</strong></p>', inputValue: '',
+      options: {
+        okButton: '保存', cancelButton: '放弃',
+        customButtons: [{ text: '稍后', result: 2 }],
+      },
     },
   })
   const toast = (context.posted as Record<string, unknown>[]).find(message => message.action === 'toast')
@@ -534,7 +1483,7 @@ toastr.success('已打开确认框');
     level: 'success', value: '已打开确认框',
   })
   ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
-    action: 'popup-result', requestId: '1', ok: true, value: 2,
+    action: 'capability-result', capability: 'ui.popup.open', requestId: '1', ok: true, value: 2,
   })
   assert.equal(await context.__popupResult, 2)
 })
@@ -552,6 +1501,7 @@ window.__modernPopup = {
     id: 'modern-popup', name: '现代弹窗', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'modern-popup', scriptName: '现代弹窗', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -563,24 +1513,56 @@ window.__modernPopup = {
   assert.notEqual(source, undefined)
   const context = runtimeAcceptanceContext([])
   runInNewContext(source!, context)
-  const popups = (context.posted as Record<string, unknown>[]).filter(message => message.action === 'popup-request')
+  const popups = (context.posted as Record<string, unknown>[]).filter(message => message.action === 'capability-request')
   assert.equal(popups.length, 2)
   assert.deepEqual(JSON.parse(JSON.stringify(popups)), [{
-    source: 'dsh-agent-rp-tavern-script', scriptId: 'modern-popup', action: 'popup-request', requestId: '1',
-    popupType: 2, content: '<h3>删除记录</h3><p><strong>确定吗？</strong></p>', inputValue: '', options: {},
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'modern-popup', action: 'capability-request', requestId: '1',
+    capability: 'ui.popup.open', payload: {
+      popupType: 2, content: '<h3>删除记录</h3><p><strong>确定吗？</strong></p>', inputValue: '', options: {},
+    },
   }, {
-    source: 'dsh-agent-rp-tavern-script', scriptId: 'modern-popup', action: 'popup-request', requestId: '2',
-    popupType: 3, content: '<p>新的名字</p>', inputValue: '旧名字', options: { placeholder: '输入名字' },
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'modern-popup', action: 'capability-request', requestId: '2',
+    capability: 'ui.popup.open', payload: {
+      popupType: 3, content: '<p>新的名字</p>', inputValue: '旧名字', options: { placeholder: '输入名字' },
+    },
   }])
   ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
-    action: 'popup-result', requestId: '1', ok: true, value: 1,
+    action: 'capability-result', capability: 'ui.popup.open', requestId: '1', ok: true, value: 1,
   })
   ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
-    action: 'popup-result', requestId: '2', ok: true, value: '新名字',
+    action: 'capability-result', capability: 'ui.popup.open', requestId: '2', ok: true, value: '新名字',
   })
   const result = context.__modernPopup as { confirm: Promise<boolean>; input: Promise<string> }
   assert.equal(await result.confirm, true)
   assert.equal(await result.input, '新名字')
+})
+
+test('validates typed popup capability requests at the opaque-frame boundary', () => {
+  const valid = {
+    action: 'capability-request', capability: 'ui.popup.open', requestId: 'request-1',
+    payload: {
+      popupType: 3, content: '<p>名称</p>', inputValue: '旧名称',
+      options: { placeholder: '新名称', customButtons: [{ text: '保留', result: 2 }] },
+    },
+  }
+  assert.deepEqual(parseTavernPopupCapabilityRequest(valid), {
+    requestId: 'request-1', type: 3, content: '<p>名称</p>', inputValue: '旧名称',
+    options: { placeholder: '新名称', customButtons: [{ text: '保留', result: 2 }] },
+  })
+  assert.equal(parseTavernPopupCapabilityRequest({ ...valid, capability: 'future.popup' }), undefined)
+  assert.equal(parseTavernPopupCapabilityRequest({ ...valid, requestId: 'x'.repeat(129) }), undefined)
+  assert.equal(parseTavernPopupCapabilityRequest({
+    ...valid, payload: { ...valid.payload, content: 'x'.repeat(262_145) },
+  }), undefined)
+  assert.equal(parseTavernPopupCapabilityRequest({
+    ...valid, payload: { ...valid.payload, options: { okButton: 'x'.repeat(201) } },
+  }), undefined)
+  assert.equal(parseTavernPopupCapabilityRequest({
+    ...valid, payload: { ...valid.payload, options: { customButtons: Array.from({ length: 10 }, () => ({ text: 'x', result: 1 })) } },
+  }), undefined)
+  assert.equal(parseTavernPopupCapabilityRequest({
+    ...valid, ignored: '猫'.repeat(700_000),
+  }), undefined)
 })
 
 test('persists extension settings and exposes the lodash debounce used by public Tavern scripts', async () => {
@@ -609,6 +1591,7 @@ window.__tavernSettings = {
     id: 'settings', name: '扩展设置', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'settings', scriptName: '扩展设置', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     extensionSettings: { cardRefinery: { theme: 'light', autosave: true } },
@@ -628,10 +1611,13 @@ window.__tavernSettings = {
   assert.deepEqual(result.calls, ['latest'])
   assert.equal(result.pendingBeforeFlush, true)
   assert.equal(result.pendingAfterCancel, false)
-  const save = (context.posted as Record<string, unknown>[]).find(message => message.action === 'extension-settings-save')
+  const save = (context.posted as Record<string, unknown>[]).find(message => (
+    message.action === 'capability-request' && message.capability === 'settings.extension.persist'
+  ))
   assert.deepEqual(JSON.parse(JSON.stringify(save)), {
-    source: 'dsh-agent-rp-tavern-script', scriptId: 'settings', action: 'extension-settings-save', requestId: '1',
-    settings: { cardRefinery: { theme: 'night', autosave: true } },
+    source: 'dsh-agent-rp-tavern-script', scriptId: 'settings', action: 'capability-request', requestId: '1',
+    capability: 'settings.extension.persist',
+    payload: { settings: { cardRefinery: { theme: 'night', autosave: true } } },
   })
   ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
     action: 'extension-settings-sync', settings: { shared: { revision: 2 } },
@@ -664,6 +1650,7 @@ window.__localforage = (async () => {
     id: 'localforage', name: '持久存储', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'localforage', scriptName: '持久存储', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -685,25 +1672,72 @@ window.__localforage = (async () => {
     customLength: 1,
     firstCustomKey: 'draft',
   })
-  const requests = (context.posted as Record<string, unknown>[]).filter(message => message.action === 'storage-request')
-  assert.ok(requests.some(message => message.namespace === 'localforage\u0000keyvaluepairs'))
-  assert.ok(requests.some(message => message.namespace === 'card-refinery\u0000sessions'))
+  const requests = (context.posted as Record<string, unknown>[]).filter(
+    message => message.action === 'capability-request' && message.capability === 'storage.script.persist',
+  )
+  assert.ok(requests.some(message => (message.payload as Record<string, unknown>).namespace === 'localforage\u0000keyvaluepairs'))
+  assert.ok(requests.some(message => (message.payload as Record<string, unknown>).namespace === 'card-refinery\u0000sessions'))
 })
 
-test('round-trips browser-persisted Tavern extension settings and recovers corrupt data', () => {
-  const values = new Map<string, string>()
-  const storage = {
-    getItem(key: string) { return values.get(key) ?? null },
-    setItem(key: string, value: string) { values.set(key, value) },
+test('validates typed persistent-storage requests and results at the opaque-frame boundary', () => {
+  const valid = {
+    action: 'capability-request', capability: 'storage.script.persist', requestId: 'storage-1',
+    payload: {
+      operation: 'set', namespace: 'localforage\u0000keyvaluepairs', key: 'session',
+      value: { stage: 2, flags: [true, null, 'ready'] },
+    },
   }
-  assert.deepEqual(writeTavernExtensionSettings(storage, { sample: { enabled: true } }), {
-    sample: { enabled: true },
+  assert.deepEqual(parseTavernStorageCapabilityRequest(valid), {
+    requestId: 'storage-1',
+    request: {
+      operation: 'set', namespace: 'localforage\u0000keyvaluepairs', key: 'session',
+      value: { stage: 2, flags: [true, null, 'ready'] },
+    },
   })
-  assert.deepEqual(readTavernExtensionSettings(storage), { sample: { enabled: true } })
-  assert.equal(values.get(TAVERN_EXTENSION_SETTINGS_KEY), '{"sample":{"enabled":true}}')
-  values.set(TAVERN_EXTENSION_SETTINGS_KEY, '{')
-  assert.deepEqual(readTavernExtensionSettings(storage), {})
-  assert.throws(() => writeTavernExtensionSettings(storage, []), /必须是对象/u)
+  assert.equal(parseTavernStorageCapabilityRequest({ ...valid, capability: 'future.storage' }), undefined)
+  assert.equal(parseTavernStorageCapabilityRequest({
+    ...valid, payload: { ...valid.payload, key: undefined },
+  }), undefined)
+  assert.equal(parseTavernStorageCapabilityRequest({
+    ...valid, payload: { operation: 'keys', namespace: 'store', key: 'smuggled' },
+  }), undefined)
+  assert.equal(parseTavernStorageCapabilityRequest({
+    ...valid, payload: { ...valid.payload, value: new Map([['key', 'value']]) },
+  }), undefined)
+  const cyclic: Record<string, unknown> = {}
+  cyclic.self = cyclic
+  assert.equal(parseTavernStorageCapabilityRequest({
+    ...valid, payload: { ...valid.payload, value: cyclic },
+  }), undefined)
+  assert.equal(parseTavernStorageCapabilityRequest({ ...valid, ignored: '猫'.repeat(700_000) }), undefined)
+  assert.equal(validTavernStorageCapabilityResult({ saved: true }), true)
+  assert.equal(validTavernStorageCapabilityResult(undefined), true)
+  assert.equal(validTavernStorageCapabilityResult(new Uint8Array([1, 2, 3])), false)
+  assert.equal(validTavernStorageCapabilityResult('猫'.repeat(700_000)), false)
+})
+
+test('validates bounded extension-settings capability requests before Host persistence', () => {
+  const valid = {
+    source: 'dsh-agent-rp-tavern-script', action: 'capability-request',
+    capability: 'settings.extension.persist', requestId: 'settings-1',
+    payload: { settings: { sample: { enabled: true } } },
+  }
+  assert.deepEqual(parseTavernExtensionSettingsCapabilityRequest(valid), {
+    requestId: 'settings-1', settings: { sample: { enabled: true } },
+  })
+  assert.equal(parseTavernExtensionSettingsCapabilityRequest({ ...valid, capability: 'future.settings' }), undefined)
+  assert.equal(parseTavernExtensionSettingsCapabilityRequest({
+    ...valid, payload: { settings: [] },
+  }), undefined)
+  assert.equal(parseTavernExtensionSettingsCapabilityRequest({
+    ...valid, payload: { settings: { binary: new Uint8Array([1, 2, 3]) } },
+  }), undefined)
+  const cyclic: Record<string, unknown> = {}
+  cyclic.self = cyclic
+  assert.equal(parseTavernExtensionSettingsCapabilityRequest({
+    ...valid, payload: { settings: cyclic },
+  }), undefined)
+  assert.equal(parseTavernExtensionSettingsCapabilityRequest({ ...valid, ignored: '猫'.repeat(700_000) }), undefined)
 })
 
 test('exposes only the current lossless character card through SillyTavern context and getCharData', () => {
@@ -739,6 +1773,7 @@ window.__currentCharacter = {
     id: 'current-card', name: '当前角色', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'current-card', scriptName: '当前角色', scriptInfo: '', buttons: [],
     characterName: '露露', characterId: 'bailu.png', characterCard, chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -781,6 +1816,7 @@ window.__regexMutation = replaceTavernRegexes([{
     id: 'regex-editor', name: '正则编辑', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'regex-editor', scriptName: '正则编辑', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test',
     approvedScriptOrigins: [], preset: {
@@ -832,6 +1868,7 @@ window.__regexReads = {
     id: 'regex-reader', name: '正则读取', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'regex-reader', scriptName: '正则读取', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     preset: {
@@ -878,6 +1915,7 @@ window.__scriptTrees = {
     id: 'tree-reader', name: '脚本读取', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'tree-reader', scriptName: '脚本读取', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -897,6 +1935,43 @@ window.__scriptTrees = {
     'character-status': [{ button_id: 'character-status_查看', button_name: '查看' }],
     'preset-tool': [{ button_id: 'preset-tool_查看', button_name: '查看' }],
   })
+})
+
+test('updates only the current script scope when duplicate ids exist', () => {
+  const sharedScript: TavernScriptSnapshot['characterScriptTrees'][number] = {
+    type: 'script', enabled: true, name: '同名脚本', id: 'shared', content: 'void 0', info: '',
+    button: { enabled: false, buttons: [] }, data: { owner: 'character' },
+    export_with: { data: true, button: true },
+  }
+  const html = tavernScriptFrameSource({
+    id: 'shared', name: '预设同名脚本', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: { owner: 'preset' },
+  }, `
+replaceVariables({ owner: 'preset-updated' }, { type: 'script' });
+window.__duplicateTrees = {
+  preset: getScriptTrees({ type: 'preset' }),
+  character: getScriptTrees({ type: 'character' }),
+};
+`, {
+    scriptScope: 'preset',
+    scriptId: 'shared', scriptName: '预设同名脚本', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: { owner: 'preset' } },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [],
+    presetScriptTrees: [{ ...sharedScript, data: { owner: 'preset' } }],
+    characterScriptTrees: [sharedScript], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const result = JSON.parse(JSON.stringify(context.__duplicateTrees)) as {
+    readonly preset: readonly { readonly data: unknown }[]
+    readonly character: readonly { readonly data: unknown }[]
+  }
+  assert.deepEqual(result.preset[0]?.data, { owner: 'preset-updated' })
+  assert.deepEqual(result.character[0]?.data, { owner: 'character' })
 })
 
 test('persists synchronous and asynchronous Tavern script tree updates', async () => {
@@ -919,6 +1994,7 @@ window.__acceptance = (async () => {
     id: 'character-tool', name: '脚本写入', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'character-tool', scriptName: '脚本写入', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -952,7 +2028,7 @@ const registration = registerMacroLike(/\{\{mood::(.*?)\}\}/gu, (context, _match
   context.message_id + ':' + context.role + ':' + mood);
 registerMacroLike(/\{\{mood::(.*?)\}\}/iu, () => 'duplicate must not win');
 window.__macroBefore = formatAsTavernRegexedString('{{mood::平静}}', 'ai_output', 'display', { depth: 0 });
-window.__macroDirect = substitudeMacros('{{char}}/{{user}}/{{lastMessageId}}/{{messageId}}/{{mood::安心}}');
+window.__macroDirect = substitudeMacros('{{char}}/<char>/<bot>/{{user}}/<user>/{{lastMessageId}}/{{messageId}}/{{mood::安心}}');
 registration.unregister();
 window.__macroAfter = formatAsTavernRegexedString('{{mood::平静}}', 'ai_output', 'display', { depth: 0 });
 `
@@ -960,6 +2036,7 @@ window.__macroAfter = formatAsTavernRegexedString('{{mood::平静}}', 'ai_output
     id: 'macro-runtime', name: '宏替换', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'macro-runtime', scriptName: '宏替换', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -973,7 +2050,7 @@ window.__macroAfter = formatAsTavernRegexedString('{{mood::平静}}', 'ai_output
   const context = runtimeAcceptanceContext([])
   runInNewContext(source!, context)
   assert.equal(context.__macroBefore, '0:assistant:平静')
-  assert.equal(context.__macroDirect, '角色/用户/0/0/0:assistant:安心')
+  assert.equal(context.__macroDirect, '角色/角色/角色/用户/用户/0/0/0:assistant:安心')
   assert.equal(context.__macroAfter, '{{mood::平静}}')
 })
 
@@ -992,6 +2069,7 @@ window.__sillyTavernMacros = {
     id: 'context-macros', name: '上下文宏', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'context-macros', scriptName: '上下文宏', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', userName: '旅人',
     approvedScriptOrigins: [],
@@ -1040,6 +2118,7 @@ window.__injectionReady = Promise.resolve().then(() => {
     id: 'prompt-injector', name: '提示注入', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'prompt-injector', scriptName: '提示注入', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -1074,6 +2153,7 @@ injectPrompts([{
 }]);
 `
   const snapshot = {
+    scriptScope: 'character',
     scriptId: 'conditional-injector', scriptName: '条件注入', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: { enabled: false }, message: {}, script: {} },
@@ -1117,6 +2197,7 @@ test('consumes only one-shot prompt injections after a completed generation even
     id: 'once-injector', name: '单次提示', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, '', {
+    scriptScope: 'character',
     scriptId: 'once-injector', scriptName: '单次提示', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -1151,6 +2232,7 @@ test('persists canonical MVU initialization listener changes', async () => {
 window.__mvuInitializedEvent = Mvu.events.VARIABLE_INITIALIZED;
 eventOn(Mvu.events.VARIABLE_INITIALIZED, variables => { variables.stat_data.ready = true; });
 `, {
+    scriptScope: 'character',
     scriptId: 'mvu-schema', scriptName: '变量结构', scriptInfo: '', buttons: [],
     characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: { stat_data: {} }, script: {} },
@@ -1217,6 +2299,7 @@ window.__acceptance = generate({
     id: 'v18-capture', name: '1', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'v18-capture', scriptName: '1', scriptInfo: '', buttons: [],
     characterName: '白露', characterId: 'bailu.png', chatId: 'session-test',
     approvedScriptOrigins: [],
@@ -1270,6 +2353,7 @@ window.__acceptance = Promise.all([
     id: 'worldbook-reader', name: '世界书读取', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'worldbook-reader', scriptName: '世界书读取', scriptInfo: '', buttons: [],
     characterName: '白露', characterId: 'bailu.png', chatId: 'session-test',
     approvedScriptOrigins: [],
@@ -1338,6 +2422,7 @@ window.__acceptance = (async () => {
     id: 'legacy-worldbook-writer', name: '旧世界书写入', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, script, {
+    scriptScope: 'character',
     scriptId: 'legacy-worldbook-writer', scriptName: '旧世界书写入', scriptInfo: '', buttons: [],
     characterName: '白露', characterId: 'bailu.png', chatId: 'session-test', approvedScriptOrigins: [],
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
@@ -1461,6 +2546,7 @@ test('runs the same two regex phases inside the isolated Tavern runtime', () => 
     id: 'status-runtime', name: '状态栏', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, '', {
+    scriptScope: 'character',
     scriptId: 'status-runtime', scriptName: '状态栏', scriptInfo: '', buttons: [],
     characterName: '白露', characterId: 'bailu.png', chatId: 'session-test',
     approvedScriptOrigins: [],
@@ -1480,6 +2566,15 @@ test('runs the same two regex phases inside the isolated Tavern runtime', () => 
 
   assert.equal(format('<StatusBlocks>状态：平静</StatusBlocks>', { message_id: 0 }),
     '<details><summary>状态</summary>平静</details>')
+  const body = (context.document as { readonly body: RuntimeElement }).body
+  const chat = body.children[0] as RuntimeElement & { readonly id?: string; readonly className?: string }
+  const shell = chat.children[1] as RuntimeElement & { readonly className?: string }
+  const mirrored = shell.children[0] as RuntimeElement & { readonly className?: string }
+  assert.equal(chat.id, 'chat')
+  assert.equal(chat.className, 'chat')
+  assert.equal(shell.className, 'mes character_mes')
+  assert.equal(mirrored.className, 'mes_text')
+  assert.equal(mirrored.innerHTML, '')
 })
 
 test('supports raw and escaped macro substitution in the find expression', () => {

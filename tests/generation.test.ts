@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { encodeGenerationState, parseGenerationRequest, readGenerationGroups } from '../src/generation.ts'
+import {
+  decodeGenerationState,
+  encodeGenerationState,
+  executeGenerationCommand,
+  parseGenerationRequest,
+  readGenerationGroups,
+} from '../src/generation.ts'
 import { CommandId } from '@deepseek-ai/dsh-commands'
 import { executeTavernTrigger } from '../src/tavern-trigger.ts'
 
@@ -60,6 +66,73 @@ test('folds latest selectable reply group snapshots across replacement events', 
   assert.equal(group?.selectedVersionSeq, original.seq)
   assert.equal(group?.surfaceSeq, restored.seq)
   assert.deepEqual(session.deriveMessages().map(message => message.content[0]?.type === 'text' ? message.content[0].text : ''), ['第一版'])
+})
+
+test('regenerates without exposing the rejected reply to the replacement request', async () => {
+  const session = Session.create(SessionId('generation-isolated-regenerate'))
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '请描述没有状态栏的房间。' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  const original = appendAssistant(session, 1, '有问题的回复\n<状态栏>仍然显示</状态栏>')
+  let requestTranscript: readonly string[] = []
+  const agent = {
+    session,
+    status: 'idle',
+    inbox: { hasPending: false },
+    followup(message: ReturnType<typeof createUserMessage>) {
+      session.append('user/message', message, { surfaceOp: 'append' })
+      requestTranscript = session.deriveMessages().map(item => item.content.flatMap(block =>
+        block.type === 'text' ? [block.text] : []).join('\n'))
+      appendAssistant(session, 2, '房间里只有安静的灯光。')
+    },
+    whenIdle: async () => {},
+    cancel: () => {},
+  }
+
+  const result = await executeGenerationCommand({
+    agent: agent as never,
+    rawInput: JSON.stringify({ operation: 'regenerate', replySeq: original.seq }),
+    signal: new AbortController().signal,
+  })
+  const state = decodeGenerationState(result.text)
+
+  assert.equal(requestTranscript.some(text => text.includes('有问题的回复') || text.includes('<状态栏>')), false)
+  assert.deepEqual(session.deriveMessages().map(message => message.content.flatMap(block =>
+    block.type === 'text' ? [block.text] : []).join('\n')), [
+    '请描述没有状态栏的房间。',
+    '房间里只有安静的灯光。',
+  ])
+  assert.deepEqual(state?.versions.map(version => version.text), [
+    '有问题的回复\n<状态栏>仍然显示</状态栏>',
+    '房间里只有安静的灯光。',
+  ])
+})
+
+test('restores the selected reply when isolated regeneration produces no replacement', async () => {
+  const session = Session.create(SessionId('generation-isolated-regenerate-failure'))
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '继续。' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  const original = appendAssistant(session, 1, '保留这一版。')
+  const agent = {
+    session,
+    status: 'idle',
+    inbox: { hasPending: false },
+    followup(message: ReturnType<typeof createUserMessage>) {
+      session.append('user/message', message, { surfaceOp: 'append' })
+    },
+    whenIdle: async () => {},
+    cancel: () => {},
+  }
+
+  await assert.rejects(executeGenerationCommand({
+    agent: agent as never,
+    rawInput: JSON.stringify({ operation: 'regenerate', replySeq: original.seq }),
+    signal: new AbortController().signal,
+  }), /模型没有生成可用的角色回复/u)
+
+  assert.deepEqual(session.deriveMessages().map(message => message.content.flatMap(block =>
+    block.type === 'text' ? [block.text] : []).join('\n')), ['继续。', '保留这一版。'])
 })
 
 test('triggers one reply after a Tavern script appends a user message', async () => {

@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { activateLorebook, inspectLorebook, inspectLorebooks } from '../src/import/lorebook.ts'
 import { parseWorldInfoJson, parseWorldInfoJsonBytes } from '../src/import/world-info.ts'
+import { summarizeWorldEngineFailures, worldEngineFailureTotal } from '../src/world-engine-diagnostic.ts'
+import { createNativeWorldEngine, summarizeWorldEngineResult } from '../src/world-engine.ts'
 
 function world(entries: object): string {
   return JSON.stringify({ name: '海城', entries, extensions: { 'fixture/unknown': true } })
@@ -191,6 +193,26 @@ test('explains the same active entries used by prompt rendering', () => {
   ])
 })
 
+test('summarizes only World Info execution failures for content-free diagnostics', () => {
+  const counts = summarizeWorldEngineFailures([
+    'active-constant', 'active-keyword', 'primary-unmatched', 'secondary-unmatched',
+    'budget-excluded', 'session-budget-excluded', 'regex-runtime-unavailable', 'regex-invalid',
+    'regex-execution-limit', 'regex-resource-limit', 'decorator-unsupported',
+    'template-unsupported', 'template-error',
+  ])
+
+  assert.deepEqual(counts, {
+    regexRuntimeUnavailable: 1,
+    regexInvalid: 1,
+    regexExecutionLimit: 1,
+    regexResourceLimit: 1,
+    decoratorUnsupported: 1,
+    templateUnsupported: 1,
+    templateError: 1,
+  })
+  assert.equal(worldEngineFailureTotal(counts), 7)
+})
+
 test('activates constant entries without evaluating their regex keywords', () => {
   const book = parseWorldInfoJson(world({
     constantRegex: {
@@ -223,4 +245,31 @@ test('shares one final token budget across books using entry priority', () => {
   assert.equal(inspected.approximateTokens, 1)
   assert.equal(inspected.books[0]?.inspected.entries[0]?.reason, 'session-budget-excluded')
   assert.equal(inspected.books[1]?.inspected.entries[0]?.reason, 'active-constant')
+})
+
+test('routes the native engine through a pure request and content-free diagnostic summary', () => {
+  const source = parseWorldInfoJson(world({
+    active: { key: [], content: 'Private active text.', constant: true, order: 2, position: 0 },
+    absent: { key: ['Private keyword'], content: 'Private inactive text.', order: 1, position: 1 },
+  }))
+  const result = createNativeWorldEngine().evaluate({
+    format: 0,
+    books: [{ id: 'private-book-id', lorebook: source.lorebook }],
+    messages: ['Unrelated private message'],
+    tokenBudget: 32,
+  })
+
+  assert.deepEqual(result.beforeCharacter, ['Private active text.'])
+  assert.deepEqual(summarizeWorldEngineResult(result), {
+    engine: 'native-v0',
+    books: 1,
+    entries: 2,
+    activeEntries: 1,
+    promptContributions: 1,
+    approximateTokens: 5,
+    tokenBudget: 32,
+    reasons: { 'active-constant': 1, 'primary-unmatched': 1 },
+    templateOutcomes: {},
+  })
+  assert.doesNotMatch(JSON.stringify(summarizeWorldEngineResult(result)), /Private|book-id|message/u)
 })

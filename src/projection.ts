@@ -20,7 +20,8 @@ import { configurePreset, parsePresetConfigurationRequest } from './preset-confi
 import { parsePresetLibraryResult } from './preset-library-protocol.ts'
 import { parseSessionPersona } from './session-persona.ts'
 import { decodeGenerationState, type GenerationStateRecord } from './generation.ts'
-import { inspectLorebooks } from './import/lorebook.ts'
+import { createNativeWorldEngine } from './world-engine.ts'
+import { summarizeWorldEngineFailures } from './world-engine-diagnostic.ts'
 import { createEjsWorldInfoBooks, EjsTemplateEngine } from './ejs-template.ts'
 import type { ImportedCharacterCard, ImportedWorldInfo } from './import/types.ts'
 import {
@@ -42,6 +43,12 @@ import {
   type TavernHelperState,
 } from './tavern-helper.ts'
 import { PROMPT_REGEX_SOURCE_MARKER, readPromptRegexSourceMarker } from './frontend-regex.ts'
+import {
+  applyTavernAuxiliaryGenerationEvent,
+  EMPTY_TAVERN_AUXILIARY_GENERATION_REPLAY,
+  summarizeTavernAuxiliaryGenerationReplay,
+  type TavernAuxiliaryGenerationReplay,
+} from './tavern-generation-log.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -70,6 +77,7 @@ const projectionSchema = {
       || (record.avatarLibraryId !== undefined && typeof record.avatarLibraryId !== 'string')
       || typeof record.importedMessageCount !== 'number' || !Number.isSafeInteger(record.importedMessageCount)
       || record.importedMessageCount < 0
+      || (record.auxiliaryGenerations !== undefined && !validAuxiliaryGenerationSummary(record.auxiliaryGenerations))
       || typeof record.worldInfoCount !== 'number' || !Number.isSafeInteger(record.worldInfoCount)
       || record.worldInfoCount < 0
       || typeof record.worldInfo !== 'object' || record.worldInfo === null
@@ -84,10 +92,20 @@ const projectionSchema = {
   },
 }
 
+function validAuxiliaryGenerationSummary(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  if (!['requests', 'succeeded', 'failed', 'pending', 'malformed'].every(key =>
+    typeof record[key] === 'number' && Number.isSafeInteger(record[key]) && record[key] >= 0)
+  ) return false
+  return record.requests === Number(record.succeeded) + Number(record.failed) + Number(record.pending)
+}
+
 type ImportCall = 'character-card' | 'world-info' | 'preset'
 
 interface AgentRpProjectionState {
-  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'worldInfo' | 'presetLibrary' | 'lastRequest' | 'generations'>
+  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'worldInfo' | 'presetLibrary' | 'lastRequest'
+  | 'generations' | 'auxiliaryGenerations'>
   readonly cardWorldInfoCount: number
   readonly cardLorebook?: SessionLorebookSource
   readonly standaloneWorldInfos: Readonly<Record<string, SessionLorebookSource>>
@@ -108,6 +126,7 @@ interface AgentRpProjectionState {
   readonly generations: Readonly<Record<string, GenerationStateRecord>>
   readonly currentReplySeq?: number
   readonly tavern?: TavernHelperState
+  readonly auxiliaryGenerations: TavernAuxiliaryGenerationReplay
 }
 
 const INITIAL_CHARACTER: AgentRpProjectionState['character'] = {
@@ -274,11 +293,12 @@ function worldInfoProjection(
   }
   let activeCount = 0
   const aggregateBudget = worldInfoTokenBudget(state.worldInfoConfiguration)
-  const inspectedCollection = inspectLorebooks(
-    configuredSources.map(({ source, configured }) => ({ id: source.id, lorebook: configured.lorebook })),
+  const inspectedCollection = createNativeWorldEngine(templateOptions).evaluate({
+    format: 0,
+    books: configuredSources.map(({ source, configured }) => ({ id: source.id, lorebook: configured.lorebook })),
     messages,
-    { ...templateOptions, tokenBudget: aggregateBudget },
-  )
+    tokenBudget: aggregateBudget,
+  })
   const books = configuredSources.map(({ source, configured }, sourceIndex) => {
     const inspected = inspectedCollection.books[sourceIndex]!.inspected
     const overrides = new Map(state.worldInfoConfiguration.overrides
@@ -314,6 +334,7 @@ function worldInfoProjection(
       }),
     }
   })
+  const entryReasons = books.flatMap(book => book.entries.map(entry => entry.reason))
   return {
     revision: state.worldInfoConfiguration.revision,
     activeCount,
@@ -321,6 +342,7 @@ function worldInfoProjection(
     approximateTokens: inspectedCollection.approximateTokens,
     budgetExcludedCount: inspectedCollection.books.flatMap(book => book.inspected.entries)
       .filter(entry => entry.reason === 'session-budget-excluded').length,
+    failureCounts: summarizeWorldEngineFailures(entryReasons),
     books,
   }
 }
@@ -578,10 +600,14 @@ export function createAgentRpProjectionDefinition(
     personaCommands: {},
     presetLibrary: [],
     generations: {},
+    auxiliaryGenerations: EMPTY_TAVERN_AUXILIARY_GENERATION_REPLAY,
   }),
   apply(state, event) {
     const surface = applySurface(state.surface, event)
-    const withSurface = surface === state.surface ? state : { ...state, surface }
+    const auxiliaryGenerations = applyTavernAuxiliaryGenerationEvent(state.auxiliaryGenerations, event)
+    const withSurface = surface === state.surface && auxiliaryGenerations === state.auxiliaryGenerations
+      ? state
+      : { ...state, surface, auxiliaryGenerations }
     const trace = promptRegexTrace(event)
     if (trace !== undefined) return { ...withSurface, promptRegex: trace }
     if (event.type === 'command/run' && event.data.name === 'rp-persona') {
@@ -1000,12 +1026,16 @@ export function createAgentRpProjectionDefinition(
   },
   view: state => {
     const worldInfo = worldInfoProjection(state, ejsTemplateEngine)
+    const auxiliaryGenerations = summarizeTavernAuxiliaryGenerationReplay(state.auxiliaryGenerations)
     const visibleTavernMessages = state.surface.flatMap(({ seq, text, role }) => text === undefined || role === undefined
       ? []
       : [{ seq, role, text, isHidden: false as const }])
     const hiddenTavernMessages = state.tavern?.hiddenPrefix ?? []
     return {
       ...state.character,
+      ...(auxiliaryGenerations.requests === 0 && auxiliaryGenerations.malformed === 0
+        ? {}
+        : { auxiliaryGenerations }),
       worldInfoCount: worldInfo.books.reduce((total, book) => total + book.entries.filter(entry => !entry.deleted).length, 0),
       worldInfo,
       ...(state.mvu === undefined ? {} : { mvu: state.mvu }),
@@ -1032,7 +1062,7 @@ export function createAgentRpProjectionDefinition(
       }),
     }
   },
-  stateVersion: 9,
+  stateVersion: 10,
   }
 }
 

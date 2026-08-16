@@ -1,0 +1,87 @@
+{
+  "prompts": [
+    {
+      "identifier": "main",
+      "name": "Main",
+      "role": "system",
+      "content": "Synthetic system prompt",
+      "system_prompt": true
+    },
+    {
+      "identifier": "worldInfoBefore",
+      "name": "World info marker",
+      "role": "system",
+      "content": "",
+      "marker": true,
+      "system_prompt": true,
+      "forbid_overrides": true
+    },
+    {
+      "identifier": "in-chat",
+      "name": "In-chat fixture",
+      "role": "user",
+      "content": "<%= user %>",
+      "injection_position": 1,
+      "injection_depth": 2,
+      "injection_order": 100
+    },
+    {
+      "identifier": "detached",
+      "name": "Detached fixture",
+      "role": "model",
+      "content": "Synthetic detached prompt"
+    }
+  ],
+  "prompt_order": [
+    {
+      "character_id": 100001,
+      "order": [
+        { "identifier": "main", "enabled": true },
+        { "identifier": "worldInfoBefore", "enabled": true },
+        { "identifier": "in-chat", "enabled": false }
+      ]
+    }
+  ],
+  "temperature": 0.8,
+  "openai_max_tokens": 4096,
+  "wi_format": "<world>{0}</world>",
+  "extensions": {
+    "regex_scripts": [
+      {
+        "scriptName": "Enabled fixture",
+        "findRegex": "/old/gu",
+        "replaceString": "new",
+        "placement": [2]
+      },
+      {
+        "scriptName": "Disabled fixture",
+        "findRegex": "/before/gu",
+        "replaceString": "after",
+        "placement": [1],
+        "disabled": true
+      }
+    ],
+    "SPreset": {
+      "MacroNest": true,
+      "ChatSquash": { "enabled": false }
+    },
+    "tavern_helper": {
+      "variables": { "theme": "fixture", "counter": 1 },
+      "legacy_ui": { "theme": "ignored" },
+      "scripts": [
+        {
+          "id": "enabled-fixture",
+          "name": "Enabled fixture",
+          "content": "eventOn('app_ready', () => {})",
+          "enabled": true
+        },
+        {
+          "id": "disabled-fixture",
+          "name": "Disabled fixture",
+          "content": "",
+          "enabled": false
+        }
+      ]
+    }
+  }
+}

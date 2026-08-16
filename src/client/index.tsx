@@ -10,7 +10,6 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { CommandRowProps, IConversation, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { createRoot, type Root } from 'react-dom/client'
@@ -20,6 +19,11 @@ import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/
 import { parseTavernHelperScripts } from '../import/tavern-helper.ts'
 import { importTavernRegex } from '../tavern-regex.ts'
 import type { TavernHelperMutationRequest, TavernScriptTree, TavernScriptTreeScope, TavernWorldbookEntry } from '../tavern-helper.ts'
+import {
+  tavernExtensionSettingsIdentity,
+  tavernScriptIdentity,
+  tavernScriptStorageIdentity,
+} from '../tavern-script-identity.ts'
 import {
   TAVERN_GENERATION_PATH,
   TAVERN_MODEL_LIST_PATH,
@@ -32,14 +36,18 @@ import {
   type TavernPromptPreviewResponse,
 } from '../tavern-generation-protocol.ts'
 import {
+  type TavernPreflightResult,
+} from '../tavern-preflight-protocol.ts'
+import {
   advanceTavernTranscript,
   BUILT_IN_TAVERN_SCRIPT_ORIGINS,
-  readTavernExtensionSettings,
   resolveTavernScriptExecution,
+  shouldResetTavernScriptRuntime,
   tavernMessageDepth,
+  tavernScriptFrameNavigation,
   tavernScriptFrameSource,
+  tavernScriptRuntimePhase,
   validatedTavernCompatibilityMarkers,
-  writeTavernExtensionSettings,
   TavernScriptOriginApprovalError,
   type TavernTranscriptCursor,
   type TavernScriptSnapshot,
@@ -62,11 +70,91 @@ import {
   type CharacterDisplaySegment, type CharacterRegexScriptSummary,
 } from '../frontend-regex.ts'
 import {
-  blockedCardFrameOrigins, cardFrameDiagnosticSummary, compileCardFrameDocument, compileCardFrames,
+  blockedCardFrameResources, compileCardFrameDocument, inlineCardSanitizerProbeState,
 } from './card-frame.ts'
+import {
+  cardFrameGreetingChoices,
+  cardResourceBlockedEvent,
+  cardResourceTypeLabel,
+  CharacterDisplay,
+} from './card-display.tsx'
+import {
+  characterLibraryChangedEvent,
+  characterLibraryJson,
+  fetchCharacterDetail,
+  fetchCharacterWorldInfoPage,
+  notifyCharacterLibraryChanged,
+  updateCharacterRemoteResource,
+  updateCharacterRemoteResourcePolicy,
+} from './character-library-client.ts'
+import {
+  parseCardCapabilityRequest, parseCardExternalWindowCapabilityRequest,
+  parseCardExternalWindowControlRequest, parseCardExternalWindowDeliveryReport,
+  parseCardNativeIdentityCapabilityRequest,
+  parseCardResourceBlockedReport, parseCardRuntimeReport,
+  parseCardVariableReplaceRequest,
+} from './card-capability.ts'
+import {
+  collectAgentRpBrowserCompatibilitySnapshot,
+  installAgentRpBrowserCompatibilityDiagnostic,
+} from './compatibility-diagnostic.ts'
 import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
 import { parseTavernSlashCommand } from './tavern-slash.ts'
-import { executeTavernStorageRequest, type TavernStorageRequest } from './tavern-storage.ts'
+import {
+  executeTavernStorageRequest,
+  readTavernExtensionSettings,
+  writeTavernExtensionSettings,
+} from './tavern-storage.ts'
+import {
+  parseTavernExternalWindowCapabilityRequest,
+  parseTavernExtensionSettingsCapabilityRequest,
+  parseTavernNativeIdentityCapabilityRequest,
+  parseTavernPopupCapabilityRequest,
+  parseTavernStorageCapabilityRequest,
+  tavernMutationMatchesCapability,
+  validTavernStorageCapabilityResult,
+  type TavernPopupOptions,
+  type TavernPopupType,
+} from './tavern-capability.ts'
+import {
+  enqueueExternalWindowRequest,
+  openExternalWindowBroker,
+  type ExternalWindowBroker,
+  type ExternalWindowPhase,
+} from './external-window.ts'
+import {
+  deliverNativeIdentityResult,
+  nativeIdentityApprovalKey,
+  nativeIdentityApprovalsChangedEvent,
+  readApprovedNativeIdentities,
+  writeApprovedNativeIdentities,
+  type NativeIdentityRuntimeRequest,
+} from './native-identity.ts'
+import { NativeIdentitySettingsPanel, useNativeIdentityDiagnosticState } from './native-identity-ui.tsx'
+import {
+  approvedTavernScriptOrigins,
+  normalizedTavernModelOrigin,
+  normalizedTavernScriptOrigin,
+  parseTavernScriptOriginApprovalKey,
+  readApprovedTavernScriptCustomGenerations,
+  readApprovedTavernScriptFrames,
+  readApprovedTavernScriptGenerations,
+  readApprovedTavernScriptImages,
+  readApprovedTavernScriptModels,
+  readApprovedTavernScriptOrigins,
+  tavernPreflightApprovals,
+  tavernPreflightLaunchPhase,
+  tavernScriptFrameApprovalKey,
+  tavernScriptImageApprovalKey,
+  tavernScriptOriginApprovalKey,
+  writeApprovedTavernScriptCustomGenerations,
+  writeApprovedTavernScriptFrames,
+  writeApprovedTavernScriptGenerations,
+  writeApprovedTavernScriptImages,
+  writeApprovedTavernScriptModels,
+  writeApprovedTavernScriptOrigins,
+} from './tavern-permission.ts'
+import { fetchTavernPreflight } from './tavern-preflight.ts'
 import {
   CHARACTER_LIBRARY_PATH,
   characterLibraryImageUrl,
@@ -74,8 +162,19 @@ import {
   type CharacterLibraryDetail,
   type CharacterLibraryImportResult,
   type CharacterLibrarySummary,
-  type CharacterLibraryWorldInfoPage,
+  type CharacterRemoteResourceApproval,
 } from '../character-library-protocol.ts'
+import { cardRemoteResourceApprovalKey } from '../card-remote-resource.ts'
+import {
+  CARD_GREETING_CAPABILITY_MANIFEST,
+  CARD_FRONTEND_CAPABILITY_MANIFEST,
+  NATIVE_WORLD_ENGINE_MANIFEST,
+  TAVERN_LEGACY_ADAPTER_MANIFEST,
+  boundedAgentRpCapabilityResultError,
+  mergeAgentRpCapabilityPlanSummaries,
+  resolveAgentRpCapabilityPlan,
+  summarizeAgentRpCapabilityPlan,
+} from '../extension-capability.ts'
 import {
   PERSONA_LIBRARY_PATH,
   type PersonaLibraryEntry,
@@ -454,89 +553,6 @@ function useRoleplayExpression(sessionId: SessionId | undefined): RoleplayExpres
 }
 
 const roleplayPresetPreferenceKey = 'dsh.agent-rp.preset'
-const tavernScriptOriginsKey = 'dsh.agent-rp.tavern-script-origins'
-const tavernScriptGenerationApprovalsKey = 'dsh.agent-rp.tavern-script-generation-approvals'
-const tavernScriptCustomGenerationApprovalsKey = 'dsh.agent-rp.tavern-script-custom-generation-approvals'
-const tavernScriptModelApprovalsKey = 'dsh.agent-rp.tavern-script-model-approvals'
-
-function normalizedTavernScriptOrigin(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  try {
-    const url = new URL(value)
-    return url.protocol === 'https:' && url.origin === value ? url.origin : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function normalizedTavernModelOrigin(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  try {
-    const url = new URL(value)
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function readApprovedTavernScriptOrigins(): ReadonlySet<string> {
-  try {
-    const value = JSON.parse(localStorage.getItem(tavernScriptOriginsKey) ?? '[]') as unknown
-    if (!Array.isArray(value)) return new Set()
-    return new Set(value.flatMap(item => {
-      const origin = normalizedTavernScriptOrigin(item)
-      return origin === undefined ? [] : [origin]
-    }))
-  } catch {
-    return new Set()
-  }
-}
-
-function writeApprovedTavernScriptOrigins(origins: ReadonlySet<string>): void {
-  localStorage.setItem(tavernScriptOriginsKey, JSON.stringify([...origins].sort()))
-}
-
-function readApprovedTavernScriptGenerations(): ReadonlySet<string> {
-  try {
-    const value = JSON.parse(localStorage.getItem(tavernScriptGenerationApprovalsKey) ?? '[]') as unknown
-    if (!Array.isArray(value)) return new Set()
-    return new Set(value.filter((item): item is string => typeof item === 'string' && item.length <= 1_024))
-  } catch {
-    return new Set()
-  }
-}
-
-function writeApprovedTavernScriptGenerations(approvals: ReadonlySet<string>): void {
-  localStorage.setItem(tavernScriptGenerationApprovalsKey, JSON.stringify([...approvals].sort()))
-}
-
-function readApprovedTavernScriptCustomGenerations(): ReadonlySet<string> {
-  try {
-    const value = JSON.parse(localStorage.getItem(tavernScriptCustomGenerationApprovalsKey) ?? '[]') as unknown
-    if (!Array.isArray(value)) return new Set()
-    return new Set(value.filter((item): item is string => typeof item === 'string' && item.length <= 3_072))
-  } catch {
-    return new Set()
-  }
-}
-
-function writeApprovedTavernScriptCustomGenerations(approvals: ReadonlySet<string>): void {
-  localStorage.setItem(tavernScriptCustomGenerationApprovalsKey, JSON.stringify([...approvals].sort()))
-}
-
-function readApprovedTavernScriptModels(): ReadonlySet<string> {
-  try {
-    const value = JSON.parse(localStorage.getItem(tavernScriptModelApprovalsKey) ?? '[]') as unknown
-    if (!Array.isArray(value)) return new Set()
-    return new Set(value.filter((item): item is string => typeof item === 'string' && item.length <= 3_072))
-  } catch {
-    return new Set()
-  }
-}
-
-function writeApprovedTavernScriptModels(approvals: ReadonlySet<string>): void {
-  localStorage.setItem(tavernScriptModelApprovalsKey, JSON.stringify([...approvals].sort()))
-}
 
 function readRoleplayPresetPreference(): string {
   const value = localStorage.getItem(roleplayPresetPreferenceKey)
@@ -617,65 +633,6 @@ function usePresetPreference(
   }
 }
 
-async function characterLibraryJson<T>(path = ''): Promise<T> {
-  const response = await fetch(`${CHARACTER_LIBRARY_PATH}${path}`, { headers: { accept: 'application/json' } })
-  const value = await response.json() as { readonly error?: string } & T
-  if (!response.ok) throw new Error(value.error ?? `角色库请求失败（${response.status}）`)
-  return value
-}
-
-async function fetchCharacterDetail(id: string): Promise<CharacterLibraryDetail> {
-  const value = await characterLibraryJson<{ readonly format: 0; readonly entry: CharacterLibraryDetail }>(
-    `/${encodeURIComponent(id)}`,
-  )
-  return value.entry
-}
-
-const characterLibraryChangedEvent = 'agent-rp:character-library-changed'
-
-function notifyCharacterLibraryChanged(id: string): void {
-  window.dispatchEvent(new CustomEvent(characterLibraryChangedEvent, { detail: { id } }))
-}
-
-async function updateCharacterRemoteResource(
-  id: string,
-  origin: string,
-  approved: boolean,
-): Promise<CharacterLibraryDetail> {
-  const operation = approved ? 'approve' : 'revoke'
-  const response = await fetch(
-    `${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(id)}/remote-resources/${operation}?origin=${encodeURIComponent(origin)}`,
-    { method: 'POST', headers: { accept: 'application/json' } },
-  )
-  const value = await response.json() as {
-    readonly error?: string
-    readonly format?: 0
-    readonly entry?: CharacterLibraryDetail
-  }
-  if (!response.ok || value.entry === undefined) {
-    throw new Error(value.error ?? `外部资源授权失败（${response.status}）`)
-  }
-  return value.entry
-}
-
-const characterWorldInfoPageSize = 40
-
-async function fetchCharacterWorldInfoPage(id: string, offset: number): Promise<CharacterLibraryWorldInfoPage> {
-  const query = new URLSearchParams({ offset: String(offset), limit: String(characterWorldInfoPageSize) })
-  const response = await fetch(`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(id)}/world-info?${query}`, {
-    headers: { accept: 'application/json' },
-  })
-  const value = await response.json() as {
-    readonly error?: string
-    readonly format?: 0
-    readonly page?: CharacterLibraryWorldInfoPage
-  }
-  if (!response.ok || value.format !== 0 || value.page === undefined) {
-    throw new Error(value.error ?? `角色世界书读取失败（${response.status}）`)
-  }
-  return value.page
-}
-
 function useCharacterDetail(libraryId: string | undefined): CharacterLibraryDetail | undefined {
   const [detail, setDetail] = useState<CharacterLibraryDetail>()
   useEffect(() => {
@@ -715,109 +672,6 @@ function selectedBackground(
   return choice === 'auto'
     ? backgrounds.find(asset => asset.name.trim().toLocaleLowerCase() === 'main') ?? backgrounds[0]
     : backgrounds.find(asset => asset.index === choice)
-}
-
-const cardFrameRevealFallbackMs = 250
-
-function BlockedCardResources({ character, origins }: {
-  readonly character: CharacterLibraryDetail
-  readonly origins: readonly string[]
-}) {
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string>()
-  return <div role="note" style={{
-    background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
-    borderRadius: '10px', fontSize: '12px', lineHeight: 1.55, padding: '12px 14px',
-  }}>
-    <strong style={{ display: 'block', fontSize: '13px' }}>外部界面尚未加载</strong>
-    <span style={{ display: 'block', marginTop: '3px', opacity: .56 }}>
-      这段开场需要从 {origins.map(origin => new URL(origin).hostname).join('、')} 读取资源；确认后仍只在隔离页面中运行
-    </span>
-    <button type="button" disabled={busy} onClick={() => {
-      setBusy(true)
-      setError(undefined)
-      void (async () => {
-        let changed = false
-        try {
-          for (const origin of origins) {
-            await updateCharacterRemoteResource(character.id, origin, true)
-            changed = true
-          }
-        } finally {
-          if (changed) notifyCharacterLibraryChanged(character.id)
-        }
-      })().then(() => {
-        setBusy(false)
-      }, reason => {
-        setBusy(false)
-        setError(reason instanceof Error ? reason.message : String(reason))
-      })
-    }} style={{ ...miniButtonStyle, marginTop: '9px' }}>{busy ? '正在确认…' : '允许这些来源并加载'}</button>
-    {error !== undefined && <span role="alert" style={{ color: '#e88989', display: 'block', marginTop: '6px' }}>{error}</span>}
-  </div>
-}
-
-function CharacterDisplay({
-  compilation, statData, characterName, character, compatibilityMarkers, onReady, preview = false,
-}: {
-  readonly compilation: CompiledCharacterDisplay
-  readonly statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined
-  readonly characterName: string
-  readonly character?: CharacterLibraryDetail
-  readonly compatibilityMarkers?: readonly string[]
-  readonly onReady?: () => void
-  readonly preview?: boolean
-}) {
-  const compiled = useMemo(() => compileCardFrames(compilation, {
-    origin: window.location.origin,
-    ...(statData === undefined ? {} : { statData }),
-    ...(character === undefined ? {} : { character }),
-    ...(compatibilityMarkers === undefined ? {} : { compatibilityMarkers }),
-  }), [character, compatibilityMarkers, compilation, statData])
-  useLayoutEffect(() => { onReady?.() }, [onReady])
-  return <div data-agent-rp-character-display data-agent-rp-display-diagnostics={cardFrameDiagnosticSummary(compiled.diagnostics)}
-    style={{ display: 'grid', gap: '10px', minWidth: 0 }}>
-    {compiled.segments.map((segment, index) => {
-      if (segment.kind === 'markdown') return <MarkdownText key={index} text={segment.text} />
-      if (preview && segment.interactive) return <div key={index} role="note" style={{
-            alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #202024)',
-            border: '1px solid var(--dsw-alias-border-l2, #39393c)', borderRadius: '10px',
-            display: 'flex', gap: '11px', minHeight: '92px', padding: '15px 16px',
-          }}>
-            <span aria-hidden="true" style={{ fontSize: '20px', opacity: .7 }}>◇</span>
-            <span style={{ minWidth: 0 }}>
-              <strong style={{ display: 'block', fontSize: '13px' }}>交互式开场</strong>
-              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.55, marginTop: '4px', opacity: .56 }}>
-                这段内容需要脚本或外部界面，开始新对话后再启动；角色库不会在后台运行它
-              </span>
-            </span>
-          </div>
-      if (!preview && character !== undefined) {
-        const blocked = blockedCardFrameOrigins(segment.remoteOrigins, character)
-        if (blocked.length > 0) return <BlockedCardResources key={index} character={character} origins={blocked} />
-      }
-      return <iframe
-          key={index}
-          title={`${characterName}的轻前端界面 ${index + 1}`}
-          data-agent-rp-frame
-          data-agent-rp-frame-kind={segment.sourceKind}
-          sandbox={preview ? '' : 'allow-scripts'}
-          srcDoc={segment.srcDoc}
-          onLoad={event => {
-            const frame = event.currentTarget
-            frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'request-resize' }, '*')
-            window.setTimeout(() => {
-              if (frame.isConnected && frame.style.visibility === 'hidden') frame.style.visibility = 'visible'
-            }, cardFrameRevealFallbackMs)
-          }}
-          style={{
-            background: 'transparent', border: 0, colorScheme: 'dark', display: 'block',
-            height: preview ? 'min(52vh, 480px)' : '72px', maxWidth: '100%',
-            visibility: preview ? 'visible' : 'hidden', width: '100%',
-          }}
-        />
-    })}
-  </div>
 }
 
 function compactCharacterDisplayText(value: string): string {
@@ -1137,7 +991,10 @@ function hideWhileMounted(elements: readonly (HTMLElement | null | undefined)[])
   }
 }
 
-function roleplaySummary(summary: SessionSummary | undefined, projection: AgentRpProjection | undefined) {
+function roleplaySummary(
+  summary: SessionSummary | undefined,
+  projection: AgentRpProjection | undefined,
+): AgentRpProjection | undefined {
   if (summary?.agentPreset !== 'agent-rp') return undefined
   if (projection !== undefined) return projection
   return {
@@ -1147,7 +1004,23 @@ function roleplaySummary(summary: SessionSummary | undefined, projection: AgentR
     scenario: '',
     importedMessageCount: 0,
     worldInfoCount: 0,
-    worldInfo: { revision: 0, activeCount: 0, tokenBudget: 4_096, approximateTokens: 0, budgetExcludedCount: 0, books: [] },
+    worldInfo: {
+      revision: 0,
+      activeCount: 0,
+      tokenBudget: 4_096,
+      approximateTokens: 0,
+      budgetExcludedCount: 0,
+      failureCounts: {
+        regexRuntimeUnavailable: 0,
+        regexInvalid: 0,
+        regexExecutionLimit: 0,
+        regexResourceLimit: 0,
+        decoratorUnsupported: 0,
+        templateUnsupported: 0,
+        templateError: 0,
+      },
+      books: [],
+    },
     presetLibrary: [],
     generations: [],
     source: 'preset' as const,
@@ -1227,10 +1100,8 @@ function CharacterRemoteResourcesSection({ detail, onChange }: {
   readonly detail: CharacterLibraryDetail
   readonly onChange?: (detail: CharacterLibraryDetail) => void
 }) {
-  const [workingOrigin, setWorkingOrigin] = useState<string>()
+  const [workingResource, setWorkingResource] = useState<string>()
   const [error, setError] = useState<string>()
-  if (detail.remoteResourceOrigins.length === 0) return null
-  const approved = new Set(detail.approvedRemoteResourceOrigins)
   return <section style={{
     background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
     borderRadius: '10px', margin: '12px 0', overflow: 'hidden',
@@ -1238,32 +1109,64 @@ function CharacterRemoteResourcesSection({ detail, onChange }: {
     <div style={{ padding: '10px 11px 8px' }}>
       <strong style={{ display: 'block', fontSize: '12px' }}>外部资源</strong>
       <span style={{ display: 'block', fontSize: '10px', lineHeight: 1.5, marginTop: '3px', opacity: .5 }}>
-        卡片引用了远程图片或界面文件；只允许你确认过的来源，并始终在隔离页面中运行
+        卡片进入会话后会按需申请脚本、样式、字体、图片、内嵌页面或数据连接；每类权限可以单独停止
       </span>
     </div>
+    <div style={{
+      alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)',
+      display: 'flex', gap: '9px', padding: '9px 11px',
+    }}>
+      <span style={{ fontSize: '11px', lineHeight: 1.45, minWidth: 0 }}>
+        <strong style={{ display: 'block' }}>{detail.remoteResourcePolicy === 'isolated-https' ? '兼容测试模式' : '按需确认模式'}</strong>
+        <span style={{ opacity: .48 }}>{detail.remoteResourcePolicy === 'isolated-https'
+          ? '本卡 HTTPS 资源已全部放行；隔离边界仍保留'
+          : '只加载逐项确认过的来源和资源类型'}</span>
+      </span>
+      <button type="button" disabled={workingResource !== undefined} onClick={() => {
+        const policy = detail.remoteResourcePolicy === 'isolated-https' ? 'prompt' : 'isolated-https'
+        setWorkingResource('policy')
+        setError(undefined)
+        void updateCharacterRemoteResourcePolicy(detail.id, policy).then(value => {
+          setWorkingResource(undefined)
+          onChange?.(value)
+          notifyCharacterLibraryChanged(detail.id)
+        }, reason => {
+          setWorkingResource(undefined)
+          setError(reason instanceof Error ? reason.message : String(reason))
+        })
+      }} style={{ ...miniButtonStyle, marginLeft: 'auto' }}>
+        {workingResource === 'policy' ? '处理中…' : detail.remoteResourcePolicy === 'isolated-https' ? '恢复按需确认' : '启用测试模式'}
+      </button>
+    </div>
     {detail.remoteResourceOrigins.map(origin => {
-      const enabled = approved.has(origin)
+      const approved = detail.approvedRemoteResources.filter(resource => resource.origin === origin)
       return <div key={origin} style={{
-        alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)',
-        display: 'flex', gap: '9px', padding: '8px 11px',
+        borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)', padding: '8px 11px',
       }}>
-        <span title={origin} style={{ fontSize: '11px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span title={origin} style={{ display: 'block', fontSize: '11px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {new URL(origin).hostname}
         </span>
-        <button type="button" disabled={workingOrigin !== undefined} onClick={() => {
-          setWorkingOrigin(origin)
-          setError(undefined)
-          void updateCharacterRemoteResource(detail.id, origin, !enabled).then(value => {
-            setWorkingOrigin(undefined)
-            onChange?.(value)
-            notifyCharacterLibraryChanged(detail.id)
-          }, reason => {
-            setWorkingOrigin(undefined)
-            setError(reason instanceof Error ? reason.message : String(reason))
-          })
-        }} style={{ ...miniButtonStyle, marginLeft: 'auto' }}>
-          {workingOrigin === origin ? '处理中…' : enabled ? '停止加载' : '允许加载'}
-        </button>
+        {approved.length === 0
+          ? <span style={{ display: 'block', fontSize: '10px', marginTop: '4px', opacity: .46 }}>尚未授权；界面实际请求时再确认</span>
+          : <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '6px' }}>
+              {approved.map(resource => {
+                const key = cardRemoteResourceApprovalKey(resource)
+                return <button key={key} type="button" disabled={workingResource !== undefined} onClick={() => {
+                  setWorkingResource(key)
+                  setError(undefined)
+                  void updateCharacterRemoteResource(detail.id, origin, resource.type, false).then(value => {
+                    setWorkingResource(undefined)
+                    onChange?.(value)
+                    notifyCharacterLibraryChanged(detail.id)
+                  }, reason => {
+                    setWorkingResource(undefined)
+                    setError(reason instanceof Error ? reason.message : String(reason))
+                  })
+                }} style={miniButtonStyle}>
+                  {workingResource === key ? '处理中…' : `停止${cardResourceTypeLabel[resource.type]}`}
+                </button>
+              })}
+            </div>}
       </div>
     })}
     {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '11px', padding: '0 11px 9px' }}>{error}</div>}
@@ -2489,6 +2392,7 @@ function WorkspaceSettingsSection({
         尚未选择工作区，新的角色入口会暂时隐藏
       </p>}
     </div>}
+    <NativeIdentitySettingsPanel />
     <ImageGenerationSettingsPanel settings={settings} writable={writable} onSave={write} />
     {snapshot.status === 'loading' && <p role="status" style={{ fontSize: '12px', marginTop: '14px', opacity: .55 }}>正在读取设置…</p>}
     {snapshot.status === 'error' && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '14px' }}>{snapshot.error}</p>}
@@ -2748,10 +2652,11 @@ function RoleplayHeader({
   const statusSource = statusHtml === undefined || projection.mvu === undefined
     ? undefined
     : compileCardFrameDocument(statusHtml, {
-        origin: window.location.origin,
-        statData: projection.mvu.statData,
-        ...(characterDetail === undefined ? {} : { character: characterDetail }),
-      })
+      origin: window.location.origin,
+      statData: projection.mvu.statData,
+      ...(characterDetail === undefined ? {} : { character: characterDetail }),
+      ...(projection.tavern === undefined ? {} : { variableScopes: projection.tavern.scopes }),
+    })
   const characterRegexScripts = (projection.frontend?.regexScripts ?? []).map((script, index) => ({
     index,
     ...summarizeCharacterRegexScript(script),
@@ -2774,7 +2679,8 @@ function RoleplayHeader({
         background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
         color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', marginLeft: '8px', padding: '6px 10px',
       }}>角色信息</button>
-      <button className="agent-rp-header-primary-action" type="button" onClick={() => { setSettingsOpen(false); setLibraryOpen(true) }} style={{
+      <button className="agent-rp-header-primary-action" type="button" data-agent-rp-action="open-character-library"
+        onClick={() => { setSettingsOpen(false); setLibraryOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 10%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>角色库</button>
@@ -2783,8 +2689,11 @@ function RoleplayHeader({
         border: `1px solid ${projection.persona === undefined ? 'var(--dsw-alias-border-l2, #444)' : `color-mix(in srgb, ${color} 34%, transparent)`}`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
       }}>身份{projection.persona === undefined ? '' : ` · ${projection.persona.name}`}</button>
-      <details className="agent-rp-header-settings" ref={settingsRef} open={settingsOpen} onToggle={event => { setSettingsOpen(event.currentTarget.open) }} style={{ position: 'relative' }}>
-        <summary ref={settingsSummaryRef} role="button" aria-expanded={settingsOpen} aria-haspopup="menu" style={{
+      <details className="agent-rp-header-settings" ref={settingsRef} open={settingsOpen}
+        data-agent-rp-surface="session-settings" data-agent-rp-surface-state={settingsOpen ? 'open' : 'closed'}
+        onToggle={event => { setSettingsOpen(event.currentTarget.open) }} style={{ position: 'relative' }}>
+        <summary ref={settingsSummaryRef} role="button" aria-expanded={settingsOpen} aria-haspopup="menu"
+          data-agent-rp-action="toggle-session-settings" style={{
           background: projection.worldInfo.activeCount > 0 ? `color-mix(in srgb, ${color} 10%, transparent)` : 'transparent',
           border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px', color: 'inherit', cursor: 'pointer',
           fontSize: '12px', listStyle: 'none', padding: '6px 10px', whiteSpace: 'nowrap',
@@ -2795,7 +2704,8 @@ function RoleplayHeader({
           minWidth: '168px', padding: '6px', position: 'absolute', right: 0, top: 'calc(100% + 7px)', zIndex: 80,
         }}>
           <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setOpen(true) }} style={headerMenuItemStyle}>角色信息</button>
-          <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setLibraryOpen(true) }} style={headerMenuItemStyle}>角色库</button>
+          <button className="agent-rp-mobile-only" type="button" role="menuitem" data-agent-rp-action="open-character-library"
+            onClick={() => { setSettingsOpen(false); setLibraryOpen(true) }} style={headerMenuItemStyle}>角色库</button>
           <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setPersonaOpen(true) }} style={headerMenuItemStyle}>你的身份</button>
           {statusSource !== undefined && <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setStatusOpen(true) }} style={headerMenuItemStyle}>当前状态</button>}
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setMigrationOpen(true) }} style={headerMenuItemStyle}>迁移聊天</button>
@@ -2807,8 +2717,10 @@ function RoleplayHeader({
             }).finally(() => { setExporting(false) })
           }} style={headerMenuItemStyle}>{exporting ? '正在导出…' : '导出聊天'}</button>
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setMemoryOpen(true) }} style={headerMenuItemStyle}>记忆</button>
-          <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setPresetOpen(true) }} style={headerMenuItemStyle}>预设</button>
-          <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setWorldInfoOpen(true) }} style={headerMenuItemStyle}>
+          <button type="button" role="menuitem" data-agent-rp-action="open-preset-manager"
+            onClick={() => { setSettingsOpen(false); setPresetOpen(true) }} style={headerMenuItemStyle}>预设</button>
+          <button type="button" role="menuitem" data-agent-rp-action="open-world-info-manager"
+            onClick={() => { setSettingsOpen(false); setWorldInfoOpen(true) }} style={headerMenuItemStyle}>
             世界书{projection.worldInfo.activeCount === 0 ? '' : ` · ${projection.worldInfo.activeCount}`}
           </button>
           <button type="button" role="menuitem" aria-pressed={viewMode === 'debug'} onClick={() => {
@@ -3290,7 +3202,8 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
       setError(importError instanceof Error ? importError.message : String(importError))
     })
   }
-  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="世界书" style={{
+  return <div data-agent-rp-dialog data-agent-rp-surface="world-info-manager"
+    role="dialog" aria-modal="true" aria-label="世界书" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.55)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '20px', position: 'fixed', zIndex: 1002,
   }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
@@ -3334,7 +3247,8 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
         {hasOverrides && <button type="button" disabled={saving} onClick={() => {
           mutate({ operation: 'reset-all', revision: worldInfo.revision }, () => { setEditing(false) })
         }} style={generationButtonStyle}>全部恢复原始设置</button>}
-        <button type="button" aria-label="关闭世界书" onClick={onClose} style={{ background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', padding: '3px 6px' }}>×</button>
+        <button type="button" aria-label="关闭世界书" data-agent-rp-action="close-world-info-manager"
+          onClick={onClose} style={{ background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', padding: '3px 6px' }}>×</button>
       </header>
       {pair === undefined && <div style={{ alignItems: 'center', display: 'flex', flex: 1, flexDirection: 'column', justifyContent: 'center', minHeight: '300px', padding: '30px', textAlign: 'center' }}>
         <div style={{ fontSize: '28px', opacity: .38 }}>◇</div>
@@ -3549,6 +3463,19 @@ function characterDegradationLabel(value: CharacterLibraryDetail['degradations']
   }
 }
 
+type TavernPreflightLoadState = {
+  readonly selectionKey: string
+  readonly status: 'loading'
+} | {
+  readonly selectionKey: string
+  readonly status: 'ready'
+  readonly result: TavernPreflightResult
+} | {
+  readonly selectionKey: string
+  readonly status: 'error'
+  readonly error: string
+}
+
 function CharacterLibraryDialog({
   currentCharacterName, currentCharacterId, listCharacters, readCharacter, setCharacterArchived, importCharacterFile,
   listPresets, importPresetFile, listPersonas, savePersona, deletePersona, onClose, onStart,
@@ -3592,6 +3519,11 @@ function CharacterLibraryDialog({
   const [removingPersonaId, setRemovingPersonaId] = useState<string>()
   const [loadingId, setLoadingId] = useState<string>()
   const [starting, setStarting] = useState(false)
+  const [approvedScriptOrigins, setApprovedScriptOrigins] = useState(readApprovedTavernScriptOrigins)
+  const [approvedScriptImages, setApprovedScriptImages] = useState(readApprovedTavernScriptImages)
+  const [approvedScriptFrames, setApprovedScriptFrames] = useState(readApprovedTavernScriptFrames)
+  const [tavernPreflightState, setTavernPreflightState] = useState<TavernPreflightLoadState>()
+  const [approvingPreflight, setApprovingPreflight] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importingPreset, setImportingPreset] = useState(false)
@@ -3602,6 +3534,26 @@ function CharacterLibraryDialog({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const presetInputRef = useRef<HTMLInputElement | null>(null)
   const selectionRequestRef = useRef(0)
+  const selectedPresetId = presetId === '' ? undefined : presetId
+  const selectedPresetSummary = presets?.find(entry => entry.id === selectedPresetId)
+  const expectsTavernPreflight = (selected?.tavernHelper?.enabledScriptCount ?? 0) > 0
+    || (selectedPresetId !== undefined
+      && (presets === undefined || (selectedPresetSummary?.tavernHelper?.enabledScriptCount ?? 0) > 0))
+  const expectsCardResourcePreflight = (selected?.remoteResources.length ?? 0) > 0
+  const expectsResourcePreflight = expectsTavernPreflight || expectsCardResourcePreflight
+  const selectedPreflightApprovals = selected === undefined ? []
+    : tavernPreflightApprovals(approvedScriptOrigins, selected.id, selectedPresetId)
+  const tavernPreflightSelectionKey = selected === undefined || !expectsTavernPreflight ? undefined : JSON.stringify([
+    selected.id, selectedPresetId ?? null, selectedPreflightApprovals,
+  ])
+  const currentTavernPreflightState = tavernPreflightState?.selectionKey === tavernPreflightSelectionKey
+    ? tavernPreflightState : undefined
+  const tavernPreflight = currentTavernPreflightState?.status === 'ready'
+    ? currentTavernPreflightState.result : undefined
+  const tavernPreflightLoading = tavernPreflightSelectionKey !== undefined
+    && (currentTavernPreflightState === undefined || currentTavernPreflightState.status === 'loading')
+  const tavernPreflightError = currentTavernPreflightState?.status === 'error'
+    ? currentTavernPreflightState.error : undefined
   useEffect(() => {
     let current = true
     selectionRequestRef.current += 1
@@ -3652,6 +3604,32 @@ function CharacterLibraryDialog({
   useEffect(() => {
     if (selected?.id !== currentCharacterId) setCopyActiveMemory(false)
   }, [currentCharacterId, selected?.id])
+  useEffect(() => {
+    if (selected === undefined || tavernPreflightSelectionKey === undefined) {
+      setTavernPreflightState(undefined)
+      return
+    }
+    const controller = new AbortController()
+    const selectionKey = tavernPreflightSelectionKey
+    setTavernPreflightState({ selectionKey, status: 'loading' })
+    void fetchTavernPreflight({
+      format: 0,
+      characterId: selected.id,
+      ...(selectedPresetId === undefined ? {} : { presetId: selectedPresetId }),
+      scriptApprovals: selectedPreflightApprovals,
+    }, controller.signal).then(result => {
+      if (controller.signal.aborted) return
+      setTavernPreflightState({ selectionKey, status: 'ready', result })
+    }, reason => {
+      if (controller.signal.aborted) return
+      setTavernPreflightState({
+        selectionKey,
+        status: 'error',
+        error: reason instanceof Error ? reason.message : String(reason),
+      })
+    })
+    return () => { controller.abort() }
+  }, [tavernPreflightSelectionKey])
   const choose = (entry: CharacterLibrarySummary): void => {
     const request = ++selectionRequestRef.current
     setLoadingId(entry.id)
@@ -3748,7 +3726,86 @@ function CharacterLibraryDialog({
     .map(entry => entry.displayName))
   const greetingSummaries = useMemo(() => selected?.greetings.map((greeting, index) =>
     compactCharacterDisplayText(selected.renderedGreetings[index] ?? greeting)) ?? [], [selected])
-  return <div className="agent-rp-character-library-overlay" data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="角色库" style={{
+  const pendingPreflightScripts = tavernPreflight?.entries.filter(entry =>
+    entry.status === 'permission-required' && entry.requestedScriptOrigin !== undefined) ?? []
+  const pendingPreflightImages = selected === undefined ? [] : tavernPreflight?.entries.flatMap(entry =>
+    entry.remoteImageOrigins.filter(origin => !approvedScriptImages.has(tavernScriptImageApprovalKey(
+      selected.id, selectedPresetId, entry.scope, entry.scriptId, origin,
+    ))).map(origin => ({ entry, origin }))) ?? []
+  const pendingPreflightFrames = selected === undefined ? [] : tavernPreflight?.entries.flatMap(entry =>
+    entry.remoteFrameOrigins.filter(origin => !approvedScriptFrames.has(tavernScriptFrameApprovalKey(
+      selected.id, selectedPresetId, entry.scope, entry.scriptId, origin,
+    ))).map(origin => ({ entry, origin }))) ?? []
+  const pendingCardResources = selected === undefined
+    ? [] : blockedCardFrameResources(selected.remoteResources, selected)
+  const pendingPreflightPermissions = pendingPreflightScripts.length
+    + pendingPreflightImages.length + pendingPreflightFrames.length + pendingCardResources.length
+  const pendingPreflightHosts = [...new Set([
+    ...pendingPreflightScripts.map(entry => new URL(entry.requestedScriptOrigin!).hostname),
+    ...pendingPreflightImages.map(item => new URL(item.origin).hostname),
+    ...pendingPreflightFrames.map(item => new URL(item.origin).hostname),
+    ...pendingCardResources.map(resource => new URL(resource.origin).hostname),
+  ])].sort()
+  const preflightLaunchPhase = tavernPreflightLaunchPhase({
+    expected: expectsResourcePreflight,
+    loading: tavernPreflightLoading,
+    settled: !expectsTavernPreflight || tavernPreflight !== undefined || tavernPreflightError !== undefined,
+    pendingPermissions: pendingPreflightPermissions,
+  })
+  const resourcePreflightStatus = tavernPreflightLoading ? 'loading'
+    : pendingPreflightPermissions > 0 ? 'permission-required'
+      : tavernPreflightError !== undefined ? 'error' : 'ready'
+  const preflightBlocksLaunch = preflightLaunchPhase !== 'ready'
+  const approvePreflightResources = (): void => {
+    if (selected === undefined || approvingPreflight) return
+    if (pendingPreflightScripts.length > 0) {
+      const next = new Set(approvedScriptOrigins)
+      for (const entry of pendingPreflightScripts) next.add(tavernScriptOriginApprovalKey(
+        selected.id, selectedPresetId, entry.scope, entry.scriptId, entry.requestedScriptOrigin!,
+      ))
+      writeApprovedTavernScriptOrigins(next)
+      setApprovedScriptOrigins(next)
+    }
+    if (pendingPreflightImages.length > 0) {
+      const next = new Set(approvedScriptImages)
+      for (const { entry, origin } of pendingPreflightImages) next.add(tavernScriptImageApprovalKey(
+        selected.id, selectedPresetId, entry.scope, entry.scriptId, origin,
+      ))
+      writeApprovedTavernScriptImages(next)
+      setApprovedScriptImages(next)
+    }
+    if (pendingPreflightFrames.length > 0) {
+      const next = new Set(approvedScriptFrames)
+      for (const { entry, origin } of pendingPreflightFrames) next.add(tavernScriptFrameApprovalKey(
+        selected.id, selectedPresetId, entry.scope, entry.scriptId, origin,
+      ))
+      writeApprovedTavernScriptFrames(next)
+      setApprovedScriptFrames(next)
+    }
+    if (pendingCardResources.length === 0) {
+      setActionNotice('已保存这张角色卡的界面资源许可')
+      return
+    }
+    setApprovingPreflight(true)
+    setError(undefined)
+    void (async (): Promise<CharacterLibraryDetail> => {
+      let detail = selected
+      for (const resource of pendingCardResources) {
+        detail = await updateCharacterRemoteResource(detail.id, resource.origin, resource.type, true)
+        setSelected(current => current?.id === detail.id ? detail : current)
+      }
+      return detail
+    })().then(detail => {
+      setSelected(current => current?.id === detail.id ? detail : current)
+      setApprovingPreflight(false)
+      setActionNotice('已保存这张角色卡的界面资源许可')
+    }, reason => {
+      setApprovingPreflight(false)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }
+  return <div className="agent-rp-character-library-overlay" data-agent-rp-dialog
+    data-agent-rp-surface="character-library" role="dialog" aria-modal="true" aria-label="角色库" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.52)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: 'clamp(8px, 3vw, 24px)', position: 'fixed', zIndex: 1001,
   }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
@@ -3866,7 +3923,7 @@ function CharacterLibraryDialog({
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
             color: 'inherit', cursor: updating ? 'wait' : 'pointer', font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: '6px 10px',
           }}>{updating ? '处理中…' : collection === 'active' ? '移到收纳箱' : '移回角色库'}</button>}
-          <button type="button" aria-label="关闭角色库" onClick={onClose} style={{
+          <button type="button" aria-label="关闭角色库" data-agent-rp-action="close-character-library" onClick={onClose} style={{
             background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', marginLeft: selected === undefined ? 'auto' : '8px', padding: '4px 6px',
           }}>×</button>
         </header>
@@ -3905,11 +3962,58 @@ function CharacterLibraryDialog({
               <strong style={{ display: 'block', fontSize: '12px', marginBottom: '2px' }}>Tavern Helper</strong>
               <span style={{ opacity: .58 }}>{tavernHelperSummaryText(selected.tavernHelper)} · 脚本在隔离运行时中执行</span>
             </div>}
-            {selected.degradations.length > 0 && <div style={{
+            {expectsResourcePreflight && <div
+              data-agent-rp-resource-preflight={resourcePreflightStatus}
+              data-agent-rp-resource-preflight-scripts={tavernPreflight?.scripts ?? 0}
+              data-agent-rp-resource-preflight-card-resources={selected.remoteResources.length}
+              data-agent-rp-resource-preflight-card-permissions={pendingCardResources.length}
+              data-agent-rp-resource-preflight-script-permissions={pendingPreflightScripts.length + pendingPreflightImages.length + pendingPreflightFrames.length}
+              data-agent-rp-resource-preflight-permissions={pendingPreflightPermissions}
+              data-agent-rp-resource-preflight-failed={tavernPreflight?.failed ?? 0}
+              data-agent-rp-resource-launch={preflightLaunchPhase}
+              style={{
+                background: pendingPreflightHosts.length === 0
+                  ? 'var(--dsw-alias-bg-layer-1, #202024)'
+                  : 'color-mix(in srgb, var(--dsw-alias-state-warning, #d5a64c) 9%, transparent)',
+                border: pendingPreflightHosts.length === 0
+                  ? '1px solid var(--dsw-alias-border-l2, #39393c)'
+                  : '1px solid color-mix(in srgb, var(--dsw-alias-state-warning, #d5a64c) 38%, transparent)',
+                borderRadius: '10px', fontSize: '11px', lineHeight: 1.55, margin: '4px 0 12px', padding: '10px 11px',
+              }}>
+              <div style={{ alignItems: 'center', display: 'flex', gap: '8px' }}>
+                <strong style={{ fontSize: '12px' }}>界面资源</strong>
+                <span style={{ marginLeft: 'auto', opacity: .56 }}>
+                  {tavernPreflightLoading ? '检查中…'
+                    : tavernPreflightError !== undefined ? '暂时无法预检'
+                      : pendingPreflightHosts.length > 0 ? `${pendingPreflightHosts.length} 个来源待确认`
+                        : expectsTavernPreflight ? `${tavernPreflight?.ready ?? 0}/${tavernPreflight?.scripts ?? 0} 已准备`
+                          : `${selected.remoteResources.length} 项已准备`}
+                </span>
+              </div>
+              {tavernPreflightError !== undefined && <div style={{ marginTop: '5px', opacity: .58 }}>
+                {tavernPreflightError}；仍可开聊，未解析的脚本会保持关闭
+              </div>}
+              {pendingPreflightHosts.length > 0 && <>
+                <div title={pendingPreflightHosts.join('\n')} style={{
+                  marginTop: '5px', opacity: .66, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>{pendingPreflightHosts.join('、')}</div>
+                <button type="button" disabled={approvingPreflight} onClick={approvePreflightResources} style={{
+                  background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)',
+                  borderRadius: '7px', color: 'inherit', cursor: approvingPreflight ? 'wait' : 'pointer', font: 'inherit', fontSize: '11px',
+                  marginTop: '7px', padding: '5px 9px',
+                }}>{approvingPreflight ? '正在保存…' : '允许所列界面资源'}</button>
+              </>}
+              {(tavernPreflight?.failed ?? 0) > 0 && <div style={{ color: 'var(--dsw-alias-state-warning, #d5a64c)', marginTop: '5px' }}>
+                {tavernPreflight!.failed} 个脚本无法完成静态解析，开聊后也不会执行
+              </div>}
+              <div style={{ marginTop: '5px', opacity: .46 }}>模型调用与外部 API 仍在实际触发时单独确认</div>
+            </div>}
+            {selected.degradations.some(value => value !== 'lorebook-regex') && <div style={{
               borderLeft: '2px solid color-mix(in srgb, #d6a24d 70%, transparent)', fontSize: '11px', lineHeight: 1.55,
               margin: '4px 0 12px', opacity: .62, padding: '2px 0 2px 10px',
             }}>
-              兼容提醒 · 尚未执行（原卡内容已保留）：{selected.degradations.map(characterDegradationLabel).join('、')}
+              兼容提醒 · 原卡包含仍需留意的扩展能力（原始内容已保留）：{selected.degradations
+                .filter(value => value !== 'lorebook-regex').map(characterDegradationLabel).join('、')}
             </div>}
             {selected.localCorrectionCount > 0 && <div style={{
               borderLeft: `2px solid color-mix(in srgb, ${color} 62%, transparent)`, fontSize: '11px', lineHeight: 1.55,
@@ -4154,7 +4258,8 @@ function CharacterLibraryDialog({
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '9px',
             color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '8px 13px',
           }}>取消</button>
-          <button type="button" disabled={collection === 'archived' || selected === undefined || starting || importingPreset} onClick={() => {
+          <button type="button" data-agent-rp-start-readiness={preflightLaunchPhase}
+            disabled={collection === 'archived' || selected === undefined || starting || importingPreset || preflightBlocksLaunch} onClick={() => {
             if (selected === undefined) return
             setStarting(true)
             setError(undefined)
@@ -4169,9 +4274,15 @@ function CharacterLibraryDialog({
               setError(startError instanceof Error ? startError.message : String(startError))
             })
           }} style={{
-            background: color, border: 0, borderRadius: '9px', color: '#fff', cursor: starting ? 'wait' : 'pointer',
-            font: 'inherit', fontWeight: 620, opacity: collection === 'archived' || selected === undefined ? .45 : 1, padding: '8px 15px',
-          }}>{starting ? '正在开始…' : '开始新对话'}</button>
+            background: color, border: 0, borderRadius: '9px', color: '#fff',
+            cursor: starting || preflightLaunchPhase === 'checking' ? 'wait' : preflightBlocksLaunch ? 'default' : 'pointer',
+            font: 'inherit', fontWeight: 620,
+            opacity: collection === 'archived' || selected === undefined || preflightBlocksLaunch ? .45 : 1,
+            padding: '8px 15px',
+          }}>{starting ? '正在开始…'
+              : preflightLaunchPhase === 'checking' ? '正在检查界面资源…'
+                : preflightLaunchPhase === 'approval-required' ? '请先确认界面资源'
+                  : '开始新对话'}</button>
         </footer>
       </div>
     </section>
@@ -4477,7 +4588,8 @@ function PresetManagerDialog({
       setSaving(false)
     }
   }
-  return <div className="agent-rp-preset-overlay" role="dialog" aria-modal="true" aria-label={`${preset.name}预设管理`} style={{
+  return <div className="agent-rp-preset-overlay" data-agent-rp-surface="preset-manager"
+    role="dialog" aria-modal="true" aria-label={`${preset.name}预设管理`} style={{
     alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1100,
   }} onMouseDown={event => { if (event.target === event.currentTarget && !saving) onClose() }}>
@@ -4492,7 +4604,8 @@ function PresetManagerDialog({
           <h2 style={{ fontSize: '17px', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{preset.name}</h2>
           <div style={{ fontSize: '12px', marginTop: '4px', opacity: 0.56 }}>{enabledCount} 项提示启用 · {regexScripts.filter(script => !script.disabled).length}/{regexScripts.length} 条正则启用 · 会话独立</div>
         </div>
-        <button type="button" aria-label="关闭预设管理" disabled={saving} onClick={onClose} style={{
+        <button type="button" aria-label="关闭预设管理" data-agent-rp-action="close-preset-manager"
+          disabled={saving} onClick={onClose} style={{
           background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '22px', marginLeft: 'auto', padding: '4px',
         }}>×</button>
       </header>
@@ -4557,14 +4670,9 @@ function PresetManagerDialog({
                     <button type="button" aria-label={`上移${prompt.name}`} disabled={attachedIndex <= 0 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, -1) }} style={miniButtonStyle}>↑</button>
                     <button type="button" aria-label={`下移${prompt.name}`} disabled={attachedIndex >= attached.length - 1 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, 1) }} style={miniButtonStyle}>↓</button>
                   </>}
-                  {prompt.toggleable ? <button type="button" role="switch" aria-checked={prompt.enabled} onClick={() => {
+                  {prompt.toggleable ? <PresetSwitch checked={prompt.enabled} label={`${prompt.enabled ? '停用' : '启用'}${prompt.name || prompt.identifier}`} onChange={() => {
                     setPrompt(prompt.identifier, value => ({ ...value, attached: true, enabled: !value.enabled }))
-                  }} style={{
-                    background: prompt.enabled ? color : 'var(--dsw-alias-bg-layer-2, #2b2b30)', border: 0, borderRadius: '999px',
-                    cursor: 'pointer', height: '22px', padding: '2px', position: 'relative', width: '39px',
-                  }}><span style={{
-                    background: '#fff', borderRadius: '50%', display: 'block', height: '18px', transform: `translateX(${prompt.enabled ? 17 : 0}px)`, transition: 'transform .14s ease', width: '18px',
-                  }} /></button> : <span style={{ fontSize: '10px', opacity: 0.44, padding: '0 3px' }}>固定</span>}
+                  }} /> : <span style={{ fontSize: '10px', opacity: 0.44, padding: '0 3px' }}>固定</span>}
                   {!prompt.attached && <button type="button" onClick={() => { setPrompt(prompt.identifier, value => ({ ...value, attached: true })) }} style={miniButtonStyle}>加入</button>}
                 </div>
                   </div>
@@ -4603,12 +4711,9 @@ function PresetManagerDialog({
                 ].filter(Boolean).join(' · ') || '普通处理'}</div>
                 {traceLabel !== undefined && <div style={{ color: trace?.outcome === 'invalid' ? '#d9a85f' : 'inherit', fontSize: '10px', marginTop: '3px', opacity: 0.58 }}>{traceLabel}</div>}
               </div>
-              <button type="button" role="switch" aria-checked={!script.disabled} disabled={saving} onClick={() => { setRegexScripts(current => current.map(item => item.index === script.index ? { ...item, disabled: !item.disabled } : item)) }} style={{
-                background: !script.disabled ? color : 'var(--dsw-alias-bg-layer-2, #2b2b30)', border: 0, borderRadius: '999px',
-                cursor: 'pointer', height: '22px', padding: '2px', position: 'relative', width: '39px',
-              }}><span style={{
-                background: '#fff', borderRadius: '50%', display: 'block', height: '18px', transform: `translateX(${!script.disabled ? 17 : 0}px)`, transition: 'transform .14s ease', width: '18px',
-              }} /></button>
+              <PresetSwitch checked={!script.disabled} disabled={saving} label={`${script.disabled ? '启用' : '停用'}${script.scriptName}`} onChange={() => {
+                setRegexScripts(current => current.map(item => item.index === script.index ? { ...item, disabled: !item.disabled } : item))
+              }} />
             </div>})}
             {((section === 'prompts' && visiblePromptSections.length === 0) || (section === 'regex' && visibleRegex.length === 0)) && <div style={{ fontSize: '13px', opacity: 0.52, padding: '32px 10px', textAlign: 'center' }}>没有匹配的{section === 'prompts' ? '模块' : '正则脚本'}</div>}
           </div>
@@ -4922,7 +5027,8 @@ function PresetImportDialog({ entries, onClose, onImport, onLibrary }: {
   const [importing, setImporting] = useState(false)
   const [error, setError] = useState<string>()
   useEffect(() => { void onLibrary({ operation: 'list' }).catch(() => undefined) }, [])
-  return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="导入预设" style={{
+  return <div data-agent-rp-dialog data-agent-rp-surface="preset-manager"
+    role="dialog" aria-modal="true" aria-label="导入预设" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: '18px', position: 'fixed', zIndex: 1100,
   }} onMouseDown={event => { if (event.target === event.currentTarget && !importing) onClose() }}>
@@ -4957,7 +5063,8 @@ function PresetImportDialog({ entries, onClose, onImport, onLibrary }: {
         })
       }} />
       <div style={{ display: 'flex', gap: '9px', justifyContent: 'flex-end' }}>
-        <button type="button" disabled={importing} onClick={onClose} style={secondaryButtonStyle}>取消</button>
+        <button type="button" data-agent-rp-action="close-preset-manager"
+          disabled={importing} onClick={onClose} style={secondaryButtonStyle}>取消</button>
         <button type="button" disabled={importing} onClick={() => { inputRef.current?.click() }} style={primaryButtonStyle}>
           {importing ? '导入中…' : '选择预设文件'}
         </button>
@@ -5056,6 +5163,24 @@ function PresetNumberField({ label, hint, value, onChange }: {
   return <label style={fieldLabelStyle}>{label}<span style={{ float: 'right', fontSize: '10px', fontWeight: 400, opacity: 0.45 }}>{hint}</span>
     <input inputMode="decimal" value={value} onChange={event => { onChange(event.target.value) }} style={fieldInputStyle} />
   </label>
+}
+
+function PresetSwitch({ checked, disabled = false, label, onChange }: {
+  readonly checked: boolean
+  readonly disabled?: boolean
+  readonly label: string
+  readonly onChange: () => void
+}) {
+  return <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled}
+    data-agent-rp-preset-toggle={checked ? 'on' : 'off'} onClick={onChange} style={{
+      background: checked ? color : 'color-mix(in srgb, currentColor 10%, transparent)',
+      border: `1px solid ${checked ? color : 'color-mix(in srgb, currentColor 36%, transparent)'}`,
+      borderRadius: '999px', boxSizing: 'border-box', color: 'inherit', cursor: disabled ? 'default' : 'pointer',
+      flex: '0 0 auto', height: '24px', opacity: disabled ? .5 : 1, padding: '2px', position: 'relative', width: '40px',
+    }}><span aria-hidden="true" style={{
+      background: checked ? '#fff' : 'currentColor', borderRadius: '50%', display: 'block', height: '18px',
+      transform: `translateX(${checked ? 16 : 0}px)`, transition: 'transform .14s ease', width: '18px',
+    }} /></button>
 }
 
 const fieldLabelStyle = { display: 'block', fontSize: '11px', fontWeight: 560, marginBottom: '13px', opacity: 0.72 } as const
@@ -5460,7 +5585,7 @@ function tavernScriptTrees(
   const variables = projection.tavern?.scripts ?? {}
   const withVariables = (script: Extract<TavernScriptTree, { readonly type: 'script' }>) => ({
     ...script,
-    data: variables[script.id] ?? script.data,
+    data: variables[tavernScriptIdentity(scope, script.id)] ?? variables[script.id] ?? script.data,
   })
   return normalized.map(tree => tree.type === 'folder'
     ? { ...tree, scripts: tree.scripts.map(withVariables) }
@@ -5601,8 +5726,12 @@ function tavernPresetConfiguration(
 function tavernScriptSnapshot(
   projection: AgentRpProjection,
   script: ImportedTavernHelperScript,
+  scriptScope: TavernScriptTreeScope,
   approvedScriptOrigins: readonly string[],
   sessionId: SessionId,
+  approvedImageOrigins: readonly string[] = [],
+  approvedFrameOrigins: readonly string[] = [],
+  extensionSettings: Readonly<Record<string, JsonValue>> = {},
 ): TavernScriptSnapshot {
   const state = projection.tavern
   const message = {
@@ -5619,6 +5748,7 @@ function tavernScriptSnapshot(
   const importedGlobalBooks = projection.worldInfo.books
     .filter(book => book.source === 'standalone' && !book.id.startsWith('script:')).map(book => book.name)
   return {
+    scriptScope,
     scriptId: script.id,
     scriptName: script.name,
     scriptInfo: script.info,
@@ -5630,21 +5760,17 @@ function tavernScriptSnapshot(
     ...(projection.userName === undefined ? {} : { userName: projection.userName }),
     ...(projection.persona === undefined ? {} : { persona: projection.persona }),
     ...(currentTavernPreset(projection) === undefined ? {} : { preset: currentTavernPreset(projection)! }),
-    extensionSettings: (() => {
-      try {
-        return readTavernExtensionSettings(window.localStorage)
-      } catch {
-        return {}
-      }
-    })(),
+    extensionSettings,
     approvedScriptOrigins,
+    approvedImageOrigins,
+    approvedFrameOrigins,
     scopes: {
       global: state?.scopes.global ?? {},
       preset: state?.scopes.preset ?? {},
       character: state?.scopes.character ?? projection.frontend?.tavernHelperVariables ?? {},
       chat: state?.scopes.chat ?? {},
       message,
-      script: state?.scripts[script.id] ?? script.data,
+      script: state?.scripts[tavernScriptIdentity(scriptScope, script.id)] ?? state?.scripts[script.id] ?? script.data,
     },
     worldbooks,
     worldbookBindings: {
@@ -5666,8 +5792,8 @@ function tavernScriptSnapshot(
     presetScriptTrees: tavernScriptTrees(projection, 'preset'),
     characterScriptTrees: tavernScriptTrees(projection, 'character'),
     injectedPrompts: (state?.injectedPrompts ?? []).flatMap(prompt => {
-      if (prompt.scriptId !== script.id) return []
-      const { scriptId: _scriptId, ...value } = prompt
+      if (prompt.scriptScope !== scriptScope || prompt.scriptId !== script.id) return []
+      const { scriptId: _scriptId, scriptScope: _scriptScope, ...value } = prompt
       return [value]
     }),
     displayRegexScripts: [
@@ -5692,22 +5818,6 @@ function runtimeScriptButtons(value: unknown): readonly { readonly name: string;
   return buttons
 }
 
-type TavernPopupType = 1 | 2 | 3 | 4
-
-interface TavernPopupOptions {
-  readonly okButton?: string | boolean
-  readonly cancelButton?: string | boolean
-  readonly rows?: number
-  readonly placeholder?: string
-  readonly tooltip?: string
-  readonly wide?: boolean
-  readonly wider?: boolean
-  readonly large?: boolean
-  readonly leftAlign?: boolean
-  readonly allowEscapeClose?: boolean
-  readonly customButtons?: readonly { readonly text: string; readonly result: number }[]
-}
-
 interface TavernPopupRequest {
   readonly key: string
   readonly target: Window
@@ -5719,53 +5829,23 @@ interface TavernPopupRequest {
   readonly options: TavernPopupOptions
 }
 
-function runtimePopupOptions(value: unknown): TavernPopupOptions {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
-  const source = value as Record<string, unknown>
-  const label = (key: 'okButton' | 'cancelButton'): string | boolean | undefined => {
-    const item = source[key]
-    return typeof item === 'string' || typeof item === 'boolean' ? item : undefined
-  }
-  const text = (key: 'placeholder' | 'tooltip'): string | undefined => {
-    const item = source[key]
-    return typeof item === 'string' && item.length <= 2_000 ? item : undefined
-  }
-  const flag = (key: 'wide' | 'wider' | 'large' | 'leftAlign' | 'allowEscapeClose'): boolean | undefined => (
-    typeof source[key] === 'boolean' ? source[key] : undefined
-  )
-  const customButtons = Array.isArray(source.customButtons) && source.customButtons.length <= 9
-    ? source.customButtons.flatMap((value): { readonly text: string; readonly result: number }[] => {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) return []
-      const button = value as Record<string, unknown>
-      if (typeof button.text !== 'string' || button.text.trim() === '' || button.text.length > 200
-        || typeof button.result !== 'number' || !Number.isFinite(button.result)) return []
-      return [{ text: button.text, result: button.result }]
-    })
-    : undefined
-  const rows = Number.isSafeInteger(source.rows) && Number(source.rows) >= 1 && Number(source.rows) <= 20
-    ? Number(source.rows) : undefined
-  const okButton = label('okButton')
-  const cancelButton = label('cancelButton')
-  const placeholder = text('placeholder')
-  const tooltip = text('tooltip')
-  const wide = flag('wide')
-  const wider = flag('wider')
-  const large = flag('large')
-  const leftAlign = flag('leftAlign')
-  const allowEscapeClose = flag('allowEscapeClose')
-  return {
-    ...(okButton === undefined ? {} : { okButton }),
-    ...(cancelButton === undefined ? {} : { cancelButton }),
-    ...(rows === undefined ? {} : { rows }),
-    ...(placeholder === undefined ? {} : { placeholder }),
-    ...(tooltip === undefined ? {} : { tooltip }),
-    ...(wide === undefined ? {} : { wide }),
-    ...(wider === undefined ? {} : { wider }),
-    ...(large === undefined ? {} : { large }),
-    ...(leftAlign === undefined ? {} : { leftAlign }),
-    ...(allowEscapeClose === undefined ? {} : { allowEscapeClose }),
-    ...(customButtons === undefined ? {} : { customButtons }),
-  }
+interface TavernExternalWindowRequest {
+  readonly key: string
+  readonly scriptKey: string
+  readonly target: Window
+  readonly requestId: string
+  readonly scriptName: string
+  readonly url: string
+  readonly hostname: string
+}
+
+interface CardExternalWindowRequest {
+  readonly key: string
+  readonly target: Window
+  readonly token: string
+  readonly requestId: string
+  readonly url: string
+  readonly hostname: string
 }
 
 function TavernScriptPopup({ request, onResolve }: {
@@ -5818,12 +5898,12 @@ function TavernScriptPopup({ request, onResolve }: {
         fontSize: '13px', lineHeight: 1.65, overflowWrap: 'anywhere', textAlign: options.leftAlign === false ? 'center' : 'left',
       }} dangerouslySetInnerHTML={{ __html: sanitized }} />
       {request.type === 3 && (inputRows > 1
-        ? <textarea autoFocus rows={inputRows} value={input} placeholder={options.placeholder} onChange={event => { setInput(event.target.value) }}
+        ? <textarea autoFocus maxLength={65_536} rows={inputRows} value={input} placeholder={options.placeholder} onChange={event => { setInput(event.target.value) }}
             onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); affirmative() } }} style={{
               background: 'var(--dsw-alias-bg-elevated, #202228)', border: '1px solid var(--dsw-alias-border-l2, #4a4c54)',
               borderRadius: '8px', color: 'inherit', font: 'inherit', lineHeight: 1.5, maxHeight: '42vh', minHeight: '88px', padding: '9px', resize: 'vertical',
             }} />
-        : <input autoFocus value={input} placeholder={options.placeholder} onChange={event => { setInput(event.target.value) }}
+        : <input autoFocus maxLength={65_536} value={input} placeholder={options.placeholder} onChange={event => { setInput(event.target.value) }}
             onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); affirmative() } }} style={{
               background: 'var(--dsw-alias-bg-elevated, #202228)', border: '1px solid var(--dsw-alias-border-l2, #4a4c54)',
               borderRadius: '8px', color: 'inherit', font: 'inherit', padding: '9px',
@@ -5850,11 +5930,18 @@ interface TavernToastMessage {
 }
 
 interface TavernScriptFrame {
+  readonly key: string
+  readonly scope: TavernScriptTreeScope
   readonly script: ImportedTavernHelperScript
   readonly source?: string
-  readonly srcDoc?: string
+  readonly src?: string
+  readonly bootSource?: string
+  readonly bootstrapSnapshot?: TavernScriptSnapshot
   readonly error?: string
   readonly requestedOrigin?: string
+  readonly compatibilityMarkers?: readonly string[]
+  readonly remoteImageOrigins?: readonly string[]
+  readonly remoteFrameOrigins?: readonly string[]
 }
 
 function TavernScriptToast({ toast, onClose }: {
@@ -5897,14 +5984,31 @@ function TavernScriptRuntime({
   readonly runTrigger: RunTavernTrigger
   readonly sessionId: SessionId
 }) {
-  const scripts = [
-    ...activeTavernScripts(projection, 'global'),
-    ...activeTavernScripts(projection, 'preset'),
-    ...activeTavernScripts(projection, 'character'),
-  ].filter(script => script.enabled && script.content.trim() !== '')
+  const scopedScripts = (['global', 'preset', 'character'] as const).flatMap(scope =>
+    activeTavernScripts(projection, scope).map(script => ({
+      key: tavernScriptIdentity(scope, script.id), scope, script,
+    })),
+  ).filter(entry => entry.script.enabled && entry.script.content.trim() !== '')
+  const scripts = scopedScripts.map(entry => entry.script)
+  const scopedScriptByKey = new Map(scopedScripts.map(entry => [entry.key, entry] as const))
   const [approvedOrigins, setApprovedOrigins] = useState(readApprovedTavernScriptOrigins)
-  const scriptOrigins = [...new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...approvedOrigins])].sort()
-  const signature = `${scripts.map(script => JSON.stringify(script)).join('\u0001')}\u0002${scriptOrigins.join('\u0001')}`
+  const [approvedImages, setApprovedImages] = useState(readApprovedTavernScriptImages)
+  const [approvedFrames, setApprovedFrames] = useState(readApprovedTavernScriptFrames)
+  const nativeIdentityState = useNativeIdentityDiagnosticState()
+  const characterApprovalId = projection.tavern?.characterSourceId ?? projection.avatarLibraryId ?? projection.characterName
+  const presetApprovalId = projection.tavern?.presetSourceId
+  const scriptOrigins = (entry: Pick<TavernScriptFrame, 'scope' | 'script'>): readonly string[] => [...new Set([
+    ...BUILT_IN_TAVERN_SCRIPT_ORIGINS,
+    ...approvedTavernScriptOrigins(
+      approvedOrigins, characterApprovalId, presetApprovalId, entry.scope, entry.script.id,
+    ),
+  ])].sort()
+  const relevantOriginApprovals = [...approvedOrigins].filter(approval => {
+    const value = parseTavernScriptOriginApprovalKey(approval)
+    return value?.characterId === characterApprovalId && value.presetId === presetApprovalId
+  }).sort()
+  const planSignature = `${scopedScripts.map(entry => JSON.stringify([entry.scope, entry.script])).join('\u0001')}\u0002${relevantOriginApprovals.join('\u0001')}`
+  const signature = `${planSignature}\u0002${[...approvedImages].sort().join('\u0001')}\u0002${[...approvedFrames].sort().join('\u0001')}`
   const [frames, setFrames] = useState<readonly TavernScriptFrame[]>([])
   const [readyScriptIds, setReadyScriptIds] = useState<ReadonlySet<string>>(() => new Set())
   const [compatibilityMarkersByScript, setCompatibilityMarkersByScript] = useState<ReadonlyMap<string, readonly string[]>>(
@@ -5920,25 +6024,47 @@ function TavernScriptRuntime({
   const [generationRequests, setGenerationRequests] = useState<ReadonlyMap<string, number>>(() => new Map())
   const [approvedCustomGenerations, setApprovedCustomGenerations] = useState(readApprovedTavernScriptCustomGenerations)
   const [customGenerationRequests, setCustomGenerationRequests] = useState<ReadonlyMap<string, {
-    readonly scriptId: string
+    readonly scriptKey: string
     readonly origin: string
     readonly count: number
   }>>(() => new Map())
   const [approvedModels, setApprovedModels] = useState(readApprovedTavernScriptModels)
   const [modelListRequests, setModelListRequests] = useState<ReadonlyMap<string, {
-    readonly scriptId: string
+    readonly scriptKey: string
     readonly origin: string
     readonly count: number
   }>>(() => new Map())
   const [surfaceScriptIds, setSurfaceScriptIds] = useState<ReadonlySet<string>>(() => new Set())
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelScriptId, setPanelScriptId] = useState<string>()
+  const [permissionOpen, setPermissionOpen] = useState(false)
+  const [diagnosticNotice, setDiagnosticNotice] = useState<string>()
   const [popupRequests, setPopupRequests] = useState<readonly TavernPopupRequest[]>([])
+  const [externalWindowRequests, setExternalWindowRequests] = useState<ReadonlyMap<string, TavernExternalWindowRequest>>(
+    () => new Map(),
+  )
+  const [approvedNativeIdentities, setApprovedNativeIdentities] = useState(readApprovedNativeIdentities)
+  const [nativeIdentityRequests, setNativeIdentityRequests] = useState<ReadonlyMap<string, NativeIdentityRuntimeRequest>>(
+    () => new Map(),
+  )
+  const [externalWindowPhase, setExternalWindowPhase] = useState<ExternalWindowPhase>()
   const [runtimeToasts, setRuntimeToasts] = useState<readonly TavernToastMessage[]>([])
   const toastSequence = useRef(0)
   const frameRefs = useRef(new Map<string, HTMLIFrameElement>())
+  const frameSources = useRef(new Map<string, string>())
+  const readyScriptIdsRef = useRef(readyScriptIds)
+  readyScriptIdsRef.current = readyScriptIds
+  const scriptBootstrapTimers = useRef(new Map<string, number>())
+  const externalWindowBrokers = useRef(new Map<string, ExternalWindowBroker>())
   const failedScriptIds = useRef(new Set<string>())
   const compatibilityMarkerTimers = useRef(new Set<number>())
+  const pendingCompatibilitySurface = useRef<{ readonly scriptKey: string; readonly surface: 'mobile-trigger' }>()
+  const pendingButtonSurface = useRef<{
+    readonly scriptKey: string
+    readonly buttonId: string
+    readonly timer: number
+  }>()
+  const surfaceButtonIds = useRef(new Set<string>())
   const generationQueue = useRef(new Map<string, QueuedTavernGeneration[]>())
   const customGenerationQueue = useRef(new Map<string, QueuedTavernGeneration[]>())
   const activeGenerations = useRef(new Map<string, {
@@ -5946,6 +6072,11 @@ function TavernScriptRuntime({
     readonly generationId?: string
     readonly controller: AbortController
   }>())
+  useEffect(() => {
+    const sync = (): void => { setApprovedNativeIdentities(readApprovedNativeIdentities()) }
+    window.addEventListener(nativeIdentityApprovalsChangedEvent, sync)
+    return () => { window.removeEventListener(nativeIdentityApprovalsChangedEvent, sync) }
+  }, [])
   const modelListQueue = useRef(new Map<string, {
     readonly target: Window
     readonly requestId: string
@@ -5953,6 +6084,7 @@ function TavernScriptRuntime({
     readonly key?: string
   }[]>())
   const projectionRef = useRef(projection)
+  const executionScope = useRef<{ readonly sessionId: SessionId; readonly planSignature: string }>()
   const mutationQueue = useRef(Promise.resolve())
   const presetRevisionRef = useRef(projection.preset?.revision ?? 0)
   const presetSessionRef = useRef(sessionId)
@@ -5966,66 +6098,189 @@ function TavernScriptRuntime({
   }
   useEffect(() => {
     const controller = new AbortController()
-    setFrames([])
-    setReadyScriptIds(new Set())
-    setCompatibilityMarkersByScript(new Map())
-    setRuntimeErrors(new Map())
-    setRuntimeButtons(new Map())
-    setExternalScriptRequests(new Map())
-    generationQueue.current.clear()
-    setGenerationRequests(new Map())
-    customGenerationQueue.current.clear()
-    setCustomGenerationRequests(new Map())
-    for (const active of activeGenerations.current.values()) active.controller.abort()
-    activeGenerations.current.clear()
-    modelListQueue.current.clear()
-    setModelListRequests(new Map())
-    setSurfaceScriptIds(new Set())
-    setPopupRequests([])
-    setRuntimeToasts([])
-    failedScriptIds.current.clear()
-    for (const timer of compatibilityMarkerTimers.current) window.clearTimeout(timer)
-    compatibilityMarkerTimers.current.clear()
-    void Promise.all(scripts.map(async (script): Promise<TavernScriptFrame> => {
+    const legacySettingsStorage: Pick<Storage, 'getItem'> = (() => {
       try {
-        const execution = await resolveTavernScriptExecution(script.content, controller.signal, scriptOrigins)
-        return {
-          script,
-          source: execution.source,
-          srcDoc: tavernScriptFrameSource(
-            script,
-            execution,
-            tavernScriptSnapshot(projectionRef.current, script, scriptOrigins, sessionId),
-          ),
-        }
-      } catch (reason: unknown) {
-        return {
-          script,
-          error: reason instanceof Error ? reason.message : String(reason),
-          ...(reason instanceof TavernScriptOriginApprovalError ? { requestedOrigin: reason.origin } : {}),
-        }
+        return window.localStorage
+      } catch {
+        return { getItem: () => null }
       }
-    })).then(result => {
-      if (controller.signal.aborted) return
-      setFrames(result)
-      setExternalScriptRequests(new Map(result.flatMap(entry => entry.requestedOrigin === undefined
-        ? [] : [[entry.script.id, entry.requestedOrigin] as const])))
-    })
-    return () => {
-      controller.abort()
-      for (const timer of compatibilityMarkerTimers.current) window.clearTimeout(timer)
-      compatibilityMarkerTimers.current.clear()
+    })()
+    const extensionSettingsByScope = new Map<TavernScriptTreeScope, Promise<Readonly<Record<string, JsonValue>>>>()
+    const extensionSettingsFor = (scope: TavernScriptTreeScope): Promise<Readonly<Record<string, JsonValue>>> => {
+      const current = extensionSettingsByScope.get(scope)
+      if (current !== undefined) return current
+      const loading = readTavernExtensionSettings(
+        tavernExtensionSettingsIdentity(characterApprovalId, presetApprovalId, scope),
+        legacySettingsStorage,
+      )
+      extensionSettingsByScope.set(scope, loading)
+      return loading
+    }
+    const previousScope = executionScope.current
+    const nextScope = { sessionId, planSignature }
+    const resetRuntime = shouldResetTavernScriptRuntime(previousScope, nextScope)
+    executionScope.current = nextScope
+    if (resetRuntime) {
+      setFrames(scopedScripts.map(entry => ({ ...entry })))
+      setReadyScriptIds(new Set())
+      setCompatibilityMarkersByScript(new Map())
+      setRuntimeErrors(new Map())
+      setRuntimeButtons(new Map())
+      setExternalScriptRequests(new Map())
+      generationQueue.current.clear()
+      setGenerationRequests(new Map())
+      customGenerationQueue.current.clear()
+      setCustomGenerationRequests(new Map())
       for (const active of activeGenerations.current.values()) active.controller.abort()
       activeGenerations.current.clear()
+      modelListQueue.current.clear()
+      setModelListRequests(new Map())
+      setSurfaceScriptIds(new Set())
+      setPopupRequests([])
+      setExternalWindowRequests(new Map())
+      setNativeIdentityRequests(new Map())
+      for (const broker of externalWindowBrokers.current.values()) broker.close()
+      externalWindowBrokers.current.clear()
+      setRuntimeToasts([])
+      frameSources.current.clear()
+      for (const timer of scriptBootstrapTimers.current.values()) window.clearTimeout(timer)
+      scriptBootstrapTimers.current.clear()
+      failedScriptIds.current.clear()
+      for (const timer of compatibilityMarkerTimers.current) window.clearTimeout(timer)
+      compatibilityMarkerTimers.current.clear()
+      if (pendingButtonSurface.current !== undefined) window.clearTimeout(pendingButtonSurface.current.timer)
+      pendingButtonSurface.current = undefined
+      surfaceButtonIds.current.clear()
+    }
+    const installFrame = (entry: TavernScriptFrame): void => {
+      if (controller.signal.aborted) return
+      const previousBootstrapTimer = scriptBootstrapTimers.current.get(entry.key)
+      if (previousBootstrapTimer !== undefined) window.clearTimeout(previousBootstrapTimer)
+      scriptBootstrapTimers.current.delete(entry.key)
+      const previousSource = frameSources.current.get(entry.key)
+      const sourceChanged = previousSource !== undefined && previousSource !== entry.src
+      if (entry.src === undefined) frameSources.current.delete(entry.key)
+      else frameSources.current.set(entry.key, entry.src)
+      if (sourceChanged || entry.error !== undefined) {
+        failedScriptIds.current.delete(entry.key)
+        setReadyScriptIds(current => {
+          if (!current.has(entry.key)) return current
+          const next = new Set(current)
+          next.delete(entry.key)
+          return next
+        })
+        setCompatibilityMarkersByScript(current => {
+          if (!current.has(entry.key)) return current
+          const next = new Map(current)
+          next.delete(entry.key)
+          return next
+        })
+        setRuntimeErrors(current => {
+          if (!current.has(entry.key)) return current
+          const next = new Map(current)
+          next.delete(entry.key)
+          return next
+        })
+      }
+      setFrames(current => {
+        const next = new Map(current.map(frame => [frame.key, frame] as const))
+        next.set(entry.key, entry)
+        return scopedScripts.map(script => next.get(script.key) ?? { ...script })
+      })
+      setExternalScriptRequests(current => {
+        const next = new Map(current)
+        if (entry.requestedOrigin === undefined) next.delete(entry.key)
+        else next.set(entry.key, entry.requestedOrigin)
+        return next
+      })
+      if (entry.src !== undefined && (sourceChanged || !readyScriptIdsRef.current.has(entry.key))) {
+        const expectedSource = entry.src
+        const timer = window.setTimeout(() => {
+          scriptBootstrapTimers.current.delete(entry.key)
+          if (controller.signal.aborted || frameSources.current.get(entry.key) !== expectedSource
+            || readyScriptIdsRef.current.has(entry.key) || failedScriptIds.current.has(entry.key)) return
+          const detail = '酒馆脚本启动超时：隔离运行时未在 15 秒内完成握手'
+          setRuntimeErrors(current => new Map(current).set(entry.key, detail))
+          ctx.logger.warn(`agent-rp: Tavern Helper script ${JSON.stringify(entry.script.name)} failed: ${detail}`)
+        }, 15_000)
+        scriptBootstrapTimers.current.set(entry.key, timer)
+      }
+    }
+    for (const scopedScript of scopedScripts) {
+      void (async (): Promise<TavernScriptFrame> => {
+        const { key, scope, script } = scopedScript
+        try {
+          const approvedScriptOrigins = scriptOrigins(scopedScript)
+          const [execution, extensionSettings] = await Promise.all([
+            resolveTavernScriptExecution(script.content, controller.signal, approvedScriptOrigins),
+            extensionSettingsFor(scope),
+          ])
+          const approvedImageOrigins = (execution.remoteImageOrigins ?? []).filter(origin => approvedImages.has(
+            tavernScriptImageApprovalKey(
+              characterApprovalId, presetApprovalId, scope, script.id, origin,
+            ),
+          ))
+          const approvedFrameOrigins = (execution.remoteFrameOrigins ?? []).filter(origin => approvedFrames.has(
+            tavernScriptFrameApprovalKey(
+              characterApprovalId, presetApprovalId, scope, script.id, origin,
+            ),
+          ))
+          const snapshot = tavernScriptSnapshot(
+            projectionRef.current, script, scope, approvedScriptOrigins, sessionId, approvedImageOrigins,
+            approvedFrameOrigins, extensionSettings,
+          )
+          const documentSource = tavernScriptFrameSource(
+            script,
+            execution,
+            snapshot,
+            { externalBootstrap: true },
+          )
+          const navigation = tavernScriptFrameNavigation(documentSource)
+          return {
+            key, scope, script,
+            source: execution.source,
+            compatibilityMarkers: execution.compatibilityMarkers,
+            remoteImageOrigins: execution.remoteImageOrigins ?? [],
+            remoteFrameOrigins: execution.remoteFrameOrigins ?? [],
+            src: navigation.url,
+            bootSource: navigation.program,
+            bootstrapSnapshot: snapshot,
+          }
+        } catch (reason: unknown) {
+          return {
+            key, scope, script,
+            error: reason instanceof Error ? reason.message : String(reason),
+            ...(reason instanceof TavernScriptOriginApprovalError ? { requestedOrigin: reason.origin } : {}),
+          }
+        }
+      })().then(installFrame)
+    }
+    return () => {
+      controller.abort()
     }
   }, [sessionId, signature])
+  useEffect(() => () => {
+    for (const timer of scriptBootstrapTimers.current.values()) window.clearTimeout(timer)
+    scriptBootstrapTimers.current.clear()
+    for (const timer of compatibilityMarkerTimers.current) window.clearTimeout(timer)
+    compatibilityMarkerTimers.current.clear()
+    if (pendingButtonSurface.current !== undefined) window.clearTimeout(pendingButtonSurface.current.timer)
+    pendingButtonSurface.current = undefined
+    surfaceButtonIds.current.clear()
+    for (const active of activeGenerations.current.values()) active.controller.abort()
+    activeGenerations.current.clear()
+    for (const broker of externalWindowBrokers.current.values()) broker.close()
+    externalWindowBrokers.current.clear()
+  }, [])
   useEffect(() => {
     onCompatibilityMarkersChange([
       ...new Set([...compatibilityMarkersByScript.values()].flat()),
     ].sort())
   }, [compatibilityMarkersByScript, onCompatibilityMarkersChange])
-  const syncFrame = (frame: HTMLIFrameElement, script: ImportedTavernHelperScript): void => {
-    const snapshot = tavernScriptSnapshot(projectionRef.current, script, scriptOrigins, sessionId)
+  const syncFrame = (frame: HTMLIFrameElement, entry: TavernScriptFrame): void => {
+    const snapshot = tavernScriptSnapshot(
+      projectionRef.current, entry.script, entry.scope, scriptOrigins(entry), sessionId,
+    )
     frame.contentWindow?.postMessage({
       source: 'dsh-agent-rp-host', action: 'variables-sync',
       scopes: snapshot.scopes, messages: snapshot.messages,
@@ -6045,31 +6300,49 @@ function TavernScriptRuntime({
       if (frame.contentWindow !== except) frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', ...message }, '*')
     }
   }
-  const generationApprovalKey = (scriptId: string): string => [
+  const broadcastExtensionSettings = (
+    ownerIdentity: string,
+    settings: Readonly<Record<string, JsonValue>>,
+    except?: Window | null,
+  ): void => {
+    for (const [key, frame] of frameRefs.current) {
+      const candidate = scopedScriptByKey.get(key)
+      if (candidate === undefined || frame.contentWindow === except) continue
+      const candidateOwner = tavernExtensionSettingsIdentity(
+        characterApprovalId, presetApprovalId, candidate.scope,
+      )
+      if (candidateOwner === ownerIdentity) {
+        frame.contentWindow?.postMessage({
+          source: 'dsh-agent-rp-host', action: 'extension-settings-sync', settings,
+        }, '*')
+      }
+    }
+  }
+  const generationApprovalKey = (scriptKey: string): string => [
     projectionRef.current.tavern?.characterSourceId ?? 'unknown-character',
     projectionRef.current.tavern?.presetSourceId ?? 'no-preset',
-    scriptId,
+    scriptKey,
   ].join('\u0000')
-  const modelApprovalKey = (scriptId: string, origin: string): string => [
+  const modelApprovalKey = (scriptKey: string, origin: string): string => [
     projectionRef.current.tavern?.characterSourceId ?? 'unknown-character',
     projectionRef.current.tavern?.presetSourceId ?? 'no-preset',
-    scriptId,
+    scriptKey,
     origin,
   ].join('\u0000')
-  const customGenerationApprovalKey = (scriptId: string, origin: string): string => [
+  const customGenerationApprovalKey = (scriptKey: string, origin: string): string => [
     projectionRef.current.tavern?.characterSourceId ?? 'unknown-character',
     projectionRef.current.tavern?.presetSourceId ?? 'no-preset',
-    scriptId,
+    scriptKey,
     origin,
   ].join('\u0000')
   const executeGeneration = (
-    scriptId: string,
+    scriptKey: string,
     target: Window,
     requestId: string,
     mode: 'preset' | 'raw',
     config: Readonly<Record<string, unknown>>,
   ): void => {
-    const key = `${scriptId}\u0000${requestId}`
+    const key = `${scriptKey}\u0000${requestId}`
     const controller = new AbortController()
     const generationId = typeof config.generation_id === 'string' ? config.generation_id : undefined
     activeGenerations.current.set(key, {
@@ -6131,7 +6404,7 @@ function TavernScriptRuntime({
       }, '*')
     })
   }
-  const cancelGenerations = (scriptId: string, target: Window, generationId?: string): void => {
+  const cancelGenerations = (scriptKey: string, target: Window, generationId?: string): void => {
     const matches = (request: QueuedTavernGeneration): boolean => request.target === target
       && (generationId === undefined || request.generationId === generationId)
     const reject = (request: QueuedTavernGeneration): void => {
@@ -6140,17 +6413,17 @@ function TavernScriptRuntime({
         ok: false, error: '酒馆脚本生成已取消',
       }, '*')
     }
-    const localQueue = generationQueue.current.get(scriptId) ?? []
+    const localQueue = generationQueue.current.get(scriptKey) ?? []
     const localCancelled = localQueue.filter(matches)
     const localRemaining = localQueue.filter(request => !matches(request))
     for (const request of localCancelled) reject(request)
-    if (localRemaining.length === 0) generationQueue.current.delete(scriptId)
-    else generationQueue.current.set(scriptId, localRemaining)
+    if (localRemaining.length === 0) generationQueue.current.delete(scriptKey)
+    else generationQueue.current.set(scriptKey, localRemaining)
     if (localCancelled.length > 0) {
       setGenerationRequests(current => {
         const next = new Map(current)
-        if (localRemaining.length === 0) next.delete(scriptId)
-        else next.set(scriptId, localRemaining.length)
+        if (localRemaining.length === 0) next.delete(scriptKey)
+        else next.set(scriptKey, localRemaining.length)
         return next
       })
     }
@@ -6183,8 +6456,8 @@ function TavernScriptRuntime({
   }
   useEffect(() => {
     for (const entry of frames) {
-      const frame = frameRefs.current.get(entry.script.id)
-      if (frame !== undefined) syncFrame(frame, entry.script)
+      const frame = frameRefs.current.get(entry.key)
+      if (frame !== undefined) syncFrame(frame, entry)
     }
   }, [projection.frontend, projection.mvu, projection.preset, projection.tavern])
   const previousMvu = useRef<{ readonly sessionId: SessionId; readonly value?: string }>()
@@ -6224,11 +6497,12 @@ function TavernScriptRuntime({
   }, [projection.tavern?.messages, sessionId])
   useEffect(() => {
     const bridge = (event: MessageEvent<unknown>): void => {
-      const entry = frames.find(candidate => frameRefs.current.get(candidate.script.id)?.contentWindow === event.source)
+      const entry = frames.find(candidate => frameRefs.current.get(candidate.key)?.contentWindow === event.source)
       if (entry === undefined || typeof event.data !== 'object' || event.data === null) return
       const message = event.data as {
         readonly source?: unknown
         readonly action?: unknown
+        readonly capability?: unknown
         readonly requestId?: unknown
         readonly scope?: unknown
         readonly variables?: unknown
@@ -6257,32 +6531,44 @@ function TavernScriptRuntime({
         readonly operation?: unknown
         readonly index?: unknown
         readonly markers?: unknown
+        readonly payload?: unknown
+      }
+      if (message.source === 'dsh-agent-rp-tavern-loader' && message.action === 'bootstrap-request') {
+        if (event.origin !== 'null' || entry.bootSource === undefined || entry.bootstrapSnapshot === undefined) return
+        ;(event.source as Window).postMessage({
+          source: 'dsh-agent-rp-host', action: 'runtime-bootstrap',
+          program: entry.bootSource, snapshot: entry.bootstrapSnapshot,
+        }, '*')
+        return
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
       if (message.action === 'ready') {
-        setReadyScriptIds(current => new Set(current).add(entry.script.id))
-        if (!failedScriptIds.current.has(entry.script.id)) {
+        const bootstrapTimer = scriptBootstrapTimers.current.get(entry.key)
+        if (bootstrapTimer !== undefined) window.clearTimeout(bootstrapTimer)
+        scriptBootstrapTimers.current.delete(entry.key)
+        setReadyScriptIds(current => new Set(current).add(entry.key))
+        if (!failedScriptIds.current.has(entry.key)) {
           setCompatibilityMarkersByScript(current => new Map(current).set(
-            entry.script.id,
+            entry.key,
             validatedTavernCompatibilityMarkers(message.markers),
           ))
           setRuntimeErrors(current => {
-            if (!current.has(entry.script.id)) return current
+            if (!current.has(entry.key)) return current
             const next = new Map(current)
-            next.delete(entry.script.id)
+            next.delete(entry.key)
             return next
           })
         }
-        const frame = frameRefs.current.get(entry.script.id)
+        const frame = frameRefs.current.get(entry.key)
         if (frame === undefined) return
-        syncFrame(frame, entry.script)
+        syncFrame(frame, entry)
         frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'script-buttons-request' }, '*')
         frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'app_ready', args: [] }, '*')
         frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'event', eventType: 'chat_id_changed', args: [String(sessionId)] }, '*')
         for (const delay of [250, 1_000, 2_500]) {
           const timer = window.setTimeout(() => {
             compatibilityMarkerTimers.current.delete(timer)
-            if (failedScriptIds.current.has(entry.script.id) || frameRefs.current.get(entry.script.id) !== frame) return
+            if (failedScriptIds.current.has(entry.key) || frameRefs.current.get(entry.key) !== frame) return
             frame.contentWindow?.postMessage({
               source: 'dsh-agent-rp-host', action: 'compatibility-markers-request',
             }, '*')
@@ -6302,21 +6588,24 @@ function TavernScriptRuntime({
         return
       }
       if (message.action === 'compatibility-markers') {
-        if (failedScriptIds.current.has(entry.script.id)) return
+        if (failedScriptIds.current.has(entry.key)) return
         setCompatibilityMarkersByScript(current => new Map(current).set(
-          entry.script.id,
+          entry.key,
           validatedTavernCompatibilityMarkers(message.markers),
         ))
         return
       }
       if (message.action === 'runtime-error') {
+        const bootstrapTimer = scriptBootstrapTimers.current.get(entry.key)
+        if (bootstrapTimer !== undefined) window.clearTimeout(bootstrapTimer)
+        scriptBootstrapTimers.current.delete(entry.key)
         const detail = String(message.value)
-        failedScriptIds.current.add(entry.script.id)
-        setRuntimeErrors(current => new Map(current).set(entry.script.id, detail))
+        failedScriptIds.current.add(entry.key)
+        setRuntimeErrors(current => new Map(current).set(entry.key, detail))
         setCompatibilityMarkersByScript(current => {
-          if (!current.has(entry.script.id)) return current
+          if (!current.has(entry.key)) return current
           const next = new Map(current)
-          next.delete(entry.script.id)
+          next.delete(entry.key)
           return next
         })
         ctx.logger.warn(`agent-rp: Tavern Helper script ${JSON.stringify(entry.script.name)} failed: ${detail}`)
@@ -6336,104 +6625,171 @@ function TavernScriptRuntime({
       }
       if (message.action === 'script-buttons') {
         const buttons = runtimeScriptButtons(message.buttons)
-        if (buttons !== undefined) setRuntimeButtons(current => new Map(current).set(entry.script.id, buttons))
+        if (buttons !== undefined) setRuntimeButtons(current => new Map(current).set(entry.key, buttons))
         return
       }
       if (message.action === 'display-override' && Number.isSafeInteger(message.messageId)
         && typeof message.value === 'string' && message.value.length <= 2 * 1024 * 1024) {
         const messageId = message.messageId as number
         if (messageId >= 0 && messageId < (projectionRef.current.tavern?.messages.length ?? 0)) {
-          onDisplayOverride(entry.script.id, messageId, message.value)
+          onDisplayOverride(entry.key, messageId, message.value)
         }
         return
       }
       if (message.action === 'surface' && typeof message.visible === 'boolean') {
         setSurfaceScriptIds(current => {
-          if (current.has(entry.script.id) === message.visible) return current
+          if (current.has(entry.key) === message.visible) return current
           const next = new Set(current)
-          if (message.visible) next.add(entry.script.id)
-          else next.delete(entry.script.id)
+          if (message.visible) next.add(entry.key)
+          else next.delete(entry.key)
           return next
         })
+        const pending = pendingButtonSurface.current
+        if (message.visible && pending?.scriptKey === entry.key) {
+          window.clearTimeout(pending.timer)
+          pendingButtonSurface.current = undefined
+          surfaceButtonIds.current.add(pending.buttonId)
+          setPanelScriptId(entry.key)
+          setPanelOpen(true)
+        }
         return
       }
       if (message.action === 'external-script-request') {
         const origin = normalizedTavernScriptOrigin(message.origin)
-        if (origin !== undefined && !approvedOrigins.has(origin)) {
-          setExternalScriptRequests(current => new Map(current).set(entry.script.id, origin))
+        if (origin !== undefined && !approvedOrigins.has(tavernScriptOriginApprovalKey(
+          characterApprovalId, presetApprovalId, entry.scope, entry.script.id, origin,
+        ))) {
+          setExternalScriptRequests(current => new Map(current).set(entry.key, origin))
         }
         return
       }
-      if (message.action === 'extension-settings-save') {
+      if (message.action === 'external-window-delivered'
+        && typeof message.requestId === 'string' && message.requestId.length <= 128) {
+        externalWindowBrokers.current.get(`${entry.key}:${message.requestId}`)?.acknowledgeDelivery()
+        return
+      }
+      if ((message.action === 'external-window-close' || message.action === 'external-window-focus')
+        && typeof message.requestId === 'string' && message.requestId.length <= 128) {
+        const requestKey = `${entry.key}:${message.requestId}`
+        const broker = externalWindowBrokers.current.get(requestKey)
+        if (message.action === 'external-window-focus') {
+          broker?.focus()
+          return
+        }
+        setExternalWindowRequests(current => {
+          if (!current.has(requestKey)) return current
+          const next = new Map(current)
+          next.delete(requestKey)
+          return next
+        })
+        if (broker !== undefined) {
+          externalWindowBrokers.current.delete(requestKey)
+          broker.close()
+        } else {
+          ;(event.source as Window).postMessage({
+            source: 'dsh-agent-rp-host', action: 'external-window-closed', requestId: message.requestId,
+          }, '*')
+        }
+        return
+      }
+      if (message.action === 'capability-request' && message.capability === 'settings.extension.persist') {
         const target = event.source as Window
-        try {
-          const settings = writeTavernExtensionSettings(window.localStorage, message.settings)
-          broadcast({ action: 'extension-settings-sync', settings }, target)
-          if (typeof message.requestId === 'string') {
+        const parsed = parseTavernExtensionSettingsCapabilityRequest(message)
+        if (parsed === undefined) {
+          if (typeof message.requestId === 'string' && message.requestId.length <= 128) {
             target.postMessage({
-              source: 'dsh-agent-rp-host', action: 'settings-result', requestId: message.requestId, ok: true,
+              source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'settings.extension.persist',
+              requestId: message.requestId, ok: false, error: '酒馆扩展设置能力请求无效',
             }, '*')
           }
-        } catch (reason: unknown) {
-          const error = reason instanceof Error ? reason.message : String(reason)
-          target.postMessage(typeof message.requestId === 'string'
-            ? { source: 'dsh-agent-rp-host', action: 'settings-result', requestId: message.requestId, ok: false, error }
-            : { source: 'dsh-agent-rp-host', action: 'settings-error', error }, '*')
+          return
         }
-        return
-      }
-      if (message.action === 'storage-request' && typeof message.requestId === 'string'
-        && typeof message.namespace === 'string'
-        && (message.operation === 'get' || message.operation === 'set' || message.operation === 'remove'
-          || message.operation === 'clear' || message.operation === 'keys' || message.operation === 'length'
-          || message.operation === 'key')) {
-        const target = event.source as Window
-        const request: TavernStorageRequest = {
-          operation: message.operation,
-          namespace: message.namespace,
-          ...(message.key === undefined ? {} : { key: String(message.key) }),
-          ...(message.value === undefined ? {} : { value: message.value }),
-          ...(message.index === undefined ? {} : { index: Number(message.index) }),
-        }
-        void executeTavernStorageRequest(request).then(value => {
+        const ownerIdentity = tavernExtensionSettingsIdentity(
+          characterApprovalId, presetApprovalId, entry.scope,
+        )
+        void writeTavernExtensionSettings(ownerIdentity, parsed.settings).then(settings => {
+          broadcastExtensionSettings(ownerIdentity, settings, target)
           target.postMessage({
-            source: 'dsh-agent-rp-host', action: 'storage-result', requestId: message.requestId, ok: true, value,
+            source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'settings.extension.persist',
+            requestId: parsed.requestId, ok: true,
           }, '*')
         }).catch((reason: unknown) => {
           target.postMessage({
-            source: 'dsh-agent-rp-host', action: 'storage-result', requestId: message.requestId, ok: false,
-            error: reason instanceof Error ? reason.message : String(reason),
+            source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'settings.extension.persist',
+            requestId: parsed.requestId, ok: false,
+            error: boundedAgentRpCapabilityResultError(
+              'settings.extension.persist', 'tavern-script-frame-v0', reason, '酒馆扩展设置保存失败',
+            ),
           }, '*')
         })
         return
       }
-      if (message.action === 'popup-request' && typeof message.requestId === 'string'
-        && (message.popupType === 1 || message.popupType === 2 || message.popupType === 3 || message.popupType === 4)
-        && typeof message.content === 'string' && message.content.length <= 262_144
-        && typeof message.inputValue === 'string' && message.inputValue.length <= 65_536) {
+      if (message.action === 'capability-request' && message.capability === 'storage.script.persist') {
         const target = event.source as Window
+        const parsed = parseTavernStorageCapabilityRequest(message)
+        if (parsed === undefined) {
+          if (typeof message.requestId === 'string' && message.requestId.length <= 128) {
+            target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'storage.script.persist',
+              requestId: message.requestId, ok: false, error: '持久存储能力请求无效',
+            }, '*')
+          }
+          return
+        }
+        const storageOwner = tavernScriptStorageIdentity(
+          characterApprovalId, presetApprovalId, entry.scope, entry.script.id,
+        )
+        void executeTavernStorageRequest(storageOwner, parsed.request).then(value => {
+          if (!validTavernStorageCapabilityResult(value)) throw new Error('持久存储结果超过安全限制')
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'storage.script.persist',
+            requestId: parsed.requestId, ok: true, value,
+          }, '*')
+        }).catch((reason: unknown) => {
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'storage.script.persist',
+            requestId: parsed.requestId, ok: false,
+            error: boundedAgentRpCapabilityResultError(
+              'storage.script.persist', 'tavern-script-frame-v0', reason, '持久存储操作失败',
+            ),
+          }, '*')
+        })
+        return
+      }
+      if (message.action === 'capability-request' && message.capability === 'ui.popup.open') {
+        const target = event.source as Window
+        const parsed = parseTavernPopupCapabilityRequest(message)
+        if (parsed === undefined) {
+          if (typeof message.requestId === 'string' && message.requestId.length <= 128) {
+            target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.popup.open',
+              requestId: message.requestId, ok: false, error: '弹窗能力请求无效',
+            }, '*')
+          }
+          return
+        }
         const request: TavernPopupRequest = {
-          key: `${entry.script.id}:${message.requestId}`,
+          key: `${entry.key}:${parsed.requestId}`,
           target,
-          requestId: message.requestId,
+          requestId: parsed.requestId,
           scriptName: entry.script.name,
-          type: message.popupType,
-          content: message.content,
-          inputValue: message.inputValue,
-          options: runtimePopupOptions(message.options),
+          type: parsed.type,
+          content: parsed.content,
+          inputValue: parsed.inputValue,
+          options: parsed.options,
         }
         setPopupRequests(current => {
           if (current.some(candidate => candidate.key === request.key)) {
             target.postMessage({
-              source: 'dsh-agent-rp-host', action: 'popup-result', requestId: request.requestId,
-              ok: false, error: '弹窗请求标识重复',
+              source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.popup.open',
+              requestId: request.requestId, ok: false, error: '弹窗请求标识重复',
             }, '*')
             return current
           }
           if (current.length >= 20) {
             target.postMessage({
-              source: 'dsh-agent-rp-host', action: 'popup-result', requestId: request.requestId,
-              ok: false, error: '等待处理的酒馆脚本弹窗过多',
+              source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.popup.open',
+              requestId: request.requestId, ok: false, error: '等待处理的酒馆脚本弹窗过多',
             }, '*')
             return current
           }
@@ -6441,19 +6797,92 @@ function TavernScriptRuntime({
         })
         return
       }
+      if (message.action === 'capability-request' && message.capability === 'ui.external-window.open') {
+        const target = event.source as Window
+        const parsed = parseTavernExternalWindowCapabilityRequest(message)
+        if (parsed === undefined) {
+          if (typeof message.requestId === 'string' && message.requestId.length <= 128) {
+            target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.external-window.open',
+              requestId: message.requestId, ok: false, error: '外部窗口能力请求无效',
+            }, '*')
+          }
+          return
+        }
+        const request: TavernExternalWindowRequest = {
+          key: `${entry.key}:${parsed.requestId}`,
+          scriptKey: entry.key,
+          target,
+          requestId: parsed.requestId,
+          scriptName: entry.script.name,
+          url: parsed.url,
+          hostname: new URL(parsed.url).hostname,
+        }
+        setExternalWindowRequests(current => {
+          return enqueueExternalWindowRequest(current, externalWindowBrokers.current, request)
+        })
+        setPermissionOpen(true)
+        return
+      }
+      if (message.action === 'capability-request' && message.capability === 'identity.native.attest') {
+        const target = event.source as Window
+        const parsed = parseTavernNativeIdentityCapabilityRequest(message)
+        if (parsed === undefined) {
+          if (typeof message.requestId === 'string' && message.requestId.length <= 128) {
+            target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'identity.native.attest',
+              requestId: message.requestId, ok: false, error: '本机身份能力请求无效',
+            }, '*')
+          }
+          return
+        }
+        const application = JSON.stringify([
+          'tavern-script', characterApprovalId, presetApprovalId ?? null, entry.scope, entry.script.id,
+        ])
+        const approval = nativeIdentityApprovalKey(application, parsed.audience, parsed.includeDisplayName)
+        const request: NativeIdentityRuntimeRequest = {
+          key: `${entry.key}:${parsed.requestId}`,
+          target,
+          runtime: 'tavern-script-frame-v0',
+          requestId: parsed.requestId,
+          application,
+          applicationName: entry.script.name || '酒馆脚本',
+          audience: parsed.audience,
+          nonce: parsed.nonce,
+          includeDisplayName: parsed.includeDisplayName,
+          scriptKey: entry.key,
+        }
+        if (approvedNativeIdentities.has(approval)) {
+          void deliverNativeIdentityResult(request, target)
+          return
+        }
+        setNativeIdentityRequests(current => {
+          if (current.has(request.key)) return current
+          if (current.size >= 8) {
+            target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'identity.native.attest',
+              requestId: request.requestId, ok: false, error: '等待确认的本机身份请求过多',
+            }, '*')
+            return current
+          }
+          return new Map(current).set(request.key, request)
+        })
+        setPermissionOpen(true)
+        return
+      }
       if (message.action === 'generation-cancel' && typeof message.generationId === 'string') {
-        cancelGenerations(entry.script.id, event.source as Window, message.generationId)
+        cancelGenerations(entry.key, event.source as Window, message.generationId)
         return
       }
       if (message.action === 'generation-cancel-all') {
-        cancelGenerations(entry.script.id, event.source as Window)
+        cancelGenerations(entry.key, event.source as Window)
         return
       }
       if (message.action === 'generation-preview' && typeof message.requestId === 'string'
         && (message.mode === 'preset' || message.mode === 'raw')
         && typeof message.config === 'object' && message.config !== null && !Array.isArray(message.config)) {
         executePromptPreview(
-          entry.script.id,
+          entry.key,
           event.source as Window,
           message.requestId,
           message.mode,
@@ -6491,26 +6920,26 @@ function TavernScriptRuntime({
             }, '*')
             return
           }
-          const approvalKey = customGenerationApprovalKey(entry.script.id, origin)
+          const approvalKey = customGenerationApprovalKey(entry.key, origin)
           if (approvedCustomGenerations.has(approvalKey)) {
-            executeGeneration(entry.script.id, target, request.requestId, request.mode, request.config)
+            executeGeneration(entry.key, target, request.requestId, request.mode, request.config)
           } else {
             const queued = customGenerationQueue.current.get(approvalKey) ?? []
             queued.push(request)
             customGenerationQueue.current.set(approvalKey, queued)
             setCustomGenerationRequests(current => new Map(current).set(approvalKey, {
-              scriptId: entry.script.id, origin, count: queued.length,
+              scriptKey: entry.key, origin, count: queued.length,
             }))
           }
           return
         }
-        if (approvedGenerations.has(generationApprovalKey(entry.script.id))) {
-          executeGeneration(entry.script.id, target, request.requestId, request.mode, request.config)
+        if (approvedGenerations.has(generationApprovalKey(entry.key))) {
+          executeGeneration(entry.key, target, request.requestId, request.mode, request.config)
         } else {
-          const queued = generationQueue.current.get(entry.script.id) ?? []
+          const queued = generationQueue.current.get(entry.key) ?? []
           queued.push(request)
-          generationQueue.current.set(entry.script.id, queued)
-          setGenerationRequests(current => new Map(current).set(entry.script.id, queued.length))
+          generationQueue.current.set(entry.key, queued)
+          setGenerationRequests(current => new Map(current).set(entry.key, queued.length))
         }
         return
       }
@@ -6526,7 +6955,7 @@ function TavernScriptRuntime({
           }, '*')
           return
         }
-        const approvalKey = modelApprovalKey(entry.script.id, origin)
+        const approvalKey = modelApprovalKey(entry.key, origin)
         const request = {
           target,
           requestId: message.requestId,
@@ -6540,7 +6969,7 @@ function TavernScriptRuntime({
           queued.push(request)
           modelListQueue.current.set(approvalKey, queued)
           setModelListRequests(current => new Map(current).set(approvalKey, {
-            scriptId: entry.script.id, origin, count: queued.length,
+            scriptKey: entry.key, origin, count: queued.length,
           }))
         }
         return
@@ -6555,6 +6984,7 @@ function TavernScriptRuntime({
         const request: Extract<TavernHelperMutationRequest, { operation: 'replace-script-injections' }> = {
           format: 0,
           operation: 'replace-script-injections',
+          scriptScope: entry.scope,
           scriptId: entry.script.id,
           prompts: message.prompts as Extract<TavernHelperMutationRequest, {
             operation: 'replace-script-injections'
@@ -6565,7 +6995,9 @@ function TavernScriptRuntime({
         }).catch((reason: unknown) => {
           target.postMessage({
             source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: false,
-            error: reason instanceof Error ? reason.message : String(reason),
+            error: boundedAgentRpCapabilityResultError(
+              'prompt-injection.session.replace', 'tavern-script-frame-v0', reason, '提示保存失败',
+            ),
           }, '*')
         })
         return
@@ -6643,16 +7075,34 @@ function TavernScriptRuntime({
         })
         return
       }
-      if ((message.action === 'worldbook-mutate' || message.action === 'chat-mutate') && typeof message.requestId === 'string'
-        && typeof message.request === 'object' && message.request !== null && !Array.isArray(message.request)) {
+      if ((message.action === 'worldbook-mutate' || message.action === 'chat-mutate') && typeof message.requestId === 'string') {
         const target = event.source as Window
+        if (!tavernMutationMatchesCapability(message.action, message.request)) {
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: false,
+            error: message.action === 'worldbook-mutate'
+              ? boundedAgentRpCapabilityResultError(
+                  'world-info.session.mutate', 'tavern-script-frame-v0', '世界书操作不受支持', '世界书保存失败',
+                )
+              : boundedAgentRpCapabilityResultError(
+                  'chat.session.mutate', 'tavern-script-frame-v0', '聊天操作不受支持', '聊天保存失败',
+                ),
+          }, '*')
+          return
+        }
         const request = message.request as TavernHelperMutationRequest
         mutationQueue.current = mutationQueue.current.then(() => runMutation(sessionId, request)).then(() => {
           target.postMessage({ source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: true }, '*')
         }).catch((reason: unknown) => {
           target.postMessage({
             source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: false,
-            error: reason instanceof Error ? reason.message : String(reason),
+            error: message.action === 'worldbook-mutate'
+              ? boundedAgentRpCapabilityResultError(
+                  'world-info.session.mutate', 'tavern-script-frame-v0', reason, '世界书保存失败',
+                )
+              : boundedAgentRpCapabilityResultError(
+                  'chat.session.mutate', 'tavern-script-frame-v0', reason, '聊天保存失败',
+                ),
           }, '*')
         })
         return
@@ -6662,38 +7112,237 @@ function TavernScriptRuntime({
           && message.scope !== 'chat' && message.scope !== 'message' && message.scope !== 'script')
         || typeof message.variables !== 'object' || message.variables === null || Array.isArray(message.variables)) return
       const target = event.source as Window
-      const request: TavernHelperMutationRequest = {
-        format: 0,
-        scope: message.scope,
-        ...(message.scope === 'script' ? { scriptId: entry.script.id } : {}),
-        variables: message.variables as Record<string, JsonValue>,
-      }
+      const variables = message.variables as Record<string, JsonValue>
+      const request: TavernHelperMutationRequest = message.scope === 'script'
+        ? { format: 0, scope: 'script', scriptScope: entry.scope, scriptId: entry.script.id, variables }
+        : { format: 0, scope: message.scope, variables }
       mutationQueue.current = mutationQueue.current.then(() => runMutation(sessionId, request)).then(() => {
         target.postMessage({ source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: true }, '*')
       }).catch((reason: unknown) => {
         target.postMessage({
           source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: false,
-          error: reason instanceof Error ? reason.message : String(reason),
+          error: boundedAgentRpCapabilityResultError(
+            'session.variables.replace', 'tavern-script-frame-v0', reason, '变量保存失败',
+          ),
         }, '*')
       })
     }
     window.addEventListener('message', bridge)
     return () => { window.removeEventListener('message', bridge) }
-  }, [approvedCustomGenerations, approvedGenerations, approvedModels, frames, inputActions, onDisplayOverride, runGeneration, runModelList,
-    runMutation, runPresetConfiguration, runPromptPreview, runTrigger, sessionId])
+  }, [approvedCustomGenerations, approvedGenerations, approvedModels, approvedNativeIdentities, frames, inputActions,
+    onDisplayOverride, runGeneration, runModelList, runMutation, runPresetConfiguration, runPromptPreview, runTrigger,
+    sessionId])
+  useEffect(() => {
+    const pending = pendingCompatibilitySurface.current
+    if (!panelOpen || pending === undefined || panelScriptId !== pending.scriptKey) return
+    const frame = frameRefs.current.get(pending.scriptKey)
+    if (frame === undefined) return
+    const animation = window.requestAnimationFrame(() => {
+      pendingCompatibilitySurface.current = undefined
+      frame.contentWindow?.postMessage({
+        source: 'dsh-agent-rp-host', action: 'compatibility-surface-open', surface: pending.surface,
+      }, '*')
+    })
+    return () => { window.cancelAnimationFrame(animation) }
+  }, [panelOpen, panelScriptId])
   if (scripts.length === 0) return null
   const failures = frames.flatMap(entry => {
-    const error = entry.error ?? runtimeErrors.get(entry.script.id)
+    const error = entry.error ?? runtimeErrors.get(entry.key)
     return error === undefined ? [] : [{ script: entry.script, error }]
   })
-  const buttons = scripts.flatMap(script => script.buttonEnabled
-    ? (runtimeButtons.get(script.id) ?? script.buttons).filter(button => button.visible).map(button => ({ script, button }))
+  const buttons = scopedScripts.flatMap(entry => entry.script.buttonEnabled
+    ? (runtimeButtons.get(entry.key) ?? entry.script.buttons).filter(button => button.visible).map(button => ({ entry, button }))
     : [])
-  const panelFrames = frames.filter(entry => entry.srcDoc !== undefined && surfaceScriptIds.has(entry.script.id))
-  const activePanelScriptId = panelFrames.some(entry => entry.script.id === panelScriptId)
+  const isMobileFrame = (entry: TavernScriptFrame): boolean => entry.compatibilityMarkers?.includes('__小手机脚本_loaded__') === true
+    || compatibilityMarkersByScript.get(entry.key)?.includes('__小手机脚本_loaded__') === true
+  const panelFrames = frames.filter(entry => entry.src !== undefined
+    && (surfaceScriptIds.has(entry.key) || isMobileFrame(entry)))
+  const mobileFrame = panelFrames.find(isMobileFrame)
+  const activePanelScriptId = panelFrames.some(entry => entry.key === panelScriptId)
     ? panelScriptId
-    : panelFrames[0]?.script.id
+    : panelFrames[0]?.key
+  const activePanelFrame = panelFrames.find(entry => entry.key === activePanelScriptId)
+  const panelSurfaceState = !panelOpen ? 'closed' : activePanelFrame !== undefined && isMobileFrame(activePanelFrame)
+    ? 'mobile'
+    : 'script'
   const activePopup = popupRequests[0]
+  const permissionActionStyle = {
+    background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '9px',
+    color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', lineHeight: 1.45, padding: '9px 11px',
+    textAlign: 'left', width: '100%',
+  } as const
+  const permissionActions = [
+    ...[...nativeIdentityRequests.values()].map(request => {
+      const approval = nativeIdentityApprovalKey(
+        request.application, request.audience, request.includeDisplayName,
+      )
+      return <button type="button" key={`identity:${request.key}`}
+        disabled={nativeIdentityState !== 'ready'}
+        title={nativeIdentityState === 'ready'
+          ? `允许这个隔离脚本向 ${request.audience} 出示五分钟有效的 DSH 本机身份证明；私钥不会离开 Host`
+          : '请先在 DSH 设置的 Agent RP 页面创建本机身份'}
+        onClick={() => {
+          const next = new Set(approvedNativeIdentities)
+          next.add(approval)
+          writeApprovedNativeIdentities(next)
+          setApprovedNativeIdentities(next)
+          setNativeIdentityRequests(current => {
+            const remaining = new Map(current)
+            remaining.delete(request.key)
+            return remaining
+          })
+          const target = request.scriptKey === undefined
+            ? request.target : frameRefs.current.get(request.scriptKey)?.contentWindow ?? request.target
+          void deliverNativeIdentityResult(request, target)
+        }} style={{ ...permissionActionStyle, cursor: nativeIdentityState === 'ready' ? 'pointer' : 'not-allowed',
+          opacity: nativeIdentityState === 'ready' ? 1 : .55 }}>允许 {request.applicationName} 向 {new URL(request.audience).hostname}
+          证明本机身份{request.includeDisplayName ? '并分享显示名称' : ''}</button>
+    }),
+    ...[...externalWindowRequests.values()].map(request => <button type="button" key={`external:${request.key}`}
+      title={`打开只连接 ${request.hostname} 的隔离登录面板`} onClick={() => {
+        const broker = openExternalWindowBroker({
+          hostWindow: window,
+          url: request.url,
+          hostname: request.hostname,
+          requesterName: request.scriptName,
+          runtime: 'tavern-script-frame-v0',
+          requestId: request.requestId,
+          resolveTarget: () => frameRefs.current.get(request.scriptKey)?.contentWindow,
+          onClosed: () => {
+            externalWindowBrokers.current.delete(request.key)
+            const target = frameRefs.current.get(request.scriptKey)?.contentWindow ?? request.target
+            target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'external-window-closed', requestId: request.requestId,
+            }, '*')
+          },
+          onStateChange: state => { setExternalWindowPhase(state.phase) },
+        })
+        setExternalWindowRequests(current => {
+          const next = new Map(current)
+          next.delete(request.key)
+          return next
+        })
+        if (broker === undefined) {
+          request.target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.external-window.open',
+            requestId: request.requestId, ok: false, error: '无法创建外部登录隔离面板',
+          }, '*')
+          return
+        }
+        externalWindowBrokers.current.set(request.key, broker)
+        request.target.postMessage({
+          source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.external-window.open',
+          requestId: request.requestId, ok: true,
+        }, '*')
+        setPermissionOpen(false)
+      }} style={permissionActionStyle}>打开 {request.hostname} 登录页（{request.scriptName || '酒馆脚本'}）</button>),
+    ...[...externalScriptRequests].map(([scriptKey, origin]) => <button type="button" key={`script:${scriptKey}:${origin}`}
+      title={`允许隔离脚本从 ${origin} 加载 JavaScript`} onClick={() => {
+        const entry = scopedScriptByKey.get(scriptKey)
+        if (entry === undefined) return
+        const next = new Set(approvedOrigins)
+        next.add(tavernScriptOriginApprovalKey(
+          characterApprovalId, presetApprovalId, entry.scope, entry.script.id, origin,
+        ))
+        writeApprovedTavernScriptOrigins(next)
+        setApprovedOrigins(next)
+      }} style={permissionActionStyle}>允许 {scopedScriptByKey.get(scriptKey)?.script.name || '脚本'} 加载 {new URL(origin).hostname} 脚本</button>),
+    ...frames.flatMap(entry => (entry.remoteImageOrigins ?? []).flatMap(origin => {
+      const approvalKey = tavernScriptImageApprovalKey(
+        characterApprovalId, presetApprovalId, entry.scope, entry.script.id, origin,
+      )
+      if (approvedImages.has(approvalKey)) return []
+      return [<button type="button" key={`image:${approvalKey}`}
+        title={`允许这个隔离脚本显示来自 ${origin} 的图片；不会开放脚本网络请求`} onClick={() => {
+          const next = new Set(approvedImages)
+          next.add(approvalKey)
+          writeApprovedTavernScriptImages(next)
+          setApprovedImages(next)
+      }} style={permissionActionStyle}>允许 {entry.script.name || '脚本'} 显示 {new URL(origin).hostname} 图片</button>]
+    })),
+    ...frames.flatMap(entry => (entry.remoteFrameOrigins ?? []).flatMap(origin => {
+      const approvalKey = tavernScriptFrameApprovalKey(
+        characterApprovalId, presetApprovalId, entry.scope, entry.script.id, origin,
+      )
+      if (approvedFrames.has(approvalKey)) return []
+      return [<button type="button" key={`frame:${approvalKey}`}
+        title={`允许这个隔离脚本嵌入 ${origin}；远端页面保留自己的 HTTPS 来源和存储`}
+        onClick={() => {
+          const next = new Set(approvedFrames)
+          next.add(approvalKey)
+          writeApprovedTavernScriptFrames(next)
+          setApprovedFrames(next)
+        }} style={permissionActionStyle}>允许 {entry.script.name || '脚本'} 嵌入 {new URL(origin).hostname}</button>]
+    })),
+    ...[...generationRequests].map(([scriptKey, count]) => {
+      const script = scopedScriptByKey.get(scriptKey)?.script
+      return <button type="button" key={`generation:${scriptKey}`}
+        title="允许这个隔离脚本使用当前 DSH 模型生成文本；生成会消耗模型额度" onClick={() => {
+          const next = new Set(approvedGenerations)
+          next.add(generationApprovalKey(scriptKey))
+          writeApprovedTavernScriptGenerations(next)
+          setApprovedGenerations(next)
+          const queued = generationQueue.current.get(scriptKey) ?? []
+          generationQueue.current.delete(scriptKey)
+          setGenerationRequests(current => {
+            const remaining = new Map(current)
+            remaining.delete(scriptKey)
+            return remaining
+          })
+          for (const request of queued) executeGeneration(scriptKey, request.target, request.requestId, request.mode, request.config)
+        }} style={permissionActionStyle}>允许 {script?.name || '脚本'} 调用模型{count > 1 ? ` (${count})` : ''}</button>
+    }),
+    ...[...customGenerationRequests].map(([approvalKey, request]) => {
+      const script = scopedScriptByKey.get(request.scriptKey)?.script
+      return <button type="button" key={`custom-generation:${approvalKey}`}
+        title={`允许这个隔离脚本连接 ${request.origin} 并生成文本；生成会消耗该 API 的额度，密钥只转发给该地址`} onClick={() => {
+          const next = new Set(approvedCustomGenerations)
+          next.add(approvalKey)
+          writeApprovedTavernScriptCustomGenerations(next)
+          setApprovedCustomGenerations(next)
+          const queued = customGenerationQueue.current.get(approvalKey) ?? []
+          customGenerationQueue.current.delete(approvalKey)
+          setCustomGenerationRequests(current => {
+            const remaining = new Map(current)
+            remaining.delete(approvalKey)
+            return remaining
+          })
+          for (const item of queued) executeGeneration(request.scriptKey, item.target, item.requestId, item.mode, item.config)
+        }} style={permissionActionStyle}>允许 {script?.name || '脚本'} 使用 {new URL(request.origin).hostname} 生成{request.count > 1 ? ` (${request.count})` : ''}</button>
+    }),
+    ...[...modelListRequests].map(([approvalKey, request]) => {
+      const script = scopedScriptByKey.get(request.scriptKey)?.script
+      return <button type="button" key={`models:${approvalKey}`}
+        title={`允许这个隔离脚本连接 ${request.origin} 并读取模型名称；API 密钥只转发给该地址`} onClick={() => {
+          const next = new Set(approvedModels)
+          next.add(approvalKey)
+          writeApprovedTavernScriptModels(next)
+          setApprovedModels(next)
+          const queued = modelListQueue.current.get(approvalKey) ?? []
+          modelListQueue.current.delete(approvalKey)
+          setModelListRequests(current => {
+            const remaining = new Map(current)
+            remaining.delete(approvalKey)
+            return remaining
+          })
+          for (const item of queued) executeModelList(item.target, item.requestId, item.apiurl, item.key)
+        }} style={permissionActionStyle}>允许 {script?.name || '脚本'} 读取 {new URL(request.origin).hostname} 模型{request.count > 1 ? ` (${request.count})` : ''}</button>
+    }),
+  ]
+  const scriptPhases = new Map(frames.map(entry => [entry.key, tavernScriptRuntimePhase({
+    hasDocument: entry.src !== undefined,
+    permissionRequired: entry.requestedOrigin !== undefined,
+    loadError: entry.error !== undefined,
+    ready: readyScriptIds.has(entry.key),
+    runtimeError: runtimeErrors.has(entry.key),
+  })]))
+  const readyScriptCount = [...scriptPhases.values()].filter(phase => phase === 'ready').length
+  const failedScriptCount = [...scriptPhases.values()].filter(
+    phase => phase === 'load-error' || phase === 'runtime-error',
+  ).length
+  const queuedGenerationCount = [...generationRequests.values()].reduce((total, count) => total + count, 0)
+    + [...customGenerationRequests.values()].reduce((total, value) => total + value.count, 0)
+  const queuedModelListCount = [...modelListRequests.values()].reduce((total, value) => total + value.count, 0)
   return <>
     {runtimeToasts.length > 0 && <div aria-live="polite" style={{
       display: 'grid', gap: '8px', position: 'fixed', right: '14px', top: '14px', width: 'min(92vw, 420px)', zIndex: 1230,
@@ -6704,11 +7353,52 @@ function TavernScriptRuntime({
     </div>}
     {activePopup !== undefined && <TavernScriptPopup key={activePopup.key} request={activePopup} onResolve={value => {
       activePopup.target.postMessage({
-        source: 'dsh-agent-rp-host', action: 'popup-result', requestId: activePopup.requestId, ok: true, value,
+        source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.popup.open',
+        requestId: activePopup.requestId, ok: true, value,
       }, '*')
       setPopupRequests(current => current.filter(request => request.key !== activePopup.key))
     }} />}
-    <div className="agent-rp-tavern-script-overlay" data-agent-rp-dialog aria-hidden={!panelOpen} {...panelOpen ? { role: 'dialog', 'aria-modal': true, 'aria-label': '酒馆脚本面板' } : {}}
+    {permissionOpen && <div role="dialog" aria-modal aria-label="酒馆脚本权限"
+      data-agent-rp-surface="tavern-permissions" onMouseDown={event => {
+      if (event.target === event.currentTarget) setPermissionOpen(false)
+    }} style={{
+      alignItems: 'center', background: 'rgba(0,0,0,.72)', display: 'flex', inset: 0, justifyContent: 'center',
+      padding: '18px', position: 'fixed', zIndex: 1240,
+    }}><section style={{
+      background: 'var(--dsw-alias-bg-base, #121318)', border: '1px solid var(--dsw-alias-border-l2, #3b3d45)',
+      borderRadius: '14px', boxShadow: '0 22px 72px rgba(0,0,0,.5)', display: 'grid', gap: '12px',
+      maxHeight: 'min(82vh, 720px)', maxWidth: '620px', overflow: 'auto', padding: '16px', width: 'min(92vw, 620px)',
+    }}>
+      <header style={{ alignItems: 'center', display: 'flex', gap: '10px' }}>
+        <div style={{ flex: '1 1 auto' }}><strong style={{ display: 'block', fontSize: '14px' }}>脚本权限</strong>
+          <span style={{ fontSize: '11px', opacity: .58 }}>当前角色卡 · 按脚本分别保存</span></div>
+        <button type="button" aria-label="关闭脚本权限" data-agent-rp-action="close-tavern-permissions"
+          onClick={() => { setPermissionOpen(false) }} style={{
+          background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '20px', padding: '2px 6px',
+        }}>×</button>
+      </header>
+      <p style={{ fontSize: '12px', lineHeight: 1.6, margin: 0, opacity: .7 }}>
+        未允许的能力保持关闭，但不会阻止其他脚本启动。本机身份证明由 Host 签名并绑定目标来源；私钥不会交给脚本。
+      </p>
+      {nativeIdentityRequests.size > 0 && nativeIdentityState !== 'ready' && <p role="status" style={{
+        color: 'var(--dsw-alias-state-warning, #d6a955)', fontSize: '12px', lineHeight: 1.55, margin: 0,
+      }}>请先在 DSH 设置的 Agent RP 页面创建本机身份，再确认身份请求。</p>}
+      <div style={{ display: 'grid', gap: '8px' }}>
+        {permissionActions.length === 0
+          ? <span style={{ fontSize: '12px', opacity: .62, padding: '8px 0' }}>当前没有待确认权限。</span>
+          : permissionActions}
+      </div>
+    </section></div>}
+    <div className="agent-rp-tavern-script-overlay" data-agent-rp-dialog data-agent-rp-surface="tavern-panel"
+      data-agent-rp-surface-state={panelSurfaceState} aria-hidden={!panelOpen}
+      data-agent-rp-tavern-total={scripts.length} data-agent-rp-tavern-ready={readyScriptCount}
+      data-agent-rp-tavern-failed={failedScriptCount} data-agent-rp-tavern-permissions={permissionActions.length}
+      data-agent-rp-tavern-awaiting-authorization={permissionActions.length}
+      data-agent-rp-native-identity-pending={nativeIdentityRequests.size}
+      {...(externalWindowPhase === undefined ? {} : { 'data-agent-rp-external-window-phase': externalWindowPhase })}
+      data-agent-rp-tavern-generation-queued={queuedGenerationCount}
+      data-agent-rp-tavern-model-list-queued={queuedModelListCount}
+      {...panelOpen ? { role: 'dialog', 'aria-modal': true, 'aria-label': '酒馆脚本面板' } : {}}
       style={panelOpen ? {
         alignItems: 'center', background: 'rgba(0,0,0,.68)', display: 'flex', inset: 0,
         justifyContent: 'center', padding: '20px', position: 'fixed', zIndex: 1100,
@@ -6724,31 +7414,50 @@ function TavernScriptRuntime({
         {panelOpen && <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #35373d)', display: 'flex', gap: '8px', padding: '10px 12px' }}>
           <strong style={{ fontSize: '13px', marginRight: '4px' }}>酒馆脚本</strong>
           <div style={{ display: 'flex', flex: '1 1 auto', gap: '6px', minWidth: 0, overflowX: 'auto' }}>
-            {panelFrames.map(entry => <button type="button" key={entry.script.id} onClick={() => { setPanelScriptId(entry.script.id) }} style={{
-              background: entry.script.id === activePanelScriptId ? 'var(--dsw-alias-bg-elevated, #2a2c32)' : 'transparent',
+            {panelFrames.map(entry => <button type="button" key={entry.key} onClick={() => { setPanelScriptId(entry.key) }} style={{
+              background: entry.key === activePanelScriptId ? 'var(--dsw-alias-bg-elevated, #2a2c32)' : 'transparent',
               border: '1px solid var(--dsw-alias-border-l2, #41434a)', borderRadius: '7px', color: 'inherit', cursor: 'pointer',
               flex: '0 0 auto', font: 'inherit', fontSize: '11px', maxWidth: '240px', overflow: 'hidden', padding: '5px 8px',
               textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>{entry.script.name || '未命名脚本'}</button>)}
           </div>
+          <button type="button" aria-live="polite" title="复制不含角色名、正文、脚本源码和 URL 的兼容诊断" onClick={() => {
+            const report = JSON.stringify(collectAgentRpBrowserCompatibilitySnapshot(document), null, 2)
+            if (navigator.clipboard === undefined) {
+              setDiagnosticNotice('无法复制')
+              return
+            }
+            void navigator.clipboard.writeText(report).then(() => {
+              setDiagnosticNotice('诊断已复制')
+            }, () => {
+              setDiagnosticNotice('复制失败')
+            })
+          }} style={{
+            background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #41434a)', borderRadius: '7px',
+            color: 'inherit', cursor: 'pointer', flex: '0 0 auto', font: 'inherit', fontSize: '11px', padding: '5px 8px',
+          }}>{diagnosticNotice ?? '复制诊断'}</button>
           <span style={{ flex: '0 0 auto', fontSize: '11px', opacity: .58 }}>{readyScriptIds.size}/{scripts.length} 已启动</span>
-          <button type="button" aria-label="关闭酒馆脚本面板" onClick={() => { setPanelOpen(false) }} style={{
+          <button type="button" aria-label="关闭酒馆脚本面板" data-agent-rp-action="close-tavern-panel"
+            onClick={() => { setPanelOpen(false) }} style={{
             background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '20px', padding: '2px 6px',
           }}>×</button>
         </header>}
-        {frames.flatMap(entry => entry.source === undefined || entry.srcDoc === undefined ? [] : [<iframe
-          key={entry.script.id}
+        {frames.flatMap(entry => entry.source === undefined || entry.src === undefined ? [] : [<iframe
+          key={entry.key}
           title={entry.script.name || '酒馆脚本'}
           data-agent-rp-tavern-script={entry.script.id}
-          sandbox="allow-scripts"
-          srcDoc={entry.srcDoc}
+          data-agent-rp-tavern-script-scope={entry.scope}
+          data-agent-rp-tavern-phase={scriptPhases.get(entry.key)}
+          sandbox="allow-scripts allow-same-origin allow-forms"
+          referrerPolicy="no-referrer"
+          src={entry.src}
           style={panelOpen ? {
-            background: 'transparent', border: 0, display: entry.script.id === activePanelScriptId ? 'block' : 'none',
+            background: 'transparent', border: 0, display: entry.key === activePanelScriptId ? 'block' : 'none',
             flex: '1 1 auto', minHeight: 0, width: '100%',
           } : { border: 0, height: '1px', width: '1px' }}
           ref={frame => {
-            if (frame === null) frameRefs.current.delete(entry.script.id)
-            else frameRefs.current.set(entry.script.id, frame)
+            if (frame === null) frameRefs.current.delete(entry.key)
+            else frameRefs.current.set(entry.key, frame)
           }}
         />])}
         {panelOpen && panelFrames.length === 0 && <div style={{
@@ -6756,110 +7465,64 @@ function TavernScriptRuntime({
         }}><div style={{ maxWidth: '520px', width: '100%' }}>
           <p style={{ fontSize: '13px', margin: '0 0 12px', opacity: .72 }}>这些脚本在后台运行，没有单独界面。</p>
           {frames.map(entry => {
-            const error = entry.error ?? runtimeErrors.get(entry.script.id)
-            return <div key={entry.script.id} style={{
+            const error = entry.error ?? runtimeErrors.get(entry.key)
+            return <div key={entry.key} style={{
               alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #35373d)', display: 'flex',
               gap: '10px', padding: '9px 2px',
             }}><span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {entry.script.name || '未命名脚本'}
             </span><span style={{ color: error === undefined ? 'inherit' : 'var(--dsw-alias-state-warning, #d5a64c)', fontSize: '11px', opacity: .66 }}>
-              {error === undefined ? (readyScriptIds.has(entry.script.id) ? '运行中' : '启动中') : '运行失败'}
+              {error === undefined ? (readyScriptIds.has(entry.key) ? '运行中' : '启动中') : '运行失败'}
             </span></div>
           })}
         </div></div>}
-        {panelOpen && frames.find(entry => entry.script.id === activePanelScriptId)?.error !== undefined && <p style={{
+        {panelOpen && frames.find(entry => entry.key === activePanelScriptId)?.error !== undefined && <p style={{
           margin: 'auto', maxWidth: '720px', padding: '20px',
-        }}>{frames.find(entry => entry.script.id === activePanelScriptId)?.error}</p>}
+        }}>{frames.find(entry => entry.key === activePanelScriptId)?.error}</p>}
       </section>
     </div>
-    <button type="button" onClick={() => { setPanelOpen(true) }} title="打开隔离运行的酒馆脚本界面" style={{
+    {mobileFrame !== undefined && <button type="button" title="打开小手机" data-agent-rp-action="open-mobile-surface" onClick={() => {
+      pendingCompatibilitySurface.current = { scriptKey: mobileFrame.key, surface: 'mobile-trigger' }
+      setPanelScriptId(mobileFrame.key)
+      setPanelOpen(true)
+    }} style={{
+      background: 'var(--dsw-alias-bg-elevated, #25272d)', border: '1px solid var(--dsw-alias-border-l2, #555)',
+      borderRadius: '7px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', padding: '3px 8px',
+    }}>小手机</button>}
+    <button type="button" data-agent-rp-action="open-tavern-panel" onClick={() => { setPanelOpen(true) }}
+      title="打开隔离运行的酒馆脚本界面" style={{
       background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '7px',
       color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .72, padding: '3px 7px',
     }}>脚本 {readyScriptIds.size}/{scripts.length}</button>
-    {buttons.map(({ script, button }) => <button type="button" key={`${script.id}:${button.name}`}
-      disabled={!readyScriptIds.has(script.id) || runtimeErrors.has(script.id)}
-      title={`${script.name} · ${button.name}`} onClick={() => {
-        frameRefs.current.get(script.id)?.contentWindow?.postMessage({
-          source: 'dsh-agent-rp-host', action: 'event', eventType: `${script.id}_${button.name}`, args: [],
+    {buttons.map(({ entry, button }) => <button type="button" key={`${entry.key}:${button.name}`}
+      disabled={!readyScriptIds.has(entry.key) || runtimeErrors.has(entry.key)}
+      title={`${entry.script.name} · ${button.name}`} onClick={() => {
+        const buttonId = `${entry.key}\u0000${button.name}`
+        if (surfaceButtonIds.current.has(buttonId) && surfaceScriptIds.has(entry.key)) {
+          setPanelScriptId(entry.key)
+          setPanelOpen(true)
+        } else {
+          if (pendingButtonSurface.current !== undefined) window.clearTimeout(pendingButtonSurface.current.timer)
+          const timer = window.setTimeout(() => {
+            if (pendingButtonSurface.current?.timer === timer) pendingButtonSurface.current = undefined
+          }, 10_000)
+          pendingButtonSurface.current = { scriptKey: entry.key, buttonId, timer }
+        }
+        frameRefs.current.get(entry.key)?.contentWindow?.postMessage({
+          source: 'dsh-agent-rp-host', action: 'event', eventType: `${entry.script.id}_${button.name}`, args: [],
         }, '*')
       }} style={{
         background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '7px',
-        color: 'inherit', cursor: readyScriptIds.has(script.id) ? 'pointer' : 'wait', font: 'inherit',
-        fontSize: '11px', opacity: readyScriptIds.has(script.id) ? .72 : .4, padding: '3px 7px',
+        color: 'inherit', cursor: readyScriptIds.has(entry.key) ? 'pointer' : 'wait', font: 'inherit',
+        fontSize: '11px', opacity: readyScriptIds.has(entry.key) ? .72 : .4, padding: '3px 7px',
       }}>{button.name}</button>)}
-    {[...externalScriptRequests].map(([scriptId, origin]) => <button type="button" key={`${scriptId}:${origin}`}
-      title={`允许隔离脚本从 ${origin} 加载 JavaScript`} onClick={() => {
-        const next = new Set(approvedOrigins)
-        next.add(origin)
-        writeApprovedTavernScriptOrigins(next)
-        setApprovedOrigins(next)
-      }} style={{
-        background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px',
-        color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .78, padding: '3px 7px',
-      }}>允许 {new URL(origin).hostname}</button>)}
-    {[...generationRequests].map(([scriptId, count]) => {
-      const script = scripts.find(entry => entry.id === scriptId)
-      return <button type="button" key={`generation:${scriptId}`}
-        title="允许这个隔离脚本使用当前 DSH 模型生成文本；生成会消耗模型额度" onClick={() => {
-          const next = new Set(approvedGenerations)
-          next.add(generationApprovalKey(scriptId))
-          writeApprovedTavernScriptGenerations(next)
-          setApprovedGenerations(next)
-          const queued = generationQueue.current.get(scriptId) ?? []
-          generationQueue.current.delete(scriptId)
-          setGenerationRequests(current => {
-            const remaining = new Map(current)
-            remaining.delete(scriptId)
-            return remaining
-          })
-          for (const request of queued) executeGeneration(scriptId, request.target, request.requestId, request.mode, request.config)
-        }} style={{
-          background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px',
-          color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .78, padding: '3px 7px',
-        }}>允许 {script?.name || '脚本'} 调用模型{count > 1 ? ` (${count})` : ''}</button>
-    })}
-    {[...customGenerationRequests].map(([approvalKey, request]) => {
-      const script = scripts.find(entry => entry.id === request.scriptId)
-      return <button type="button" key={`custom-generation:${approvalKey}`}
-        title={`允许这个隔离脚本连接 ${request.origin} 并生成文本；生成会消耗该 API 的额度，密钥只转发给该地址`} onClick={() => {
-          const next = new Set(approvedCustomGenerations)
-          next.add(approvalKey)
-          writeApprovedTavernScriptCustomGenerations(next)
-          setApprovedCustomGenerations(next)
-          const queued = customGenerationQueue.current.get(approvalKey) ?? []
-          customGenerationQueue.current.delete(approvalKey)
-          setCustomGenerationRequests(current => {
-            const remaining = new Map(current)
-            remaining.delete(approvalKey)
-            return remaining
-          })
-          for (const item of queued) executeGeneration(request.scriptId, item.target, item.requestId, item.mode, item.config)
-        }} style={{
-          background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px',
-          color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .78, padding: '3px 7px',
-        }}>允许 {script?.name || '脚本'} 使用 {new URL(request.origin).hostname} 生成{request.count > 1 ? ` (${request.count})` : ''}</button>
-    })}
-    {[...modelListRequests].map(([approvalKey, request]) => {
-      const script = scripts.find(entry => entry.id === request.scriptId)
-      return <button type="button" key={`models:${approvalKey}`}
-        title={`允许这个隔离脚本连接 ${request.origin} 并读取模型名称；API 密钥只转发给该地址`} onClick={() => {
-          const next = new Set(approvedModels)
-          next.add(approvalKey)
-          writeApprovedTavernScriptModels(next)
-          setApprovedModels(next)
-          const queued = modelListQueue.current.get(approvalKey) ?? []
-          modelListQueue.current.delete(approvalKey)
-          setModelListRequests(current => {
-            const remaining = new Map(current)
-            remaining.delete(approvalKey)
-            return remaining
-          })
-          for (const item of queued) executeModelList(item.target, item.requestId, item.apiurl, item.key)
-        }} style={{
-          background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px',
-          color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', opacity: .78, padding: '3px 7px',
-        }}>允许 {script?.name || '脚本'} 读取 {new URL(request.origin).hostname} 模型{request.count > 1 ? ` (${request.count})` : ''}</button>
-    })}
+    {permissionActions.length > 0 && <button type="button" data-agent-rp-action="open-tavern-permissions"
+      title={`${permissionActions.length} 项酒馆脚本权限待确认`}
+      onClick={() => { setPermissionOpen(true) }} style={{
+        background: 'color-mix(in srgb, var(--dsw-alias-state-warning, #d5a64c) 12%, transparent)',
+        border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px', color: 'inherit',
+        cursor: 'pointer', font: 'inherit', fontSize: '11px', padding: '3px 7px',
+      }}>权限 {permissionActions.length}</button>}
     {(readyScriptIds.size < scripts.length || failures.length > 0) && <span
       title={failures.length === 0 ? '正在启动酒馆脚本' : failures.map(entry => `${entry.script.name}：${entry.error}`).join('\n')}
       style={{
@@ -6893,7 +7556,21 @@ function roleplayComposerDockComponent(
   const [drawOpen, setDrawOpen] = useState(false)
   const [displayOverrides, setDisplayOverrides] = useState<ReadonlyMap<number, string>>(() => new Map())
   const [compatibilityMarkers, setCompatibilityMarkers] = useState<readonly string[]>([])
+  const [cardExternalWindowRequests, setCardExternalWindowRequests] = useState<ReadonlyMap<string, CardExternalWindowRequest>>(
+    () => new Map(),
+  )
+  const [cardExternalWindowPermissionOpen, setCardExternalWindowPermissionOpen] = useState(false)
+  const [cardExternalWindowPhase, setCardExternalWindowPhase] = useState<ExternalWindowPhase>()
+  const [approvedCardNativeIdentities, setApprovedCardNativeIdentities] = useState(readApprovedNativeIdentities)
+  const [cardNativeIdentityRequests, setCardNativeIdentityRequests] = useState<ReadonlyMap<string, NativeIdentityRuntimeRequest>>(
+    () => new Map(),
+  )
+  const nativeIdentityState = useNativeIdentityDiagnosticState()
+  const approvedCardNativeIdentitiesRef = useRef(approvedCardNativeIdentities)
+  approvedCardNativeIdentitiesRef.current = approvedCardNativeIdentities
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const cardExternalWindowBrokers = useRef(new Map<string, ExternalWindowBroker>())
+  const cardFramesByTokenRef = useRef(new Map<string, HTMLIFrameElement>())
   const characterDetail = useCharacterDetail(projection?.avatarLibraryId)
   const displayStateRef = useRef({ chat, characterDetail, compatibilityMarkers, displayOverrides, projection, viewMode })
   const scanDisplayRef = useRef<() => void>(() => undefined)
@@ -6912,6 +7589,21 @@ function roleplayComposerDockComponent(
   }, [])
   useEffect(() => { setDisplayOverrides(new Map()) }, [sessionId, transcriptSignature])
   useEffect(() => { setCompatibilityMarkers([]) }, [sessionId])
+  useEffect(() => {
+    const sync = (): void => { setApprovedCardNativeIdentities(readApprovedNativeIdentities()) }
+    window.addEventListener(nativeIdentityApprovalsChangedEvent, sync)
+    return () => { window.removeEventListener(nativeIdentityApprovalsChangedEvent, sync) }
+  }, [])
+  useEffect(() => {
+    setCardExternalWindowRequests(new Map())
+    setCardNativeIdentityRequests(new Map())
+    setCardExternalWindowPermissionOpen(false)
+    cardFramesByTokenRef.current.clear()
+    return () => {
+      for (const broker of cardExternalWindowBrokers.current.values()) broker.close()
+      cardExternalWindowBrokers.current.clear()
+    }
+  }, [sessionId])
   useLayoutEffect(() => {
     const scroll = rootRef.current?.closest<HTMLElement>('[data-conversation-scroll]')
     if (scroll == null || background === undefined || projection?.avatarLibraryId === undefined || viewMode !== 'immersive') return
@@ -6964,7 +7656,8 @@ function roleplayComposerDockComponent(
       const trailing = row?.lastElementChild
       for (const element of Array.from(tools?.children ?? [])) hide(element)
       for (const element of Array.from(trailing?.children ?? [])) {
-        if (element.tagName !== 'BUTTON') hide(element)
+        const ownsMenuButton = element.querySelector('button[aria-haspopup="menu"]') !== null
+        if (element.tagName !== 'BUTTON' && !ownsMenuButton) hide(element)
       }
       for (const element of Array.from(inputRoot.children)) {
         if (element !== card && element !== dock) hide(element)
@@ -6992,7 +7685,13 @@ function roleplayComposerDockComponent(
     if (projection === undefined) return
     const scroll = rootRef.current?.closest<HTMLElement>('[data-conversation-scroll]')
     if (scroll == null) return
-    const mounted = new Map<HTMLElement, { readonly root: Root; signature: string }>()
+    const mounted = new Map<HTMLElement, {
+      readonly capabilityToken: string
+      readonly root: Root
+      signature: string
+    }>()
+    const pendingCardMutations = new WeakSet<Window>()
+    const cardVariableMutationQueues = new WeakMap<Window, Promise<void>>()
     const hiddenTranscriptDetails = new Map<HTMLElement, { readonly display: string; readonly priority: string }>()
     const legacyConversationNotices = new Set<HTMLElement>()
     const hideTranscriptDetail = (element: HTMLElement): void => {
@@ -7021,17 +7720,218 @@ function roleplayComposerDockComponent(
       legacyConversationNotices.add(notice)
       hideTranscriptDetail(item)
     }
+    const registeredCardFrame = (token: string, source: MessageEventSource | null): HTMLIFrameElement | undefined => {
+      const registered = cardFramesByTokenRef.current.get(token)
+      if (registered?.contentWindow === source) return registered
+      const recovered = [...mounted.keys()]
+        .flatMap(root => [...root.querySelectorAll<HTMLIFrameElement>('iframe[data-agent-rp-frame-token]')])
+        .find(frame => frame.dataset.agentRpFrameToken === token && frame.contentWindow === source)
+      if (recovered !== undefined) cardFramesByTokenRef.current.set(token, recovered)
+      return recovered
+    }
     const bridge = (event: MessageEvent<unknown>): void => {
-      const sourceFrame = [...mounted.keys()]
-        .flatMap(root => [...root.querySelectorAll<HTMLIFrameElement>('iframe[data-agent-rp-frame]')])
-        .find(frame => frame.contentWindow === event.source)
-      if (sourceFrame == null
-        || typeof event.data !== 'object' || event.data === null) return
-      const message = event.data as { readonly source?: unknown; readonly action?: unknown; readonly value?: unknown }
+      if (typeof event.data !== 'object' || event.data === null) return
+      const externalWindowDelivery = parseCardExternalWindowDeliveryReport(event.data)
+      if (externalWindowDelivery !== undefined) {
+        const sourceFrame = registeredCardFrame(externalWindowDelivery.token, event.source)
+        if (sourceFrame === undefined) return
+        cardExternalWindowBrokers.current
+          .get(`${externalWindowDelivery.token}:${externalWindowDelivery.requestId}`)
+          ?.acknowledgeDelivery()
+        return
+      }
+      const resourceBlocked = parseCardResourceBlockedReport(event.data)
+      if (resourceBlocked !== undefined) {
+        const sourceFrame = registeredCardFrame(resourceBlocked.token, event.source)
+        if (sourceFrame === undefined) return
+        sourceFrame.dataset.agentRpResourceBlocked = resourceBlocked.type
+        sourceFrame.dispatchEvent(new CustomEvent<CharacterRemoteResourceApproval>(cardResourceBlockedEvent, {
+          detail: { origin: resourceBlocked.origin, type: resourceBlocked.type },
+        }))
+        return
+      }
+      const externalWindowControl = parseCardExternalWindowControlRequest(event.data)
+      if (externalWindowControl !== undefined) {
+        const sourceFrame = registeredCardFrame(externalWindowControl.token, event.source)
+        if (sourceFrame === undefined) return
+        const target = event.source as Window
+        const key = `${externalWindowControl.token}:${externalWindowControl.requestId}`
+        const broker = cardExternalWindowBrokers.current.get(key)
+        if (externalWindowControl.action === 'external-window-focus') {
+          broker?.focus()
+          return
+        }
+        setCardExternalWindowRequests(current => {
+          if (!current.has(key)) return current
+          const next = new Map(current)
+          next.delete(key)
+          return next
+        })
+        if (broker !== undefined) {
+          cardExternalWindowBrokers.current.delete(key)
+          broker.close()
+        } else {
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'external-window-closed',
+            requestId: externalWindowControl.requestId,
+          }, '*')
+        }
+        return
+      }
+      const externalWindowRequest = parseCardExternalWindowCapabilityRequest(event.data)
+      if (externalWindowRequest !== undefined) {
+        const sourceFrame = registeredCardFrame(externalWindowRequest.token, event.source)
+        if (sourceFrame === undefined) return
+        sourceFrame.dataset.agentRpCapabilityRequest = externalWindowRequest.capability
+        const target = event.source as Window
+        const key = `${externalWindowRequest.token}:${externalWindowRequest.requestId}`
+        const request: CardExternalWindowRequest = {
+          key,
+          target,
+          token: externalWindowRequest.token,
+          requestId: externalWindowRequest.requestId,
+          url: externalWindowRequest.url,
+          hostname: new URL(externalWindowRequest.url).hostname,
+        }
+        setCardExternalWindowRequests(current => {
+          return enqueueExternalWindowRequest(current, cardExternalWindowBrokers.current, request)
+        })
+        setCardExternalWindowPermissionOpen(true)
+        return
+      }
+      const nativeIdentityRequest = parseCardNativeIdentityCapabilityRequest(event.data)
+      if (nativeIdentityRequest !== undefined) {
+        const sourceFrame = registeredCardFrame(nativeIdentityRequest.token, event.source)
+        if (sourceFrame === undefined) return
+        sourceFrame.dataset.agentRpCapabilityRequest = nativeIdentityRequest.capability
+        const target = event.source as Window
+        const current = displayStateRef.current.projection
+        if (current === undefined) return
+        const characterId = current.tavern?.characterSourceId ?? current.avatarLibraryId ?? current.characterName
+        const application = JSON.stringify(['card-frame', characterId])
+        const approval = nativeIdentityApprovalKey(
+          application, nativeIdentityRequest.audience, nativeIdentityRequest.includeDisplayName,
+        )
+        const request: NativeIdentityRuntimeRequest = {
+          key: `${nativeIdentityRequest.token}:${nativeIdentityRequest.requestId}`,
+          target,
+          runtime: 'card-frame-v0',
+          requestId: nativeIdentityRequest.requestId,
+          application,
+          applicationName: current.characterName,
+          audience: nativeIdentityRequest.audience,
+          nonce: nativeIdentityRequest.nonce,
+          includeDisplayName: nativeIdentityRequest.includeDisplayName,
+          token: nativeIdentityRequest.token,
+        }
+        if (approvedCardNativeIdentitiesRef.current.has(approval)) {
+          void deliverNativeIdentityResult(request, target)
+          return
+        }
+        setCardNativeIdentityRequests(requests => {
+          if (requests.has(request.key)) return requests
+          if (requests.size >= 8) {
+            target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'identity.native.attest',
+              requestId: request.requestId, ok: false, error: '等待确认的本机身份请求过多',
+            }, '*')
+            return requests
+          }
+          return new Map(requests).set(request.key, request)
+        })
+        setCardExternalWindowPermissionOpen(true)
+        return
+      }
+      const capabilityRequest = parseCardCapabilityRequest(event.data)
+      if (capabilityRequest !== undefined) {
+        const sourceFrame = registeredCardFrame(capabilityRequest.token, event.source)
+        if (sourceFrame === undefined) return
+        sourceFrame.dataset.agentRpCapabilityRequest = capabilityRequest.capability
+        const target = event.source as Window
+        const respond = (ok: boolean, error?: string): void => {
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'capability-result', requestId: capabilityRequest.requestId,
+            ok, ...(error === undefined ? {} : { error }),
+          }, '*')
+        }
+        const current = displayStateRef.current
+        const choices = current.projection === undefined
+          ? undefined : cardFrameGreetingChoices(current.projection, current.characterDetail)
+        const selectedGreeting = choices?.alternatives[capabilityRequest.greetingIndex]
+        if (selectedGreeting === undefined) {
+          respond(false, '这条开场已不属于当前角色卡')
+          return
+        }
+        if (pendingCardMutations.has(target)) {
+          respond(false, '正在切换开场')
+          return
+        }
+        pendingCardMutations.add(target)
+        void runTavernMutation(sessionId, {
+          format: 0, operation: 'set-chat-messages', messages: [{ message_id: 0, message: selectedGreeting }],
+        }).then(() => {
+          respond(true)
+        }, reason => {
+          ctx.logger.warn(`agent-rp: card greeting switch failed: ${String(reason)}`)
+          respond(false, '开场切换失败')
+        }).finally(() => {
+          pendingCardMutations.delete(target)
+        })
+        return
+      }
+      const variableRequest = parseCardVariableReplaceRequest(event.data)
+      if (variableRequest !== undefined) {
+        const sourceFrame = registeredCardFrame(variableRequest.token, event.source)
+        if (sourceFrame === undefined) return
+        sourceFrame.dataset.agentRpVariableScope = variableRequest.scope
+        const target = event.source as Window
+        const respond = (ok: boolean, error?: string): void => {
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'variables-result', requestId: variableRequest.requestId,
+            ok, ...(error === undefined ? {} : { error }),
+          }, '*')
+        }
+        const previous = cardVariableMutationQueues.get(target) ?? Promise.resolve()
+        const work = previous.catch(() => undefined).then(() => runTavernMutation(sessionId, {
+          format: 0, scope: variableRequest.scope, variables: variableRequest.variables,
+        }))
+        cardVariableMutationQueues.set(target, work)
+        void work.then(() => {
+          respond(true)
+        }, reason => {
+          ctx.logger.warn(`agent-rp: card variable update failed: ${String(reason)}`)
+          respond(false, '变量保存失败')
+        }).finally(() => {
+          if (cardVariableMutationQueues.get(target) === work) cardVariableMutationQueues.delete(target)
+        })
+        return
+      }
+      const runtimeReport = parseCardRuntimeReport(event.data)
+      if (runtimeReport !== undefined) {
+        const sourceFrame = registeredCardFrame(runtimeReport.token, event.source)
+        if (sourceFrame === undefined) return
+        sourceFrame.dataset.agentRpRuntimePhase = runtimeReport.value
+        return
+      }
+      const message = event.data as {
+        readonly source?: unknown
+        readonly action?: unknown
+        readonly token?: unknown
+        readonly value?: unknown
+      }
       if (message.source !== 'dsh-agent-rp-card') return
+      const sourceFrame = typeof message.token === 'string'
+        ? registeredCardFrame(message.token, event.source) : undefined
+      if (sourceFrame === undefined) return
+      if (message.action === 'resource-monitor' && typeof message.value === 'string'
+        && ['listener-installed', 'document-open', 'bootstrap-injected', 'listener-restored'].includes(message.value)) {
+        sourceFrame.dataset.agentRpResourceMonitor = message.value
+        return
+      }
       if (message.action === 'resize' && typeof message.value === 'number' && Number.isFinite(message.value)) {
         sourceFrame.style.height = `${Math.max(72, Math.ceil(message.value))}px`
         sourceFrame.style.visibility = 'visible'
+        sourceFrame.dataset.agentRpResizeReceived = 'true'
         return
       }
       if (typeof message.value !== 'string' || message.value.length > 65_536) return
@@ -7065,33 +7965,51 @@ function roleplayComposerDockComponent(
       activeCompatibilityMarkers: readonly string[],
     ): void => {
       const existing = item.querySelector<HTMLElement>(':scope > [data-agent-rp-rendered-display]')
+      const greetingChoices = cardFrameGreetingChoices(activeProjection, activeCharacterDetail)
       const signature = JSON.stringify([
         compilation,
         activeProjection.mvu?.statData,
+        activeProjection.tavern?.scopes,
         activeProjection.characterName,
         activeCharacterDetail?.id,
         activeCharacterDetail?.imageAssets,
         activeCharacterDetail?.displayExtensions.filter(extension => extension.enabled),
-        activeCharacterDetail?.approvedRemoteResourceOrigins,
+        activeCharacterDetail?.approvedRemoteResources,
+        activeCharacterDetail?.remoteResourcePolicy,
         activeCompatibilityMarkers,
+        greetingChoices,
       ])
       const existingMount = existing === null ? undefined : mounted.get(existing)
-      const render = (display: HTMLElement, root: Root): void => {
+      const registerFrame = (token: string, frame: HTMLIFrameElement | null): void => {
+        if (frame === null) cardFramesByTokenRef.current.delete(token)
+        else {
+          cardFramesByTokenRef.current.set(token, frame)
+          frame.dataset.agentRpFrameRegistered = 'true'
+        }
+      }
+      const render = (display: HTMLElement, mount: {
+        readonly capabilityToken: string
+        readonly root: Root
+      }): void => {
         original.style.removeProperty('display')
         display.style.setProperty('display', 'block')
-        root.render(<CharacterDisplay
+        mount.root.render(<CharacterDisplay
+          capabilityToken={mount.capabilityToken}
           compilation={compilation}
           statData={activeProjection.mvu?.statData}
           characterName={activeProjection.characterName}
           compatibilityMarkers={activeCompatibilityMarkers}
+          {...(activeProjection.tavern === undefined ? {} : { variableScopes: activeProjection.tavern.scopes })}
+          {...(greetingChoices === undefined ? {} : { greetingChoices })}
           {...(activeCharacterDetail === undefined ? {} : { character: activeCharacterDetail })}
+          onFrameRegistration={registerFrame}
           onReady={() => { original.style.display = 'none' }}
         />)
       }
       if (existing !== null && existingMount !== undefined) {
         if (existingMount.signature === signature) return
         existingMount.signature = signature
-        render(existing, existingMount.root)
+        render(existing, existingMount)
         return
       }
       const display = document.createElement('div')
@@ -7100,8 +8018,9 @@ function roleplayComposerDockComponent(
       item.dataset.agentRpFrontend = 'true'
       item.insertBefore(display, original.nextSibling)
       const root = createRoot(display)
-      mounted.set(display, { root, signature })
-      render(display, root)
+      const mount = { capabilityToken: crypto.randomUUID(), root, signature }
+      mounted.set(display, mount)
+      render(display, mount)
     }
     window.addEventListener('message', bridge)
     const scan = (): void => {
@@ -7120,6 +8039,19 @@ function roleplayComposerDockComponent(
         && frontend.regexScripts.length + (activeProjection.preset?.regexScripts.length ?? 0) > 0
       const messageIdBySeq = new Map(activeProjection.tavern?.messages.map(message => [message.seq, message.messageId]))
       const tavernMessageBySeq = new Map(activeProjection.tavern?.messages.map(message => [message.seq, message]))
+      const visibleTavernMessages = activeProjection.tavern?.messages.filter(message => !message.isHidden) ?? []
+      const visibleFlowItems = [...scroll.querySelectorAll<HTMLElement>(
+        '[data-chat-flow-kind="user"], [data-chat-flow-kind="assistant-step"]',
+      )]
+      const alignedTavernMessageByItem = new Map<HTMLElement, (typeof visibleTavernMessages)[number]>()
+      if (visibleFlowItems.length === visibleTavernMessages.length && visibleFlowItems.every((item, index) => {
+        const role = item.dataset.chatFlowKind === 'user' ? 'user' : 'assistant'
+        return visibleTavernMessages[index]?.role === role
+      })) {
+        visibleFlowItems.forEach((item, index) => {
+          alignedTavernMessageByItem.set(item, visibleTavernMessages[index]!)
+        })
+      }
       if (activeViewMode === 'immersive') {
         for (const item of scroll.querySelectorAll<HTMLElement>(
           '[data-chat-flow-kind="context"], [data-chat-flow-kind="tool-call"], '
@@ -7168,7 +8100,8 @@ function roleplayComposerDockComponent(
         const node = activeChat.nodes.get(key)
         if (node?.kind !== 'user') continue
         const seq = (node.data as { readonly seq: number }).seq
-        const messageId = messageIdBySeq.get(seq)
+        const message = alignedTavernMessageByItem.get(item) ?? tavernMessageBySeq.get(seq)
+        const messageId = message?.messageId ?? messageIdBySeq.get(seq)
         const override = messageId === undefined ? undefined : activeDisplayOverrides.get(messageId)
         const original = item.firstElementChild as HTMLElement | null
         if (original === null) continue
@@ -7178,7 +8111,6 @@ function roleplayComposerDockComponent(
           }, activeProjection, activeCharacterDetail, activeCompatibilityMarkers)
           continue
         }
-        const message = tavernMessageBySeq.get(seq)
         if (!hasDisplayRules || frontend === undefined || message?.role !== 'user' || message.text === '') continue
         const depth = tavernMessageDepth(activeProjection.tavern?.messages, message.messageId)
         const rendered = renderCharacterDisplay(message.text, {
@@ -7201,7 +8133,9 @@ function roleplayComposerDockComponent(
           ? undefined
           : activeProjection.generations.find(group => group.assistantSeqs.includes(finalSeq))
         const selected = generation?.versions.find(version => version.seq === generation.selectedVersionSeq)
+        const alignedMessage = alignedTavernMessageByItem.get(item)
         const messageId = (selected === undefined ? undefined : messageIdBySeq.get(selected.seq))
+          ?? alignedMessage?.messageId
           ?? (finalSeq === undefined ? undefined : messageIdBySeq.get(finalSeq))
         const depth = tavernMessageDepth(activeProjection.tavern?.messages, messageId)
         const override = messageId === undefined ? undefined : activeDisplayOverrides.get(messageId)
@@ -7237,7 +8171,9 @@ function roleplayComposerDockComponent(
           }
         }
         if (!hasDisplayRules || frontend === undefined) continue
-        const raw = data.blocks?.flatMap(block => block.kind === 'text' && block.text !== undefined ? [block.text] : []).join('\n') ?? ''
+        const raw = alignedMessage?.role === 'assistant'
+          ? alignedMessage.text
+          : data.blocks?.flatMap(block => block.kind === 'text' && block.text !== undefined ? [block.text] : []).join('\n') ?? ''
         if (raw === '') continue
         const rendered = renderCharacterDisplay(raw.replaceAll(statusPlaceholder, ''), {
           name: activeProjection.characterName,
@@ -7301,12 +8237,178 @@ function roleplayComposerDockComponent(
   }, [sessionId, viewMode, projection !== undefined])
   useEffect(() => { scanDisplayRef.current() }, [chat, characterDetail, compatibilityMarkers, displayOverrides, projection])
   if (projection === undefined) return null
-  return <div ref={rootRef} data-agent-rp-status style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
-    <TavernScriptRuntime ctx={ctx} inputActions={inputActions}
+  const hasTavernVariableSurface = (['global', 'preset', 'character'] as const).some(scope =>
+    activeTavernScripts(projection, scope).some(script => script.enabled && script.content.trim() !== ''))
+  const capabilityPlans = [
+    resolveAgentRpCapabilityPlan(CARD_FRONTEND_CAPABILITY_MANIFEST),
+    ...(projection.worldInfoCount === 0 ? [] : [resolveAgentRpCapabilityPlan(NATIVE_WORLD_ENGINE_MANIFEST)]),
+    ...((characterDetail?.greetingCount ?? 0) <= 1
+      ? [] : [resolveAgentRpCapabilityPlan(CARD_GREETING_CAPABILITY_MANIFEST)]),
+    ...(hasTavernVariableSurface ? [resolveAgentRpCapabilityPlan(TAVERN_LEGACY_ADAPTER_MANIFEST)] : []),
+  ]
+  const capabilitySummary = mergeAgentRpCapabilityPlanSummaries(
+    capabilityPlans.map(summarizeAgentRpCapabilityPlan),
+  )
+  const auxiliaryGenerations = projection.auxiliaryGenerations ?? {
+    requests: 0, succeeded: 0, failed: 0, pending: 0, malformed: 0,
+  }
+  const worldEngineFailures = projection.worldInfo.failureCounts
+  const cardPermissionCount = cardExternalWindowRequests.size + cardNativeIdentityRequests.size
+  return <div ref={rootRef} data-agent-rp-status
+    {...(cardExternalWindowPhase === undefined
+      ? {} : { 'data-agent-rp-external-window-phase': cardExternalWindowPhase })}
+    data-agent-rp-inline-frontend-sanitizer={inlineCardSanitizerProbeState()}
+    data-agent-rp-capability-extensions={capabilityPlans.length}
+    data-agent-rp-capability-requirements={capabilitySummary.requirements}
+    data-agent-rp-capability-available={capabilitySummary.resolutions.available}
+    data-agent-rp-capability-approvals={capabilitySummary.resolutions['approval-required']}
+    data-agent-rp-capability-required-unavailable={capabilitySummary.requiredUnavailable}
+    data-agent-rp-capability-unsupported={capabilitySummary.resolutions.unsupported}
+    data-agent-rp-capability-version-mismatch={capabilitySummary.resolutions['version-mismatch']}
+    data-agent-rp-capability-denied={capabilitySummary.resolutions.denied}
+    data-agent-rp-native-identity={nativeIdentityState}
+    data-agent-rp-native-identity-approved={approvedCardNativeIdentities.size}
+    data-agent-rp-native-identity-pending={cardNativeIdentityRequests.size}
+    data-agent-rp-auxiliary-generation-requests={auxiliaryGenerations.requests}
+    data-agent-rp-auxiliary-generation-succeeded={auxiliaryGenerations.succeeded}
+    data-agent-rp-auxiliary-generation-failed={auxiliaryGenerations.failed}
+    data-agent-rp-auxiliary-generation-pending={auxiliaryGenerations.pending}
+    data-agent-rp-auxiliary-generation-malformed={auxiliaryGenerations.malformed}
+    data-agent-rp-variable-surfaces={hasTavernVariableSurface ? 2 : 1}
+    data-agent-rp-variable-shared-scopes={5}
+    data-agent-rp-variable-script-scopes={hasTavernVariableSurface ? 1 : 0}
+    data-agent-rp-world-info-write-surfaces={hasTavernVariableSurface ? 1 : 0}
+    data-agent-rp-chat-write-surfaces={hasTavernVariableSurface ? 1 : 0}
+    data-agent-rp-prompt-injection-surfaces={hasTavernVariableSurface ? 1 : 0}
+    data-agent-rp-prompt-preview-surfaces={hasTavernVariableSurface ? 1 : 0}
+    data-agent-rp-world-engine={projection.worldInfoCount === 0 ? 'inactive' : 'native-v0'}
+    data-agent-rp-world-engine-entries={projection.worldInfoCount}
+    data-agent-rp-world-engine-active={projection.worldInfo.activeCount}
+    data-agent-rp-world-engine-budget-excluded={projection.worldInfo.budgetExcludedCount}
+    data-agent-rp-world-engine-regex-runtime-unavailable={worldEngineFailures.regexRuntimeUnavailable}
+    data-agent-rp-world-engine-regex-invalid={worldEngineFailures.regexInvalid}
+    data-agent-rp-world-engine-regex-execution-limit={worldEngineFailures.regexExecutionLimit}
+    data-agent-rp-world-engine-regex-resource-limit={worldEngineFailures.regexResourceLimit}
+    data-agent-rp-world-engine-decorator-unsupported={worldEngineFailures.decoratorUnsupported}
+    data-agent-rp-world-engine-template-unsupported={worldEngineFailures.templateUnsupported}
+    data-agent-rp-world-engine-template-error={worldEngineFailures.templateError}
+    style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
+    {cardExternalWindowPermissionOpen && <div role="dialog" aria-modal aria-label="轻前端权限"
+      data-agent-rp-surface="card-permissions" onMouseDown={event => {
+      if (event.target === event.currentTarget) setCardExternalWindowPermissionOpen(false)
+    }} style={{
+      alignItems: 'center', background: 'rgba(0,0,0,.72)', display: 'flex', inset: 0, justifyContent: 'center',
+      padding: '18px', position: 'fixed', zIndex: 1240,
+    }}><section style={{
+      background: 'var(--dsw-alias-bg-base, #121318)', border: '1px solid var(--dsw-alias-border-l2, #3b3d45)',
+      borderRadius: '14px', boxShadow: '0 22px 72px rgba(0,0,0,.5)', display: 'grid', gap: '12px',
+      maxHeight: 'min(82vh, 720px)', maxWidth: '620px', overflow: 'auto', padding: '16px', width: 'min(92vw, 620px)',
+    }}>
+      <header style={{ alignItems: 'center', display: 'flex', gap: '10px' }}>
+        <div style={{ flex: '1 1 auto' }}><strong style={{ display: 'block', fontSize: '14px' }}>轻前端权限</strong>
+          <span style={{ fontSize: '11px', opacity: .58 }}>当前角色卡 · 按能力和目标来源分别保存</span></div>
+        <button type="button" aria-label="关闭轻前端权限" onClick={() => {
+          setCardExternalWindowPermissionOpen(false)
+        }} style={{
+          background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '20px', padding: '2px 6px',
+        }}>×</button>
+      </header>
+      <p style={{ fontSize: '12px', lineHeight: 1.6, margin: 0, opacity: .7 }}>
+        本机身份证明由 Host 签名并绑定目标来源；私钥不会交给轻前端。旧式外部登录仍使用隔离面板。
+      </p>
+      {cardNativeIdentityRequests.size > 0 && nativeIdentityState !== 'ready' && <p role="status" style={{
+        color: 'var(--dsw-alias-state-warning, #d6a955)', fontSize: '12px', lineHeight: 1.55, margin: 0,
+      }}>请先在 DSH 设置的 Agent RP 页面创建本机身份，再确认身份请求。</p>}
+      <div style={{ display: 'grid', gap: '8px' }}>
+        {cardPermissionCount === 0
+          ? <span style={{ fontSize: '12px', opacity: .62, padding: '8px 0' }}>当前没有待确认权限。</span>
+          : <>
+            {[...cardNativeIdentityRequests.values()].map(request => {
+              const approval = nativeIdentityApprovalKey(
+                request.application, request.audience, request.includeDisplayName,
+              )
+              return <button type="button" key={`identity:${request.key}`}
+                disabled={nativeIdentityState !== 'ready'}
+                title={nativeIdentityState === 'ready'
+                  ? `允许这个轻前端向 ${request.audience} 出示五分钟有效的 DSH 本机身份证明；私钥不会离开 Host`
+                  : '请先在 DSH 设置的 Agent RP 页面创建本机身份'}
+                onClick={() => {
+                  const next = new Set(approvedCardNativeIdentities)
+                  next.add(approval)
+                  writeApprovedNativeIdentities(next)
+                  setApprovedCardNativeIdentities(next)
+                  setCardNativeIdentityRequests(current => {
+                    const remaining = new Map(current)
+                    remaining.delete(request.key)
+                    return remaining
+                  })
+                  const target = request.token === undefined
+                    ? request.target : cardFramesByTokenRef.current.get(request.token)?.contentWindow ?? request.target
+                  void deliverNativeIdentityResult(request, target)
+                }} style={{
+                  background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)',
+                  borderRadius: '9px', color: 'inherit', cursor: nativeIdentityState === 'ready' ? 'pointer' : 'not-allowed',
+                  font: 'inherit', fontSize: '12px', opacity: nativeIdentityState === 'ready' ? 1 : .55,
+                  lineHeight: 1.45, padding: '9px 11px', textAlign: 'left', width: '100%',
+                }}>允许 {projection.characterName} 向 {new URL(request.audience).hostname}
+                  证明本机身份{request.includeDisplayName ? '并分享显示名称' : ''}</button>
+            })}
+            {[...cardExternalWindowRequests.values()].map(request => <button type="button" key={request.key}
+            title={`打开只连接 ${request.hostname} 的隔离登录面板`} onClick={() => {
+              const broker = openExternalWindowBroker({
+                hostWindow: window,
+                url: request.url,
+                hostname: request.hostname,
+                requesterName: projection.characterName,
+                runtime: 'card-frame-v0',
+                requestId: request.requestId,
+                resolveTarget: () => cardFramesByTokenRef.current.get(request.token)?.contentWindow,
+                onClosed: () => {
+                  cardExternalWindowBrokers.current.delete(request.key)
+                  const target = cardFramesByTokenRef.current.get(request.token)?.contentWindow ?? request.target
+                  target.postMessage({
+                    source: 'dsh-agent-rp-host', action: 'external-window-closed', requestId: request.requestId,
+                  }, '*')
+                },
+                onStateChange: state => { setCardExternalWindowPhase(state.phase) },
+              })
+              setCardExternalWindowRequests(current => {
+                const next = new Map(current)
+                next.delete(request.key)
+                return next
+              })
+              if (broker === undefined) {
+                request.target.postMessage({
+                  source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.external-window.open',
+                  requestId: request.requestId, ok: false, error: '无法创建外部登录隔离面板',
+                }, '*')
+                return
+              }
+              cardExternalWindowBrokers.current.set(request.key, broker)
+              request.target.postMessage({
+                source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.external-window.open',
+                requestId: request.requestId, ok: true,
+              }, '*')
+              setCardExternalWindowPermissionOpen(false)
+            }} style={{
+              background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '9px',
+              color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', lineHeight: 1.45,
+              padding: '9px 11px', textAlign: 'left', width: '100%',
+            }}>打开 {request.hostname} 登录页（{projection.characterName}）</button>)}
+          </>}
+      </div>
+    </section></div>}
+    <TavernScriptRuntime key={sessionId} ctx={ctx} inputActions={inputActions}
       onCompatibilityMarkersChange={onCompatibilityMarkersChange} onDisplayOverride={onDisplayOverride} projection={projection}
       runGeneration={runTavernGeneration} runModelList={runTavernModelList} runMutation={runTavernMutation}
       runPresetConfiguration={runPresetConfiguration} runPromptPreview={runTavernPromptPreview}
       runTrigger={runTavernTrigger} sessionId={sessionId} />
+    {cardPermissionCount > 0 && <button type="button" title={`${cardPermissionCount} 项轻前端权限待确认`}
+      onClick={() => { setCardExternalWindowPermissionOpen(true) }} style={{
+        background: 'color-mix(in srgb, var(--dsw-alias-state-warning, #d5a64c) 12%, transparent)',
+        border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px', color: 'inherit',
+        cursor: 'pointer', font: 'inherit', fontSize: '11px', padding: '3px 7px',
+      }}>轻前端权限 {cardPermissionCount}</button>}
     <button type="button" aria-label="生成聊天插图" title="生成聊天插图" onClick={() => { setDrawOpen(true) }} style={{
       alignItems: 'center', background: 'transparent', border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer',
       display: 'inline-flex', flex: '0 0 auto', font: 'inherit', fontSize: '11px', gap: '4px', opacity: .62, padding: '3px 7px',
@@ -7438,6 +8540,7 @@ export const inject = ['connection', 'slots', 'sessions', 'workspaces']
 
 /** Register the Agent RP header, composer presentation, and import affordance. */
 export function apply(ctx: ClientContext): void {
+  ctx.effect(() => installAgentRpBrowserCompatibilityDiagnostic(window, document))
   ctx.effect(() => {
     const style = document.createElement('style')
     style.dataset.agentRpResponsive = ''
@@ -7523,14 +8626,6 @@ export function apply(ctx: ClientContext): void {
     const response = await session.command(`/rp-memory ${JSON.stringify(request)}`)
     if (!response.ok) throw new Error(response.error.message)
     if (!response.value.matched) throw new Error('当前 Host 未启用记忆管理')
-  }
-  const characterLibraryJson = async <T,>(path = ''): Promise<T> => {
-    const response = await fetch(`${CHARACTER_LIBRARY_PATH}${path}`, {
-      headers: { accept: 'application/json' },
-    })
-    const value = await response.json() as { readonly error?: string } & T
-    if (!response.ok) throw new Error(value.error ?? `角色库请求失败（${response.status}）`)
-    return value
   }
   const listCharacters = async (collection: CharacterLibraryCollection = 'active'): Promise<readonly CharacterLibrarySummary[]> => {
     const query = collection === 'active' ? '' : '?collection=archived'

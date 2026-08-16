@@ -1,45 +1,24 @@
 /** Same-origin HTTP surface for the local Persona library. */
 
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingMessage } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type { AgentRpHttpServer } from './host-http.ts'
+import {
+  jsonResponse as json,
+  readJsonRequest,
+  trustedBrowserRequest,
+  type AgentRpHttpServer,
+} from './host-http.ts'
 import { PersonaLibrary } from './persona-library.ts'
 import { PERSONA_LIBRARY_PATH, type PersonaLibrarySaveRequest } from './persona-library-protocol.ts'
 
-function trustedBrowserRequest(request: IncomingMessage): boolean {
-  const host = request.headers.host
-  if (host === undefined || host.trim() === '' || request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    const parsed = new URL(origin)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
-  } catch {
-    return false
-  }
-}
-
-function json(response: ServerResponse, status: number, value: unknown): void {
-  const body = Buffer.from(JSON.stringify(value), 'utf8')
-  response.writeHead(status, {
-    'cache-control': 'no-store',
-    'content-length': String(body.byteLength),
-    'content-type': 'application/json; charset=utf-8',
-  })
-  response.end(body)
-}
-
 async function readJson(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk as Uint8Array)
-    bytes += data.byteLength
-    if (bytes > 16_384) throw new Error('Persona 请求过大')
-    chunks.push(data)
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  return readJsonRequest(request, {
+    limit: 16_384,
+    emptyMessage: 'Persona 请求为空',
+    tooLargeMessage: 'Persona 请求过大',
+    invalidMessage: 'Persona 请求不是有效 JSON',
+  })
 }
 
 function parseSaveRequest(value: unknown): PersonaLibrarySaveRequest {

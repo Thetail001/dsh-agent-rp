@@ -4,36 +4,17 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { CharacterLibrary } from './character-library.ts'
-import { CHARACTER_LIBRARY_PATH, type CharacterLibraryDetail } from './character-library-protocol.ts'
-import type { AgentRpHttpServer } from './host-http.ts'
+import {
+  CHARACTER_LIBRARY_PATH, type CharacterLibraryDetail, type CharacterRemoteResourceType,
+} from './character-library-protocol.ts'
+import { isCharacterRemoteResourceType } from './card-remote-resource.ts'
+import {
+  jsonResponse as json,
+  readBoundedRequestBody,
+  trustedBrowserRequest,
+  type AgentRpHttpServer,
+} from './host-http.ts'
 import { MAX_CHARACTER_CARD_FILE_BYTES } from './import/character-card.ts'
-
-function trustedBrowserRequest(request: IncomingMessage, sandboxedImage: boolean): boolean {
-  const host = request.headers.host
-  if (host === undefined || host.trim() === '') return false
-  if (request.headers['sec-fetch-site'] === 'cross-site') {
-    return sandboxedImage && request.headers['sec-fetch-dest'] === 'image'
-      && request.headers['sec-fetch-mode'] === 'no-cors' && request.headers.origin === undefined
-  }
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    const parsed = new URL(origin)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
-  } catch {
-    return false
-  }
-}
-
-function json(response: ServerResponse, status: number, value: unknown): void {
-  const body = Buffer.from(JSON.stringify(value), 'utf8')
-  response.writeHead(status, {
-    'cache-control': 'no-store',
-    'content-length': String(body.byteLength),
-    'content-type': 'application/json; charset=utf-8',
-  })
-  response.end(body)
-}
 
 function fail(response: ServerResponse, status: number, message: string): void {
   json(response, status, { error: message })
@@ -46,18 +27,11 @@ function browserDetail(entry: CharacterLibraryDetail): CharacterLibraryDetail {
 }
 
 async function readUpload(request: IncomingMessage): Promise<Uint8Array> {
-  const declared = Number(request.headers['content-length'])
-  if (Number.isFinite(declared) && declared > MAX_CHARACTER_CARD_FILE_BYTES) throw new Error('角色卡文件过大')
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk as Uint8Array)
-    bytes += data.byteLength
-    if (bytes > MAX_CHARACTER_CARD_FILE_BYTES) throw new Error('角色卡文件过大')
-    chunks.push(data)
-  }
-  if (bytes === 0) throw new Error('角色卡文件为空')
-  return new Uint8Array(Buffer.concat(chunks))
+  return new Uint8Array(await readBoundedRequestBody(request, {
+    limit: MAX_CHARACTER_CARD_FILE_BYTES,
+    emptyMessage: '角色卡文件为空',
+    tooLargeMessage: '角色卡文件过大',
+  }))
 }
 
 function pathParts(request: IncomingMessage): readonly string[] {
@@ -178,14 +152,37 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
         }
         if (request.method === 'POST' && parts.length === 3 && parts[0] !== undefined
           && parts[1] === 'remote-resources' && (parts[2] === 'approve' || parts[2] === 'revoke')) {
-          const origin = new URL(request.url ?? '/', 'http://agent-rp.local').searchParams.get('origin')
+          const search = new URL(request.url ?? '/', 'http://agent-rp.local').searchParams
+          const origin = search.get('origin')
           if (origin === null) {
             fail(response, 400, '外部资源来源缺失')
             return
           }
+          const type = search.get('type')
+          if (type !== null && !isCharacterRemoteResourceType(type)) {
+            fail(response, 400, '外部资源类型无效')
+            return
+          }
           json(response, 200, {
             format: 0,
-            entry: browserDetail(library.setRemoteResourceOriginApproved(parts[0], origin, parts[2] === 'approve')),
+            entry: browserDetail(type === null
+              ? library.setRemoteResourceOriginApproved(parts[0], origin, parts[2] === 'approve')
+              : library.setRemoteResourceApproved(
+                  parts[0], origin, type as CharacterRemoteResourceType, parts[2] === 'approve',
+                )),
+          })
+          return
+        }
+        if (request.method === 'POST' && parts.length === 3 && parts[0] !== undefined
+          && parts[1] === 'remote-resources' && parts[2] === 'policy') {
+          const policy = new URL(request.url ?? '/', 'http://agent-rp.local').searchParams.get('value')
+          if (policy !== 'prompt' && policy !== 'isolated-https') {
+            fail(response, 400, '外部资源策略无效')
+            return
+          }
+          json(response, 200, {
+            format: 0,
+            entry: browserDetail(library.setRemoteResourcePolicy(parts[0], policy)),
           })
           return
         }

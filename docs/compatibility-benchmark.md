@@ -29,3 +29,33 @@ pnpm run benchmark:charx
 默认生成包含 2000 张 4 KiB 惰性图片的 V3 CHARX，分别测量只读取 `card.json` 和资源目录、导入、冷启动详情、头像读取与末尾单图读取。目录扫描会校验条目数量、路径与总解压大小，但图片在被请求前保持压缩；因此详情页不会先把整包媒体解进内存。可用 `--images`、`--image-kib` 与 `--repeats` 调整规模。
 
 这个场景仍不代表真实图片解码或 DOM 渲染。远程网络、浏览器图片解码峰值和窄屏滚动需要浏览器侧的后续基准。
+
+## 本地真实卡验收
+
+无法公开分发的真实卡只用于本地验收，不进入仓库、测试产物或日志。构建完成后，在独立 DSH 标签页中只重载一次，并先读取轻前端 iframe 的内容无关状态：`data-agent-rp-frame-registered="true"` 表示 Host 已登记消息来源，`data-agent-rp-runtime-phase="content-present"` 表示页面完成了至少一次可见内容检测，`data-agent-rp-resource-monitor="listener-restored"` 表示卡片替换文档后安全监听器仍在，缺少 `data-agent-rp-resource-blocked` 表示当前没有等待处理的 CSP 资源类型。
+
+### 兼容问题分层
+
+大型社区卡通常同时使用 EJS、提示词模板、世界书、Tavern Helper、MVU、浏览器界面和远端服务。验收把这些能力分成四层：卡片与提示语义、扩展运行时、浏览器嵌入、远端站点/API/OAuth。轻前端已经显示不代表 Tavern 脚本已经启动，脚本全部就绪也不代表远端服务可达。每层分别记录生命周期、超时和重试结果；浏览器脚本故障不得用远端网络失败解释，远端网络失败也不得触发脚本兼容补丁。
+
+浏览器环境适合承载可移植的社区界面，但域名、部署、网络路由和上游服务延迟属于独立的可用性变量。真实卡 smoke 先验证本地 Host 与隔离运行时，再对远端站点、配置接口、数据接口和身份回调分别探测。兼容功能按 EJS、提示词模板、世界书引擎、Tavern Helper、MVU、存储、资源与外部窗口列入能力目录；不能用不断扩大的 `window` 全局模拟层代替可测试的能力接口。
+
+浏览器验收前可先运行 `pnpm run audit:card -- <本地角色卡路径>`。命令支持 PNG、JSON 和 CHARX，只输出格式、数量、稳定失败类别、耗时、静态轻前端资源与唯一来源的分类计数、依赖体积和实际网络请求数；不会输出文件路径、角色名、正文、正则表达式、脚本名称、脚本源码或远程 URL。它会在隔离运行时中检查真实 EJS 与世界书正则，并按浏览器的并发启动方式读取内置受信来源的脚本依赖，但不执行脚本。需要额外来源许可或无法解析的脚本只增加对应计数。
+
+社区推荐的 Chat Completion 预设可以独立运行 `pnpm run audit:preset -- <本地预设.json>`。报告只包含提示模块与挂载数量、开关数量、角色/标记/注入计数、格式覆盖、已配置生成字段名、扩展兼容状态和解析耗时；不会输出文件路径、预设名、模块名、提示词、正则表达式、脚本源码或生成设置值。无效输入只返回稳定失败类别。
+
+酒馆脚本容器用 `data-agent-rp-tavern-total`、`data-agent-rp-tavern-ready`、`data-agent-rp-tavern-failed` 和 `data-agent-rp-tavern-permissions` 汇总当前执行计划；`data-agent-rp-tavern-awaiting-authorization`、`data-agent-rp-tavern-generation-queued` 与 `data-agent-rp-tavern-model-list-queued` 分别记录等待许可、排队生成和排队读取模型目录的数量。每个脚本 iframe 的 `data-agent-rp-tavern-script-scope` 标出 `global`、`preset` 或 `character`，`data-agent-rp-tavern-phase` 进一步区分 `preparing`、`permission-required`、`load-error`、`booting`、`ready` 与 `runtime-error`。这些字段只暴露作用域、数量和生命周期，不读取卡片正文、脚本源码或错误详情；因此应先用它们确定失败阶段，再决定是否需要打开界面或检查单条错误。
+
+角色库的开聊前资源区用 `data-agent-rp-resource-preflight` 区分 `loading`、`permission-required`、`ready` 与 `error`，并用 `data-agent-rp-resource-preflight-scripts`、`data-agent-rp-resource-preflight-card-resources`、`data-agent-rp-resource-preflight-card-permissions`、`data-agent-rp-resource-preflight-script-permissions`、`data-agent-rp-resource-preflight-permissions` 和 `data-agent-rp-resource-preflight-failed` 输出内容无关计数。`data-agent-rp-resource-launch` 与开始按钮的 `data-agent-rp-start-readiness` 输出 `checking`、`approval-required` 或 `ready`；前两种状态不会创建会话。静态预检覆盖轻前端直接声明的七类资源，以及选中角色卡与预设的 Tavern Helper 模块、图片和子 iframe 来源；它不执行脚本。一次确认分别按角色卡资源类别，或角色卡、预设、脚本范围、脚本标识、资源类别与来源保存。每个异步结果与角色卡、预设和已批准来源的精确快照绑定，过时结果不会替换当前选择。模型生成和外部 API 调用不纳入批量许可。
+
+会话状态根节点用 `data-agent-rp-capability-extensions`、`data-agent-rp-capability-requirements`、`data-agent-rp-capability-available`、`data-agent-rp-capability-approvals`、`data-agent-rp-capability-required-unavailable`、`data-agent-rp-capability-unsupported`、`data-agent-rp-capability-version-mismatch` 和 `data-agent-rp-capability-denied` 汇总类型化能力计划。`data-agent-rp-native-identity` 区分 `loading`、`unconfigured`、`ready` 与 `error`，`data-agent-rp-native-identity-approved` 和 `data-agent-rp-native-identity-pending` 只记录持久许可及待确认请求数量；酒馆脚本容器的同名 pending 字段计入同一份浏览器报告。身份主体、显示名称、公钥、受众、nonce 与签名不会进入 DOM 诊断。`data-agent-rp-inline-frontend-sanitizer` 使用固定合成标记检查浏览器净化器是否同时保留惰性自定义容器并删除脚本、事件属性和嵌入页；失败时报告加入 `inline-frontend-sanitizer-degraded`。`data-agent-rp-external-window-phase` 区分外部窗口创建、回执校验与请求运行时接收，`callback-delivery-unconfirmed` 表示 Host 已取得并校验回执，但原请求运行时没有及时确认派发；它不能被报告为登录成功。`data-agent-rp-auxiliary-generation-requests`、`data-agent-rp-auxiliary-generation-succeeded`、`data-agent-rp-auxiliary-generation-failed`、`data-agent-rp-auxiliary-generation-pending` 与 `data-agent-rp-auxiliary-generation-malformed` 汇总可审计的脚本辅助模型调用；`data-agent-rp-world-engine`、`data-agent-rp-world-engine-entries`、`data-agent-rp-world-engine-active` 与 `data-agent-rp-world-engine-budget-excluded` 则证明管理投影和提示组装使用同一个世界书引擎结果。这些字段不包含书名、条目标识、关键词、消息、提示文本、URL 或模型响应。
+
+状态检查通过后，只操作一个不发送消息的本地界面入口，再检查该入口的关键控件和本次重载之后新增的浏览器警告或错误。`content-empty`、`runtime-error` 与 `runtime-rejection` 可以直接缩小空白页面的阶段；`content-present` 只证明界面已挂载，不能代替视觉与交互检查。轻前端 iframe 必须保持仅含 `allow-scripts`；Tavern 执行 iframe 必须使用 `data:` URL、不得使用 `srcdoc`，且 sandbox 必须精确等于 `allow-scripts allow-same-origin allow-forms`。其他令牌组合仍视为权限扩大。验收不应通过连续刷新掩盖确定性失败。
+
+页面提供 `window.__dshAgentRpCompatibilitySnapshot()`，并把同一结果同步到根节点的 `data-agent-rp-compatibility-snapshot` 属性，把上述会话、脚本、卡片 iframe 与开聊预检字段收敛为 `agent-rp-browser-compat-v0` 报告。报告检查必需能力解析、脚本运行失败、可执行卡片 iframe 登记、预检计数与启动状态一致性。普通卡片 iframe 只接受 `allow-scripts`；Tavern iframe 只接受 opaque-origin `data:` URL 和精确的 `allow-scripts allow-same-origin allow-forms`，仍使用 `srcdoc`、来源错误或令牌不符都会报告 `iframe-sandbox-expanded`。权限等待仍作为正常状态记录。酒馆脚本面板的“复制诊断”按钮复制同一报告。报告不包含角色名、脚本名、标识、正文、表达式、错误详情、URL、请求载荷或模型响应。
+
+报告的 `interactions` 还提供与文案无关的真实入口状态。角色库、会话设置、预设、世界书、酒馆脚本面板、小手机与脚本权限分别使用 `data-agent-rp-action` 操作入口，用 `data-agent-rp-surface` 和 `data-agent-rp-surface-state` 确认界面已经打开或关闭。浏览器 smoke 不依赖角色名、脚本名或中文按钮文案；它只按稳定标记执行一次打开和关闭，并等待对应的 `interactions` 状态改变。
+
+世界书安全执行器还用 `data-agent-rp-world-engine-regex-runtime-unavailable`、`data-agent-rp-world-engine-regex-invalid`、`data-agent-rp-world-engine-regex-execution-limit`、`data-agent-rp-world-engine-regex-resource-limit`、`data-agent-rp-world-engine-decorator-unsupported`、`data-agent-rp-world-engine-template-unsupported` 与 `data-agent-rp-world-engine-template-error` 输出失败计数。普通关键词未命中、关闭条目、空正文和预算排除不属于执行失败；任一失败计数大于零时，统一报告加入 `world-engine-degraded`，且不包含书名、条目名、关键词、正文、表达式或错误详情。
+
+`interactiveEntriesPresent` 证明当前会话具备适用的稳定入口。有 Tavern 脚本时必须存在脚本面板入口，有待确认脚本权限时必须存在权限入口；没有小手机脚本或没有待确认权限的角色卡不会因此失败。每次 smoke 不发送消息、不修改角色卡，也不自动授予权限。

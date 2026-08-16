@@ -37,6 +37,7 @@ test('assembles markers and nested variables on the correct side of chat history
     { identifier: 'dialogueExamples', name: '示例', role: 'system', content: '', marker: true, systemPrompt: true, forbidOverrides: false },
     { identifier: 'chatHistory', name: '历史', role: 'system', content: '', marker: true, systemPrompt: true, forbidOverrides: false },
     { identifier: 'after', name: '历史后', role: 'system', content: '{{getvar::line}}：{{lastUserMessage}}', marker: false, systemPrompt: true, forbidOverrides: false },
+    { identifier: 'identity-aliases', name: '身份别名', role: 'system', content: '{{user}}/<user>/{{char}}/<char>/<bot>', marker: false, systemPrompt: true, forbidOverrides: false },
     { identifier: 'prefill', name: '回复前缀', role: 'assistant', content: 'OUTPUT', marker: false, systemPrompt: false, forbidOverrides: false },
     { identifier: 'in-chat', name: '聊天内注入', role: 'system', content: '暂不应进入请求', marker: false, systemPrompt: false, forbidOverrides: false, injectionPosition: 1, injectionDepth: 2, injectionOrder: 100 },
     { identifier: 'disabled', name: '关闭项', role: 'system', content: '绝不能出现', marker: false, systemPrompt: true, forbidOverrides: false },
@@ -75,6 +76,7 @@ test('assembles markers and nested variables on the correct side of chat history
   assert.match(assembled.system, /<scenario>宝宝刚刚推门进来。<\/scenario>/u)
   assert.match(assembled.system, /怕冷/u)
   assert.match(assembled.system, /白露: 坐吧，宝宝/u)
+  assert.match(`${assembled.system}\n${assembled.afterHistory}`, /宝宝\/宝宝\/白露\/白露\/白露/u)
   assert.doesNotMatch(assembled.system, /历史后|OUTPUT|暂不应进入请求|绝不能出现/u)
   assert.match(assembled.afterHistory, /轻声回答：表为什么停了/u)
   assert.match(assembled.afterHistory, /SillyTavern assistant prompt · 回复前缀/u)
@@ -83,7 +85,7 @@ test('assembles markers and nested variables on the correct side of chat history
   assert.deepEqual(assembled.inChat, [{
     role: 'system', content: '暂不应进入请求', depth: 2, order: 100,
   }])
-  assert.equal(assembled.enabledPromptCount, 12)
+  assert.equal(assembled.enabledPromptCount, 13)
   assert.equal(assembled.degradedRoleCount, 1)
   assert.equal(assembled.unsupportedMacroCount, 0)
   assert.equal(assembled.templateFailureCount, 0)

@@ -2,6 +2,12 @@
 
 import { snapshotJsonValue, type JsonValue, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ImportedCharacterFrontend, ImportedTavernHelperScript } from './import/types.ts'
+import { AGENT_RP_CAPABILITIES } from './extension-capability.ts'
+import {
+  parseTavernScriptIdentity,
+  tavernScriptIdentity,
+  type TavernScriptScope,
+} from './tavern-script-identity.ts'
 
 /** Tavern Helper variable namespaces supported by the isolated runtime. */
 export type TavernVariableScope = 'global' | 'preset' | 'character' | 'chat' | 'message' | 'script'
@@ -39,7 +45,7 @@ export interface TavernScriptFolder {
 export type TavernScriptTree = TavernScript | TavernScriptFolder
 
 /** Script-tree storage scopes exposed by Tavern Helper. */
-export type TavernScriptTreeScope = 'global' | 'preset' | 'character'
+export type TavernScriptTreeScope = TavernScriptScope
 
 /** JSON-safe Tavern Helper worldbook entry retained in one roleplay Session. */
 export interface TavernWorldbookEntry {
@@ -146,6 +152,7 @@ export interface TavernHelperState {
     readonly chat: JsonRecord
     readonly message: JsonRecord
   }
+  /** Variable objects keyed by the Host-owned combination of script-tree scope and script id. */
   readonly scripts: Readonly<Record<string, JsonRecord>>
   /** Session-local script-tree replacements; imported source files remain unchanged. */
   readonly scriptTrees?: Readonly<Partial<Record<TavernScriptTreeScope, readonly TavernScriptTree[]>>>
@@ -160,6 +167,7 @@ export interface TavernHelperState {
   readonly worldbookBindings?: TavernWorldbookBindings
   readonly lastMutation?: {
     readonly scope: TavernVariableScope | 'worldbook' | 'injection' | 'script-tree'
+    readonly scriptScope?: TavernScriptTreeScope
     readonly scriptId?: string
   }
 }
@@ -167,6 +175,7 @@ export interface TavernHelperState {
 /** One validated model prompt owned by an isolated Tavern Helper script. */
 export interface TavernInjectedPrompt {
   readonly id: string
+  readonly scriptScope: TavernScriptTreeScope
   readonly scriptId: string
   readonly position: 'in_chat' | 'none'
   readonly depth: number
@@ -177,12 +186,19 @@ export interface TavernInjectedPrompt {
 }
 
 /** Browser request replacing one Tavern Helper variable namespace. */
-export interface TavernHelperVariableMutationRequest {
-  readonly format: 0
-  readonly scope: TavernVariableScope
-  readonly scriptId?: string
-  readonly variables: JsonRecord
-}
+export type TavernHelperVariableMutationRequest =
+  | {
+    readonly format: 0
+    readonly scope: Exclude<TavernVariableScope, 'script'>
+    readonly variables: JsonRecord
+  }
+  | {
+    readonly format: 0
+    readonly scope: 'script'
+    readonly scriptScope: TavernScriptTreeScope
+    readonly scriptId: string
+    readonly variables: JsonRecord
+  }
 
 /** Browser request changing one script-visible worldbook or its current bindings. */
 export type TavernWorldbookMutationRequest =
@@ -204,8 +220,9 @@ export interface TavernScriptTreeMutationRequest {
 export interface TavernInjectionMutationRequest {
   readonly format: 0
   readonly operation: 'replace-script-injections'
+  readonly scriptScope: TavernScriptTreeScope
   readonly scriptId: string
-  readonly prompts: readonly Omit<TavernInjectedPrompt, 'scriptId'>[]
+  readonly prompts: readonly Omit<TavernInjectedPrompt, 'scriptId' | 'scriptScope'>[]
 }
 
 /** One validated mutation sent by an isolated Tavern Helper script. */
@@ -213,7 +230,11 @@ export type TavernHelperMutationRequest = TavernHelperVariableMutationRequest | 
   | TavernChatMutationRequest | TavernInjectionMutationRequest | TavernScriptTreeMutationRequest
 
 const STATE_PREFIX = 'agent-rp-tavern-helper-v0:'
-const MAX_MUTATION_BYTES = 2 * 1024 * 1024
+const MAX_MUTATION_BYTES = Math.max(
+  AGENT_RP_CAPABILITIES['session.variables.replace'].runtimePolicies['tavern-script-frame-v0'].requestBytes,
+  AGENT_RP_CAPABILITIES['world-info.session.mutate'].runtimePolicies['tavern-script-frame-v0'].requestBytes,
+  AGENT_RP_CAPABILITIES['prompt-injection.session.replace'].runtimePolicies['tavern-script-frame-v0'].requestBytes,
+)
 const MAX_WORLDBOOK_ENTRIES = 10_000
 const MAX_CHAT_MESSAGES = 10_000
 const MAX_INJECTED_PROMPTS = 256
@@ -393,9 +414,22 @@ function flattenedTavernScripts(trees: readonly TavernScriptTree[]): readonly Ta
   return trees.flatMap(tree => tree.type === 'folder' ? tree.scripts : [tree])
 }
 
+function tavernScriptVariables(
+  scripts: Readonly<Record<string, JsonRecord>>,
+  scope: TavernScriptTreeScope,
+  scriptId: string,
+): JsonRecord | undefined {
+  return scripts[tavernScriptIdentity(scope, scriptId)] ?? scripts[scriptId]
+}
+
 function tavernScriptScopeIds(state: TavernHelperState, scope: TavernScriptTreeScope): Set<string> {
   const override = state.scriptTrees?.[scope]
   if (override !== undefined) return new Set(flattenedTavernScripts(override).map(script => script.id))
+  const scoped = Object.keys(state.scripts).flatMap(key => {
+    const identity = parseTavernScriptIdentity(key)
+    return identity?.scope === scope ? [identity.scriptId] : []
+  })
+  if (scoped.length > 0) return new Set(scoped)
   if (scope === 'global') return new Set()
   if (scope === 'preset') return new Set(state.presetScriptIds ?? [])
   const excluded = new Set([
@@ -471,7 +505,17 @@ function worldbookEntries(value: unknown): readonly TavernWorldbookEntry[] {
   return value.map((entry, index) => worldbookEntry(entry, index, used))
 }
 
-function injectedPrompt(value: unknown, index: number, scriptId?: string): TavernInjectedPrompt {
+function tavernScriptScope(value: unknown, label: string): TavernScriptTreeScope {
+  if (value !== 'global' && value !== 'preset' && value !== 'character') throw new Error(`${label} is invalid`)
+  return value
+}
+
+function injectedPrompt(
+  value: unknown,
+  index: number,
+  owner?: { readonly scriptScope: TavernScriptTreeScope; readonly scriptId: string },
+  legacyScope?: (scriptId: string) => TavernScriptTreeScope,
+): TavernInjectedPrompt {
   const prompt = nested(value)
   const id = text(prompt.id, `injected prompt[${index}].id`).trim()
   if (id === '' || id.length > 512) throw new Error(`injected prompt[${index}].id is invalid`)
@@ -486,8 +530,11 @@ function injectedPrompt(value: unknown, index: number, scriptId?: string): Taver
   if (depth < 0 || depth > 20_000 || content.length > MAX_INJECTED_PROMPT_CHARS) {
     throw new Error(`injected prompt[${index}] is too large`)
   }
-  const owner = scriptId ?? text(prompt.scriptId, `injected prompt[${index}].scriptId`)
-  if (owner === '') throw new Error(`injected prompt[${index}].scriptId is invalid`)
+  const scriptId = owner?.scriptId ?? text(prompt.scriptId, `injected prompt[${index}].scriptId`)
+  if (scriptId === '') throw new Error(`injected prompt[${index}].scriptId is invalid`)
+  const scriptScope = owner?.scriptScope ?? (prompt.scriptScope === undefined
+    ? legacyScope?.(scriptId) ?? 'character'
+    : tavernScriptScope(prompt.scriptScope, `injected prompt[${index}].scriptScope`))
   if ((prompt.shouldScan !== undefined && typeof prompt.shouldScan !== 'boolean')
     || (prompt.should_scan !== undefined && typeof prompt.should_scan !== 'boolean')
     || (prompt.once !== undefined && typeof prompt.once !== 'boolean')) {
@@ -495,7 +542,8 @@ function injectedPrompt(value: unknown, index: number, scriptId?: string): Taver
   }
   return {
     id,
-    scriptId: owner,
+    scriptScope,
+    scriptId,
     position: prompt.position,
     depth,
     role: prompt.role,
@@ -505,12 +553,17 @@ function injectedPrompt(value: unknown, index: number, scriptId?: string): Taver
   }
 }
 
-function injectedPrompts(value: unknown, scriptId?: string): readonly TavernInjectedPrompt[] {
+function injectedPrompts(
+  value: unknown,
+  owner?: { readonly scriptScope: TavernScriptTreeScope; readonly scriptId: string },
+  legacyScope?: (scriptId: string) => TavernScriptTreeScope,
+): readonly TavernInjectedPrompt[] {
   if (!Array.isArray(value) || value.length > MAX_INJECTED_PROMPTS) {
     throw new Error('Tavern Helper injected prompts are invalid')
   }
-  const prompts = value.map((prompt, index) => injectedPrompt(prompt, index, scriptId))
-  if (new Set(prompts.map(prompt => prompt.id)).size !== prompts.length) {
+  const prompts = value.map((prompt, index) => injectedPrompt(prompt, index, owner, legacyScope))
+  if (new Set(prompts.map(prompt => `${tavernScriptIdentity(prompt.scriptScope, prompt.scriptId)}\u0000${prompt.id}`)).size
+    !== prompts.length) {
     throw new Error('Tavern Helper injected prompt ids must be unique')
   }
   return prompts
@@ -528,23 +581,26 @@ export function initializeTavernHelperState(
     ? frontend.tavernHelperScripts : flattenedTavernScripts(characterOverride)
   const activeGlobalScripts = flattenedTavernScripts(previous?.scriptTrees?.global ?? [])
   const globalScripts = Object.fromEntries(activeGlobalScripts.map(script => [
-    script.id,
-    previous?.scripts[script.id] ?? script.data,
+    tavernScriptIdentity('global', script.id),
+    previous === undefined ? script.data : tavernScriptVariables(previous.scripts, 'global', script.id) ?? script.data,
   ]))
   const presetScripts = Object.fromEntries((previous?.presetScriptIds ?? []).flatMap(id => {
-    const value = previous?.scripts[id]
-    return value === undefined ? [] : [[id, value]]
+    const value = previous === undefined ? undefined : tavernScriptVariables(previous.scripts, 'preset', id)
+    return value === undefined ? [] : [[tavernScriptIdentity('preset', id), value]]
   }))
   const scripts = {
     ...globalScripts,
     ...presetScripts,
     ...Object.fromEntries(activeCharacterScripts.map(script => [
-      script.id,
-      sameCharacter ? previous?.scripts[script.id] ?? script.data : script.data,
+      tavernScriptIdentity('character', script.id),
+      sameCharacter && previous !== undefined
+        ? tavernScriptVariables(previous.scripts, 'character', script.id) ?? script.data : script.data,
     ])),
   }
   const scriptIds = new Set(Object.keys(scripts))
-  const prompts = previous?.injectedPrompts?.filter(prompt => scriptIds.has(prompt.scriptId))
+  const prompts = previous?.injectedPrompts?.filter(prompt => scriptIds.has(
+    tavernScriptIdentity(prompt.scriptScope, prompt.scriptId),
+  ))
   const scriptTrees = previous?.scriptTrees === undefined ? undefined : {
     ...(previous.scriptTrees.global === undefined ? {} : { global: previous.scriptTrees.global }),
     ...(previous.scriptTrees.preset === undefined ? {} : { preset: previous.scriptTrees.preset }),
@@ -582,16 +638,17 @@ export function initializeTavernHelperPresetState(
   presetSourceId: string,
 ): TavernHelperState {
   const samePreset = state.presetSourceId === presetSourceId
-  const previousPresetIds = new Set(state.presetScriptIds ?? [])
-  const characterScripts = Object.fromEntries(Object.entries(state.scripts)
-    .filter(([id]) => !previousPresetIds.has(id)))
+  const retainedScripts = Object.fromEntries(Object.entries(state.scripts).filter(([key]) => {
+    const identity = parseTavernScriptIdentity(key)
+    return identity === undefined || identity.scope !== 'preset'
+  }))
   const presetOverride = samePreset ? state.scriptTrees?.preset : undefined
   const activePresetScripts = presetOverride === undefined ? scripts : flattenedTavernScripts(presetOverride)
   const nextScripts = {
-    ...characterScripts,
+    ...retainedScripts,
     ...Object.fromEntries(activePresetScripts.map(script => [
-      script.id,
-      samePreset ? state.scripts[script.id] ?? script.data : script.data,
+      tavernScriptIdentity('preset', script.id),
+      samePreset ? tavernScriptVariables(state.scripts, 'preset', script.id) ?? script.data : script.data,
     ])),
   }
   const scriptIds = new Set(Object.keys(nextScripts))
@@ -606,7 +663,9 @@ export function initializeTavernHelperPresetState(
     scripts: nextScripts,
     ...(scriptTrees === undefined ? {} : { scriptTrees }),
     ...(state.injectedPrompts === undefined
-      ? {} : { injectedPrompts: state.injectedPrompts.filter(prompt => scriptIds.has(prompt.scriptId)) }),
+      ? {} : { injectedPrompts: state.injectedPrompts.filter(prompt => scriptIds.has(
+          tavernScriptIdentity(prompt.scriptScope, prompt.scriptId),
+        )) }),
   }
 }
 
@@ -692,11 +751,15 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
     if (typeof value.scriptId !== 'string' || value.scriptId === '') {
       throw new Error('Tavern Helper injected prompts require a scriptId')
     }
+    const scriptScope = tavernScriptScope(value.scriptScope, 'Tavern Helper injected prompt scriptScope')
     return {
       format: 0,
       operation: value.operation,
+      scriptScope,
       scriptId: value.scriptId,
-      prompts: injectedPrompts(value.prompts, value.scriptId).map(({ scriptId: _scriptId, ...prompt }) => prompt),
+      prompts: injectedPrompts(value.prompts, { scriptScope, scriptId: value.scriptId }).map(({
+        scriptId: _scriptId, scriptScope: _scriptScope, ...prompt
+      }) => prompt),
     }
   }
   if (value.format !== 0 || (value.scope !== 'global' && value.scope !== 'preset'
@@ -704,13 +767,21 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
     && value.scope !== 'script')) {
     throw new Error('Tavern Helper variable update has an unsupported scope')
   }
-  if (value.scriptId !== undefined && typeof value.scriptId !== 'string') {
-    throw new Error('Tavern Helper scriptId must be a string')
+  if (value.scope === 'script') {
+    if (typeof value.scriptId !== 'string' || value.scriptId === '') {
+      throw new Error('Tavern Helper scriptId must be a non-empty string')
+    }
+    return {
+      format: 0,
+      scope: value.scope,
+      scriptScope: tavernScriptScope(value.scriptScope, 'Tavern Helper scriptScope'),
+      scriptId: value.scriptId,
+      variables: record(value.variables, 'Tavern Helper variables'),
+    }
   }
   return {
     format: 0,
     scope: value.scope,
-    ...(value.scriptId === undefined ? {} : { scriptId: value.scriptId }),
     variables: record(value.variables, 'Tavern Helper variables'),
   }
 }
@@ -739,9 +810,13 @@ export function applyTavernHelperMutation(
           ? new Set(flattenedTavernScripts(request.trees).map(script => script.id))
           : tavernScriptScopeIds(state, 'character'),
       }
-      const activeIds = new Set([...scopeIds.global, ...scopeIds.preset, ...scopeIds.character])
+      const activeIds = new Set((['global', 'preset', 'character'] as const).flatMap(scope =>
+        [...scopeIds[scope]].map(id => tavernScriptIdentity(scope, id)),
+      ))
       const scripts = Object.fromEntries(Object.entries(state.scripts).filter(([id]) => activeIds.has(id)))
-      for (const script of flattenedTavernScripts(request.trees)) scripts[script.id] = script.data
+      for (const script of flattenedTavernScripts(request.trees)) {
+        scripts[tavernScriptIdentity(request.scope, script.id)] = script.data
+      }
       return {
         ...state,
         revision: state.revision + 1,
@@ -749,21 +824,25 @@ export function applyTavernHelperMutation(
         scripts,
         scriptTrees,
         ...(state.injectedPrompts === undefined
-          ? {} : { injectedPrompts: state.injectedPrompts.filter(prompt => activeIds.has(prompt.scriptId)) }),
+          ? {} : { injectedPrompts: state.injectedPrompts.filter(prompt => activeIds.has(
+              tavernScriptIdentity(prompt.scriptScope, prompt.scriptId),
+            )) }),
         lastMutation: { scope: 'script-tree' },
       }
     }
     if (request.operation === 'replace-script-injections') {
-      if (!(request.scriptId in state.scripts)) throw new Error('Tavern Helper injected prompts have an unknown scriptId')
-      const replacedIds = new Set(request.prompts.map(prompt => prompt.id))
+      const owner = tavernScriptIdentity(request.scriptScope, request.scriptId)
+      if (!(owner in state.scripts)) throw new Error('Tavern Helper injected prompts have an unknown scriptId')
       return {
         ...state,
         revision: state.revision + 1,
         injectedPrompts: [
-          ...(state.injectedPrompts ?? []).filter(prompt => prompt.scriptId !== request.scriptId && !replacedIds.has(prompt.id)),
-          ...request.prompts.map(prompt => ({ ...prompt, scriptId: request.scriptId })),
+          ...(state.injectedPrompts ?? []).filter(prompt => tavernScriptIdentity(prompt.scriptScope, prompt.scriptId) !== owner),
+          ...request.prompts.map(prompt => ({
+            ...prompt, scriptScope: request.scriptScope, scriptId: request.scriptId,
+          })),
         ],
-        lastMutation: { scope: 'injection', scriptId: request.scriptId },
+        lastMutation: { scope: 'injection', scriptScope: request.scriptScope, scriptId: request.scriptId },
       }
     }
     if (request.operation === 'replace-worldbook') {
@@ -796,15 +875,15 @@ export function applyTavernHelperMutation(
     return { ...state, revision: state.revision + 1, worldbookBindings, lastMutation: { scope: 'worldbook' } }
   }
   if (request.scope === 'script') {
-    const scriptId = request.scriptId
-    if (scriptId === undefined || !(scriptId in state.scripts)) {
+    const scriptKey = tavernScriptIdentity(request.scriptScope, request.scriptId)
+    if (!(scriptKey in state.scripts)) {
       throw new Error('Tavern Helper script variable update has an unknown scriptId')
     }
     return {
       ...state,
       revision: state.revision + 1,
-      scripts: { ...state.scripts, [scriptId]: request.variables },
-      lastMutation: { scope: 'script', scriptId },
+      scripts: { ...state.scripts, [scriptKey]: request.variables },
+      lastMutation: { scope: 'script', scriptScope: request.scriptScope, scriptId: request.scriptId },
     }
   }
   return {
@@ -848,17 +927,29 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
       tavernScriptTrees(trees, `Tavern Helper ${scope} script trees`),
     ])) as TavernHelperState['scriptTrees']
   })()
-  if (parsedScriptTrees !== undefined && Object.values(parsedScriptTrees)
-    .flatMap(trees => flattenedTavernScripts(trees ?? [])).some(script => !(script.id in parsedScripts))) {
+  if (parsed.presetScriptIds !== undefined && (!Array.isArray(parsed.presetScriptIds)
+    || parsed.presetScriptIds.some(value => typeof value !== 'string'))) {
+    throw new Error('Tavern Helper preset script ids are invalid')
+  }
+  const parsedPresetScriptIds = parsed.presetScriptIds as readonly string[] | undefined
+  const hasParsedScript = (scope: TavernScriptTreeScope, scriptId: string): boolean =>
+    tavernScriptIdentity(scope, scriptId) in parsedScripts || scriptId in parsedScripts
+  if (parsedScriptTrees !== undefined && (Object.entries(parsedScriptTrees) as [TavernScriptTreeScope, readonly TavernScriptTree[]][])
+    .some(([scope, trees]) => flattenedTavernScripts(trees).some(script => !hasParsedScript(scope, script.id)))) {
     throw new Error('Tavern Helper script trees reference missing script variables')
   }
   const parsedWorldbooks = parsed.worldbooks === undefined
     ? undefined
     : Object.fromEntries(Object.entries(record(parsed.worldbooks, 'Tavern Helper worldbooks'))
       .map(([name, entries]) => [worldbookName(name), worldbookEntries(entries)]))
+  const legacyPromptScope = (scriptId: string): TavernScriptTreeScope => {
+    if (flattenedTavernScripts(parsedScriptTrees?.global ?? []).some(script => script.id === scriptId)) return 'global'
+    if (parsedPresetScriptIds?.includes(scriptId) === true) return 'preset'
+    return 'character'
+  }
   const parsedInjectedPrompts = parsed.injectedPrompts === undefined
-    ? undefined : injectedPrompts(parsed.injectedPrompts)
-  if (parsedInjectedPrompts?.some(prompt => !(prompt.scriptId in parsedScripts)) === true) {
+    ? undefined : injectedPrompts(parsed.injectedPrompts, undefined, legacyPromptScope)
+  if (parsedInjectedPrompts?.some(prompt => !hasParsedScript(prompt.scriptScope, prompt.scriptId)) === true) {
     throw new Error('Tavern Helper injected prompts reference an unknown scriptId')
   }
   const deletedWorldbookNames = parsed.deletedWorldbookNames === undefined
@@ -897,10 +988,6 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
   if (parsed.presetSourceId !== undefined && typeof parsed.presetSourceId !== 'string') {
     throw new Error('Tavern Helper preset source is invalid')
   }
-  if (parsed.presetScriptIds !== undefined && (!Array.isArray(parsed.presetScriptIds)
-    || parsed.presetScriptIds.some(value => typeof value !== 'string'))) {
-    throw new Error('Tavern Helper preset script ids are invalid')
-  }
   const mutation = parsed.lastMutation
   let lastMutation: TavernHelperState['lastMutation']
   if (mutation !== undefined) {
@@ -916,13 +1003,20 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     if (value.scriptId !== undefined && typeof value.scriptId !== 'string') {
       throw new Error('Tavern Helper last mutation scriptId is invalid')
     }
-    lastMutation = { scope: value.scope, ...(value.scriptId === undefined ? {} : { scriptId: value.scriptId }) }
+    const scriptScope = value.scriptScope === undefined
+      ? (typeof value.scriptId === 'string' ? legacyPromptScope(value.scriptId) : undefined)
+      : tavernScriptScope(value.scriptScope, 'Tavern Helper last mutation scriptScope')
+    lastMutation = {
+      scope: value.scope,
+      ...(scriptScope === undefined ? {} : { scriptScope }),
+      ...(value.scriptId === undefined ? {} : { scriptId: value.scriptId }),
+    }
   }
   return {
     format: 0,
     characterSourceId: parsed.characterSourceId,
     ...(parsed.presetSourceId === undefined ? {} : { presetSourceId: parsed.presetSourceId }),
-    ...(parsed.presetScriptIds === undefined ? {} : { presetScriptIds: parsed.presetScriptIds as string[] }),
+    ...(parsedPresetScriptIds === undefined ? {} : { presetScriptIds: parsedPresetScriptIds }),
     revision: parsed.revision,
     scopes: parsedScopes,
     scripts: parsedScripts,
