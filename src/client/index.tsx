@@ -7892,7 +7892,13 @@ function roleplayComposerDockComponent(
   const cardFramesByTokenRef = useRef(new Map<string, HTMLIFrameElement>())
   const cardFrameDiagnosticSourcesRef = useRef(new Map<string, AgentRpRuntimeDiagnosticSource>())
   const cardFrameDiagnosticFactsRef = useRef(new Map<string, AgentRpRuntimeCardFrameFacts>())
-  const characterDetail = useCharacterDetail(projection?.avatarLibraryId)
+  const storedCharacterDetail = useCharacterDetail(projection?.avatarLibraryId)
+  const sessionResourcePermissions = useMemo(() => readAgentRpSessionResourcePermissions(
+    window.sessionStorage, String(sessionId),
+  ), [sessionId])
+  const characterDetail = useMemo(() => storedCharacterDetail === undefined ? undefined
+    : withAgentRpSessionCardPermissions(storedCharacterDetail, sessionResourcePermissions),
+  [sessionResourcePermissions, storedCharacterDetail])
   const displayStateRef = useRef({ chat, characterDetail, compatibilityMarkers, displayOverrides, projection, viewMode })
   const scanDisplayRef = useRef<() => void>(() => undefined)
   displayStateRef.current = { chat, characterDetail, compatibilityMarkers, displayOverrides, projection, viewMode }

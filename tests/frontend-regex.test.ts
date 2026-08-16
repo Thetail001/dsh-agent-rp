@@ -2643,6 +2643,9 @@ test('runs the same two regex phases inside the isolated Tavern runtime', () => 
     '<details><summary>状态</summary>平静</details>')
   const body = (context.document as { readonly body: RuntimeElement }).body
   const chat = body.children[0] as RuntimeElement & { readonly id?: string; readonly className?: string }
+  assert.equal(chat.children.length, 1)
+  const retrieve = context.retrieveDisplayedMessage as (messageId: number) => unknown
+  retrieve(0)
   const shell = chat.children[1] as RuntimeElement & { readonly className?: string }
   const mirrored = shell.children[0] as RuntimeElement & { readonly className?: string }
   assert.equal(chat.id, 'chat')
