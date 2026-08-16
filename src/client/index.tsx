@@ -145,18 +145,28 @@ import {
   readApprovedTavernScriptOrigins,
   tavernPreflightApprovals,
   tavernPreflightLaunchPhase,
+  tavernPermissionPlan,
   tavernPermissionOwnerId,
   tavernScriptFrameApprovalKey,
   tavernScriptImageApprovalKey,
+  tavernScriptInteractionApprovalKey,
   tavernScriptOriginApprovalKey,
+  summarizeTavernPermissionPlan,
   writeApprovedTavernScriptCustomGenerations,
   writeApprovedTavernScriptFrames,
   writeApprovedTavernScriptGenerations,
   writeApprovedTavernScriptImages,
   writeApprovedTavernScriptModels,
   writeApprovedTavernScriptOrigins,
+  type TavernScriptResourcePermission,
 } from './tavern-permission.ts'
 import { fetchTavernPreflight } from './tavern-preflight.ts'
+import {
+  readAgentRpSessionResourcePermissions,
+  withAgentRpSessionCardPermissions,
+  writeAgentRpSessionResourcePermissions,
+  type AgentRpSessionResourcePermissions,
+} from './session-permission.ts'
 import {
   CHARACTER_LIBRARY_PATH,
   characterLibraryImageUrl,
@@ -430,6 +440,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
     persona?: SessionPersonaSnapshot,
     presetId?: string,
     memory?: 'copy-active',
+    resourcePermissions?: AgentRpSessionResourcePermissions,
   ) => Promise<void>
   readonly listPresets: () => Promise<readonly PresetLibrarySummary[]>
   readonly listPersonas: () => Promise<readonly PersonaLibraryEntry[]>
@@ -1911,8 +1922,8 @@ function BlankRoleplayLauncher({
       setCharacterArchived={setCharacterArchived}
       importCharacterFile={importCharacterFile}
       onClose={() => { setLibraryOpen(false) }}
-      onStart={(character, greetingIndex, persona, presetId) => startCharacterSession(
-        sessionId, character, greetingIndex, persona, presetId,
+      onStart={(character, greetingIndex, persona, presetId, memory, resourcePermissions) => startCharacterSession(
+        sessionId, character, greetingIndex, persona, presetId, memory, resourcePermissions,
       )}
       listPresets={listPresets}
       importPresetFile={importPresetFile}
@@ -2595,7 +2606,13 @@ function RoleplayHeader({
   const [aliasError, setAliasError] = useState<string>()
   const [renaming, setRenaming] = useState(false)
   const viewMode = useRoleplayViewMode(sessionId)
-  const characterDetail = useCharacterDetail(projection?.avatarLibraryId)
+  const storedCharacterDetail = useCharacterDetail(projection?.avatarLibraryId)
+  const sessionResourcePermissions = useMemo(() => readAgentRpSessionResourcePermissions(
+    window.sessionStorage, String(sessionId),
+  ), [sessionId])
+  const characterDetail = useMemo(() => storedCharacterDetail === undefined ? undefined
+    : withAgentRpSessionCardPermissions(storedCharacterDetail, sessionResourcePermissions),
+  [sessionResourcePermissions, storedCharacterDetail])
   const expressionChoice = useRoleplayExpression(sessionId)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const settingsRef = useRef<HTMLDetailsElement | null>(null)
@@ -2879,8 +2896,8 @@ function RoleplayHeader({
       setCharacterArchived={setCharacterArchived}
       importCharacterFile={importCharacterFile}
       onClose={() => { setLibraryOpen(false) }}
-      onStart={(character, greetingIndex, persona, presetId, memory) => startCharacterSession(
-        sessionId, character, greetingIndex, persona, presetId, memory,
+      onStart={(character, greetingIndex, persona, presetId, memory, resourcePermissions) => startCharacterSession(
+        sessionId, character, greetingIndex, persona, presetId, memory, resourcePermissions,
       )}
       listPresets={listPresets}
       importPresetFile={importPresetFile}
@@ -3481,6 +3498,13 @@ type TavernPreflightLoadState = {
   readonly error: string
 }
 
+type PreflightPermissionDuration = 'session' | 'remember'
+
+interface PreflightApprovalResult {
+  readonly character: CharacterLibraryDetail
+  readonly resourcePermissions?: AgentRpSessionResourcePermissions
+}
+
 function CharacterLibraryDialog({
   currentCharacterName, currentCharacterId, listCharacters, readCharacter, setCharacterArchived, importCharacterFile,
   listPresets, importPresetFile, listPersonas, savePersona, deletePersona, onClose, onStart,
@@ -3500,6 +3524,7 @@ function CharacterLibraryDialog({
   readonly onStart: (
     character: CharacterLibraryDetail, greetingIndex: number, persona?: SessionPersonaSnapshot, presetId?: string,
     memory?: 'copy-active',
+    resourcePermissions?: AgentRpSessionResourcePermissions,
   ) => Promise<void>
 }) {
   const narrow = useNarrowCharacterLibrary()
@@ -3529,6 +3554,7 @@ function CharacterLibraryDialog({
   const [approvedScriptFrames, setApprovedScriptFrames] = useState(readApprovedTavernScriptFrames)
   const [tavernPreflightState, setTavernPreflightState] = useState<TavernPreflightLoadState>()
   const [approvingPreflight, setApprovingPreflight] = useState(false)
+  const [preflightPermissionDuration, setPreflightPermissionDuration] = useState<PreflightPermissionDuration>('remember')
   const [updating, setUpdating] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importingPreset, setImportingPreset] = useState(false)
@@ -3767,47 +3793,80 @@ function CharacterLibraryDialog({
   const resourcePreflightStatus = tavernPreflightLoading ? 'loading'
     : pendingPreflightPermissions > 0 ? 'permission-required'
       : tavernPreflightError !== undefined ? 'error' : 'ready'
-  const preflightBlocksLaunch = preflightLaunchPhase !== 'ready'
-  const approvePreflightResources = (): void => {
-    if (selected === undefined || approvingPreflight) return
-    if (pendingPreflightScripts.length > 0) {
-      const next = new Set(approvedScriptOrigins)
-      for (const permission of pendingPreflightScripts) next.add(permission.approvalKey)
-      writeApprovedTavernScriptOrigins(next)
-      setApprovedScriptOrigins(next)
-    }
-    if (pendingPreflightImages.length > 0) {
-      const next = new Set(approvedScriptImages)
-      for (const permission of pendingPreflightImages) next.add(permission.approvalKey)
-      writeApprovedTavernScriptImages(next)
-      setApprovedScriptImages(next)
-    }
-    if (pendingPreflightFrames.length > 0) {
-      const next = new Set(approvedScriptFrames)
-      for (const permission of pendingPreflightFrames) next.add(permission.approvalKey)
-      writeApprovedTavernScriptFrames(next)
-      setApprovedScriptFrames(next)
-    }
-    if (pendingCardResources.length === 0) {
-      setActionNotice('已保存这张角色卡的界面资源许可')
-      return
-    }
+  const preflightChecking = preflightLaunchPhase === 'checking'
+  const approvePreflightResources = async (
+    duration: PreflightPermissionDuration,
+  ): Promise<PreflightApprovalResult> => {
+    if (selected === undefined) throw new Error('请先选择角色卡')
     setApprovingPreflight(true)
-    setError(undefined)
-    void (async (): Promise<CharacterLibraryDetail> => {
+    try {
+      if (duration === 'session') {
+        return {
+          character: selected,
+          resourcePermissions: {
+            tavern: {
+              scripts: pendingPreflightScripts.map(permission => permission.approvalKey),
+              images: pendingPreflightImages.map(permission => permission.approvalKey),
+              frames: pendingPreflightFrames.map(permission => permission.approvalKey),
+            },
+            card: pendingCardResources,
+          },
+        }
+      }
+      if (pendingPreflightScripts.length > 0) {
+        const next = new Set(approvedScriptOrigins)
+        for (const permission of pendingPreflightScripts) next.add(permission.approvalKey)
+        writeApprovedTavernScriptOrigins(next)
+        setApprovedScriptOrigins(next)
+      }
+      if (pendingPreflightImages.length > 0) {
+        const next = new Set(approvedScriptImages)
+        for (const permission of pendingPreflightImages) next.add(permission.approvalKey)
+        writeApprovedTavernScriptImages(next)
+        setApprovedScriptImages(next)
+      }
+      if (pendingPreflightFrames.length > 0) {
+        const next = new Set(approvedScriptFrames)
+        for (const permission of pendingPreflightFrames) next.add(permission.approvalKey)
+        writeApprovedTavernScriptFrames(next)
+        setApprovedScriptFrames(next)
+      }
       let detail = selected
       for (const resource of pendingCardResources) {
         detail = await updateCharacterRemoteResource(detail.id, resource.origin, resource.type, true)
         setSelected(current => current?.id === detail.id ? detail : current)
       }
-      return detail
-    })().then(detail => {
-      setSelected(current => current?.id === detail.id ? detail : current)
+      setActionNotice('已记住这张角色卡所列的精确界面权限')
+      return { character: detail }
+    } finally {
       setApprovingPreflight(false)
-      setActionNotice('已保存这张角色卡的界面资源许可')
-    }, reason => {
-      setApprovingPreflight(false)
+    }
+  }
+  const approvePreflightOnly = (): void => {
+    if (approvingPreflight) return
+    setError(undefined)
+    void approvePreflightResources('remember').catch(reason => {
       setError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }
+  const startSelectedCharacter = (): void => {
+    if (selected === undefined || starting || approvingPreflight || preflightChecking) return
+    setStarting(true)
+    setError(undefined)
+    void (async (): Promise<void> => {
+      const approval = preflightLaunchPhase === 'approval-required'
+        ? await approvePreflightResources(preflightPermissionDuration) : { character: selected }
+      const persona = personas?.find(entry => entry.id === personaId)
+      await onStart(approval.character, greetingIndex, persona === undefined ? undefined : {
+        id: persona.id, name: persona.name, description: persona.description,
+      }, presetId === '' ? undefined : presetId, copyActiveMemory ? 'copy-active' : undefined,
+      approval.resourcePermissions)
+    })().then(() => {
+      setStarting(false)
+      onClose()
+    }, startError => {
+      setStarting(false)
+      setError(startError instanceof Error ? startError.message : String(startError))
     })
   }
   return <div className="agent-rp-character-library-overlay" data-agent-rp-dialog
@@ -3983,6 +4042,7 @@ function CharacterLibraryDialog({
               data-agent-rp-resource-preflight-permissions={pendingPreflightPermissions}
               data-agent-rp-resource-preflight-failed={tavernPreflight?.failed ?? 0}
               data-agent-rp-resource-launch={preflightLaunchPhase}
+              data-agent-rp-resource-permission-duration={preflightPermissionDuration}
               style={{
                 background: pendingPreflightHosts.length === 0
                   ? 'var(--dsw-alias-bg-layer-1, #202024)'
@@ -4009,12 +4069,32 @@ function CharacterLibraryDialog({
                 <div title={pendingPreflightHosts.join('\n')} style={{
                   marginTop: '5px', opacity: .66, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>{pendingPreflightHosts.join('、')}</div>
+                <div role="radiogroup" aria-label="界面权限保存时长" style={{
+                  display: 'grid', gap: '6px', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', marginTop: '8px',
+                }}>
+                  {([['session', '仅这段对话', '只保存在当前浏览器标签的这段对话中'],
+                    ['remember', '记住这张卡', '按角色卡、预设、脚本和精确来源保存']] as const).map(([value, label, detail]) => <button
+                      key={value} type="button" role="radio" aria-checked={preflightPermissionDuration === value}
+                      data-agent-rp-permission-duration={value}
+                      onClick={() => { setPreflightPermissionDuration(value) }} style={{
+                        background: preflightPermissionDuration === value
+                          ? `color-mix(in srgb, ${color} 14%, transparent)` : 'transparent',
+                        border: preflightPermissionDuration === value
+                          ? `1px solid color-mix(in srgb, ${color} 42%, transparent)`
+                          : '1px solid var(--dsw-alias-border-l2, #444)',
+                        borderRadius: '7px', color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '6px 8px',
+                        textAlign: 'left',
+                      }}>
+                      <strong style={{ display: 'block', fontSize: '11px' }}>{label}</strong>
+                      <span style={{ display: 'block', fontSize: '9px', lineHeight: 1.4, marginTop: '2px', opacity: .5 }}>{detail}</span>
+                    </button>)}
+                </div>
                 <button type="button" data-agent-rp-action="approve-preflight-resources"
-                  disabled={approvingPreflight} onClick={approvePreflightResources} style={{
+                  disabled={approvingPreflight || starting} onClick={approvePreflightOnly} style={{
                   background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)',
                   borderRadius: '7px', color: 'inherit', cursor: approvingPreflight ? 'wait' : 'pointer', font: 'inherit', fontSize: '11px',
                   marginTop: '7px', padding: '5px 9px',
-                }}>{approvingPreflight ? '正在保存…' : '允许所列界面资源'}</button>
+                }}>{approvingPreflight ? '正在保存…' : '记住所列精确权限'}</button>
               </>}
               {(tavernPreflight?.failed ?? 0) > 0 && <div style={{ color: 'var(--dsw-alias-state-warning, #d5a64c)', marginTop: '5px' }}>
                 {tavernPreflight!.failed} 个脚本无法完成静态解析，开聊后也不会执行
@@ -4272,29 +4352,20 @@ function CharacterLibraryDialog({
             color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '8px 13px',
           }}>取消</button>
           <button type="button" data-agent-rp-start-readiness={preflightLaunchPhase}
-            disabled={collection === 'archived' || selected === undefined || starting || importingPreset || preflightBlocksLaunch} onClick={() => {
-            if (selected === undefined) return
-            setStarting(true)
-            setError(undefined)
-            const persona = personas?.find(entry => entry.id === personaId)
-            void onStart(selected, greetingIndex, persona === undefined ? undefined : {
-              id: persona.id, name: persona.name, description: persona.description,
-            }, presetId === '' ? undefined : presetId, copyActiveMemory ? 'copy-active' : undefined).then(() => {
-              setStarting(false)
-              onClose()
-            }, startError => {
-              setStarting(false)
-              setError(startError instanceof Error ? startError.message : String(startError))
-            })
-          }} style={{
+            data-agent-rp-start-action={preflightChecking ? 'checking'
+              : preflightLaunchPhase === 'approval-required' ? 'approve-and-start' : 'start'}
+            disabled={collection === 'archived' || selected === undefined || starting || approvingPreflight
+              || importingPreset || preflightChecking} onClick={startSelectedCharacter} style={{
             background: color, border: 0, borderRadius: '9px', color: '#fff',
-            cursor: starting || preflightLaunchPhase === 'checking' ? 'wait' : preflightBlocksLaunch ? 'default' : 'pointer',
+            cursor: starting || approvingPreflight || preflightChecking ? 'wait' : 'pointer',
             font: 'inherit', fontWeight: 620,
-            opacity: collection === 'archived' || selected === undefined || preflightBlocksLaunch ? .45 : 1,
+            opacity: collection === 'archived' || selected === undefined || preflightChecking ? .45 : 1,
             padding: '8px 15px',
           }}>{starting ? '正在开始…'
-              : preflightLaunchPhase === 'checking' ? '正在检查界面资源…'
-                : preflightLaunchPhase === 'approval-required' ? '请先确认界面资源'
+              : approvingPreflight ? '正在保存权限…'
+                : preflightChecking ? '正在检查界面资源…'
+                  : preflightLaunchPhase === 'approval-required'
+                    ? preflightPermissionDuration === 'session' ? '本次允许并开始' : '记住权限并开始'
                   : '开始新对话'}</button>
         </footer>
       </div>
@@ -5852,6 +5923,41 @@ interface TavernExternalWindowRequest {
   readonly hostname: string
 }
 
+interface TavernOriginInteractionRequest {
+  readonly scriptKey: string
+  readonly origin: string
+  readonly count: number
+}
+
+type TavernRuntimePermissionRequest = {
+  readonly kind: TavernScriptResourcePermission['kind']
+  readonly key: string
+  readonly resource: TavernScriptResourcePermission
+} | {
+  readonly kind: 'identity'
+  readonly key: string
+  readonly request: NativeIdentityRuntimeRequest
+} | {
+  readonly kind: 'external-window'
+  readonly key: string
+  readonly request: TavernExternalWindowRequest
+} | {
+  readonly kind: 'generation'
+  readonly key: string
+  readonly scriptKey: string
+  readonly count: number
+} | {
+  readonly kind: 'custom-generation'
+  readonly key: string
+  readonly approvalKey: string
+  readonly request: TavernOriginInteractionRequest
+} | {
+  readonly kind: 'model-list'
+  readonly key: string
+  readonly approvalKey: string
+  readonly request: TavernOriginInteractionRequest
+}
+
 interface CardExternalWindowRequest {
   readonly key: string
   readonly target: Window
@@ -6004,9 +6110,18 @@ function TavernScriptRuntime({
   ).filter(entry => entry.script.enabled && entry.script.content.trim() !== '')
   const scripts = scopedScripts.map(entry => entry.script)
   const scopedScriptByKey = new Map(scopedScripts.map(entry => [entry.key, entry] as const))
-  const [approvedOrigins, setApprovedOrigins] = useState(readApprovedTavernScriptOrigins)
-  const [approvedImages, setApprovedImages] = useState(readApprovedTavernScriptImages)
-  const [approvedFrames, setApprovedFrames] = useState(readApprovedTavernScriptFrames)
+  const sessionResourcePermissions = useMemo(() => readAgentRpSessionResourcePermissions(
+    window.sessionStorage, String(sessionId),
+  ), [sessionId])
+  const [approvedOrigins, setApprovedOrigins] = useState(() => new Set([
+    ...readApprovedTavernScriptOrigins(), ...sessionResourcePermissions.tavern.scripts,
+  ]))
+  const [approvedImages, setApprovedImages] = useState(() => new Set([
+    ...readApprovedTavernScriptImages(), ...sessionResourcePermissions.tavern.images,
+  ]))
+  const [approvedFrames, setApprovedFrames] = useState(() => new Set([
+    ...readApprovedTavernScriptFrames(), ...sessionResourcePermissions.tavern.frames,
+  ]))
   const nativeIdentityState = useNativeIdentityDiagnosticState()
   const characterApprovalId = tavernPermissionOwnerId(
     projection.avatarLibraryId, projection.tavern?.characterSourceId,
@@ -6040,17 +6155,13 @@ function TavernScriptRuntime({
   const [approvedGenerations, setApprovedGenerations] = useState(readApprovedTavernScriptGenerations)
   const [generationRequests, setGenerationRequests] = useState<ReadonlyMap<string, number>>(() => new Map())
   const [approvedCustomGenerations, setApprovedCustomGenerations] = useState(readApprovedTavernScriptCustomGenerations)
-  const [customGenerationRequests, setCustomGenerationRequests] = useState<ReadonlyMap<string, {
-    readonly scriptKey: string
-    readonly origin: string
-    readonly count: number
-  }>>(() => new Map())
+  const [customGenerationRequests, setCustomGenerationRequests] = useState<ReadonlyMap<
+    string, TavernOriginInteractionRequest
+  >>(() => new Map())
   const [approvedModels, setApprovedModels] = useState(readApprovedTavernScriptModels)
-  const [modelListRequests, setModelListRequests] = useState<ReadonlyMap<string, {
-    readonly scriptKey: string
-    readonly origin: string
-    readonly count: number
-  }>>(() => new Map())
+  const [modelListRequests, setModelListRequests] = useState<ReadonlyMap<
+    string, TavernOriginInteractionRequest
+  >>(() => new Map())
   const [surfaceScriptIds, setSurfaceScriptIds] = useState<ReadonlySet<string>>(() => new Set())
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelScriptId, setPanelScriptId] = useState<string>()
@@ -6335,23 +6446,17 @@ function TavernScriptRuntime({
       }
     }
   }
-  const generationApprovalKey = (scriptKey: string): string => [
-    projectionRef.current.tavern?.characterSourceId ?? 'unknown-character',
-    projectionRef.current.tavern?.presetSourceId ?? 'no-preset',
-    scriptKey,
-  ].join('\u0000')
-  const modelApprovalKey = (scriptKey: string, origin: string): string => [
-    projectionRef.current.tavern?.characterSourceId ?? 'unknown-character',
-    projectionRef.current.tavern?.presetSourceId ?? 'no-preset',
-    scriptKey,
-    origin,
-  ].join('\u0000')
-  const customGenerationApprovalKey = (scriptKey: string, origin: string): string => [
-    projectionRef.current.tavern?.characterSourceId ?? 'unknown-character',
-    projectionRef.current.tavern?.presetSourceId ?? 'no-preset',
-    scriptKey,
-    origin,
-  ].join('\u0000')
+  const generationApprovalKey = (scriptKey: string): string => tavernScriptInteractionApprovalKey(
+    characterApprovalId, presetApprovalId, 'generation', scriptKey,
+  )
+  const modelApprovalKey = (scriptKey: string, origin: string): string =>
+    tavernScriptInteractionApprovalKey(
+      characterApprovalId, presetApprovalId, 'model-list', scriptKey, origin,
+    )
+  const customGenerationApprovalKey = (scriptKey: string, origin: string): string =>
+    tavernScriptInteractionApprovalKey(
+      characterApprovalId, presetApprovalId, 'custom-generation', scriptKey, origin,
+    )
   const executeGeneration = (
     scriptKey: string,
     target: Window,
@@ -7228,143 +7333,209 @@ function TavernScriptRuntime({
     writeApprovedTavernScriptFrames(next)
     setApprovedFrames(next)
   }
-  const permissionActions = [
-    ...[...nativeIdentityRequests.values()].map(request => {
-      const approval = nativeIdentityApprovalKey(
-        request.application, request.audience, request.includeDisplayName,
-      )
-      return <button type="button" key={`identity:${request.key}`} data-agent-rp-permission-kind="identity"
-        disabled={nativeIdentityState !== 'ready'}
-        title={nativeIdentityState === 'ready'
-          ? `允许这个隔离脚本向 ${request.audience} 出示五分钟有效的 DSH 本机身份证明；私钥不会离开 Host`
-          : '请先在 DSH 设置的 Agent RP 页面创建本机身份'}
-        onClick={() => {
-          const next = new Set(approvedNativeIdentities)
-          next.add(approval)
-          writeApprovedNativeIdentities(next)
-          setApprovedNativeIdentities(next)
-          setNativeIdentityRequests(current => {
-            const remaining = new Map(current)
-            remaining.delete(request.key)
-            return remaining
-          })
-          const target = request.scriptKey === undefined
-            ? request.target : frameRefs.current.get(request.scriptKey)?.contentWindow ?? request.target
-          void deliverNativeIdentityResult(request, target)
-        }} style={{ ...permissionActionStyle, cursor: nativeIdentityState === 'ready' ? 'pointer' : 'not-allowed',
-          opacity: nativeIdentityState === 'ready' ? 1 : .55 }}>允许 {request.applicationName} 向 {new URL(request.audience).hostname}
-          证明本机身份{request.includeDisplayName ? '并分享显示名称' : ''}</button>
-    }),
-    ...[...externalWindowRequests.values()].map(request => <button type="button" key={`external:${request.key}`}
-      data-agent-rp-permission-kind="external-window"
-      title={`打开只连接 ${request.hostname} 的隔离登录面板`} onClick={() => {
-        const broker = openExternalWindowBroker({
-          hostWindow: window,
-          url: request.url,
-          hostname: request.hostname,
-          requesterName: request.scriptName,
-          runtime: 'tavern-script-frame-v0',
-          requestId: request.requestId,
-          resolveTarget: () => frameRefs.current.get(request.scriptKey)?.contentWindow,
-          onClosed: () => {
-            externalWindowBrokers.current.delete(request.key)
-            const target = frameRefs.current.get(request.scriptKey)?.contentWindow ?? request.target
-            target.postMessage({
-              source: 'dsh-agent-rp-host', action: 'external-window-closed', requestId: request.requestId,
+  const runtimePermissions = tavernPermissionPlan<TavernRuntimePermissionRequest>([
+    ...runtimeResourcePermissions.map(resource => ({
+      kind: resource.kind,
+      key: resource.approvalKey,
+      resource,
+    })),
+    ...[...nativeIdentityRequests.values()].map(request => ({
+      kind: 'identity' as const,
+      key: request.key,
+      request,
+    })),
+    ...[...externalWindowRequests.values()].map(request => ({
+      kind: 'external-window' as const,
+      key: request.key,
+      request,
+    })),
+    ...[...generationRequests].map(([scriptKey, count]) => ({
+      kind: 'generation' as const,
+      key: generationApprovalKey(scriptKey),
+      scriptKey,
+      count,
+    })),
+    ...[...customGenerationRequests].map(([approvalKey, request]) => ({
+      kind: 'custom-generation' as const,
+      key: approvalKey,
+      approvalKey,
+      request,
+    })),
+    ...[...modelListRequests].map(([approvalKey, request]) => ({
+      kind: 'model-list' as const,
+      key: approvalKey,
+      approvalKey,
+      request,
+    })),
+  ])
+  const permissionSummary = summarizeTavernPermissionPlan(runtimePermissions)
+  const renderPermissionAction = (permission: typeof runtimePermissions[number]) => {
+    switch (permission.kind) {
+      case 'script':
+      case 'image':
+      case 'frame': {
+        const resourcePermission = permission.resource
+        const entry = scopedScriptByKey.get(tavernScriptIdentity(
+          resourcePermission.scope, resourcePermission.scriptId,
+        ))
+        const action = resourcePermission.kind === 'script' ? '加载'
+          : resourcePermission.kind === 'image' ? '显示' : '嵌入'
+        const resource = resourcePermission.kind === 'script' ? '脚本'
+          : resourcePermission.kind === 'image' ? '图片' : ''
+        const title = resourcePermission.kind === 'script'
+          ? `允许隔离脚本从 ${resourcePermission.origin} 加载 JavaScript`
+          : resourcePermission.kind === 'image'
+            ? `允许这个隔离脚本显示来自 ${resourcePermission.origin} 的图片；不会开放脚本网络请求`
+            : `允许这个隔离脚本嵌入 ${resourcePermission.origin}；远端页面保留自己的 HTTPS 来源和存储`
+        return <button type="button" key={`${permission.kind}:${permission.key}`}
+          data-agent-rp-permission-kind={permission.kind} data-agent-rp-permission-lifecycle={permission.lifecycle}
+          title={title} onClick={() => { approveRuntimeResource(resourcePermission) }} style={permissionActionStyle}>
+          允许 {entry?.script.name || '脚本'} {action} {new URL(resourcePermission.origin).hostname}
+          {resource === '' ? '' : ` ${resource}`}
+        </button>
+      }
+      case 'identity': {
+        const { request } = permission
+        const approval = nativeIdentityApprovalKey(
+          request.application, request.audience, request.includeDisplayName,
+        )
+        return <button type="button" key={`${permission.kind}:${permission.key}`}
+          data-agent-rp-permission-kind={permission.kind} data-agent-rp-permission-lifecycle={permission.lifecycle}
+          disabled={nativeIdentityState !== 'ready'}
+          title={nativeIdentityState === 'ready'
+            ? `允许这个隔离脚本向 ${request.audience} 出示五分钟有效的 DSH 本机身份证明；私钥不会离开 Host`
+            : '请先在 DSH 设置的 Agent RP 页面创建本机身份'}
+          onClick={() => {
+            const next = new Set(approvedNativeIdentities)
+            next.add(approval)
+            writeApprovedNativeIdentities(next)
+            setApprovedNativeIdentities(next)
+            setNativeIdentityRequests(current => {
+              const remaining = new Map(current)
+              remaining.delete(request.key)
+              return remaining
+            })
+            const target = request.scriptKey === undefined
+              ? request.target : frameRefs.current.get(request.scriptKey)?.contentWindow ?? request.target
+            void deliverNativeIdentityResult(request, target)
+          }} style={{ ...permissionActionStyle, cursor: nativeIdentityState === 'ready' ? 'pointer' : 'not-allowed',
+            opacity: nativeIdentityState === 'ready' ? 1 : .55 }}>允许 {request.applicationName} 向 {new URL(request.audience).hostname}
+            证明本机身份{request.includeDisplayName ? '并分享显示名称' : ''}</button>
+      }
+      case 'external-window': {
+        const { request } = permission
+        return <button type="button" key={`${permission.kind}:${permission.key}`}
+          data-agent-rp-permission-kind={permission.kind} data-agent-rp-permission-lifecycle={permission.lifecycle}
+          title={`打开只连接 ${request.hostname} 的隔离登录面板`} onClick={() => {
+            const broker = openExternalWindowBroker({
+              hostWindow: window,
+              url: request.url,
+              hostname: request.hostname,
+              requesterName: request.scriptName,
+              runtime: 'tavern-script-frame-v0',
+              requestId: request.requestId,
+              resolveTarget: () => frameRefs.current.get(request.scriptKey)?.contentWindow,
+              onClosed: () => {
+                externalWindowBrokers.current.delete(request.key)
+                const target = frameRefs.current.get(request.scriptKey)?.contentWindow ?? request.target
+                target.postMessage({
+                  source: 'dsh-agent-rp-host', action: 'external-window-closed', requestId: request.requestId,
+                }, '*')
+              },
+              onStateChange: state => { setExternalWindowPhase(state.phase) },
+            })
+            setExternalWindowRequests(current => {
+              const next = new Map(current)
+              next.delete(request.key)
+              return next
+            })
+            if (broker === undefined) {
+              request.target.postMessage({
+                source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.external-window.open',
+                requestId: request.requestId, ok: false, error: '无法创建外部登录隔离面板',
+              }, '*')
+              return
+            }
+            externalWindowBrokers.current.set(request.key, broker)
+            request.target.postMessage({
+              source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.external-window.open',
+              requestId: request.requestId, ok: true,
             }, '*')
-          },
-          onStateChange: state => { setExternalWindowPhase(state.phase) },
-        })
-        setExternalWindowRequests(current => {
-          const next = new Map(current)
-          next.delete(request.key)
-          return next
-        })
-        if (broker === undefined) {
-          request.target.postMessage({
-            source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.external-window.open',
-            requestId: request.requestId, ok: false, error: '无法创建外部登录隔离面板',
-          }, '*')
-          return
-        }
-        externalWindowBrokers.current.set(request.key, broker)
-        request.target.postMessage({
-          source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'ui.external-window.open',
-          requestId: request.requestId, ok: true,
-        }, '*')
-        setPermissionOpen(false)
-      }} style={permissionActionStyle}>打开 {request.hostname} 登录页（{request.scriptName || '酒馆脚本'}）</button>),
-    ...runtimeResourcePermissions.map(permission => {
-      const entry = scopedScriptByKey.get(tavernScriptIdentity(permission.scope, permission.scriptId))
-      const action = permission.kind === 'script' ? '加载' : permission.kind === 'image' ? '显示' : '嵌入'
-      const resource = permission.kind === 'script' ? '脚本' : permission.kind === 'image' ? '图片' : ''
-      const title = permission.kind === 'script'
-        ? `允许隔离脚本从 ${permission.origin} 加载 JavaScript`
-        : permission.kind === 'image'
-          ? `允许这个隔离脚本显示来自 ${permission.origin} 的图片；不会开放脚本网络请求`
-          : `允许这个隔离脚本嵌入 ${permission.origin}；远端页面保留自己的 HTTPS 来源和存储`
-      return <button type="button" key={`resource:${permission.kind}:${permission.approvalKey}`}
-        data-agent-rp-permission-kind={permission.kind} title={title}
-        onClick={() => { approveRuntimeResource(permission) }} style={permissionActionStyle}>
-        允许 {entry?.script.name || '脚本'} {action} {new URL(permission.origin).hostname}{resource === '' ? '' : ` ${resource}`}
-      </button>
-    }),
-    ...[...generationRequests].map(([scriptKey, count]) => {
-      const script = scopedScriptByKey.get(scriptKey)?.script
-      return <button type="button" key={`generation:${scriptKey}`} data-agent-rp-permission-kind="generation"
-        title="允许这个隔离脚本使用当前 DSH 模型生成文本；生成会消耗模型额度" onClick={() => {
-          const next = new Set(approvedGenerations)
-          next.add(generationApprovalKey(scriptKey))
-          writeApprovedTavernScriptGenerations(next)
-          setApprovedGenerations(next)
-          const queued = generationQueue.current.get(scriptKey) ?? []
-          generationQueue.current.delete(scriptKey)
-          setGenerationRequests(current => {
-            const remaining = new Map(current)
-            remaining.delete(scriptKey)
-            return remaining
-          })
-          for (const request of queued) executeGeneration(scriptKey, request.target, request.requestId, request.mode, request.config)
-        }} style={permissionActionStyle}>允许 {script?.name || '脚本'} 调用模型{count > 1 ? ` (${count})` : ''}</button>
-    }),
-    ...[...customGenerationRequests].map(([approvalKey, request]) => {
-      const script = scopedScriptByKey.get(request.scriptKey)?.script
-      return <button type="button" key={`custom-generation:${approvalKey}`}
-        data-agent-rp-permission-kind="custom-generation"
-        title={`允许这个隔离脚本连接 ${request.origin} 并生成文本；生成会消耗该 API 的额度，密钥只转发给该地址`} onClick={() => {
-          const next = new Set(approvedCustomGenerations)
-          next.add(approvalKey)
-          writeApprovedTavernScriptCustomGenerations(next)
-          setApprovedCustomGenerations(next)
-          const queued = customGenerationQueue.current.get(approvalKey) ?? []
-          customGenerationQueue.current.delete(approvalKey)
-          setCustomGenerationRequests(current => {
-            const remaining = new Map(current)
-            remaining.delete(approvalKey)
-            return remaining
-          })
-          for (const item of queued) executeGeneration(request.scriptKey, item.target, item.requestId, item.mode, item.config)
-        }} style={permissionActionStyle}>允许 {script?.name || '脚本'} 使用 {new URL(request.origin).hostname} 生成{request.count > 1 ? ` (${request.count})` : ''}</button>
-    }),
-    ...[...modelListRequests].map(([approvalKey, request]) => {
-      const script = scopedScriptByKey.get(request.scriptKey)?.script
-      return <button type="button" key={`models:${approvalKey}`} data-agent-rp-permission-kind="model-list"
-        title={`允许这个隔离脚本连接 ${request.origin} 并读取模型名称；API 密钥只转发给该地址`} onClick={() => {
-          const next = new Set(approvedModels)
-          next.add(approvalKey)
-          writeApprovedTavernScriptModels(next)
-          setApprovedModels(next)
-          const queued = modelListQueue.current.get(approvalKey) ?? []
-          modelListQueue.current.delete(approvalKey)
-          setModelListRequests(current => {
-            const remaining = new Map(current)
-            remaining.delete(approvalKey)
-            return remaining
-          })
-          for (const item of queued) executeModelList(item.target, item.requestId, item.apiurl, item.key)
-        }} style={permissionActionStyle}>允许 {script?.name || '脚本'} 读取 {new URL(request.origin).hostname} 模型{request.count > 1 ? ` (${request.count})` : ''}</button>
-    }),
-  ]
+            setPermissionOpen(false)
+          }} style={permissionActionStyle}>打开 {request.hostname} 登录页（{request.scriptName || '酒馆脚本'}）</button>
+      }
+      case 'generation': {
+        const script = scopedScriptByKey.get(permission.scriptKey)?.script
+        return <button type="button" key={`${permission.kind}:${permission.key}`}
+          data-agent-rp-permission-kind={permission.kind} data-agent-rp-permission-lifecycle={permission.lifecycle}
+          title="允许这个隔离脚本使用当前 DSH 模型生成文本；生成会消耗模型额度" onClick={() => {
+            const next = new Set(approvedGenerations)
+            next.add(permission.key)
+            writeApprovedTavernScriptGenerations(next)
+            setApprovedGenerations(next)
+            const queued = generationQueue.current.get(permission.scriptKey) ?? []
+            generationQueue.current.delete(permission.scriptKey)
+            setGenerationRequests(current => {
+              const remaining = new Map(current)
+              remaining.delete(permission.scriptKey)
+              return remaining
+            })
+            for (const request of queued) executeGeneration(
+              permission.scriptKey, request.target, request.requestId, request.mode, request.config,
+            )
+          }} style={permissionActionStyle}>允许 {script?.name || '脚本'} 调用模型
+          {permission.count > 1 ? ` (${permission.count})` : ''}</button>
+      }
+      case 'custom-generation': {
+        const { approvalKey, request } = permission
+        const script = scopedScriptByKey.get(request.scriptKey)?.script
+        return <button type="button" key={`${permission.kind}:${permission.key}`}
+          data-agent-rp-permission-kind={permission.kind} data-agent-rp-permission-lifecycle={permission.lifecycle}
+          title={`允许这个隔离脚本连接 ${request.origin} 并生成文本；生成会消耗该 API 的额度，密钥只转发给该地址`} onClick={() => {
+            const next = new Set(approvedCustomGenerations)
+            next.add(approvalKey)
+            writeApprovedTavernScriptCustomGenerations(next)
+            setApprovedCustomGenerations(next)
+            const queued = customGenerationQueue.current.get(approvalKey) ?? []
+            customGenerationQueue.current.delete(approvalKey)
+            setCustomGenerationRequests(current => {
+              const remaining = new Map(current)
+              remaining.delete(approvalKey)
+              return remaining
+            })
+            for (const item of queued) executeGeneration(
+              request.scriptKey, item.target, item.requestId, item.mode, item.config,
+            )
+          }} style={permissionActionStyle}>允许 {script?.name || '脚本'} 使用 {new URL(request.origin).hostname} 生成
+          {request.count > 1 ? ` (${request.count})` : ''}</button>
+      }
+      case 'model-list': {
+        const { approvalKey, request } = permission
+        const script = scopedScriptByKey.get(request.scriptKey)?.script
+        return <button type="button" key={`${permission.kind}:${permission.key}`}
+          data-agent-rp-permission-kind={permission.kind} data-agent-rp-permission-lifecycle={permission.lifecycle}
+          title={`允许这个隔离脚本连接 ${request.origin} 并读取模型名称；API 密钥只转发给该地址`} onClick={() => {
+            const next = new Set(approvedModels)
+            next.add(approvalKey)
+            writeApprovedTavernScriptModels(next)
+            setApprovedModels(next)
+            const queued = modelListQueue.current.get(approvalKey) ?? []
+            modelListQueue.current.delete(approvalKey)
+            setModelListRequests(current => {
+              const remaining = new Map(current)
+              remaining.delete(approvalKey)
+              return remaining
+            })
+            for (const item of queued) executeModelList(item.target, item.requestId, item.apiurl, item.key)
+          }} style={permissionActionStyle}>允许 {script?.name || '脚本'} 读取 {new URL(request.origin).hostname} 模型
+          {request.count > 1 ? ` (${request.count})` : ''}</button>
+      }
+    }
+  }
+  const startupPermissionActions = runtimePermissions
+    .filter(permission => permission.lifecycle === 'startup').map(renderPermissionAction)
+  const interactionPermissionActions = runtimePermissions
+    .filter(permission => permission.lifecycle === 'interaction').map(renderPermissionAction)
   const scriptPhases = new Map(frames.map(entry => [entry.key, tavernScriptRuntimePhase({
     hasDocument: entry.src !== undefined,
     permissionRequired: entry.requestedOrigin !== undefined,
@@ -7419,25 +7590,39 @@ function TavernScriptRuntime({
       {nativeIdentityRequests.size > 0 && nativeIdentityState !== 'ready' && <p role="status" style={{
         color: 'var(--dsw-alias-state-warning, #d6a955)', fontSize: '12px', lineHeight: 1.55, margin: 0,
       }}>请先在 DSH 设置的 Agent RP 页面创建本机身份，再确认身份请求。</p>}
-      <div style={{ display: 'grid', gap: '8px' }}>
-        {permissionActions.length === 0
-          ? <span style={{ fontSize: '12px', opacity: .62, padding: '8px 0' }}>当前没有待确认权限。</span>
-          : permissionActions}
-      </div>
+      {permissionSummary.total === 0
+        ? <span style={{ fontSize: '12px', opacity: .62, padding: '8px 0' }}>当前没有待确认权限。</span>
+        : <div style={{ display: 'grid', gap: '14px' }}>
+            {startupPermissionActions.length > 0 && <section>
+              <strong style={{ display: 'block', fontSize: '11px', marginBottom: '7px', opacity: .72 }}>
+                启动资源 · {startupPermissionActions.length}
+              </strong>
+              <div style={{ display: 'grid', gap: '8px' }}>{startupPermissionActions}</div>
+            </section>}
+            {interactionPermissionActions.length > 0 && <section>
+              <strong style={{ display: 'block', fontSize: '11px', marginBottom: '7px', opacity: .72 }}>
+                操作请求 · {interactionPermissionActions.length}
+              </strong>
+              <div style={{ display: 'grid', gap: '8px' }}>{interactionPermissionActions}</div>
+            </section>}
+          </div>}
     </section></div>}
     <div className="agent-rp-tavern-script-overlay" data-agent-rp-dialog data-agent-rp-surface="tavern-panel"
       data-agent-rp-surface-state={panelSurfaceState} aria-hidden={!panelOpen}
       data-agent-rp-tavern-total={scripts.length} data-agent-rp-tavern-ready={readyScriptCount}
-      data-agent-rp-tavern-failed={failedScriptCount} data-agent-rp-tavern-permissions={permissionActions.length}
-      data-agent-rp-tavern-awaiting-authorization={permissionActions.length}
-      data-agent-rp-tavern-permission-script={runtimeResourcePermissions.filter(permission => permission.kind === 'script').length}
-      data-agent-rp-tavern-permission-image={runtimeResourcePermissions.filter(permission => permission.kind === 'image').length}
-      data-agent-rp-tavern-permission-frame={runtimeResourcePermissions.filter(permission => permission.kind === 'frame').length}
-      data-agent-rp-tavern-permission-identity={nativeIdentityRequests.size}
-      data-agent-rp-tavern-permission-external-window={externalWindowRequests.size}
-      data-agent-rp-tavern-permission-generation={generationRequests.size}
-      data-agent-rp-tavern-permission-custom-generation={customGenerationRequests.size}
-      data-agent-rp-tavern-permission-model-list={modelListRequests.size}
+      data-agent-rp-tavern-failed={failedScriptCount} data-agent-rp-tavern-permissions={permissionSummary.total}
+      data-agent-rp-tavern-awaiting-authorization={permissionSummary.total}
+      data-agent-rp-tavern-startup-permissions={permissionSummary.startup}
+      data-agent-rp-tavern-interaction-permissions={permissionSummary.interaction}
+      data-agent-rp-tavern-permission-state={permissionSummary.state}
+      data-agent-rp-tavern-permission-script={permissionSummary.counts.script}
+      data-agent-rp-tavern-permission-image={permissionSummary.counts.image}
+      data-agent-rp-tavern-permission-frame={permissionSummary.counts.frame}
+      data-agent-rp-tavern-permission-identity={permissionSummary.counts.identity}
+      data-agent-rp-tavern-permission-external-window={permissionSummary.counts['external-window']}
+      data-agent-rp-tavern-permission-generation={permissionSummary.counts.generation}
+      data-agent-rp-tavern-permission-custom-generation={permissionSummary.counts['custom-generation']}
+      data-agent-rp-tavern-permission-model-list={permissionSummary.counts['model-list']}
       data-agent-rp-native-identity-pending={nativeIdentityRequests.size}
       {...(externalWindowPhase === undefined ? {} : { 'data-agent-rp-external-window-phase': externalWindowPhase })}
       data-agent-rp-tavern-generation-queued={queuedGenerationCount}
@@ -7560,13 +7745,15 @@ function TavernScriptRuntime({
         color: 'inherit', cursor: readyScriptIds.has(entry.key) ? 'pointer' : 'wait', font: 'inherit',
         fontSize: '11px', opacity: readyScriptIds.has(entry.key) ? .72 : .4, padding: '3px 7px',
       }}>{button.name}</button>)}
-    {permissionActions.length > 0 && <button type="button" data-agent-rp-action="open-tavern-permissions"
-      title={`${permissionActions.length} 项酒馆脚本权限待确认`}
+    {permissionSummary.total > 0 && <button type="button" data-agent-rp-action="open-tavern-permissions"
+      title={permissionSummary.startup > 0
+        ? `${permissionSummary.startup} 项启动资源、${permissionSummary.interaction} 项操作请求待确认`
+        : `${permissionSummary.interaction} 项操作请求待确认`}
       onClick={() => { setPermissionOpen(true) }} style={{
         background: 'color-mix(in srgb, var(--dsw-alias-state-warning, #d5a64c) 12%, transparent)',
         border: '1px solid var(--dsw-alias-state-warning, #9f7934)', borderRadius: '7px', color: 'inherit',
         cursor: 'pointer', font: 'inherit', fontSize: '11px', padding: '3px 7px',
-      }}>权限 {permissionActions.length}</button>}
+      }}>{permissionSummary.startup > 0 ? '启动权限' : '操作请求'} {permissionSummary.total}</button>}
     {(readyScriptIds.size < scripts.length || failures.length > 0) && <span
       title={failures.length === 0 ? '正在启动酒馆脚本' : failures.map(entry => `${entry.script.name}：${entry.error}`).join('\n')}
       style={{
@@ -8706,7 +8893,10 @@ export function apply(ctx: ClientContext): void {
     }
     return { entry: value.entry, outcome: value.outcome }
   }
-  const launchRoleplaySession = async (request: AgentRpSessionLaunchRequest): Promise<SessionId> => {
+  const launchRoleplaySession = async (
+    request: AgentRpSessionLaunchRequest,
+    resourcePermissions?: AgentRpSessionResourcePermissions,
+  ): Promise<SessionId> => {
     const response = await fetch(AGENT_RP_SESSION_PATH, {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -8726,6 +8916,9 @@ export function apply(ctx: ClientContext): void {
     await (ctx.sessions as unknown as { refresh(): Promise<void> }).refresh()
     if (ctx.sessions.list.getSnapshot().byId[sessionId] === undefined) {
       throw new Error('角色会话已创建，但客户端尚未收到它；请刷新页面后重试')
+    }
+    if (resourcePermissions !== undefined) {
+      writeAgentRpSessionResourcePermissions(window.sessionStorage, String(sessionId), resourcePermissions)
     }
     ctx.sessions.open(sessionId)
     return sessionId
@@ -8769,6 +8962,7 @@ export function apply(ctx: ClientContext): void {
     persona?: SessionPersonaSnapshot,
     presetId?: string,
     memory?: 'copy-active',
+    resourcePermissions?: AgentRpSessionResourcePermissions,
   ): Promise<void> => {
     await launchRoleplaySession({
       format: 0,
@@ -8779,7 +8973,7 @@ export function apply(ctx: ClientContext): void {
       ...(persona === undefined ? {} : { persona }),
       ...(presetId === undefined ? {} : { presetId }),
       ...(memory === undefined ? {} : { memory }),
-    })
+    }, resourcePermissions)
   }
   const archiveConsumedBlankSession = async (sessionId: SessionId): Promise<void> => {
     if (ctx.sessions.list.getSnapshot().byId[sessionId]?.blank !== true) return
@@ -8795,10 +8989,12 @@ export function apply(ctx: ClientContext): void {
     greetingIndex: number,
     persona?: SessionPersonaSnapshot,
     presetId?: string,
+    _memory?: 'copy-active',
+    resourcePermissions?: AgentRpSessionResourcePermissions,
   ): Promise<void> => {
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
     if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话选择角色')
-    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId)
+    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId, undefined, resourcePermissions)
     await archiveConsumedBlankSession(sessionId)
   }
   const startCharacterFromCurrentSession = async (
@@ -8808,8 +9004,9 @@ export function apply(ctx: ClientContext): void {
     persona?: SessionPersonaSnapshot,
     presetId?: string,
     memory?: 'copy-active',
+    resourcePermissions?: AgentRpSessionResourcePermissions,
   ): Promise<void> => {
-    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId, memory)
+    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId, memory, resourcePermissions)
   }
   const migrateChat = async (
     sourceSessionId: SessionId,

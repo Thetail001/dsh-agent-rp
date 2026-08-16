@@ -111,6 +111,9 @@ export interface AgentRpBrowserCompatibilitySnapshot {
       readonly ready: number
       readonly failed: number
       readonly pendingPermissions: number
+      readonly startupPermissions: number
+      readonly interactionPermissions: number
+      readonly permissionState: 'settled' | 'startup-blocked' | 'interaction-pending' | 'unknown'
       readonly permissions: {
         readonly script: number
         readonly image: number
@@ -141,6 +144,8 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly status: string
     readonly launch: string
     readonly startReadiness?: string
+    readonly startAction?: string
+    readonly permissionDuration: 'session' | 'remember' | 'unknown'
     readonly scripts: number
     readonly cardResources: number
     readonly pendingCardPermissions: number
@@ -287,6 +292,10 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     }
     const tavernFailed = tavern === null ? 0 : integer(tavern, 'data-agent-rp-tavern-failed')
     if (tavernFailed > 0) issues.add('tavern-runtime-failed')
+    const tavernPermissionState = tavern?.getAttribute('data-agent-rp-tavern-permission-state')
+    const normalizedTavernPermissionState = tavernPermissionState === 'settled'
+      || tavernPermissionState === 'startup-blocked' || tavernPermissionState === 'interaction-pending'
+      ? tavernPermissionState : 'unknown'
     const worldEngineFailures = {
       regexRuntimeUnavailable: integer(status, 'data-agent-rp-world-engine-regex-runtime-unavailable'),
       regexInvalid: integer(status, 'data-agent-rp-world-engine-regex-invalid'),
@@ -332,6 +341,9 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
         ready: integer(tavern, 'data-agent-rp-tavern-ready'),
         failed: tavernFailed,
         pendingPermissions: integer(tavern, 'data-agent-rp-tavern-permissions'),
+        startupPermissions: integer(tavern, 'data-agent-rp-tavern-startup-permissions'),
+        interactionPermissions: integer(tavern, 'data-agent-rp-tavern-interaction-permissions'),
+        permissionState: normalizedTavernPermissionState,
         permissions: {
           script: integer(tavern, 'data-agent-rp-tavern-permission-script'),
           image: integer(tavern, 'data-agent-rp-tavern-permission-image'),
@@ -369,9 +381,23 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     && (session.tavern === undefined || session.tavern.pendingPermissions === 0 || tavernPermissionLaunchers > 0)
   )
   if (!interactiveEntriesPresent) issues.add('interactive-entry-missing')
+  const expectedTavernPermissionState = session?.tavern === undefined ? undefined
+    : session.tavern.startupPermissions > 0 ? 'startup-blocked'
+      : session.tavern.interactionPermissions > 0 ? 'interaction-pending' : 'settled'
+  const expectedTavernStartupPermissions = session?.tavern === undefined ? undefined
+    : session.tavern.permissions.script + session.tavern.permissions.image + session.tavern.permissions.frame
+  const expectedTavernInteractionPermissions = session?.tavern === undefined ? undefined
+    : session.tavern.permissions.identity + session.tavern.permissions.externalWindow
+      + session.tavern.permissions.generation + session.tavern.permissions.customGeneration
+      + session.tavern.permissions.modelList
   const tavernPermissionsConsistent = session?.tavern === undefined
-    || Object.values(session.tavern.permissions).reduce((total, count) => total + count, 0)
+    || (Object.values(session.tavern.permissions).reduce((total, count) => total + count, 0)
       === session.tavern.pendingPermissions
+      && session.tavern.startupPermissions + session.tavern.interactionPermissions
+        === session.tavern.pendingPermissions
+      && session.tavern.startupPermissions === expectedTavernStartupPermissions
+      && session.tavern.interactionPermissions === expectedTavernInteractionPermissions
+      && session.tavern.permissionState === expectedTavernPermissionState)
   if (!tavernPermissionsConsistent) issues.add('tavern-permission-count-mismatch')
 
   let preflight: AgentRpBrowserCompatibilitySnapshot['preflight']
@@ -388,12 +414,20 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     const launch = value(preflightElement, 'data-agent-rp-resource-launch')
     const failed = integer(preflightElement, 'data-agent-rp-resource-preflight-failed')
     const startReadiness = startElement?.getAttribute('data-agent-rp-start-readiness') ?? undefined
+    const startAction = startElement?.getAttribute('data-agent-rp-start-action') ?? undefined
+    const permissionDurationValue = value(preflightElement, 'data-agent-rp-resource-permission-duration')
+    const permissionDuration = permissionDurationValue === 'session' || permissionDurationValue === 'remember'
+      ? permissionDurationValue : 'unknown'
     preflightConsistent = pendingPermissions === pendingCardPermissions + pendingScriptPermissions
       && pendingScriptPermissions === pendingScriptOrigins + pendingImageOrigins + pendingFrameOrigins
+      && permissionDuration !== 'unknown'
     if (!preflightConsistent) issues.add('preflight-count-mismatch')
     const expectedLaunch = statusValue === 'loading' ? 'checking'
       : pendingPermissions > 0 ? 'approval-required' : 'ready'
-    if (launch !== expectedLaunch || (startReadiness !== undefined && startReadiness !== launch)) {
+    const expectedStartAction = expectedLaunch === 'checking' ? 'checking'
+      : expectedLaunch === 'approval-required' ? 'approve-and-start' : 'start'
+    if (launch !== expectedLaunch || (startReadiness !== undefined && startReadiness !== launch)
+      || (startElement !== null && startAction !== expectedStartAction)) {
       preflightConsistent = false
       issues.add('preflight-launch-mismatch')
     }
@@ -409,6 +443,8 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       status: statusValue,
       launch,
       ...(startReadiness === undefined ? {} : { startReadiness }),
+      ...(startAction === undefined ? {} : { startAction }),
+      permissionDuration,
       scripts: integer(preflightElement, 'data-agent-rp-resource-preflight-scripts'),
       cardResources: integer(preflightElement, 'data-agent-rp-resource-preflight-card-resources'),
       pendingCardPermissions,
@@ -539,6 +575,9 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-tavern-ready',
       'data-agent-rp-tavern-failed',
       'data-agent-rp-tavern-permissions',
+      'data-agent-rp-tavern-startup-permissions',
+      'data-agent-rp-tavern-interaction-permissions',
+      'data-agent-rp-tavern-permission-state',
       'data-agent-rp-tavern-permission-script',
       'data-agent-rp-tavern-permission-image',
       'data-agent-rp-tavern-permission-frame',
@@ -568,7 +607,9 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-resource-preflight-frame-origins',
       'data-agent-rp-resource-preflight-permissions',
       'data-agent-rp-resource-preflight-failed',
+      'data-agent-rp-resource-permission-duration',
       'data-agent-rp-start-readiness',
+      'data-agent-rp-start-action',
       'data-agent-rp-action',
       'data-agent-rp-surface',
       'data-agent-rp-surface-state',

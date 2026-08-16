@@ -13,6 +13,44 @@ const tavernScriptModelApprovalsKey = 'dsh.agent-rp.tavern-script-model-approval
 /** Script-tree namespace that owns one isolated Tavern Helper script. */
 export type TavernPermissionScope = 'global' | 'preset' | 'character'
 
+/** Permission categories exposed by the isolated Tavern Helper runtime. */
+export const TAVERN_PERMISSION_KINDS = [
+  'script',
+  'image',
+  'frame',
+  'identity',
+  'external-window',
+  'generation',
+  'custom-generation',
+  'model-list',
+] as const
+
+/** One permission category exposed by the isolated Tavern Helper runtime. */
+export type TavernPermissionKind = typeof TAVERN_PERMISSION_KINDS[number]
+
+/** Whether a request gates script startup or waits for an explicit interaction. */
+export type TavernPermissionLifecycle = 'startup' | 'interaction'
+
+/** Minimum fields shared by every pending Tavern Helper permission request. */
+export interface TavernPermissionRequest {
+  readonly kind: TavernPermissionKind
+  readonly key: string
+}
+
+/** A pending request annotated with its authoritative lifecycle. */
+export type PlannedTavernPermission<T extends TavernPermissionRequest = TavernPermissionRequest> = T & {
+  readonly lifecycle: TavernPermissionLifecycle
+}
+
+/** Content-free counts derived from one exact permission plan. */
+export interface TavernPermissionPlanSummary {
+  readonly total: number
+  readonly startup: number
+  readonly interaction: number
+  readonly counts: Readonly<Record<TavernPermissionKind, number>>
+  readonly state: 'settled' | 'startup-blocked' | 'interaction-pending'
+}
+
 /** Resource kinds whose grants can be planned before script execution. */
 export type TavernScriptResourcePermissionKind = 'script' | 'image' | 'frame'
 
@@ -44,6 +82,55 @@ export function tavernPermissionOwnerId(
     return sourceId.slice('library:'.length)
   }
   return sourceId
+}
+
+/** Classify whether one permission can prevent a script from starting. */
+export function tavernPermissionLifecycle(kind: TavernPermissionKind): TavernPermissionLifecycle {
+  return kind === 'script' || kind === 'image' || kind === 'frame' ? 'startup' : 'interaction'
+}
+
+/** Deduplicate pending permissions and attach their lifecycle in deterministic order. */
+export function tavernPermissionPlan<T extends TavernPermissionRequest>(
+  requests: readonly T[],
+): readonly PlannedTavernPermission<T>[] {
+  const plan = new Map<string, PlannedTavernPermission<T>>()
+  for (const request of requests) {
+    const key = `${request.kind}\u0000${request.key}`
+    if (!plan.has(key)) plan.set(key, { ...request, lifecycle: tavernPermissionLifecycle(request.kind) })
+  }
+  return [...plan.values()].sort((left, right) =>
+    `${left.lifecycle === 'startup' ? '0' : '1'}\u0000${left.kind}\u0000${left.key}`
+      .localeCompare(`${right.lifecycle === 'startup' ? '0' : '1'}\u0000${right.kind}\u0000${right.key}`))
+}
+
+/** Summarize one permission plan without exposing request keys or payloads. */
+export function summarizeTavernPermissionPlan(
+  permissions: readonly PlannedTavernPermission[],
+): TavernPermissionPlanSummary {
+  const counts: Record<TavernPermissionKind, number> = {
+    script: 0,
+    image: 0,
+    frame: 0,
+    identity: 0,
+    'external-window': 0,
+    generation: 0,
+    'custom-generation': 0,
+    'model-list': 0,
+  }
+  let startup = 0
+  let interaction = 0
+  for (const permission of permissions) {
+    counts[permission.kind] += 1
+    if (permission.lifecycle === 'startup') startup += 1
+    else interaction += 1
+  }
+  return {
+    total: permissions.length,
+    startup,
+    interaction,
+    counts,
+    state: startup > 0 ? 'startup-blocked' : interaction > 0 ? 'interaction-pending' : 'settled',
+  }
 }
 
 /** Whether a future Session can start without bypassing its resource preflight. */
@@ -243,6 +330,17 @@ export function tavernScriptFrameApprovalKey(
   origin: string,
 ): string {
   return JSON.stringify([characterId, presetId ?? null, scope, scriptId, origin])
+}
+
+/** Serialize a persistent interaction grant through the same stable Session owners. */
+export function tavernScriptInteractionApprovalKey(
+  characterId: string,
+  presetId: string | undefined,
+  kind: 'generation' | 'custom-generation' | 'model-list',
+  scriptKey: string,
+  origin?: string,
+): string {
+  return JSON.stringify([characterId, presetId ?? null, kind, scriptKey, origin ?? null])
 }
 
 /** Resolve pending script resources through the same keys before and after Session launch. */

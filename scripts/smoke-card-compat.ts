@@ -8,11 +8,14 @@ import { pathToFileURL } from 'node:url'
 import { chromium, type BrowserContext, type Page } from 'playwright-core'
 import {
   AGENT_RP_COMPAT_SMOKE_EXIT,
+  classifyAgentRpSmokeConsoleError,
   runAgentRpBrowserCompatibilitySmoke,
   runnerFailure,
   type AgentRpCompatSmokeAction,
+  type AgentRpCompatSmokeConsoleErrorKind,
   type AgentRpCompatSmokeDecision,
   type AgentRpCompatSmokeDriver,
+  type AgentRpCompatSmokePermissionDuration,
   type AgentRpCompatSmokeReport,
   type AgentRpCompatSmokeStage,
 } from '../src/compat-smoke.ts'
@@ -25,6 +28,7 @@ interface CliOptions {
   readonly timeoutMs: number
   readonly headed: boolean
   readonly approvePreflight: boolean
+  readonly permissionDuration: AgentRpCompatSmokePermissionDuration
   readonly browserPath?: string
   readonly profilePath: string
 }
@@ -45,6 +49,7 @@ function usage(): string {
   return [
     'Usage: pnpm run smoke:compat -- --card <card.png|json|charx> [--preset <preset.json>]',
     '       [--url http://127.0.0.1:3091/] [--timeout-ms 90000] [--headed] [--approve-preflight]',
+    '       [--permission-duration session|remember]',
     '       [--browser <chromium executable>] [--profile <dedicated browser profile>]',
   ].join('\n')
 }
@@ -76,6 +81,13 @@ function parseArgs(argv: readonly string[]): CliOptions {
     throw new SmokeCommandError('runner-failed')
   }
   const presetPath = argument(argv, '--preset')
+  const rawPermissionDuration = argument(argv, '--permission-duration') ?? 'session'
+  if (rawPermissionDuration !== 'session' && rawPermissionDuration !== 'remember') {
+    throw new SmokeCommandError('runner-failed')
+  }
+  if (argv.includes('--permission-duration') && !argv.includes('--approve-preflight')) {
+    throw new SmokeCommandError('runner-failed')
+  }
   return {
     cardPath: resolve(cardPath),
     ...(presetPath === undefined ? {} : { presetPath: resolve(presetPath) }),
@@ -83,6 +95,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
     timeoutMs,
     headed: argv.includes('--headed'),
     approvePreflight: argv.includes('--approve-preflight'),
+    permissionDuration: rawPermissionDuration,
     ...(argument(argv, '--browser') === undefined ? {} : { browserPath: resolve(argument(argv, '--browser')!) }),
     profilePath: resolve(argument(argv, '--profile') ?? join(homedir(), '.dsh', 'agent-rp-smoke-browser')),
   }
@@ -250,11 +263,6 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
     throw new SmokeCommandError('interaction-missing')
   }
 
-  async approvePreflightResources(): Promise<void> {
-    await this.page.locator('[data-agent-rp-action="approve-preflight-resources"]')
-      .click({ timeout: this.timeoutMs })
-  }
-
   async selectCharacter(characterId: string): Promise<void> {
     await this.page.waitForFunction(expected => [...document.querySelectorAll('[data-agent-rp-character-id]')]
       .some(element => element.getAttribute('data-agent-rp-character-id') === expected), characterId, {
@@ -279,8 +287,20 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
       ?.getAttribute('data-agent-rp-selected-preset-id') === expected, presetId, { timeout: this.timeoutMs })
   }
 
+  async selectPermissionDuration(duration: AgentRpCompatSmokePermissionDuration): Promise<void> {
+    await this.page.locator(`[data-agent-rp-permission-duration="${duration}"]`)
+      .click({ timeout: this.timeoutMs })
+    await this.page.waitForFunction(expected => document
+      .querySelector('[data-agent-rp-resource-permission-duration]')
+      ?.getAttribute('data-agent-rp-resource-permission-duration') === expected, duration, {
+      timeout: this.timeoutMs,
+    })
+  }
+
   async startSession(): Promise<void> {
-    await this.page.locator('[data-agent-rp-start-readiness="ready"]').click({ timeout: this.timeoutMs })
+    await this.page.locator(
+      '[data-agent-rp-start-action="approve-and-start"], [data-agent-rp-start-action="start"]',
+    ).click({ timeout: this.timeoutMs })
     await this.page.waitForFunction(() => {
       const library = document.querySelector('[data-agent-rp-surface="character-library"]')
       return library === null || library.querySelector('[role="alert"]') !== null
@@ -314,6 +334,11 @@ async function main(argv: readonly string[]): Promise<void> {
   let presetOutcome: PresetImportOutcome = 'not-attempted'
   let reachable = false
   let consoleErrors = 0
+  const consoleErrorKinds: Record<AgentRpCompatSmokeConsoleErrorKind, number> = {
+    'resource-load': 0,
+    'security-policy': 0,
+    runtime: 0,
+  }
   let pageErrors = 0
   let screenshot = false
   let snapshot: AgentRpBrowserCompatibilitySnapshot | undefined
@@ -348,7 +373,11 @@ async function main(argv: readonly string[]): Promise<void> {
       viewport: { width: 1440, height: 1000 },
     })
     page = context.pages()[0] ?? await context.newPage()
-    page.on('console', message => { if (message.type() === 'error') consoleErrors += 1 })
+    page.on('console', message => {
+      if (message.type() !== 'error') return
+      consoleErrors += 1
+      consoleErrorKinds[classifyAgentRpSmokeConsoleError(message.text())] += 1
+    })
     page.on('pageerror', () => { pageErrors += 1 })
     await page.goto(options.url.href, { waitUntil: 'domcontentloaded', timeout: options.timeoutMs })
     if (new URL(page.url()).origin !== options.url.origin) throw new SmokeCommandError('client-load-failed')
@@ -359,6 +388,7 @@ async function main(argv: readonly string[]): Promise<void> {
       timeoutMs: options.timeoutMs,
       waitForManualApproval: options.headed,
       approvePreflight: options.approvePreflight,
+      permissionDuration: options.permissionDuration,
     })
     decision = result.decision
     snapshot = result.snapshot
@@ -385,7 +415,7 @@ async function main(argv: readonly string[]): Promise<void> {
     ...decision,
     server: { mode: 'external', reachable },
     imports: { card: cardOutcome, preset: presetOutcome },
-    browser: { consoleErrors, pageErrors, failureScreenshot: screenshot },
+    browser: { consoleErrors, consoleErrorKinds, pageErrors, failureScreenshot: screenshot },
     timingsMs,
     ...(snapshot === undefined ? {} : { snapshot }),
   }

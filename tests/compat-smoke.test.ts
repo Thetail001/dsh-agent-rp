@@ -3,11 +3,19 @@ import test from 'node:test'
 import {
   classifyAgentRpPreflight,
   classifyAgentRpRuntime,
+  classifyAgentRpSmokeConsoleError,
   runAgentRpBrowserCompatibilitySmoke,
   type AgentRpCompatSmokeAction,
   type AgentRpCompatSmokeDriver,
+  type AgentRpCompatSmokePermissionDuration,
 } from '../src/compat-smoke.ts'
 import type { AgentRpBrowserCompatibilitySnapshot } from '../src/client/compatibility-diagnostic.ts'
+
+test('classifies browser console failures without retaining their private text', () => {
+  assert.equal(classifyAgentRpSmokeConsoleError('Failed to load resource: net::ERR_FAILED'), 'resource-load')
+  assert.equal(classifyAgentRpSmokeConsoleError('Refused to connect because of Content Security Policy'), 'security-policy')
+  assert.equal(classifyAgentRpSmokeConsoleError('Unhandled application failure'), 'runtime')
+})
 
 function browserSnapshot(options: {
   readonly preflight?: 'loading' | 'approval-required' | 'ready' | 'error'
@@ -17,6 +25,7 @@ function browserSnapshot(options: {
   readonly sessionSettings?: 'closed' | 'open'
   readonly tavernPanel?: 'closed' | 'mobile' | 'script'
   readonly worldInfoManager?: 'closed' | 'open'
+  readonly permissionDuration?: AgentRpCompatSmokePermissionDuration
 } = {}): AgentRpBrowserCompatibilitySnapshot {
   const runtime = options.runtime
   const issues = runtime === 'empty' ? ['card-frame-content-empty'] as const
@@ -52,6 +61,7 @@ function browserSnapshot(options: {
       tavern: {
         scripts: 1, frames: 1, ready: runtime === 'pending' ? 0 : 1, failed: 0,
         pendingPermissions: 0, queuedGenerations: 0, queuedModelLists: 0,
+        startupPermissions: 0, interactionPermissions: 0, permissionState: 'settled',
         permissions: {
           script: 0, image: 0, frame: 0, identity: 0, externalWindow: 0,
           generation: 0, customGeneration: 0, modelList: 0,
@@ -73,6 +83,9 @@ function browserSnapshot(options: {
         : preflight === 'approval-required' ? 'approval-required' : 'ready',
       startReadiness: preflight === 'loading' ? 'checking'
         : preflight === 'approval-required' ? 'approval-required' : 'ready',
+      startAction: preflight === 'loading' ? 'checking'
+        : preflight === 'approval-required' ? 'approve-and-start' : 'start',
+      permissionDuration: options.permissionDuration ?? 'remember',
       scripts: 1,
       cardResources: 2,
       pendingCardPermissions: preflight === 'approval-required' ? 1 : 0,
@@ -130,6 +143,7 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
   private worldInfoManager: 'closed' | 'open' = 'closed'
   private selected = false
   private launched = false
+  permissionDuration: AgentRpCompatSmokePermissionDuration = 'remember'
   readonly approvalAttempts: number[] = []
   readonly actions: AgentRpCompatSmokeAction[] = []
 
@@ -146,7 +160,10 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
       && (!this.approvalClears || this.approvalAttempts.length === 0)
     return Promise.resolve(browserSnapshot({
       ...(this.selected && !this.launched
-        ? { preflight: approvalRequired ? 'approval-required' as const : 'ready' as const }
+        ? {
+            preflight: approvalRequired ? 'approval-required' as const : 'ready' as const,
+            permissionDuration: this.permissionDuration,
+          }
         : {}),
       ...(this.launched ? { runtime: 'healthy' as const } : {}),
       characterLibrary: this.characterLibrary,
@@ -180,11 +197,6 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
     return Promise.resolve()
   }
 
-  approvePreflightResources(): Promise<void> {
-    this.approvalAttempts.push(this.approvalAttempts.length + 1)
-    return Promise.resolve()
-  }
-
   selectCharacter(characterId: string): Promise<void> {
     assert.equal(characterId, 'character-id')
     this.selected = true
@@ -196,7 +208,16 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
     return Promise.resolve()
   }
 
+  selectPermissionDuration(duration: AgentRpCompatSmokePermissionDuration): Promise<void> {
+    this.permissionDuration = duration
+    return Promise.resolve()
+  }
+
   startSession(): Promise<void> {
+    if (this.preflightNeedsApproval && this.approvalAttempts.length === 0) {
+      this.approvalAttempts.push(1)
+      if (!this.approvalClears) return Promise.reject(new Error('permission remains pending'))
+    }
     this.characterLibrary = 'closed'
     this.launched = true
     return Promise.resolve()
@@ -240,16 +261,27 @@ test('explicit preflight approval continues through the healthy lifecycle', asyn
 
   assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
   assert.equal(driver.approvalAttempts.length, 1)
+  assert.equal(driver.permissionDuration, 'session')
 })
 
-test('explicit preflight approval is attempted only once when permission remains pending', async () => {
+test('explicit preflight approval can retain exact grants for the card', async () => {
+  const driver = new FakeSmokeDriver(true)
+  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
+    characterId: 'character-id', timeoutMs: 100, approvePreflight: true, permissionDuration: 'remember',
+  })
+
+  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
+  assert.equal(driver.permissionDuration, 'remember')
+})
+
+test('approve-and-start reports one launch failure when permission persistence fails', async () => {
   const driver = new FakeSmokeDriver(true, false)
   const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
     characterId: 'character-id', timeoutMs: 5, pollMs: 1, approvePreflight: true,
   })
 
   assert.deepEqual(result.decision, {
-    status: 'manual-required', stage: 'approval-required', exitCode: 2,
+    status: 'failed', stage: 'session-launch-failed', exitCode: 3,
   })
   assert.equal(driver.approvalAttempts.length, 1)
 })

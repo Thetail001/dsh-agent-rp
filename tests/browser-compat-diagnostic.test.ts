@@ -79,6 +79,9 @@ test('collects one content-free healthy browser snapshot with expected permissio
       'data-agent-rp-tavern-ready': '2',
       'data-agent-rp-tavern-failed': '0',
       'data-agent-rp-tavern-permissions': '1',
+      'data-agent-rp-tavern-startup-permissions': '1',
+      'data-agent-rp-tavern-interaction-permissions': '0',
+      'data-agent-rp-tavern-permission-state': 'startup-blocked',
       'data-agent-rp-tavern-permission-frame': '1',
       'data-agent-rp-native-identity-pending': '2',
       'data-agent-rp-tavern-generation-queued': '0',
@@ -100,6 +103,7 @@ test('collects one content-free healthy browser snapshot with expected permissio
     })],
     '[data-agent-rp-resource-preflight]': [new DiagnosticElement({
       'data-agent-rp-resource-preflight': 'permission-required',
+      'data-agent-rp-resource-permission-duration': 'remember',
       'data-agent-rp-resource-launch': 'approval-required',
       'data-agent-rp-resource-preflight-scripts': '2',
       'data-agent-rp-resource-preflight-card-resources': '7',
@@ -113,6 +117,7 @@ test('collects one content-free healthy browser snapshot with expected permissio
     })],
     '[data-agent-rp-start-readiness]': [new DiagnosticElement({
       'data-agent-rp-start-readiness': 'approval-required',
+      'data-agent-rp-start-action': 'approve-and-start',
     })],
   }))
 
@@ -131,6 +136,11 @@ test('collects one content-free healthy browser snapshot with expected permissio
   })
   assert.deepEqual(report.issues, [])
   assert.equal(report.session?.tavern?.pendingPermissions, 1)
+  assert.deepEqual(report.session?.tavern === undefined ? undefined : {
+    startup: report.session.tavern.startupPermissions,
+    interaction: report.session.tavern.interactionPermissions,
+    state: report.session.tavern.permissionState,
+  }, { startup: 1, interaction: 0, state: 'startup-blocked' })
   assert.deepEqual(report.session?.tavern?.permissions, {
     script: 0, image: 0, frame: 1, identity: 0, externalWindow: 0,
     generation: 0, customGeneration: 0, modelList: 0,
@@ -178,6 +188,9 @@ test('reports stable issue codes for expanded sandboxes and inconsistent lifecyc
       'data-agent-rp-tavern-ready': '0',
       'data-agent-rp-tavern-failed': '1',
       'data-agent-rp-tavern-permissions': '0',
+      'data-agent-rp-tavern-startup-permissions': '0',
+      'data-agent-rp-tavern-interaction-permissions': '0',
+      'data-agent-rp-tavern-permission-state': 'settled',
     })],
     ...stableInteractionSelectors,
     '[data-agent-rp-surface="tavern-panel"]': [new DiagnosticElement({
@@ -194,6 +207,7 @@ test('reports stable issue codes for expanded sandboxes and inconsistent lifecyc
     })],
     '[data-agent-rp-resource-preflight]': [new DiagnosticElement({
       'data-agent-rp-resource-preflight': 'permission-required',
+      'data-agent-rp-resource-permission-duration': 'remember',
       'data-agent-rp-resource-launch': 'ready',
       'data-agent-rp-resource-preflight-card-permissions': '1',
       'data-agent-rp-resource-preflight-script-permissions': '1',
@@ -202,6 +216,7 @@ test('reports stable issue codes for expanded sandboxes and inconsistent lifecyc
     })],
     '[data-agent-rp-start-readiness]': [new DiagnosticElement({
       'data-agent-rp-start-readiness': 'ready',
+      'data-agent-rp-start-action': 'start',
     })],
   }))
 
@@ -360,6 +375,9 @@ test('reports missing stable interaction entries without reading labels or conte
     '[data-agent-rp-tavern-total]': [new DiagnosticElement({
       'data-agent-rp-tavern-total': '1',
       'data-agent-rp-tavern-ready': '1',
+      'data-agent-rp-tavern-startup-permissions': '0',
+      'data-agent-rp-tavern-interaction-permissions': '0',
+      'data-agent-rp-tavern-permission-state': 'settled',
     })],
   }))
 
@@ -405,11 +423,13 @@ test('distinguishes a failed preflight request from consistent permission waitin
   const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
     '[data-agent-rp-resource-preflight]': [new DiagnosticElement({
       'data-agent-rp-resource-preflight': 'error',
+      'data-agent-rp-resource-permission-duration': 'remember',
       'data-agent-rp-resource-launch': 'ready',
       'data-agent-rp-resource-preflight-permissions': '0',
     })],
     '[data-agent-rp-start-readiness]': [new DiagnosticElement({
       'data-agent-rp-start-readiness': 'ready',
+      'data-agent-rp-start-action': 'start',
     })],
   }))
 
@@ -431,5 +451,26 @@ test('rejects a runtime permission total without matching content-free categorie
   }))
 
   assert.equal(report.checks.tavernPermissionsConsistent, false)
+  assert.deepEqual(report.issues, ['tavern-permission-count-mismatch'])
+})
+
+test('rejects permission lifecycle totals that disguise an interaction as startup work', () => {
+  const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    '[data-agent-rp-status]': [new DiagnosticElement(capabilityAttributes)],
+    '[data-agent-rp-tavern-total]': [new DiagnosticElement({
+      'data-agent-rp-tavern-total': '1',
+      'data-agent-rp-tavern-ready': '1',
+      'data-agent-rp-tavern-failed': '0',
+      'data-agent-rp-tavern-permissions': '1',
+      'data-agent-rp-tavern-permission-generation': '1',
+      'data-agent-rp-tavern-startup-permissions': '1',
+      'data-agent-rp-tavern-interaction-permissions': '0',
+      'data-agent-rp-tavern-permission-state': 'startup-blocked',
+    })],
+    ...stableInteractionSelectors,
+  }))
+
+  assert.equal(report.checks.tavernPermissionsConsistent, false)
+  assert.equal(report.session?.tavern?.permissionState, 'startup-blocked')
   assert.deepEqual(report.issues, ['tavern-permission-count-mismatch'])
 })

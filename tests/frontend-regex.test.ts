@@ -30,10 +30,13 @@ import {
   pendingTavernScriptResourcePermissions,
   tavernPreflightApprovals,
   tavernPreflightLaunchPhase,
+  tavernPermissionPlan,
   tavernPermissionOwnerId,
   tavernScriptFrameApprovalKey,
   tavernScriptImageApprovalKey,
+  tavernScriptInteractionApprovalKey,
   tavernScriptOriginApprovalKey,
+  summarizeTavernPermissionPlan,
 } from '../src/client/tavern-permission.ts'
 import {
   AI_OUTPUT_PLACEMENT,
@@ -892,6 +895,39 @@ test('shares one pending resource plan between preflight and active scripts', ()
       'card-a', 'preset-a', 'character', 'resource-script', 'https://frames.example.test',
     ),
   }])
+})
+
+test('derives one deduplicated startup and interaction permission lifecycle', () => {
+  const plan = tavernPermissionPlan([
+    { kind: 'generation', key: 'generation-a', payload: 'first' },
+    { kind: 'frame', key: 'frame-a', payload: 'frame' },
+    { kind: 'generation', key: 'generation-a', payload: 'duplicate' },
+    { kind: 'identity', key: 'identity-a', payload: 'identity' },
+  ] as const)
+
+  assert.deepEqual(plan, [
+    { kind: 'frame', key: 'frame-a', payload: 'frame', lifecycle: 'startup' },
+    { kind: 'generation', key: 'generation-a', payload: 'first', lifecycle: 'interaction' },
+    { kind: 'identity', key: 'identity-a', payload: 'identity', lifecycle: 'interaction' },
+  ])
+  assert.deepEqual(summarizeTavernPermissionPlan(plan), {
+    total: 3,
+    startup: 1,
+    interaction: 2,
+    counts: {
+      script: 0, image: 0, frame: 1, identity: 1, 'external-window': 0,
+      generation: 1, 'custom-generation': 0, 'model-list': 0,
+    },
+    state: 'startup-blocked',
+  })
+  assert.equal(
+    tavernScriptInteractionApprovalKey(
+      'card-a', 'preset-a', 'model-list', 'character\u0000script-a', 'https://models.example.test',
+    ),
+    JSON.stringify([
+      'card-a', 'preset-a', 'model-list', 'character\u0000script-a', 'https://models.example.test',
+    ]),
+  )
 })
 
 test('keeps Session launch behind resource discovery and exact approvals', () => {

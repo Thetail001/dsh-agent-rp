@@ -38,6 +38,9 @@ export type AgentRpCompatSmokeStage =
 /** Stable status category for command-line and CI consumers. */
 export type AgentRpCompatSmokeStatus = 'healthy' | 'manual-required' | 'failed' | 'runner-error'
 
+/** How an explicitly approved preflight grant is retained by the browser smoke. */
+export type AgentRpCompatSmokePermissionDuration = 'session' | 'remember'
+
 /** One terminal lifecycle decision. */
 export interface AgentRpCompatSmokeDecision {
   readonly status: AgentRpCompatSmokeStatus
@@ -55,11 +58,23 @@ export interface AgentRpCompatSmokeReport extends AgentRpCompatSmokeDecision {
   }
   readonly browser: {
     readonly consoleErrors: number
+    readonly consoleErrorKinds: Readonly<Record<AgentRpCompatSmokeConsoleErrorKind, number>>
     readonly pageErrors: number
     readonly failureScreenshot: boolean
   }
   readonly timingsMs: Readonly<Record<string, number>>
   readonly snapshot?: AgentRpBrowserCompatibilitySnapshot
+}
+
+/** Content-free categories retained for browser console errors. */
+export type AgentRpCompatSmokeConsoleErrorKind = 'resource-load' | 'security-policy' | 'runtime'
+
+/** Classify a browser console error without retaining its text, URL, or arguments. */
+export function classifyAgentRpSmokeConsoleError(message: string): AgentRpCompatSmokeConsoleErrorKind {
+  if (message.includes('Failed to load resource') || message.includes('net::ERR_')) return 'resource-load'
+  if (message.includes('Content Security Policy') || message.includes('Refused to')
+    || message.includes('blocked by CORS policy') || message.includes('Cross-Origin')) return 'security-policy'
+  return 'runtime'
 }
 
 /** Stable browser actions used by the smoke driver. */
@@ -81,9 +96,9 @@ export interface AgentRpCompatSmokeDriver {
   readonly snapshot: () => Promise<AgentRpBrowserCompatibilitySnapshot | undefined>
   readonly sourceLauncherCount: (sourceSessionId?: string) => Promise<number>
   readonly clickAction: (action: AgentRpCompatSmokeAction, sourceSessionId?: string) => Promise<void>
-  readonly approvePreflightResources: () => Promise<void>
   readonly selectCharacter: (characterId: string) => Promise<void>
   readonly selectPreset: (presetId: string) => Promise<void>
+  readonly selectPermissionDuration: (duration: AgentRpCompatSmokePermissionDuration) => Promise<void>
   readonly startSession: () => Promise<void>
 }
 
@@ -96,6 +111,7 @@ export interface AgentRpCompatSmokeBrowserInput {
   readonly pollMs?: number
   readonly waitForManualApproval?: boolean
   readonly approvePreflight?: boolean
+  readonly permissionDuration?: AgentRpCompatSmokePermissionDuration
 }
 
 const healthyDecision: AgentRpCompatSmokeDecision = {
@@ -317,26 +333,27 @@ export async function runAgentRpBrowserCompatibilitySmoke(
     return { decision: failed('selection-failed') }
   }
 
-  let preflight = await poll(
+  const preflight = await poll(
     driver, input.timeoutMs, pollMs, classifyAgentRpPreflight,
     input.approvePreflight ? false : input.waitForManualApproval,
   )
+  let launched = false
   if (input.approvePreflight && preflight.decision.status === 'manual-required') {
     try {
-      await driver.approvePreflightResources()
-      await driver.delay(pollMs)
+      await driver.selectPermissionDuration(input.permissionDuration ?? 'session')
+      await driver.startSession()
+      launched = true
     } catch {
-      return preflight
+      return { decision: failed('session-launch-failed'), ...(preflight.snapshot === undefined ? {} : { snapshot: preflight.snapshot }) }
     }
-    preflight = await poll(
-      driver, input.timeoutMs, pollMs, classifyAgentRpPreflight, true,
-    )
   }
-  if (preflight.decision.status !== 'healthy') return preflight
-  try {
-    await driver.startSession()
-  } catch {
-    return { decision: failed('session-launch-failed'), ...(preflight.snapshot === undefined ? {} : { snapshot: preflight.snapshot }) }
+  if (!launched) {
+    if (preflight.decision.status !== 'healthy') return preflight
+    try {
+      await driver.startSession()
+    } catch {
+      return { decision: failed('session-launch-failed'), ...(preflight.snapshot === undefined ? {} : { snapshot: preflight.snapshot }) }
+    }
   }
   const runtime = await poll(
     driver, input.timeoutMs, pollMs, classifyAgentRpRuntime, input.waitForManualApproval,
