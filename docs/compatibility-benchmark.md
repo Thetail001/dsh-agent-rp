@@ -52,7 +52,7 @@ pnpm run benchmark:charx
 pnpm run smoke:compat -- --card <本地角色卡> --preset <本地预设>
 ```
 
-命令只接受 loopback DSH 地址，默认连接 `http://127.0.0.1:3091/`，不会重启或接管已经运行的 DSH。它幂等导入角色卡和可选预设，使用 DSH 当前选择的空白会话或角色会话，只加载页面一次，然后按稳定的 `data-agent-rp-*` 标记完成选择、开聊、运行时收敛以及角色库、会话设置、预设、世界书、酒馆脚本和适用的小手机入口检查。命令不填写输入框、不发送模型消息、不连续刷新页面，也不根据角色名、脚本名或界面文案定位控件。
+命令只接受 loopback DSH 地址，默认连接 `http://127.0.0.1:3091/`，不会重启或接管已经运行的 DSH。它幂等导入角色卡和可选预设，使用 DSH 当前选择的空白会话或角色会话，只加载页面一次，然后从 Host 运行态快照读取开聊预检、Session、世界书、Tavern Helper 和轻前端 iframe 的收敛状态；`data-agent-rp-*` 标记只用于操作角色库、会话设置、预设、世界书、酒馆脚本和适用的小手机入口，并校验实际 iframe sandbox。命令不填写输入框、不发送模型消息、不连续刷新页面，也不根据角色名、脚本名或界面文案定位控件。
 
 默认使用独立的持久 Chromium 配置目录，不读取日常浏览器的账号、Cookie 或存储。预检需要本机资源许可或运行时需要身份许可时，headless 运行返回 `approval-required` 和退出码 2；它不会自动放行来源。调用方已经审阅并同意本次角色卡及预设声明的静态界面资源时，可以显式运行：
 
@@ -80,7 +80,9 @@ pnpm run smoke:compat -- --card <本地角色卡> --preset <本地预设> --head
 
 状态检查通过后，只操作一个不发送消息的本地界面入口，再检查该入口的关键控件和本次重载之后新增的浏览器警告或错误。`content-empty`、`runtime-error` 与 `runtime-rejection` 可以直接缩小空白页面的阶段；`content-present` 只证明界面已挂载，不能代替视觉与交互检查。轻前端 iframe 必须保持仅含 `allow-scripts`；Tavern 执行 iframe 必须使用 `data:` URL、不得使用 `srcdoc`，且 sandbox 必须精确等于 `allow-scripts allow-same-origin allow-forms`。其他令牌组合仍视为权限扩大。验收不应通过连续刷新掩盖确定性失败。
 
-页面提供 `window.__dshAgentRpCompatibilitySnapshot()`，并把同一结果同步到根节点的 `data-agent-rp-compatibility-snapshot` 属性，把上述会话、脚本、卡片 iframe 与开聊预检字段收敛为 `agent-rp-browser-compat-v0` 报告。报告检查必需能力解析、脚本运行失败、可执行卡片 iframe 登记、预检计数与启动状态一致性。普通卡片 iframe 只接受 `allow-scripts`；Tavern iframe 只接受 opaque-origin `data:` URL 和精确的 `allow-scripts allow-same-origin allow-forms`，仍使用 `srcdoc`、来源错误或令牌不符都会报告 `iframe-sandbox-expanded`。权限等待仍作为正常状态记录。酒馆脚本面板的“复制诊断”按钮复制同一报告。报告不包含角色名、脚本名、标识、正文、表达式、错误详情、URL、请求载荷或模型响应。
+页面提供 `window.__dshAgentRpRuntimeSnapshot()`，返回 `agent-rp-runtime-v0` Host 运行态快照。预检、Session、Tavern Helper 和每个轻前端 iframe 按内部作用域发布完整状态；注册表只对外保留固定阶段、布尔值、计数、单调 revision、更新时间和来源数量，不序列化内部发布者、Session ID 或 iframe token。组件卸载会删除自己发布的状态，当前 Session 只合并同一内部作用域的 Tavern 与 iframe 状态，避免切换会话后继承旧事实。相同状态不会增加 revision。
+
+`window.__dshAgentRpCompatibilitySnapshot()` 把同一次 Host 快照与真实 DOM 完整性检查收敛为 `agent-rp-browser-compat-v0` 报告，并把结果同步到根节点的 `data-agent-rp-compatibility-snapshot` 属性。报告中的 `runtime` 记录 Host 快照 revision、更新时间与内容无关的来源数量；运行阶段、权限、世界书和 iframe 回执优先取自 Host 注册表，未安装新协议时才受控回退到旧 DOM 投影。交互入口是否真实存在、界面是否打开以及 iframe sandbox 始终从 DOM 检查，运行时自报不能覆盖这些安全结果。普通卡片 iframe 只接受 `allow-scripts`；Tavern iframe 只接受 opaque-origin `data:` URL 和精确的 `allow-scripts allow-same-origin allow-forms`，仍使用 `srcdoc`、来源错误或令牌不符都会报告 `iframe-sandbox-expanded`。权限等待仍作为正常状态记录。酒馆脚本面板的“复制诊断”按钮与浏览器 smoke 使用同一报告。报告不包含角色名、脚本名、标识、正文、表达式、错误详情、URL、请求载荷或模型响应。
 
 报告的 `interactions` 还提供与文案无关的真实入口状态。角色库、会话设置、预设、世界书、酒馆脚本面板、小手机与脚本权限分别使用 `data-agent-rp-action` 操作入口，用 `data-agent-rp-surface` 和 `data-agent-rp-surface-state` 确认界面已经打开或关闭。浏览器 smoke 不依赖角色名、脚本名或中文按钮文案；它只按稳定标记执行一次打开和关闭，并等待对应的 `interactions` 状态改变。
 

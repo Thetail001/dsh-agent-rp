@@ -1,5 +1,10 @@
 /** Content-free browser diagnostics for one mounted Agent RP interface. */
 
+import type {
+  AgentRpRuntimeDiagnosticRegistry,
+  AgentRpRuntimeDiagnosticSnapshot,
+} from './runtime-diagnostic.ts'
+
 type Counter = Readonly<Record<string, number>>
 
 /** Root attribute containing the latest serialized content-free report. */
@@ -26,9 +31,16 @@ export type AgentRpBrowserCompatibilityIssue =
   | 'tavern-runtime-failed'
   | 'world-engine-degraded'
 
-/** Content-free runtime facts collected from the mounted Agent RP DOM. */
+/** Content-free Host runtime facts plus mounted DOM integrity and interaction checks. */
 export interface AgentRpBrowserCompatibilitySnapshot {
   readonly audit: 'agent-rp-browser-compat-v0'
+  readonly runtime?: {
+    readonly source: 'host'
+    readonly audit: AgentRpRuntimeDiagnosticSnapshot['audit']
+    readonly revision: number
+    readonly updatedAt: number
+    readonly sources: AgentRpRuntimeDiagnosticSnapshot['sources']
+  }
   readonly interactions: {
     readonly characterLibrary: {
       readonly launchers: number
@@ -218,9 +230,10 @@ function restrictedSandbox(frame: Element): boolean {
   return tokens?.length === 1 && tokens[0] === 'allow-scripts'
 }
 
-/** Read one mounted Agent RP interface without copying names, content, URLs, ids, or error messages. */
+/** Assemble one mounted interface from Host facts and DOM checks without copying content-bearing values. */
 export function collectAgentRpBrowserCompatibilitySnapshot(
   root: ParentNode,
+  runtime?: AgentRpRuntimeDiagnosticSnapshot,
 ): AgentRpBrowserCompatibilitySnapshot {
   const status = root.querySelector('[data-agent-rp-status]')
   const tavern = root.querySelector('[data-agent-rp-tavern-total]')
@@ -266,32 +279,12 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       versionMismatch: integer(status, 'data-agent-rp-capability-version-mismatch'),
       denied: integer(status, 'data-agent-rp-capability-denied'),
     }
-    if (capabilities.requiredUnavailable > 0) issues.add('capability-required-unavailable')
-    if ((externalWindowPhases['external-open-unconfirmed'] ?? 0) > 0) {
-      issues.add('external-window-open-unconfirmed')
-    }
-    if ((externalWindowPhases['callback-rejected'] ?? 0) > 0) {
-      issues.add('external-window-callback-rejected')
-    }
-    if ((externalWindowPhases['callback-delivery-unconfirmed'] ?? 0) > 0) {
-      issues.add('external-window-delivery-unconfirmed')
-    }
-    if ((externalWindowPhases['external-closed-without-callback'] ?? 0) > 0) {
-      issues.add('external-window-closed-without-callback')
-    }
     const inlineFrontendSanitizer = value(status, 'data-agent-rp-inline-frontend-sanitizer')
-    if (inlineFrontendSanitizer !== 'ready') issues.add('inline-frontend-sanitizer-degraded')
     const unregisteredCardFrames = scriptCardFrames.filter(
       frame => frame.getAttribute('data-agent-rp-frame-registered') !== 'true',
     ).length
-    if (unregisteredCardFrames > 0) issues.add('card-frame-unregistered')
     const runtimePhases = counter(scriptCardFrames, 'data-agent-rp-runtime-phase')
-    if ((runtimePhases['content-empty'] ?? 0) > 0) issues.add('card-frame-content-empty')
-    if ((runtimePhases['runtime-error'] ?? 0) + (runtimePhases['runtime-rejection'] ?? 0) > 0) {
-      issues.add('card-frame-runtime-failed')
-    }
     const tavernFailed = tavern === null ? 0 : integer(tavern, 'data-agent-rp-tavern-failed')
-    if (tavernFailed > 0) issues.add('tavern-runtime-failed')
     const tavernPermissionState = tavern?.getAttribute('data-agent-rp-tavern-permission-state')
     const normalizedTavernPermissionState = tavernPermissionState === 'settled'
       || tavernPermissionState === 'startup-blocked' || tavernPermissionState === 'interaction-pending'
@@ -305,7 +298,6 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       templateUnsupported: integer(status, 'data-agent-rp-world-engine-template-unsupported'),
       templateError: integer(status, 'data-agent-rp-world-engine-template-error'),
     }
-    if (Object.values(worldEngineFailures).some(count => count > 0)) issues.add('world-engine-degraded')
     session = {
       capabilities,
       auxiliaryGenerations: {
@@ -372,6 +364,32 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     }
   }
 
+  if (runtime?.session !== undefined) session = runtime.session
+  if (session !== undefined) {
+    if (session.capabilities.requiredUnavailable > 0) issues.add('capability-required-unavailable')
+    if ((session.externalWindows.phases['external-open-unconfirmed'] ?? 0) > 0) {
+      issues.add('external-window-open-unconfirmed')
+    }
+    if ((session.externalWindows.phases['callback-rejected'] ?? 0) > 0) {
+      issues.add('external-window-callback-rejected')
+    }
+    if ((session.externalWindows.phases['callback-delivery-unconfirmed'] ?? 0) > 0) {
+      issues.add('external-window-delivery-unconfirmed')
+    }
+    if ((session.externalWindows.phases['external-closed-without-callback'] ?? 0) > 0) {
+      issues.add('external-window-closed-without-callback')
+    }
+    if (session.renderer.inlineFrontendSanitizer !== 'ready') issues.add('inline-frontend-sanitizer-degraded')
+    if (session.cardFrames.registered < session.cardFrames.scriptEnabled) issues.add('card-frame-unregistered')
+    if ((session.cardFrames.runtimePhases['content-empty'] ?? 0) > 0) issues.add('card-frame-content-empty')
+    if ((session.cardFrames.runtimePhases['runtime-error'] ?? 0)
+      + (session.cardFrames.runtimePhases['runtime-rejection'] ?? 0) > 0) {
+      issues.add('card-frame-runtime-failed')
+    }
+    if ((session.tavern?.failed ?? 0) > 0) issues.add('tavern-runtime-failed')
+    if (Object.values(session.worldEngine.failures).some(count => count > 0)) issues.add('world-engine-degraded')
+  }
+
   const interactiveEntriesPresent = session === undefined || (
     characterLibraryLaunchers > 0
     && sessionSettingsLaunchers > 0
@@ -418,27 +436,6 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     const permissionDurationValue = value(preflightElement, 'data-agent-rp-resource-permission-duration')
     const permissionDuration = permissionDurationValue === 'session' || permissionDurationValue === 'remember'
       ? permissionDurationValue : 'unknown'
-    preflightConsistent = pendingPermissions === pendingCardPermissions + pendingScriptPermissions
-      && pendingScriptPermissions === pendingScriptOrigins + pendingImageOrigins + pendingFrameOrigins
-      && permissionDuration !== 'unknown'
-    if (!preflightConsistent) issues.add('preflight-count-mismatch')
-    const expectedLaunch = statusValue === 'loading' ? 'checking'
-      : pendingPermissions > 0 ? 'approval-required' : 'ready'
-    const expectedStartAction = expectedLaunch === 'checking' ? 'checking'
-      : expectedLaunch === 'approval-required' ? 'approve-and-start' : 'start'
-    if (launch !== expectedLaunch || (startReadiness !== undefined && startReadiness !== launch)
-      || (startElement !== null && startAction !== expectedStartAction)) {
-      preflightConsistent = false
-      issues.add('preflight-launch-mismatch')
-    }
-    if (failed > 0) {
-      preflightHealthy = false
-      issues.add('preflight-failed')
-    }
-    if (statusValue === 'error') {
-      preflightHealthy = false
-      issues.add('preflight-request-failed')
-    }
     preflight = {
       status: statusValue,
       launch,
@@ -456,10 +453,44 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       failed,
     }
   }
+  if (runtime?.preflight !== undefined) preflight = runtime.preflight
+  if (preflight !== undefined) {
+    preflightConsistent = preflight.pendingPermissions
+        === preflight.pendingCardPermissions + preflight.pendingScriptPermissions
+      && preflight.pendingScriptPermissions
+        === preflight.pendingScriptOrigins + preflight.pendingImageOrigins + preflight.pendingFrameOrigins
+      && preflight.permissionDuration !== 'unknown'
+    if (!preflightConsistent) issues.add('preflight-count-mismatch')
+    const expectedLaunch = preflight.status === 'loading' ? 'checking'
+      : preflight.pendingPermissions > 0 ? 'approval-required' : 'ready'
+    const expectedStartAction = expectedLaunch === 'checking' ? 'checking'
+      : expectedLaunch === 'approval-required' ? 'approve-and-start' : 'start'
+    if (preflight.launch !== expectedLaunch
+      || (preflight.startReadiness !== undefined && preflight.startReadiness !== preflight.launch)
+      || (preflight.startAction !== undefined && preflight.startAction !== expectedStartAction)) {
+      preflightConsistent = false
+      issues.add('preflight-launch-mismatch')
+    }
+    if (preflight.failed > 0) {
+      preflightHealthy = false
+      issues.add('preflight-failed')
+    }
+    if (preflight.status === 'error') {
+      preflightHealthy = false
+      issues.add('preflight-request-failed')
+    }
+  }
 
   if (allFrames.some(frame => !restrictedSandbox(frame))) issues.add('iframe-sandbox-expanded')
   return {
     audit: 'agent-rp-browser-compat-v0',
+    ...(runtime === undefined ? {} : { runtime: {
+      source: 'host' as const,
+      audit: runtime.audit,
+      revision: runtime.revision,
+      updatedAt: runtime.updatedAt,
+      sources: runtime.sources,
+    } }),
     interactions: {
       characterLibrary: {
         launchers: characterLibraryLaunchers,
@@ -512,11 +543,15 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
 export function installAgentRpBrowserCompatibilityDiagnostic(
   target: Window,
   root: ParentNode,
+  runtime?: Pick<AgentRpRuntimeDiagnosticRegistry, 'snapshot' | 'subscribe'>,
 ): () => void {
   const previous = target.__dshAgentRpCompatibilitySnapshot
   const documentRoot = 'documentElement' in root ? (root as Document).documentElement : undefined
   const previousAttribute = documentRoot?.getAttribute(AGENT_RP_BROWSER_COMPATIBILITY_ATTRIBUTE) ?? undefined
-  const snapshot = (): AgentRpBrowserCompatibilitySnapshot => collectAgentRpBrowserCompatibilitySnapshot(root)
+  const snapshot = (): AgentRpBrowserCompatibilitySnapshot => collectAgentRpBrowserCompatibilitySnapshot(
+    root,
+    runtime?.snapshot(),
+  )
   const refresh = (): void => {
     if (documentRoot === undefined) return
     const serialized = JSON.stringify(snapshot())
@@ -534,6 +569,7 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
     }, 50)
   }
   const observer = new MutationObserver(scheduleRefresh)
+  const unsubscribeRuntime = runtime?.subscribe(scheduleRefresh)
   observer.observe(root as Node, {
     attributes: true,
     attributeFilter: [
@@ -620,6 +656,7 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
   refresh()
   return () => {
     observer.disconnect()
+    unsubscribeRuntime?.()
     if (scheduledRefresh !== undefined) target.clearTimeout(scheduledRefresh)
     if (documentRoot !== undefined) {
       if (previousAttribute === undefined) documentRoot.removeAttribute(AGENT_RP_BROWSER_COMPATIBILITY_ATTRIBUTE)

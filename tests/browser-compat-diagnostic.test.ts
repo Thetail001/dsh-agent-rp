@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { collectAgentRpBrowserCompatibilitySnapshot } from '../src/client/compatibility-diagnostic.ts'
+import {
+  AgentRpRuntimeDiagnosticRegistry,
+  createAgentRpRuntimeDiagnosticSource,
+} from '../src/client/runtime-diagnostic.ts'
 
 class DiagnosticElement {
   readonly attributes: Readonly<Record<string, string>>
@@ -473,4 +477,67 @@ test('rejects permission lifecycle totals that disguise an interaction as startu
   assert.equal(report.checks.tavernPermissionsConsistent, false)
   assert.equal(report.session?.tavern?.permissionState, 'startup-blocked')
   assert.deepEqual(report.issues, ['tavern-permission-count-mismatch'])
+})
+
+test('uses Host runtime facts while retaining DOM-owned sandbox checks', () => {
+  const registry = new AgentRpRuntimeDiagnosticRegistry(() => 123)
+  registry.publish(createAgentRpRuntimeDiagnosticSource('session'), {
+    kind: 'session',
+    scope: 'private-session-id',
+    facts: {
+      capabilities: {
+        extensions: 1, requirements: 3, available: 3, approvals: 0,
+        requiredUnavailable: 0, unsupported: 0, versionMismatch: 0, denied: 0,
+      },
+      auxiliaryGenerations: { requests: 0, succeeded: 0, failed: 0, pending: 0, malformed: 0 },
+      externalWindowPhases: [],
+      nativeIdentity: { state: 'ready', approved: 0, pending: 0 },
+      variables: { surfaces: 1, sharedScopes: 5, scriptScopes: 0 },
+      renderer: { inlineFrontendSanitizer: 'ready' },
+      worldEngine: {
+        engine: 'inactive', entries: 0, active: 0, budgetExcluded: 0,
+        failures: {
+          regexRuntimeUnavailable: 0, regexInvalid: 0, regexExecutionLimit: 0,
+          regexResourceLimit: 0, decoratorUnsupported: 0, templateUnsupported: 0, templateError: 0,
+        },
+      },
+    },
+  })
+  registry.publish(createAgentRpRuntimeDiagnosticSource('preflight'), {
+    kind: 'preflight',
+    facts: {
+      status: 'ready', launch: 'ready', startReadiness: 'ready', startAction: 'start',
+      permissionDuration: 'session', scripts: 0, cardResources: 1,
+      pendingCardPermissions: 0, pendingScriptPermissions: 0, pendingScriptOrigins: 0,
+      pendingImageOrigins: 0, pendingFrameOrigins: 0, pendingPermissions: 0, failed: 0,
+    },
+  })
+  const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    '[data-agent-rp-status]': [new DiagnosticElement({
+      ...capabilityAttributes,
+      'data-agent-rp-inline-frontend-sanitizer': 'failed',
+      'data-agent-rp-capability-required-unavailable': '1',
+      'data-agent-rp-world-engine-template-error': '1',
+      'data-private-card-text': 'must not appear',
+    })],
+    ...stableInteractionSelectors,
+    'iframe[data-agent-rp-frame]': [new DiagnosticElement({
+      sandbox: 'allow-scripts allow-same-origin',
+      'data-agent-rp-runtime-phase': 'runtime-error',
+    })],
+    '[data-agent-rp-resource-preflight]': [new DiagnosticElement({
+      'data-agent-rp-resource-preflight': 'error',
+      'data-agent-rp-resource-launch': 'ready',
+      'data-agent-rp-resource-permission-duration': 'remember',
+      'data-agent-rp-resource-preflight-failed': '1',
+    })],
+  }), registry.snapshot())
+
+  assert.deepEqual(report.issues, ['iframe-sandbox-expanded'])
+  assert.equal(report.runtime?.source, 'host')
+  assert.equal(report.runtime?.revision, 2)
+  assert.equal(report.session?.renderer.inlineFrontendSanitizer, 'ready')
+  assert.equal(report.session?.worldEngine.engine, 'inactive')
+  assert.equal(report.preflight?.status, 'ready')
+  assert.doesNotMatch(JSON.stringify(report), /private|session-id|must not appear/u)
 })
