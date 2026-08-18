@@ -188,6 +188,7 @@ import {
   type TavernScriptResourcePermission,
 } from './tavern-permission.ts'
 import { fetchTavernPreflight } from './tavern-preflight.ts'
+import { RoleplayResourceCenter } from './resource-center.tsx'
 import {
   agentRpSessionResourcePermissionsChangedEvent,
   readAgentRpSessionResourcePermissions,
@@ -1953,6 +1954,9 @@ type SidebarRoleplayDestinationProps = PropsRuntime<'sidebar.destinations'> & Pi
   | 'savePersona'
   | 'deletePersona'
 > & {
+  readonly listWorldInfos: () => Promise<readonly WorldInfoLibraryUpload[]>
+  readonly importWorldInfoFile: (file: File) => Promise<WorldInfoLibraryUpload>
+  readonly renamePreset: (id: string, name: string) => Promise<PresetLibrarySummary>
   readonly workspaceSettings: WorkspaceSettingsSource
   readonly workspaceList: WorkspaceListSource
 }
@@ -1973,11 +1977,13 @@ function SidebarRoleplayDestination({
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, migrateRpDistributionChat,
   startCharacterSession,
   listPresets, importPresetFile, listPersonas, savePersona, deletePersona,
+  listWorldInfos, importWorldInfoFile, renamePreset,
   workspaceSettings, workspaceList,
 }: SidebarRoleplayDestinationProps) {
   const [workbenchOpen, setWorkbenchOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [migrationOpen, setMigrationOpen] = useState(false)
+  const [resourceCenterOpen, setResourceCenterOpen] = useState(false)
   const [launchSessionId, setLaunchSessionId] = useState<SessionId | undefined>(undefined)
   const [accessSaving, setAccessSaving] = useState(false)
   const [accessError, setAccessError] = useState<string>()
@@ -2033,6 +2039,11 @@ function SidebarRoleplayDestination({
     closeWorkbench()
     setMigrationOpen(true)
   }
+  const openResourceCenter = (): void => {
+    closeWorkbench()
+    setResourceCenterOpen(true)
+  }
+  const narrowResourceCenter = useNarrowCharacterLibrary()
   useEffect(() => {
     if (!workbenchOpen) return
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -2137,18 +2148,21 @@ function SidebarRoleplayDestination({
             background: 'var(--dsw-alias-bg-layer-1, #292a2e)', borderRadius: '9px', fontSize: '11px',
             lineHeight: 1.55, margin: '11px 0 0', opacity: .72, padding: '9px 10px',
           }}>{unavailableReason}</p>}
-          <h2 style={{ fontSize: '13px', margin: '24px 0 10px', opacity: .62 }}>内容层级</h2>
-          <div style={{ border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '12px', overflow: 'hidden' }}>
-            {[
-              ['角色与世界书', '角色设定、开场、世界书与卡片资源'],
-              ['预设与身份', '提示词预设、Persona 与会话选择'],
-              ['扩展与诊断', '酒馆脚本、权限和兼容状态'],
-            ].map(([title, detail], index) => <div key={title} style={{
-              borderTop: index === 0 ? 'none' : '1px solid var(--dsw-alias-border-l2, #3d3d43)', padding: '10px 11px',
-            }}><strong style={{ display: 'block', fontSize: '12px' }}>{title}</strong>
-              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '3px', opacity: .52 }}>{detail}</span>
-            </div>)}
-          </div>
+          <h2 style={{ fontSize: '13px', margin: '24px 0 10px', opacity: .62 }}>管理</h2>
+          <button type="button" data-agent-rp-action="open-resource-center" onClick={openResourceCenter} style={{
+            alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #292a2e)',
+            border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '12px', color: 'inherit',
+            cursor: 'pointer', display: 'flex', font: 'inherit', gap: '11px', padding: '12px', textAlign: 'left', width: '100%',
+          }}>
+            <span aria-hidden="true" style={{ color, fontSize: '20px', lineHeight: 1 }}>◇</span>
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <strong style={{ display: 'block', fontSize: '13px' }}>资源中心</strong>
+              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '3px', opacity: .52 }}>
+                角色、世界书、预设与 Persona
+              </span>
+            </span>
+            <span aria-hidden="true" style={{ fontSize: '16px', opacity: .38 }}>›</span>
+          </button>
           <p style={{ fontSize: '11px', lineHeight: 1.6, margin: '12px 2px 0', opacity: .46 }}>
             工作台保持一个全局入口；具体能力按任务分组，不再占用发送栏，也不会为每项兼容功能增加常驻图标
           </p>
@@ -2180,6 +2194,22 @@ function SidebarRoleplayDestination({
         remoteSessionId,
         presetId,
       )} />}
+    {resourceCenterOpen && <RoleplayResourceCenter
+      accent={color}
+      narrow={narrowResourceCenter}
+      listCharacters={listCharacters}
+      setCharacterArchived={setCharacterArchived}
+      importCharacterFile={importCharacterFile}
+      listWorldInfos={listWorldInfos}
+      importWorldInfoFile={importWorldInfoFile}
+      listPresets={listPresets}
+      importPresetFile={importPresetFile}
+      renamePreset={renamePreset}
+      listPersonas={listPersonas}
+      savePersona={savePersona}
+      deletePersona={deletePersona}
+      onClose={() => { setResourceCenterOpen(false) }}
+    />}
   </>
 }
 
@@ -9716,7 +9746,7 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok) throw new Error(response.error.message)
     if (!response.value.matched) throw new Error('当前 Host 未启用世界书管理')
   }
-  const importWorldInfo = async (sessionId: SessionId, file: File): Promise<void> => {
+  const importWorldInfoFile = async (file: File): Promise<WorldInfoLibraryUpload> => {
     if (!/\.json$/iu.test(file.name)) throw new Error('请选择 SillyTavern World Info JSON 文件')
     const response = await fetch(`${WORLD_INFO_LIBRARY_PATH}?filename=${encodeURIComponent(file.name)}`, {
       method: 'POST',
@@ -9725,10 +9755,14 @@ export function apply(ctx: ClientContext): void {
     })
     const value = await response.json() as Partial<WorldInfoLibraryUploadResponse> & { readonly error?: string }
     if (!response.ok || value.upload === undefined) throw new Error(value.error ?? `世界书上传失败（${response.status}）`)
+    return value.upload
+  }
+  const importWorldInfo = async (sessionId: SessionId, file: File): Promise<void> => {
+    const upload = await importWorldInfoFile(file)
     const scope = ctx.sessions.scope(sessionId)
     const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
     if (session === undefined) throw new Error('当前角色会话不可用')
-    const request: WorldInfoLibraryLaunchRequest = { format: 0, importId: value.upload.id }
+    const request: WorldInfoLibraryLaunchRequest = { format: 0, importId: upload.id }
     const result = await session.command(`/rp-world-info-import ${JSON.stringify(request)}`)
     if (!result.ok) throw new Error(result.error.message)
     if (!result.value.matched) throw new Error('当前 Host 未启用世界书导入')
@@ -9904,7 +9938,7 @@ export function apply(ctx: ClientContext): void {
     probe={probeRpDistribution} transfer={transferRpDistribution} receive={receiveRpDistribution} />))
   ctx.slots.inject('sidebar.destinations', () => ctx.slots.register({
     name: 'sidebar.destinations', id: 'agent-rp-workbench', order: 20,
-  }, props => <SidebarRoleplayDestination {...props} runtimeDiagnostics={runtimeDiagnostics} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} migrateRpDistributionChat={migrateRpDistributionChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} importPresetFile={importPresetFile} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  }, props => <SidebarRoleplayDestination {...props} runtimeDiagnostics={runtimeDiagnostics} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} migrateRpDistributionChat={migrateRpDistributionChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} importPresetFile={importPresetFile} renamePreset={renamePresetLibraryEntry} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} listWorldInfos={listWorldInfos} importWorldInfoFile={importWorldInfoFile} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-tavern-variables',
   }, () => null))
