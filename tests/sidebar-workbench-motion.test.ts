@@ -12,6 +12,10 @@ test('sidebar workbench declares entry motion and reduced-motion fallback', () =
   assert.match(source, /@media \(prefers-reduced-motion: reduce\)/u)
   assert.match(source, /data-agent-rp-workbench-dismiss/u)
   assert.match(source, /data-agent-rp-destination-icon/u)
+  assert.match(source, /ctx\.slots\.inject\('sidebar\.destinations'/u)
+  assert.match(source, /ctx\.slots\.inject\('sidebar\.footer\.action'/u)
+  assert.match(source, /ctx\.slots\.spec\('sidebar\.destinations'\)/u)
+  assert.match(source, /data-agent-rp-sidebar-slot="footer-action"/u)
 })
 
 test('sidebar workbench owns current-workspace access while global settings stay advanced', () => {

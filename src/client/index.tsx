@@ -9,6 +9,7 @@ import type {
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { CommandRowProps, IConversation, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import DOMPurify from 'dompurify'
@@ -27,6 +28,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 import type { AgentRpProjection } from '../projection-types.ts'
+import { resolveLegacySidebarWidth } from './sidebar-slot-compat.ts'
 import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/types.ts'
 import { parseTavernHelperScripts } from '../import/tavern-helper.ts'
 import { importTavernRegex } from '../tavern-regex.ts'
@@ -1939,7 +1941,7 @@ function PersonaManagerDialog({ current, listPersonas, savePersona, deletePerson
   </div>
 }
 
-type SidebarRoleplayDestinationProps = PropsRuntime<'sidebar.destinations'> & Pick<HeaderProps,
+type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
   | 'runtimeDiagnostics'
   | 'listCharacters'
   | 'readCharacter'
@@ -1961,6 +1963,9 @@ type SidebarRoleplayDestinationProps = PropsRuntime<'sidebar.destinations'> & Pi
   readonly workspaceList: WorkspaceListSource
 }
 
+type SidebarRoleplayDestinationProps = PropsRuntime<'sidebar.destinations'> & SidebarRoleplayWorkbenchProps
+type SidebarRoleplayFooterActionProps = PropsRuntime<'sidebar.footer.action'> & SidebarRoleplayWorkbenchProps
+
 function RoleplayDestinationIcon({ size }: { readonly size: number }) {
   return <svg aria-hidden="true" viewBox="0 0 20 20" width={size} height={size} fill="none">
     <path d="M5.25 3.75h9.5A2.5 2.5 0 0 1 17.25 6.25v5A2.5 2.5 0 0 1 14.75 13.75H9l-3.75 2.5.75-2.5h-.75a2.5 2.5 0 0 1-2.5-2.5v-5a2.5 2.5 0 0 1 2.5-2.5Z"
@@ -1969,6 +1974,31 @@ function RoleplayDestinationIcon({ size }: { readonly size: number }) {
       stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
     <path d="M7.15 7.1v2.2M6.05 8.2h2.2" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
   </svg>
+}
+
+function SidebarRoleplayFooterAction(props: SidebarRoleplayFooterActionProps) {
+  const container = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(0)
+  useLayoutEffect(() => {
+    const trigger = container.current
+    if (trigger === null) return
+    const update = (): void => { setWidth(resolveLegacySidebarWidth(trigger)) }
+    update()
+    window.addEventListener('resize', update)
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(update)
+    let ancestor: HTMLElement | null = trigger
+    while (observer !== undefined && ancestor !== null && ancestor !== document.body) {
+      observer.observe(ancestor)
+      ancestor = ancestor.parentElement
+    }
+    return () => {
+      window.removeEventListener('resize', update)
+      observer?.disconnect()
+    }
+  }, [])
+  return <div ref={container} data-agent-rp-sidebar-slot="footer-action" style={{ width: props.wide ? '100%' : 'auto' }}>
+    <SidebarRoleplayDestination {...props} width={width} />
+  </div>
 }
 
 function SidebarRoleplayDestination({
@@ -9936,9 +9966,23 @@ export function apply(ctx: ClientContext): void {
   }, props => <RpDistributionBridgeSection {...props} listCharacters={listCharacters} listPresets={listPresets}
     listPersonas={listPersonas} listWorldInfos={listWorldInfos}
     probe={probeRpDistribution} transfer={transferRpDistribution} receive={receiveRpDistribution} />))
+  const sidebarRoleplayWorkbenchProps: SidebarRoleplayWorkbenchProps = {
+    runtimeDiagnostics, workspaceSettings, workspaceList, listCharacters, readCharacter, setCharacterArchived,
+    importCharacterFile, migrateChat: migrateChatFromBlankSession,
+    migrateRpDistributionChat: migrateRpDistributionChatFromBlankSession,
+    startCharacterSession: startCharacterFromBlankSession, listPresets, importPresetFile,
+    renamePreset: renamePresetLibraryEntry, listPersonas, savePersona, deletePersona,
+    listWorldInfos, importWorldInfoFile,
+  }
   ctx.slots.inject('sidebar.destinations', () => ctx.slots.register({
     name: 'sidebar.destinations', id: 'agent-rp-workbench', order: 20,
-  }, props => <SidebarRoleplayDestination {...props} runtimeDiagnostics={runtimeDiagnostics} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} migrateRpDistributionChat={migrateRpDistributionChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} importPresetFile={importPresetFile} renamePreset={renamePresetLibraryEntry} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} listWorldInfos={listWorldInfos} importWorldInfoFile={importWorldInfoFile} />))
+  }, props => <SidebarRoleplayDestination {...props} {...sidebarRoleplayWorkbenchProps} />))
+  ctx.slots.inject('sidebar.footer.action', () => {
+    if (ctx.slots.spec('sidebar.destinations') !== undefined) return () => {}
+    return ctx.slots.register({
+      name: 'sidebar.footer.action', id: 'agent-rp-workbench', order: 20,
+    }, props => <SidebarRoleplayFooterAction {...props} {...sidebarRoleplayWorkbenchProps} />)
+  })
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-tavern-variables',
   }, () => null))
