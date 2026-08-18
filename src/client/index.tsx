@@ -1978,11 +1978,32 @@ function RoleplayDestinationIcon({ size }: { readonly size: number }) {
 
 function SidebarRoleplayFooterAction(props: SidebarRoleplayFooterActionProps) {
   const container = useRef<HTMLDivElement>(null)
+  const motionFrame = useRef<number>()
   const [width, setWidth] = useState(0)
-  const update = useCallback((): void => {
+  const update = useCallback((): number | undefined => {
     const trigger = container.current
-    if (trigger !== null) setWidth(resolveLegacySidebarWidth(trigger))
+    if (trigger === null) return undefined
+    const nextWidth = resolveLegacySidebarWidth(trigger)
+    setWidth(nextWidth)
+    return nextWidth
   }, [])
+  const trackSidebarMotion = useCallback((): void => {
+    if (motionFrame.current !== undefined) cancelAnimationFrame(motionFrame.current)
+    const started = performance.now()
+    let previousWidth: number | undefined
+    let stableFrames = 0
+    const sample = (time: number): void => {
+      const nextWidth = update()
+      stableFrames = nextWidth === previousWidth ? stableFrames + 1 : 0
+      previousWidth = nextWidth
+      if ((time - started < 120 || stableFrames < 3) && time - started < 500) {
+        motionFrame.current = requestAnimationFrame(sample)
+      } else {
+        motionFrame.current = undefined
+      }
+    }
+    motionFrame.current = requestAnimationFrame(sample)
+  }, [update])
   useLayoutEffect(() => {
     const trigger = container.current
     if (trigger === null) return
@@ -1997,9 +2018,10 @@ function SidebarRoleplayFooterAction(props: SidebarRoleplayFooterActionProps) {
     return () => {
       window.removeEventListener('resize', update)
       observer?.disconnect()
+      if (motionFrame.current !== undefined) cancelAnimationFrame(motionFrame.current)
     }
   }, [update])
-  return <div ref={container} data-agent-rp-sidebar-slot="footer-action" onClickCapture={update}
+  return <div ref={container} data-agent-rp-sidebar-slot="footer-action" onClickCapture={trackSidebarMotion}
     style={{ width: props.wide ? '100%' : 'auto' }}>
     <SidebarRoleplayDestination {...props} width={width} />
   </div>
