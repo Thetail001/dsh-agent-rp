@@ -249,6 +249,7 @@ import {
   DEFAULT_AGENT_RP_SETTINGS,
   allowsAgentRpEntry,
   normalizeAgentRpSettings,
+  setAgentRpWorkspaceEntry,
   type AgentRpSettings, type ImageGenerationProfile, type ImageGenerationSettings,
 } from '../workspace-settings.ts'
 import {
@@ -1978,6 +1979,8 @@ function SidebarRoleplayDestination({
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [migrationOpen, setMigrationOpen] = useState(false)
   const [launchSessionId, setLaunchSessionId] = useState<SessionId | undefined>(undefined)
+  const [accessSaving, setAccessSaving] = useState(false)
+  const [accessError, setAccessError] = useState<string>()
   const currentSessionId = useSessions(state => state.current)
   const currentSession = useSessions(state => currentSessionId === undefined ? undefined : state.byId[currentSessionId])
   const settingsSnapshot = useSyncExternalStore(
@@ -1993,13 +1996,30 @@ function SidebarRoleplayDestination({
   const workspace = currentSessionId === undefined
     ? undefined
     : workspaceSnapshot.items.find(item => item.sessionIds.includes(currentSessionId))
+  const workspaceEnabled = workspace !== undefined
+    && allowsAgentRpEntry(settingsSnapshot.value, workspace.workspaceId)
+  const workspaceAccessWritable = workspace !== undefined
+    && settingsSnapshot.status === 'ready'
+    && !accessSaving
   const blankSessionReady = currentSession?.blank === true
-    && allowsAgentRpEntry(settingsSnapshot.value, workspace?.workspaceId)
+    && workspaceEnabled
   const unavailableReason = currentSessionId === undefined
     ? '先点侧栏的“新会话”，再从这里选择角色或迁移聊天'
     : !currentSession?.blank
       ? '当前会话已经开始；新建一个空白会话即可开始另一段角色对话'
-      : '当前工作区尚未启用 Agent RP 启动入口，可在设置中调整工作区范围'
+      : '当前工作区尚未启用 Agent RP 启动入口，可在上方直接启用'
+  const toggleWorkspaceAccess = (): void => {
+    if (!workspaceAccessWritable || workspace === undefined) return
+    setAccessSaving(true)
+    setAccessError(undefined)
+    void workspaceSettings.set(setAgentRpWorkspaceEntry(
+      settingsSnapshot.value,
+      workspace.workspaceId,
+      !workspaceEnabled,
+    )).catch((reason: unknown) => {
+      setAccessError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => { setAccessSaving(false) })
+  }
   const closeWorkbench = (): void => { setWorkbenchOpen(false) }
   const openLibrary = (): void => {
     if (!blankSessionReady || currentSessionId === undefined) return
@@ -2067,7 +2087,33 @@ function SidebarRoleplayDestination({
           }}>×</button>
         </header>
         <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: '18px 16px 24px' }}>
-          <h2 style={{ fontSize: '13px', margin: '0 0 10px', opacity: .62 }}>开始</h2>
+          <div data-agent-rp-workspace-access data-agent-rp-workspace-enabled={workspaceEnabled ? 'true' : 'false'}
+            style={{
+              alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #292a2e)',
+              border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '12px',
+              display: 'flex', gap: '12px', justifyContent: 'space-between', padding: '11px 12px',
+            }}>
+            <span style={{ minWidth: 0 }}>
+              <span style={{ display: 'block', fontSize: '11px', opacity: .5 }}>当前工作区</span>
+              <strong style={{ display: 'block', fontSize: '13px', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {workspace?.title ?? '尚未加入工作区'}
+              </strong>
+            </span>
+            <button type="button" data-agent-rp-action="toggle-workspace-access" aria-pressed={workspaceEnabled}
+              aria-label={workspaceEnabled ? '停用当前工作区的 Agent RP 入口' : '启用当前工作区的 Agent RP 入口'}
+              disabled={!workspaceAccessWritable} onClick={toggleWorkspaceAccess} style={{
+                background: workspaceEnabled ? `color-mix(in srgb, ${color} 18%, transparent)` : 'transparent',
+                border: `1px solid ${workspaceEnabled ? `color-mix(in srgb, ${color} 46%, transparent)` : 'var(--dsw-alias-border-l2, #4a4a50)'}`,
+                borderRadius: '999px', color: 'inherit', cursor: workspaceAccessWritable ? 'pointer' : 'default',
+                flex: '0 0 auto', font: 'inherit', fontSize: '11px', minWidth: '58px', opacity: workspaceAccessWritable ? 1 : .5,
+                padding: '6px 9px',
+              }}>{accessSaving ? '保存中' : settingsSnapshot.status === 'loading' ? '读取中'
+                : settingsSnapshot.status === 'error' ? '不可用' : workspaceEnabled ? '已启用' : '未启用'}</button>
+          </div>
+          {accessError !== undefined && <p role="alert" style={{
+            color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '11px', margin: '7px 2px 0',
+          }}>{accessError}</p>}
+          <h2 style={{ fontSize: '13px', margin: '22px 0 10px', opacity: .62 }}>开始</h2>
           <div style={{ display: 'grid', gap: '10px', gridTemplateColumns: 'repeat(auto-fit, minmax(132px, 1fr))' }}>
             <button type="button" data-agent-rp-action="open-character-library"
               data-agent-rp-source-session={currentSessionId} disabled={!blankSessionReady} onClick={openLibrary} style={{
@@ -2530,13 +2576,8 @@ function WorkspaceSettingsSection({
     }).finally(() => { setSaving(false) })
   }
   const toggleWorkspace = (workspaceId: string): void => {
-    const selected = settings.workspaceIds.includes(workspaceId)
-    write({
-      ...settings,
-      workspaceIds: selected
-        ? settings.workspaceIds.filter(id => id !== workspaceId)
-        : [...settings.workspaceIds, workspaceId],
-    })
+    const enabled = allowsAgentRpEntry(settings, workspaceId)
+    write(setAgentRpWorkspaceEntry(settings, workspaceId, !enabled))
   }
   const choiceStyle = (active: boolean) => ({
     alignItems: 'center',
@@ -2553,54 +2594,69 @@ function WorkspaceSettingsSection({
     width: '100%',
   })
   return <section style={{ margin: '0 auto', maxWidth: '720px', padding: '8px 4px 32px' }}>
-    <h2 style={{ fontSize: '18px', margin: '0 0 8px' }}>Agent RP</h2>
+    <h2 style={{ fontSize: '18px', margin: '0 0 8px' }}>Agent RP 全局设置</h2>
     <p style={{ fontSize: '13px', lineHeight: 1.6, margin: '0 0 22px', opacity: .62 }}>
-      控制哪些工作区允许从 Agent RP 工作台开始角色对话或迁移聊天，已有角色会话不受影响
+      这里保留跨工作区规则、身份与图片服务；日常角色入口和当前工作区开关位于侧栏 Agent RP 工作台
     </p>
-    <div style={{ display: 'grid', gap: '8px' }}>
-      <button type="button" disabled={!writable} style={choiceStyle(settings.workspaceMode === 'all')}
-        onClick={() => { write({ ...settings, workspaceMode: 'all' }) }}>
-        <span aria-hidden="true" style={{ color: settings.workspaceMode === 'all' ? color : 'inherit' }}>
-          {settings.workspaceMode === 'all' ? '●' : '○'}
-        </span>
-        <span><strong style={{ display: 'block', fontSize: '13px' }}>全部工作区</strong>
-          <span style={{ fontSize: '12px', opacity: .55 }}>每个工作区都允许使用 Agent RP 启动操作</span></span>
-      </button>
-      <button type="button" disabled={!writable} style={choiceStyle(settings.workspaceMode === 'selected')}
-        onClick={() => { write({ ...settings, workspaceMode: 'selected' }) }}>
-        <span aria-hidden="true" style={{ color: settings.workspaceMode === 'selected' ? color : 'inherit' }}>
-          {settings.workspaceMode === 'selected' ? '●' : '○'}
-        </span>
-        <span><strong style={{ display: 'block', fontSize: '13px' }}>仅指定工作区</strong>
-          <span style={{ fontSize: '12px', opacity: .55 }}>只在下面勾选的工作区显示入口</span></span>
-      </button>
-    </div>
-    {settings.workspaceMode === 'selected' && <div style={{ marginTop: '22px' }}>
-      <h3 style={{ fontSize: '13px', margin: '0 0 9px' }}>工作区</h3>
-      {workspaceSnapshot.items.length === 0
-        ? <p style={{ fontSize: '12px', margin: 0, opacity: .55 }}>还没有可选的工作区</p>
-        : <div style={{ border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '11px', overflow: 'hidden' }}>
-          {workspaceSnapshot.items.map((workspace, index) => {
-            const checked = settings.workspaceIds.includes(workspace.workspaceId)
-            return <label key={workspace.workspaceId} style={{
-              alignItems: 'center', borderTop: index === 0 ? 'none' : '1px solid var(--dsw-alias-border-l2, #3d3d43)',
-              cursor: writable ? 'pointer' : 'default', display: 'flex', gap: '11px', padding: '11px 13px',
-            }}>
-              <input type="checkbox" checked={checked} disabled={!writable}
-                onChange={() => { toggleWorkspace(workspace.workspaceId) }} />
-              <span style={{ minWidth: 0 }}>
-                <strong style={{ display: 'block', fontSize: '13px', fontWeight: 580 }}>{workspace.title}</strong>
-                <span style={{ display: 'block', fontSize: '11px', marginTop: '2px', opacity: .45, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {workspace.path}
-                </span>
-              </span>
-            </label>
-          })}
-        </div>}
-      {settings.workspaceIds.length === 0 && <p style={{ fontSize: '12px', margin: '10px 0 0', opacity: .58 }}>
-        尚未选择工作区，新的角色入口会暂时隐藏
-      </p>}
-    </div>}
+    <details style={{
+      border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '12px', marginBottom: '22px',
+    }}>
+      <summary style={{ cursor: 'pointer', fontSize: '13px', fontWeight: 620, padding: '13px 14px' }}>
+        工作区入口范围（高级）
+      </summary>
+      <div style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #3d3d43)', padding: '14px' }}>
+        <p style={{ fontSize: '12px', lineHeight: 1.55, margin: '0 0 13px', opacity: .56 }}>
+          当前工作区可直接在侧栏工作台切换；这里用于批量管理所有工作区
+        </p>
+        <div style={{ display: 'grid', gap: '8px' }}>
+          <button type="button" disabled={!writable} style={choiceStyle(settings.workspaceMode === 'all')}
+            onClick={() => { write({ ...settings, workspaceMode: 'all' }) }}>
+            <span aria-hidden="true" style={{ color: settings.workspaceMode === 'all' ? color : 'inherit' }}>
+              {settings.workspaceMode === 'all' ? '●' : '○'}
+            </span>
+            <span><strong style={{ display: 'block', fontSize: '13px' }}>默认全部启用</strong>
+              <span style={{ fontSize: '12px', opacity: .55 }}>未来工作区也默认可用，可在下方单独关闭</span></span>
+          </button>
+          <button type="button" disabled={!writable} style={choiceStyle(settings.workspaceMode === 'selected')}
+            onClick={() => { write({ ...settings, workspaceMode: 'selected' }) }}>
+            <span aria-hidden="true" style={{ color: settings.workspaceMode === 'selected' ? color : 'inherit' }}>
+              {settings.workspaceMode === 'selected' ? '●' : '○'}
+            </span>
+            <span><strong style={{ display: 'block', fontSize: '13px' }}>仅指定工作区</strong>
+              <span style={{ fontSize: '12px', opacity: .55 }}>未来工作区默认关闭，只启用下方勾选项</span></span>
+          </button>
+        </div>
+        <div style={{ marginTop: '18px' }}>
+          <h3 style={{ fontSize: '13px', margin: '0 0 9px' }}>工作区</h3>
+          {workspaceSnapshot.items.length === 0
+            ? <p style={{ fontSize: '12px', margin: 0, opacity: .55 }}>还没有可选的工作区</p>
+            : <div style={{ border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '11px', overflow: 'hidden' }}>
+              {workspaceSnapshot.items.map((workspace, index) => {
+                const checked = allowsAgentRpEntry(settings, workspace.workspaceId)
+                return <label key={workspace.workspaceId} style={{
+                  alignItems: 'center', borderTop: index === 0 ? 'none' : '1px solid var(--dsw-alias-border-l2, #3d3d43)',
+                  cursor: writable ? 'pointer' : 'default', display: 'flex', gap: '11px', padding: '11px 13px',
+                }}>
+                  <input type="checkbox" checked={checked} disabled={!writable}
+                    onChange={() => { toggleWorkspace(workspace.workspaceId) }} />
+                  <span style={{ minWidth: 0 }}>
+                    <strong style={{ display: 'block', fontSize: '13px', fontWeight: 580 }}>{workspace.title}</strong>
+                    <span style={{ display: 'block', fontSize: '11px', marginTop: '2px', opacity: .45, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {workspace.path}
+                    </span>
+                  </span>
+                </label>
+              })}
+            </div>}
+          {settings.workspaceMode === 'selected' && settings.workspaceIds.length === 0 && <p style={{
+            fontSize: '12px', margin: '10px 0 0', opacity: .58,
+          }}>尚未选择工作区，新的角色入口会暂时隐藏</p>}
+          {settings.workspaceMode === 'all' && settings.workspaceExcludedIds.length > 0 && <p style={{
+            fontSize: '12px', margin: '10px 0 0', opacity: .58,
+          }}>{settings.workspaceExcludedIds.length} 个工作区已单独关闭</p>}
+        </div>
+      </div>
+    </details>
     <NativeIdentitySettingsPanel />
     <ImageGenerationSettingsPanel settings={settings} writable={writable} onSave={write} />
     {snapshot.status === 'loading' && <p role="status" style={{ fontSize: '12px', marginTop: '14px', opacity: .55 }}>正在读取设置…</p>}

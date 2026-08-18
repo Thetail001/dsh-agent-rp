@@ -12,3 +12,10 @@ test('sidebar workbench declares entry motion and reduced-motion fallback', () =
   assert.match(source, /data-agent-rp-workbench-dismiss/u)
   assert.match(source, /data-agent-rp-destination-icon/u)
 })
+
+test('sidebar workbench owns current-workspace access while global settings stay advanced', () => {
+  assert.match(source, /data-agent-rp-workspace-access/u)
+  assert.match(source, /data-agent-rp-action="toggle-workspace-access"/u)
+  assert.match(source, /当前工作区可直接在侧栏工作台切换/u)
+  assert.match(source, /工作区入口范围（高级）/u)
+})
