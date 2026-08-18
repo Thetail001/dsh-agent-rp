@@ -1172,13 +1172,14 @@ function CharacterRemoteResourcesSection({ detail, onChange }: {
       alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)',
       display: 'flex', gap: '9px', padding: '9px 11px',
     }}>
-      <span style={{ fontSize: '11px', lineHeight: 1.45, minWidth: 0 }}>
+      <span style={{ flex: '1 1 auto', fontSize: '11px', lineHeight: 1.45, minWidth: 0 }}>
         <strong style={{ display: 'block' }}>{detail.remoteResourcePolicy === 'isolated-https' ? '兼容测试模式' : '按需确认模式'}</strong>
         <span style={{ opacity: .48 }}>{detail.remoteResourcePolicy === 'isolated-https'
           ? '本卡 HTTPS 资源已全部放行；隔离边界仍保留'
           : '只加载逐项确认过的来源和资源类型'}</span>
       </span>
-      <button type="button" disabled={workingResource !== undefined} onClick={() => {
+      <button type="button" data-agent-rp-action="toggle-card-resource-policy"
+        disabled={workingResource !== undefined} onClick={() => {
         const policy = detail.remoteResourcePolicy === 'isolated-https' ? 'prompt' : 'isolated-https'
         setWorkingResource('policy')
         setError(undefined)
@@ -1190,7 +1191,7 @@ function CharacterRemoteResourcesSection({ detail, onChange }: {
           setWorkingResource(undefined)
           setError(reason instanceof Error ? reason.message : String(reason))
         })
-      }} style={{ ...miniButtonStyle, marginLeft: 'auto' }}>
+      }} style={{ ...miniButtonStyle, flex: 'none', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
         {workingResource === 'policy' ? '处理中…' : detail.remoteResourcePolicy === 'isolated-https' ? '恢复按需确认' : '启用测试模式'}
       </button>
     </div>
