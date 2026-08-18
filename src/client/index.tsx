@@ -29,6 +29,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 import type { AgentRpProjection } from '../projection-types.ts'
 import { resolveLegacySidebarWidth } from './sidebar-slot-compat.ts'
+import { resolveRoleplayAvatarSource } from './avatar-source.ts'
 import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/types.ts'
 import { parseTavernHelperScripts } from '../import/tavern-helper.ts'
 import { importTavernRegex } from '../tavern-regex.ts'
@@ -1091,42 +1092,47 @@ function roleplayDisplayName(summary: SessionSummary | undefined, projection: Ag
   return summary?.title?.trim() || projection.characterName
 }
 
-function Avatar({ projection, loadAvatar, imageUrl, size = 40 }: {
+function Avatar({ projection, loadAvatar, imageUrl, libraryAvatarAvailable, size = 40 }: {
   readonly projection: AgentRpProjection
   readonly loadAvatar: HeaderProps['loadAvatar']
   readonly imageUrl?: string
+  readonly libraryAvatarAvailable?: boolean
   readonly size?: number
 }) {
   const [src, setSrc] = useState<string>()
   useEffect(() => {
     let current = true
     let objectUrl: string | undefined
-    const attachmentId = projection.avatarAttachmentId
-    const libraryId = projection.avatarLibraryId
-    if (imageUrl !== undefined) {
-      setSrc(imageUrl)
+    const source = resolveRoleplayAvatarSource({
+      ...(imageUrl === undefined ? {} : { imageUrl }),
+      ...(projection.avatarAttachmentId === undefined ? {} : { attachmentId: projection.avatarAttachmentId }),
+      ...(projection.avatarLibraryId === undefined ? {} : { libraryId: projection.avatarLibraryId }),
+      ...(libraryAvatarAvailable === undefined ? {} : { libraryAvatarAvailable }),
+    })
+    if (source.kind === 'direct') {
+      setSrc(source.url)
       return () => { current = false }
     }
-    if (attachmentId === undefined && libraryId === undefined) {
+    if (source.kind === 'fallback') {
       setSrc(undefined)
       return () => { current = false }
     }
-    const loading = libraryId === undefined
-      ? loadAvatar(attachmentId!)
-      : Promise.resolve(`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(libraryId)}/avatar`)
+    const loading = source.kind === 'attachment'
+      ? loadAvatar(source.id)
+      : Promise.resolve(`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(source.id)}/avatar`)
     void loading.then((url: string | undefined) => {
       if (!current) {
         if (url !== undefined) URL.revokeObjectURL(url)
         return
       }
-      objectUrl = url
+      objectUrl = source.kind === 'attachment' ? url : undefined
       setSrc(url)
     })
     return () => {
       current = false
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl)
     }
-  }, [imageUrl, loadAvatar, projection.avatarAttachmentId, projection.avatarLibraryId])
+  }, [imageUrl, libraryAvatarAvailable, loadAvatar, projection.avatarAttachmentId, projection.avatarLibraryId])
   return <span style={{
     alignItems: 'center',
     background: `color-mix(in srgb, ${color} 16%, transparent)`,
@@ -3018,7 +3024,9 @@ function RoleplayHeader({
   }))
   return <>
     <div ref={rootRef} className="agent-rp-header" data-agent-rp-header style={{ alignItems: 'center', display: 'flex', gap: '10px', marginRight: 'auto', minWidth: 0 }}>
-      <Avatar projection={displayProjection} loadAvatar={loadAvatar} {...(expressionUrl === undefined ? {} : { imageUrl: expressionUrl })} />
+      <Avatar projection={displayProjection} loadAvatar={loadAvatar}
+        {...(storedCharacterDetail === undefined ? {} : { libraryAvatarAvailable: storedCharacterDetail.avatarAvailable })}
+        {...(expressionUrl === undefined ? {} : { imageUrl: expressionUrl })} />
       <div className="agent-rp-header-meta" style={{ minWidth: 0 }}>
         <div style={{ alignItems: 'baseline', display: 'flex', gap: '8px', minWidth: 0 }}>
           <strong style={{ fontSize: '15px', fontWeight: 620, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -3122,7 +3130,9 @@ function RoleplayHeader({
         boxShadow: '-18px 0 44px rgba(0,0,0,.2)', maxWidth: '92vw', overflowY: 'auto', padding: '24px', width: '380px',
       }}>
         <div style={{ alignItems: 'center', display: 'flex', gap: '13px' }}>
-          <Avatar projection={displayProjection} loadAvatar={loadAvatar} {...(expressionUrl === undefined ? {} : { imageUrl: expressionUrl })} size={54} />
+          <Avatar projection={displayProjection} loadAvatar={loadAvatar}
+            {...(storedCharacterDetail === undefined ? {} : { libraryAvatarAvailable: storedCharacterDetail.avatarAvailable })}
+            {...(expressionUrl === undefined ? {} : { imageUrl: expressionUrl })} size={54} />
           <div style={{ minWidth: 0 }}>
             <h2 style={{ fontSize: '18px', margin: 0 }}>{displayName}</h2>
             <div style={{ fontSize: '12px', marginTop: '5px', opacity: 0.52 }}>
