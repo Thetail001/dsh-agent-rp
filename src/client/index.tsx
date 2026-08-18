@@ -1576,6 +1576,38 @@ const characterLibraryNarrowQuery = '(max-width: 720px)'
 
 const agentRpResponsiveStyle = `
 .agent-rp-mobile-only { display: none !important; }
+[data-agent-rp-action='open-workbench'] {
+  transition:
+    background-color var(--ds-transition-duration-slow, 180ms) var(--ds-ease-in-out, ease),
+    transform var(--ds-transition-duration-slow, 180ms) var(--ds-ease-in-out, ease);
+}
+[data-agent-rp-action='open-workbench']:active { transform: scale(.94); }
+[data-agent-rp-destination-icon] {
+  transition: transform var(--ds-transition-duration-slow, 180ms) var(--ds-ease-in-out, ease);
+}
+[data-agent-rp-action='open-workbench'][aria-expanded='true'] [data-agent-rp-destination-icon] {
+  transform: scale(1.08);
+}
+[data-agent-rp-workbench-dismiss] {
+  animation: agent-rp-workbench-mask-in var(--ds-transition-duration-slow, 180ms) var(--ds-ease-in-out, ease) both;
+}
+[data-agent-rp-workbench] {
+  animation: agent-rp-workbench-panel-in var(--ds-transition-duration-slow, 180ms) var(--ds-ease-in-out, ease) both;
+}
+@keyframes agent-rp-workbench-mask-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes agent-rp-workbench-panel-in {
+  from { opacity: .68; transform: translateX(-14px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-agent-rp-action='open-workbench'],
+  [data-agent-rp-destination-icon] { transition: none; }
+  [data-agent-rp-workbench-dismiss],
+  [data-agent-rp-workbench] { animation: none; }
+}
 @media (max-width: 720px) {
   .agent-rp-header {
     flex: 1 1 auto !important;
@@ -2003,12 +2035,14 @@ function SidebarRoleplayDestination({
         justifyContent: wide ? 'flex-start' : 'center', margin: wide ? '2px 0' : '4px auto',
         overflow: 'hidden', padding: wide ? '0 8px' : 0, width: wide ? '100%' : '36px',
       }}>
-        <span style={{ color, display: 'inline-flex', flex: 'none' }}><RoleplayDestinationIcon size={wide ? 16 : 18} /></span>
+        <span data-agent-rp-destination-icon style={{ color, display: 'inline-flex', flex: 'none' }}>
+          <RoleplayDestinationIcon size={wide ? 16 : 18} />
+        </span>
         {wide && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Agent RP</span>}
       </button>
     </Tooltip>
     {workbenchOpen && <div role="presentation" style={{ inset: 0, position: 'fixed', zIndex: 980 }}>
-      <button type="button" aria-label="关闭 Agent RP 工作台" onClick={closeWorkbench} style={{
+      <button type="button" aria-label="关闭 Agent RP 工作台" data-agent-rp-workbench-dismiss onClick={closeWorkbench} style={{
         background: 'var(--dsw-alias-bg-mask-1, rgba(0,0,0,.34))', border: 0, cursor: 'default', inset: 0,
         padding: 0, position: 'absolute', width: '100%',
       }} />
