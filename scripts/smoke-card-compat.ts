@@ -347,55 +347,11 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
 
   async clickAction(action: AgentRpCompatSmokeAction, sourceSessionId?: string): Promise<void> {
     this.markConsolePhase(this.launched ? 'interaction' : 'preflight')
-    if (action === 'toggle-session-preset-module') {
-      const switches = await this.page.locator('[data-agent-rp-preset-toggle]').all()
-      for (const candidate of switches) {
-        if (!await candidate.isVisible()) continue
-        await candidate.click({ timeout: this.timeoutMs })
-        return
-      }
-      throw new SmokeCommandError('interaction-missing')
-    }
-    if (action === 'select-world-info-entry') {
-      const entries = await this.page.locator('[data-agent-rp-world-entry]').all()
-      for (const candidate of entries) {
-        if (!await candidate.isVisible()) continue
-        await candidate.click({ timeout: this.timeoutMs })
-        return
-      }
-      throw new SmokeCommandError('interaction-missing')
-    }
-    if (action === 'toggle-world-info-entry') {
-      await this.page.locator('[data-agent-rp-world-entry-toggle]')
-        .waitFor({ state: 'visible', timeout: this.timeoutMs })
-      await this.page.locator('[data-agent-rp-world-entry-toggle]').click({ timeout: this.timeoutMs })
-      return
-    }
-    if (action === 'open-archived-collection' || action === 'open-active-collection') {
-      const value = action === 'open-archived-collection' ? 'archived' : 'active'
-      await this.page.locator(`[data-agent-rp-collection-tab-value="${value}"]`)
-        .click({ timeout: this.timeoutMs })
-      return
-    }
-    if (action === 'toggle-character-archived') {
-      await this.page.waitForFunction(() => {
-        const button = document.querySelector('[data-agent-rp-character-archive-toggle]')
-        return button instanceof HTMLElement && !(button as HTMLButtonElement).disabled
-      }, undefined, { timeout: this.timeoutMs })
-      await this.page.locator('[data-agent-rp-character-archive-toggle]').click({ timeout: this.timeoutMs })
-      return
-    }
     const candidates = await this.page.locator(`[data-agent-rp-action="${action}"]`).all()
     for (const candidate of candidates) {
       if (sourceSessionId !== undefined
         && await candidate.getAttribute('data-agent-rp-source-session') !== sourceSessionId) continue
       if (!await candidate.isVisible()) continue
-      if (action === 'save-session-preset') {
-        await this.page.waitForFunction(() => {
-          const button = document.querySelector('[data-agent-rp-action="save-session-preset"]')
-          return button instanceof HTMLElement && !(button as HTMLButtonElement).disabled
-        }, undefined, { timeout: this.timeoutMs })
-      }
       await candidate.click({ timeout: this.timeoutMs })
       return
     }

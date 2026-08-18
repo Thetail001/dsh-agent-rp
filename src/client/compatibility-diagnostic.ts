@@ -27,7 +27,6 @@ export type AgentRpBrowserCompatibilityIssue =
   | 'preflight-failed'
   | 'preflight-launch-mismatch'
   | 'preflight-request-failed'
-  | 'preset-count-mismatch'
   | 'tavern-permission-count-mismatch'
   | 'tavern-runtime-failed'
   | 'world-engine-degraded'
@@ -46,20 +45,10 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly characterLibrary: {
       readonly launchers: number
       readonly state: 'closed' | 'open'
-      /** Active role-library collection displayed inside the open dialog. */
-      readonly collection: 'active' | 'archived' | 'unknown'
-      /** Character entries rendered in the displayed collection. */
-      readonly entries: number
-      /** Archive/restore controls rendered for the selected entry. */
-      readonly archiveToggle: number
     }
     readonly presetManager: {
       readonly launchers: number
       readonly state: 'closed' | 'open'
-      /** Session-owned preset switches rendered inside the open manager. */
-      readonly toggleable: number
-      /** Save-control markers rendered inside the open manager. */
-      readonly save: number
     }
     readonly sessionSettings: {
       readonly launchers: number
@@ -77,10 +66,6 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly worldInfoManager: {
       readonly launchers: number
       readonly state: 'closed' | 'open'
-      /** World-info entries rendered inside the open manager. */
-      readonly entries: number
-      /** Entry-toggle controls rendered inside the open manager. */
-      readonly toggle: number
     }
   }
   readonly session?: {
@@ -109,13 +94,6 @@ export interface AgentRpBrowserCompatibilitySnapshot {
       readonly approved: number
       readonly pending: number
     }
-    readonly preset?: {
-      readonly revision: number
-      readonly promptCount: number
-      readonly enabledCount: number
-      readonly regexCount: number
-      readonly enabledRegexCount: number
-    }
     readonly variables: {
       readonly surfaces: number
       readonly sharedScopes: number
@@ -129,8 +107,6 @@ export interface AgentRpBrowserCompatibilitySnapshot {
       readonly entries: number
       readonly active: number
       readonly budgetExcluded: number
-      /** Durable session world-info configuration revision when the client publishes it. */
-      readonly revision?: number
       readonly failures: {
         readonly regexRuntimeUnavailable: number
         readonly regexInvalid: number
@@ -206,7 +182,6 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly interactiveEntriesPresent: boolean
     readonly preflightConsistent: boolean
     readonly preflightHealthy: boolean
-    readonly presetCountsConsistent: boolean
     readonly tavernPermissionsConsistent: boolean
     readonly tavernRuntimeHealthy: boolean
     readonly worldEngineHealthy: boolean
@@ -279,24 +254,14 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
   const preflightElement = root.querySelector('[data-agent-rp-resource-preflight]')
   const startElement = root.querySelector('[data-agent-rp-start-readiness]')
   const characterLibraryLaunchers = root.querySelectorAll('[data-agent-rp-action="open-character-library"]').length
-  const characterLibraryElement = root.querySelector('[data-agent-rp-surface="character-library"]')
-  const characterLibraryOpen = characterLibraryElement !== null
-  const characterLibraryCollectionValue = characterLibraryElement?.getAttribute('data-agent-rp-character-collection')
-  const characterLibraryCollection = characterLibraryCollectionValue === 'active' || characterLibraryCollectionValue === 'archived'
-    ? characterLibraryCollectionValue : 'unknown'
-  const characterLibraryEntries = root.querySelectorAll('[data-agent-rp-character-id]').length
-  const characterLibraryArchiveToggle = root.querySelectorAll('[data-agent-rp-character-archive-toggle]').length
+  const characterLibraryOpen = root.querySelector('[data-agent-rp-surface="character-library"]') !== null
   const sessionSettingsLaunchers = root.querySelectorAll('[data-agent-rp-action="toggle-session-settings"]').length
   const sessionSettingsOpen = root.querySelector('[data-agent-rp-surface="session-settings"]')
     ?.getAttribute('data-agent-rp-surface-state') === 'open'
   const presetManagerLaunchers = root.querySelectorAll('[data-agent-rp-action="open-preset-manager"]').length
   const presetManagerOpen = root.querySelector('[data-agent-rp-surface="preset-manager"]') !== null
-  const presetManagerToggleable = root.querySelectorAll('[data-agent-rp-preset-toggle]').length
-  const presetManagerSave = root.querySelectorAll('[data-agent-rp-action="save-session-preset"]').length
   const worldInfoManagerLaunchers = root.querySelectorAll('[data-agent-rp-action="open-world-info-manager"]').length
   const worldInfoManagerOpen = root.querySelector('[data-agent-rp-surface="world-info-manager"]') !== null
-  const worldInfoManagerEntries = root.querySelectorAll('[data-agent-rp-world-entry]').length
-  const worldInfoManagerToggle = root.querySelectorAll('[data-agent-rp-world-entry-toggle]').length
   const tavernPanelLaunchers = root.querySelectorAll('[data-agent-rp-action="open-tavern-panel"]').length
   const mobileLaunchers = root.querySelectorAll('[data-agent-rp-action="open-mobile-surface"]').length
   const tavernPermissionLaunchers = root.querySelectorAll('[data-agent-rp-action="open-tavern-permissions"]').length
@@ -360,21 +325,12 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
         sharedScopes: integer(status, 'data-agent-rp-variable-shared-scopes'),
         scriptScopes: integer(status, 'data-agent-rp-variable-script-scopes'),
       },
-      ...(status.getAttribute('data-agent-rp-preset-prompt-count') === null ? {} : { preset: {
-        revision: integer(status, 'data-agent-rp-preset-revision'),
-        promptCount: integer(status, 'data-agent-rp-preset-prompt-count'),
-        enabledCount: integer(status, 'data-agent-rp-preset-enabled-count'),
-        regexCount: integer(status, 'data-agent-rp-preset-regex-count'),
-        enabledRegexCount: integer(status, 'data-agent-rp-preset-enabled-regex-count'),
-      } }),
       renderer: { inlineFrontendSanitizer },
       worldEngine: {
         engine: value(status, 'data-agent-rp-world-engine'),
         entries: integer(status, 'data-agent-rp-world-engine-entries'),
         active: integer(status, 'data-agent-rp-world-engine-active'),
         budgetExcluded: integer(status, 'data-agent-rp-world-engine-budget-excluded'),
-        ...(status.getAttribute('data-agent-rp-world-info-revision') === null
-          ? {} : { revision: integer(status, 'data-agent-rp-world-info-revision') }),
         failures: worldEngineFailures,
       },
       ...(tavern === null ? {} : { tavern: {
@@ -448,11 +404,6 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     }
     if ((session.tavern?.failed ?? 0) > 0) issues.add('tavern-runtime-failed')
     if (Object.values(session.worldEngine.failures).some(count => count > 0)) issues.add('world-engine-degraded')
-    if (session.preset !== undefined
-      && (session.preset.enabledCount > session.preset.promptCount
-        || session.preset.enabledRegexCount > session.preset.regexCount)) {
-      issues.add('preset-count-mismatch')
-    }
   }
 
   const interactiveEntriesPresent = session === undefined || (
@@ -564,15 +515,10 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       characterLibrary: {
         launchers: characterLibraryLaunchers,
         state: characterLibraryOpen ? 'open' : 'closed',
-        collection: characterLibraryOpen ? characterLibraryCollection : 'unknown',
-        entries: characterLibraryEntries,
-        archiveToggle: characterLibraryArchiveToggle,
       },
       presetManager: {
         launchers: presetManagerLaunchers,
         state: presetManagerOpen ? 'open' : 'closed',
-        toggleable: presetManagerToggleable,
-        save: presetManagerSave,
       },
       sessionSettings: {
         launchers: sessionSettingsLaunchers,
@@ -590,8 +536,6 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       worldInfoManager: {
         launchers: worldInfoManagerLaunchers,
         state: worldInfoManagerOpen ? 'open' : 'closed',
-        entries: worldInfoManagerEntries,
-        toggle: worldInfoManagerToggle,
       },
     },
     ...(session === undefined ? {} : { session }),
@@ -607,7 +551,6 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       interactiveEntriesPresent,
       preflightConsistent,
       preflightHealthy,
-      presetCountsConsistent: session === undefined || !issues.has('preset-count-mismatch'),
       tavernPermissionsConsistent,
       tavernRuntimeHealthy: session?.tavern === undefined || session.tavern.failed === 0,
       worldEngineHealthy: session === undefined || !issues.has('world-engine-degraded'),
@@ -673,14 +616,7 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-variable-surfaces',
       'data-agent-rp-variable-shared-scopes',
       'data-agent-rp-variable-script-scopes',
-      'data-agent-rp-preset-revision',
-      'data-agent-rp-preset-prompt-count',
-      'data-agent-rp-preset-enabled-count',
-      'data-agent-rp-preset-regex-count',
-      'data-agent-rp-preset-enabled-regex-count',
-      'data-agent-rp-preset-toggle',
       'data-agent-rp-world-engine',
-      'data-agent-rp-world-info-revision',
       'data-agent-rp-world-engine-entries',
       'data-agent-rp-world-engine-active',
       'data-agent-rp-world-engine-budget-excluded',
@@ -744,12 +680,6 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-action',
       'data-agent-rp-surface',
       'data-agent-rp-surface-state',
-      'data-agent-rp-character-collection',
-      'data-agent-rp-collection-tab',
-      'data-agent-rp-collection-tab-value',
-      'data-agent-rp-character-archive-toggle',
-      'data-agent-rp-world-entry',
-      'data-agent-rp-world-entry-toggle',
     ],
     childList: true,
     subtree: true,

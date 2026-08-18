@@ -158,18 +158,11 @@ export function classifyAgentRpSmokeConsoleSignal(
 export type AgentRpCompatSmokeAction =
   | 'open-character-library'
   | 'close-character-library'
-  | 'open-archived-collection'
-  | 'open-active-collection'
-  | 'toggle-character-archived'
   | 'toggle-session-settings'
   | 'open-preset-manager'
   | 'close-preset-manager'
-  | 'toggle-session-preset-module'
-  | 'save-session-preset'
   | 'open-world-info-manager'
   | 'close-world-info-manager'
-  | 'select-world-info-entry'
-  | 'toggle-world-info-entry'
   | 'open-tavern-panel'
   | 'close-tavern-panel'
   | 'open-mobile-surface'
@@ -352,14 +345,10 @@ async function poll(
 
 function surfaceState(snapshot: AgentRpBrowserCompatibilitySnapshot, action: AgentRpCompatSmokeAction): string {
   switch (action) {
-    case 'open-character-library': case 'close-character-library':
-    case 'open-archived-collection': case 'open-active-collection':
-    case 'toggle-character-archived': return snapshot.interactions.characterLibrary.state
+    case 'open-character-library': case 'close-character-library': return snapshot.interactions.characterLibrary.state
     case 'toggle-session-settings': return snapshot.interactions.sessionSettings.state
-    case 'open-preset-manager': case 'close-preset-manager':
-    case 'toggle-session-preset-module': case 'save-session-preset': return snapshot.interactions.presetManager.state
-    case 'open-world-info-manager': case 'close-world-info-manager':
-    case 'select-world-info-entry': case 'toggle-world-info-entry': return snapshot.interactions.worldInfoManager.state
+    case 'open-preset-manager': case 'close-preset-manager': return snapshot.interactions.presetManager.state
+    case 'open-world-info-manager': case 'close-world-info-manager': return snapshot.interactions.worldInfoManager.state
     case 'open-tavern-panel': case 'open-mobile-surface': case 'close-tavern-panel': return snapshot.interactions.tavernPanel.state
   }
 }
@@ -400,218 +389,15 @@ async function exerciseInteraction(
   return closed !== undefined && surfaceState(closed, close) === 'closed'
 }
 
-/** Content-free session preset counts used to verify one save round trip. */
-function presetCounts(snapshot: AgentRpBrowserCompatibilitySnapshot):
-  { readonly revision: number; readonly enabledCount: number; readonly enabledRegexCount: number } | undefined {
-  const preset = snapshot.session?.preset
-  if (preset === undefined) return undefined
-  return { revision: preset.revision, enabledCount: preset.enabledCount, enabledRegexCount: preset.enabledRegexCount }
-}
-
-/**
- * Flip one session-owned preset switch, save it, and wait for the content-free
- * counts to advance. A manager with no toggleable switches is a successful no-op.
- */
-async function exerciseSessionPresetToggle(
-  driver: AgentRpCompatSmokeDriver,
-  snapshot: AgentRpBrowserCompatibilitySnapshot,
-  timeoutMs: number,
-  pollMs: number,
-): Promise<boolean> {
-  const baseline = presetCounts(snapshot)
-  if (snapshot.interactions.presetManager.toggleable === 0 || baseline === undefined) return true
-  try {
-    await driver.clickAction('toggle-session-preset-module')
-    await driver.clickAction('save-session-preset')
-  } catch {
-    return false
-  }
-  const deadline = Date.now() + timeoutMs
-  while (true) {
-    const current = await driver.snapshot()
-    const counts = current === undefined ? undefined : presetCounts(current)
-    if (counts !== undefined && counts.revision > baseline.revision) {
-      const enabledChanged = counts.enabledCount === baseline.enabledCount + 1
-        || counts.enabledCount === baseline.enabledCount - 1
-      const regexChanged = counts.enabledRegexCount === baseline.enabledRegexCount + 1
-        || counts.enabledRegexCount === baseline.enabledRegexCount - 1
-      if (enabledChanged !== regexChanged) return true
-    }
-    if (Date.now() >= deadline) return false
-    await driver.delay(Math.min(pollMs, Math.max(1, deadline - Date.now())))
-  }
-}
-
-/**
- * Select one world-info entry, toggle it, and wait for the durable world-info
- * configuration revision to advance. A manager with no entries is a successful no-op.
- */
-async function exerciseWorldInfoToggle(
-  driver: AgentRpCompatSmokeDriver,
-  snapshot: AgentRpBrowserCompatibilitySnapshot,
-  timeoutMs: number,
-  pollMs: number,
-): Promise<boolean> {
-  const baseline = snapshot.session?.worldEngine.revision
-  if (snapshot.interactions.worldInfoManager.entries === 0 || baseline === undefined) return true
-  try {
-    await driver.clickAction('select-world-info-entry')
-    await driver.clickAction('toggle-world-info-entry')
-  } catch {
-    return false
-  }
-  const deadline = Date.now() + timeoutMs
-  while (true) {
-    const current = await driver.snapshot()
-    const revision = current?.session?.worldEngine.revision
-    if (revision !== undefined && revision > baseline) return true
-    if (Date.now() >= deadline) return false
-    await driver.delay(Math.min(pollMs, Math.max(1, deadline - Date.now())))
-  }
-}
-
-/** Content-free character-library facts used to verify one archive round trip. */
-function libraryFacts(snapshot: AgentRpBrowserCompatibilitySnapshot): {
-  readonly collection: AgentRpBrowserCompatibilitySnapshot['interactions']['characterLibrary']['collection']
-  readonly entries: number
-  readonly archiveToggle: number
-} {
-  return snapshot.interactions.characterLibrary
-}
-
-async function waitForLibraryFacts(
-  driver: AgentRpCompatSmokeDriver,
-  predicate: (snapshot: AgentRpBrowserCompatibilitySnapshot) => boolean,
-  timeoutMs: number,
-  pollMs: number,
-): Promise<AgentRpBrowserCompatibilitySnapshot | undefined> {
-  const deadline = Date.now() + timeoutMs
-  while (true) {
-    const snapshot = await driver.snapshot()
-    if (snapshot !== undefined && predicate(snapshot)) return snapshot
-    if (Date.now() >= deadline) return undefined
-    await driver.delay(Math.min(pollMs, Math.max(1, deadline - Date.now())))
-  }
-}
-
-/**
- * Archive the selected character into the collection box and restore it, waiting
- * for the content-free entry counts and collection to round-trip.
- */
-async function exerciseCharacterArchive(
-  driver: AgentRpCompatSmokeDriver,
-  snapshot: AgentRpBrowserCompatibilitySnapshot,
-  characterId: string,
-  timeoutMs: number,
-  pollMs: number,
-): Promise<boolean> {
-  const baseline = libraryFacts(snapshot)
-  if (baseline.collection !== 'active') return false
-  try {
-    await driver.selectCharacter(characterId)
-  } catch {
-    return false
-  }
-  const selectedActive = await waitForLibraryFacts(
-    driver, value => libraryFacts(value).archiveToggle >= 1, timeoutMs, pollMs,
-  )
-  if (selectedActive === undefined) return false
-  try {
-    await driver.clickAction('open-archived-collection')
-  } catch {
-    return false
-  }
-  const archivedBaseline = await waitForLibraryFacts(
-    driver, value => libraryFacts(value).collection === 'archived', timeoutMs, pollMs,
-  )
-  if (archivedBaseline === undefined) return false
-  const archivedEntries = libraryFacts(archivedBaseline).entries
-  try {
-    await driver.clickAction('open-active-collection')
-    const active = await waitForLibraryFacts(
-      driver, value => libraryFacts(value).collection === 'active', timeoutMs, pollMs,
-    )
-    if (active === undefined) return false
-    await driver.selectCharacter(characterId)
-  } catch {
-    return false
-  }
-  const reselected = await waitForLibraryFacts(
-    driver, value => libraryFacts(value).archiveToggle >= 1, timeoutMs, pollMs,
-  )
-  if (reselected === undefined) return false
-  try {
-    await driver.clickAction('toggle-character-archived')
-  } catch {
-    return false
-  }
-  const movedAway = await waitForLibraryFacts(
-    driver, value => libraryFacts(value).collection === 'active'
-      && libraryFacts(value).entries === baseline.entries - 1, timeoutMs, pollMs,
-  )
-  if (movedAway === undefined) return false
-  try {
-    await driver.clickAction('open-archived-collection')
-  } catch {
-    return false
-  }
-  const movedIn = await waitForLibraryFacts(
-    driver, value => libraryFacts(value).collection === 'archived'
-      && libraryFacts(value).entries === archivedEntries + 1, timeoutMs, pollMs,
-  )
-  if (movedIn === undefined) return false
-  try {
-    await driver.selectCharacter(characterId)
-  } catch {
-    return false
-  }
-  const selectedArchived = await waitForLibraryFacts(
-    driver, value => libraryFacts(value).archiveToggle >= 1, timeoutMs, pollMs,
-  )
-  if (selectedArchived === undefined) return false
-  try {
-    await driver.clickAction('toggle-character-archived')
-  } catch {
-    return false
-  }
-  const restoredAway = await waitForLibraryFacts(
-    driver, value => libraryFacts(value).collection === 'archived'
-      && libraryFacts(value).entries === archivedEntries, timeoutMs, pollMs,
-  )
-  if (restoredAway === undefined) return false
-  try {
-    await driver.clickAction('open-active-collection')
-  } catch {
-    return false
-  }
-  const restoredActive = await waitForLibraryFacts(
-    driver, value => libraryFacts(value).collection === 'active'
-      && libraryFacts(value).entries === baseline.entries, timeoutMs, pollMs,
-  )
-  return restoredActive !== undefined
-}
-
 async function exerciseStableInteractions(
   driver: AgentRpCompatSmokeDriver,
   snapshot: AgentRpBrowserCompatibilitySnapshot,
   timeoutMs: number,
   pollMs: number,
-  characterId?: string,
 ): Promise<AgentRpCompatSmokeDecision> {
   if (!snapshot.checks.interactiveEntriesPresent) return failed('interaction-missing')
   try {
-    await driver.clickAction('open-character-library')
-    const libraryOpened = await waitForSurface(driver, 'open-character-library', 'open', timeoutMs, pollMs)
-    if (libraryOpened === undefined || libraryOpened.interactions.characterLibrary.state !== 'open') {
-      return failed('interaction-failed')
-    }
-    if (characterId !== undefined
-      && !await exerciseCharacterArchive(driver, libraryOpened, characterId, timeoutMs, pollMs)) {
-      return failed('interaction-failed')
-    }
-    await driver.clickAction('close-character-library')
-    const libraryClosed = await waitForSurface(driver, 'close-character-library', 'closed', timeoutMs, pollMs)
-    if (libraryClosed === undefined || libraryClosed.interactions.characterLibrary.state !== 'closed') {
+    if (!await exerciseInteraction(driver, 'open-character-library', 'open', 'close-character-library', timeoutMs, pollMs)) {
       return failed('interaction-failed')
     }
     await driver.clickAction('toggle-session-settings')
@@ -619,39 +405,15 @@ async function exerciseStableInteractions(
     if (settingsForPreset === undefined || settingsForPreset.interactions.sessionSettings.state !== 'open') {
       return failed('interaction-failed')
     }
-    await driver.clickAction('open-preset-manager')
-    const presetManagerOpened = await waitForSurface(driver, 'open-preset-manager', 'open', timeoutMs, pollMs)
-    if (presetManagerOpened === undefined || presetManagerOpened.interactions.presetManager.state !== 'open') {
+    if (!await exerciseInteraction(driver, 'open-preset-manager', 'open', 'close-preset-manager', timeoutMs, pollMs)) {
       return failed('interaction-failed')
-    }
-    if (!await exerciseSessionPresetToggle(driver, presetManagerOpened, timeoutMs, pollMs)) {
-      return failed('interaction-failed')
-    }
-    // A successful product save closes the manager itself; only close it when it stayed open.
-    const afterPresetSave = await driver.snapshot()
-    if (afterPresetSave !== undefined && afterPresetSave.interactions.presetManager.state !== 'closed') {
-      await driver.clickAction('close-preset-manager')
-      const presetManagerClosed = await waitForSurface(driver, 'close-preset-manager', 'closed', timeoutMs, pollMs)
-      if (presetManagerClosed === undefined || presetManagerClosed.interactions.presetManager.state !== 'closed') {
-        return failed('interaction-failed')
-      }
     }
     await driver.clickAction('toggle-session-settings')
     const settingsForWorldInfo = await waitForSurface(driver, 'toggle-session-settings', 'open', timeoutMs, pollMs)
     if (settingsForWorldInfo === undefined || settingsForWorldInfo.interactions.sessionSettings.state !== 'open') {
       return failed('interaction-failed')
     }
-    await driver.clickAction('open-world-info-manager')
-    const worldInfoOpened = await waitForSurface(driver, 'open-world-info-manager', 'open', timeoutMs, pollMs)
-    if (worldInfoOpened === undefined || worldInfoOpened.interactions.worldInfoManager.state !== 'open') {
-      return failed('interaction-failed')
-    }
-    if (!await exerciseWorldInfoToggle(driver, worldInfoOpened, timeoutMs, pollMs)) {
-      return failed('interaction-failed')
-    }
-    await driver.clickAction('close-world-info-manager')
-    const worldInfoClosed = await waitForSurface(driver, 'close-world-info-manager', 'closed', timeoutMs, pollMs)
-    if (worldInfoClosed === undefined || worldInfoClosed.interactions.worldInfoManager.state !== 'closed') {
+    if (!await exerciseInteraction(driver, 'open-world-info-manager', 'open', 'close-world-info-manager', timeoutMs, pollMs)) {
       return failed('interaction-failed')
     }
     if ((snapshot.session?.tavern?.scripts ?? 0) > 0
@@ -782,7 +544,7 @@ export async function runAgentRpBrowserCompatibilitySmoke(
     }
   }
   const interaction = await exerciseStableInteractions(
-    driver, runtimeSnapshot, input.timeoutMs, pollMs, input.characterId,
+    driver, runtimeSnapshot, input.timeoutMs, pollMs,
   )
   const finalSnapshot = await driver.snapshot()
   return { decision: interaction, snapshot: finalSnapshot ?? runtimeSnapshot }

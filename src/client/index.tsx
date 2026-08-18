@@ -3330,7 +3330,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
             <div style={{ display: 'grid', gap: '5px' }}>
               {item.entries.map(candidate => {
                 const key = `${item.id}\u0000${candidate.index}`
-                return <button key={key} type="button" data-agent-rp-world-entry aria-current={key === selectedKey} onClick={() => {
+                return <button key={key} type="button" aria-current={key === selectedKey} onClick={() => {
                   setSelectedKey(key); setEditing(false); setError(undefined)
                 }} style={{
                   alignItems: 'center', background: key === selectedKey ? `color-mix(in srgb, ${color} 14%, transparent)` : 'transparent',
@@ -3388,7 +3388,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
               ].filter(Boolean).join('\n')}</div>
             </details>}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '22px' }}>
-              {!entry.deleted && <button type="button" data-agent-rp-world-entry-toggle disabled={saving} onClick={() => {
+              {!entry.deleted && <button type="button" disabled={saving} onClick={() => {
                 mutate({ operation: 'toggle', revision: worldInfo.revision, bookId: book.id, entryIndex: entry.index, enabled: !entry.enabled })
               }} style={generationButtonStyle}>{entry.enabled ? '关闭条目' : '打开条目'}</button>}
               {!entry.deleted && <button type="button" disabled={saving} onClick={() => { setDraft(editableFromProjection(entry)); setEditing(true) }} style={generationButtonStyle}>编辑</button>}
@@ -3946,7 +3946,6 @@ function CharacterLibraryDialog({
   return <div className="agent-rp-character-library-overlay" data-agent-rp-dialog
     data-agent-rp-selected-character-id={selected?.id ?? ''}
     data-agent-rp-selected-preset-id={selectedPresetId ?? ''}
-    data-agent-rp-character-collection={collection}
     data-agent-rp-surface="character-library" role="dialog" aria-modal="true" aria-label="角色库" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.52)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: 'clamp(8px, 3vw, 24px)', position: 'fixed', zIndex: 1001,
@@ -3969,7 +3968,6 @@ function CharacterLibraryDialog({
           <div role="tablist" aria-label="角色库分区" style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '9px', display: 'grid', gap: '3px', gridTemplateColumns: '1fr 1fr', marginTop: '12px', padding: '3px' }}>
             {([['active', '角色卡'], ['archived', '收纳箱']] as const).map(([value, label]) => <button
               key={value} type="button" role="tab" aria-selected={collection === value}
-              data-agent-rp-collection-tab data-agent-rp-collection-tab-value={value}
               onClick={() => { setCollection(value); setCharacterQuery('') }} style={{
                 background: collection === value ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
                 border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px',
@@ -4063,7 +4061,7 @@ function CharacterLibraryDialog({
             <strong style={{ display: 'block', fontSize: '17px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected?.displayName ?? '选择角色'}</strong>
             {selected !== undefined && <span title={selected.originalFilename} style={{ display: 'block', fontSize: '11px', marginTop: '3px', opacity: .46, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected.originalFilename}</span>}
           </div>
-          {selected !== undefined && <button type="button" data-agent-rp-character-archive-toggle disabled={updating} onClick={updateArchiveState} style={{
+          {selected !== undefined && <button type="button" disabled={updating} onClick={updateArchiveState} style={{
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
             color: 'inherit', cursor: updating ? 'wait' : 'pointer', font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: '6px 10px',
           }}>{updating ? '处理中…' : collection === 'active' ? '移到收纳箱' : '移回角色库'}</button>}
@@ -4940,7 +4938,7 @@ function PresetManagerDialog({
         <button type="button" disabled={saving} onClick={exportCopy} title={preset.omittedExtensions.length === 0 ? '导出当前配置' : `不包含未执行扩展：${preset.omittedExtensions.join('、')}`} style={secondaryButtonStyle}>导出副本</button>
         <button type="button" disabled={saving} onClick={() => { void saveToLibrary() }} style={secondaryButtonStyle}>另存为预设</button>
         <button type="button" disabled={saving} onClick={onClose} style={secondaryButtonStyle}>取消</button>
-        <button type="button" disabled={saving} onClick={() => { void save() }} data-agent-rp-action="save-session-preset" style={primaryButtonStyle}>{saving ? '保存中…' : '保存到此会话'}</button>
+        <button type="button" disabled={saving} onClick={() => { void save() }} style={primaryButtonStyle}>{saving ? '保存中…' : '保存到此会话'}</button>
       </footer>
     </section>
     {editingPrompt !== undefined && <PresetPromptEditorDialog
@@ -8770,13 +8768,6 @@ function roleplayComposerDockComponent(
           approved: approvedCardNativeIdentities.size,
           pending: cardNativeIdentityRequests.size,
         },
-        ...(projection.preset === undefined ? {} : { preset: {
-          revision: projection.preset.revision,
-          promptCount: projection.preset.promptCount,
-          enabledCount: projection.preset.enabledCount,
-          regexCount: projection.preset.regexScriptCount,
-          enabledRegexCount: projection.preset.enabledRegexScriptCount,
-        } }),
         variables: {
           surfaces: hasTavernVariableSurface ? 2 : 1,
           sharedScopes: 5,
@@ -8788,7 +8779,6 @@ function roleplayComposerDockComponent(
           entries: projection.worldInfoCount,
           active: projection.worldInfo.activeCount,
           budgetExcluded: projection.worldInfo.budgetExcludedCount,
-          revision: projection.worldInfo.revision,
           failures: worldEngineFailures,
         },
       },
@@ -8823,15 +8813,7 @@ function roleplayComposerDockComponent(
     data-agent-rp-chat-write-surfaces={hasTavernVariableSurface ? 1 : 0}
     data-agent-rp-prompt-injection-surfaces={hasTavernVariableSurface ? 1 : 0}
     data-agent-rp-prompt-preview-surfaces={hasTavernVariableSurface ? 1 : 0}
-    {...(projection.preset === undefined ? {} : {
-      'data-agent-rp-preset-revision': projection.preset.revision,
-      'data-agent-rp-preset-prompt-count': projection.preset.promptCount,
-      'data-agent-rp-preset-enabled-count': projection.preset.enabledCount,
-      'data-agent-rp-preset-regex-count': projection.preset.regexScriptCount,
-      'data-agent-rp-preset-enabled-regex-count': projection.preset.enabledRegexScriptCount,
-    })}
     data-agent-rp-world-engine={projection.worldInfoCount === 0 ? 'inactive' : 'native-v0'}
-    data-agent-rp-world-info-revision={projection.worldInfo.revision}
     data-agent-rp-world-engine-entries={projection.worldInfoCount}
     data-agent-rp-world-engine-active={projection.worldInfo.activeCount}
     data-agent-rp-world-engine-budget-excluded={projection.worldInfo.budgetExcludedCount}

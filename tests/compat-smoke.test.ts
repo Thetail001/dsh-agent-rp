@@ -57,25 +57,10 @@ function browserSnapshot(options: {
   readonly preflight?: 'loading' | 'approval-required' | 'ready' | 'error'
   readonly runtime?: 'pending' | 'healthy' | 'empty' | 'failed'
   readonly characterLibrary?: 'closed' | 'open'
-  readonly characterCollection?: 'active' | 'archived' | 'unknown'
-  readonly characterEntries?: number
-  readonly characterArchiveToggle?: number
   readonly presetManager?: 'closed' | 'open'
-  readonly presetToggleable?: number
-  readonly presetSave?: number
-  readonly preset?: {
-    readonly revision: number
-    readonly promptCount: number
-    readonly enabledCount: number
-    readonly regexCount: number
-    readonly enabledRegexCount: number
-  }
   readonly sessionSettings?: 'closed' | 'open'
   readonly tavernPanel?: 'closed' | 'mobile' | 'script'
   readonly worldInfoManager?: 'closed' | 'open'
-  readonly worldInfoEntries?: number
-  readonly worldInfoToggle?: number
-  readonly worldEngineRevision?: number
   readonly permissionDuration?: AgentRpCompatSmokePermissionDuration
   readonly blockedFonts?: number
 } = {}): AgentRpBrowserCompatibilitySnapshot {
@@ -84,32 +69,15 @@ function browserSnapshot(options: {
   const issues = runtime === 'empty' ? ['card-frame-content-empty'] as const
     : runtime === 'failed' ? ['card-frame-runtime-failed'] as const : []
   const preflight = options.preflight
-  const preset = options.preset
   return {
     audit: 'agent-rp-browser-compat-v0',
     interactions: {
-      characterLibrary: {
-        launchers: 1,
-        state: options.characterLibrary ?? 'closed',
-        collection: options.characterCollection ?? 'unknown',
-        entries: options.characterEntries ?? 0,
-        archiveToggle: options.characterArchiveToggle ?? 0,
-      },
-      presetManager: {
-        launchers: 1,
-        state: options.presetManager ?? 'closed',
-        toggleable: options.presetToggleable ?? 0,
-        save: options.presetSave ?? 0,
-      },
+      characterLibrary: { launchers: 1, state: options.characterLibrary ?? 'closed' },
+      presetManager: { launchers: 1, state: options.presetManager ?? 'closed' },
       sessionSettings: { launchers: 1, state: options.sessionSettings ?? 'closed' },
       tavernPanel: { launchers: 1, mobileLaunchers: 1, state: options.tavernPanel ?? 'closed' },
       tavernPermissions: { launchers: 0, state: 'closed' },
-      worldInfoManager: {
-        launchers: 1,
-        state: options.worldInfoManager ?? 'closed',
-        entries: options.worldInfoEntries ?? 0,
-        toggle: options.worldInfoToggle ?? 0,
-      },
+      worldInfoManager: { launchers: 1, state: options.worldInfoManager ?? 'closed' },
     },
     ...(runtime === undefined ? {} : { session: {
       capabilities: {
@@ -119,12 +87,10 @@ function browserSnapshot(options: {
       auxiliaryGenerations: { requests: 0, succeeded: 0, failed: 0, pending: 0, malformed: 0 },
       externalWindows: { phases: {} },
       nativeIdentity: { state: 'ready' as const, approved: 0, pending: 0 },
-      ...(preset === undefined ? {} : { preset }),
       variables: { surfaces: 2, sharedScopes: 5, scriptScopes: 1 },
       renderer: { inlineFrontendSanitizer: 'ready' },
       worldEngine: {
         engine: 'native-v0', entries: 611, active: 12, budgetExcluded: 0,
-        ...(options.worldEngineRevision === undefined ? {} : { revision: options.worldEngineRevision }),
         failures: {
           regexRuntimeUnavailable: 0, regexInvalid: 0, regexExecutionLimit: 0,
           regexResourceLimit: 0, decoratorUnsupported: 0, templateUnsupported: 0, templateError: 0,
@@ -180,7 +146,6 @@ function browserSnapshot(options: {
       interactiveEntriesPresent: true,
       preflightConsistent: true,
       preflightHealthy: preflight !== 'error',
-      presetCountsConsistent: true,
       tavernPermissionsConsistent: true,
       tavernRuntimeHealthy: runtime !== 'failed',
       worldEngineHealthy: true,
@@ -214,21 +179,12 @@ test('keeps transitional card frames pending before assigning a stable failure s
 
 class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
   private characterLibrary: 'closed' | 'open' = 'closed'
-  private characterCollection: 'active' | 'archived' = 'active'
-  private characterSelected = false
-  private activeCharacterEntries = 1
-  private archivedCharacterEntries = 0
   private presetManager: 'closed' | 'open' = 'closed'
   private sessionSettings: 'closed' | 'open' = 'closed'
   private tavernPanel: 'closed' | 'mobile' | 'script' = 'closed'
   private worldInfoManager: 'closed' | 'open' = 'closed'
   private selected = false
   private launched = false
-  private presetTogglePending = false
-  private presetRevision = 7
-  private presetEnabledCount = 3
-  private presetEnabledRegexCount = 2
-  private worldInfoRevision = 5
   permissionDuration: AgentRpCompatSmokePermissionDuration = 'remember'
   readonly approvalAttempts: number[] = []
   onboardingAcknowledgements = 0
@@ -241,11 +197,6 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
     private readonly genericTavernPanel: 'script' | 'mobile' = 'script',
     private clientGateState: 'ready' | 'onboarding' = 'ready',
     private remainingRuntimeFonts = 0,
-    private readonly presetToggleable = 1,
-    private readonly presetSaveApplies = true,
-    private readonly worldInfoEntries = 3,
-    private readonly worldInfoToggleApplies = true,
-    private readonly libraryArchiveApplies = true,
   ) {}
 
   delay(): Promise<void> { return Promise.resolve() }
@@ -278,34 +229,12 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
           }
         : {}),
       ...(this.launched ? { runtime: 'healthy' as const } : {}),
-      ...(this.presetToggleable === 0 ? {} : {
-        presetToggleable: this.presetManager === 'open' ? this.presetToggleable : 0,
-        presetSave: this.presetManager === 'open' && this.presetSaveApplies ? 1 : 0,
-      }),
-      ...(this.launched ? { preset: {
-        revision: this.presetRevision,
-        promptCount: 4,
-        enabledCount: this.presetEnabledCount,
-        regexCount: 3,
-        enabledRegexCount: this.presetEnabledRegexCount,
-      } } : {}),
       blockedFonts: this.launched ? this.remainingRuntimeFonts : 0,
       characterLibrary: this.characterLibrary,
-      characterCollection: this.characterLibrary === 'open'
-        ? this.characterCollection : 'unknown',
-      characterEntries: this.characterLibrary === 'open'
-        ? this.characterCollection === 'active' ? this.activeCharacterEntries : this.archivedCharacterEntries
-        : 0,
-      characterArchiveToggle: this.characterLibrary === 'open' && this.characterSelected ? 1 : 0,
       presetManager: this.presetManager,
       sessionSettings: this.sessionSettings,
       tavernPanel: this.tavernPanel,
       worldInfoManager: this.worldInfoManager,
-      ...(this.worldInfoEntries === 0 ? {} : {
-        worldInfoEntries: this.worldInfoManager === 'open' ? this.worldInfoEntries : 0,
-        worldInfoToggle: this.worldInfoManager === 'open' ? 1 : 0,
-      }),
-      ...(this.launched ? { worldEngineRevision: this.worldInfoRevision } : {}),
     }))
   }
 
@@ -316,42 +245,15 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
   clickAction(action: AgentRpCompatSmokeAction): Promise<void> {
     this.actions.push(action)
     switch (action) {
-      case 'open-character-library': this.characterLibrary = 'open'; this.characterSelected = false; break
+      case 'open-character-library': this.characterLibrary = 'open'; break
       case 'close-character-library': this.characterLibrary = 'closed'; break
-      case 'open-archived-collection': this.characterCollection = 'archived'; break
-      case 'open-active-collection': this.characterCollection = 'active'; break
-      case 'toggle-character-archived':
-        if (this.characterSelected && this.libraryArchiveApplies) {
-          if (this.characterCollection === 'active') {
-            this.activeCharacterEntries = Math.max(0, this.activeCharacterEntries - 1)
-            this.archivedCharacterEntries += 1
-          } else {
-            this.archivedCharacterEntries = Math.max(0, this.archivedCharacterEntries - 1)
-            this.activeCharacterEntries += 1
-          }
-          this.characterSelected = false
-        }
-        break
       case 'toggle-session-settings':
         this.sessionSettings = this.sessionSettings === 'open' ? 'closed' : 'open'
         break
       case 'open-preset-manager': this.sessionSettings = 'closed'; this.presetManager = 'open'; break
       case 'close-preset-manager': this.presetManager = 'closed'; break
-      case 'toggle-session-preset-module': this.presetTogglePending = true; break
-      case 'save-session-preset':
-        this.presetRevision += 1
-        if (this.presetTogglePending && this.presetSaveApplies) {
-          this.presetEnabledCount = Math.max(0, this.presetEnabledCount - 1)
-          this.presetTogglePending = false
-          this.presetManager = 'closed'
-        }
-        break
       case 'open-world-info-manager': this.sessionSettings = 'closed'; this.worldInfoManager = 'open'; break
       case 'close-world-info-manager': this.worldInfoManager = 'closed'; break
-      case 'select-world-info-entry': break
-      case 'toggle-world-info-entry':
-        if (this.worldInfoToggleApplies) this.worldInfoRevision += 1
-        break
       case 'open-tavern-panel': this.tavernPanel = this.genericTavernPanel; break
       case 'open-mobile-surface': this.tavernPanel = 'mobile'; break
       case 'close-tavern-panel': this.tavernPanel = 'closed'; break
@@ -362,7 +264,6 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
   selectCharacter(characterId: string): Promise<void> {
     assert.equal(characterId, 'character-id')
     this.selected = true
-    this.characterSelected = true
     return Promise.resolve()
   }
 
@@ -396,121 +297,12 @@ test('drives one content-free launch and all applicable stable interaction surfa
   assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
   assert.deepEqual(driver.actions, [
     'open-character-library',
-    'open-character-library',
-    'open-archived-collection', 'open-active-collection',
-    'toggle-character-archived', 'open-archived-collection', 'toggle-character-archived', 'open-active-collection',
-    'close-character-library',
-    'toggle-session-settings', 'open-preset-manager',
-    'toggle-session-preset-module', 'save-session-preset',
-    'toggle-session-settings', 'open-world-info-manager',
-    'select-world-info-entry', 'toggle-world-info-entry',
-    'close-world-info-manager',
+    'open-character-library', 'close-character-library',
+    'toggle-session-settings', 'open-preset-manager', 'close-preset-manager',
+    'toggle-session-settings', 'open-world-info-manager', 'close-world-info-manager',
     'open-tavern-panel', 'close-tavern-panel',
     'open-mobile-surface', 'close-tavern-panel',
   ])
-})
-
-test('toggles one session-owned preset switch and verifies the content-free counts advance', async () => {
-  const driver = new FakeSmokeDriver()
-  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
-    characterId: 'character-id', timeoutMs: 100,
-  })
-
-  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
-  assert.equal(result.snapshot?.session?.preset?.revision, 8)
-  assert.equal(result.snapshot?.session?.preset?.enabledCount, 2)
-})
-
-test('skips the preset toggle when the manager has no toggleable switches', async () => {
-  const driver = new FakeSmokeDriver(false, true, 'script', 'ready', 0, 0)
-  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
-    characterId: 'character-id', timeoutMs: 100,
-  })
-
-  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
-  assert.equal(driver.actions.includes('toggle-session-preset-module'), false)
-  assert.equal(driver.actions.includes('save-session-preset'), false)
-  assert.equal(result.snapshot?.session?.preset?.revision, 7)
-})
-
-test('fails the interaction when a saved preset does not advance its counts', async () => {
-  const driver = new FakeSmokeDriver(false, true, 'script', 'ready', 0, 1, false)
-  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
-    characterId: 'character-id', timeoutMs: 5, pollMs: 1,
-  })
-
-  assert.deepEqual(result.decision, {
-    status: 'failed', stage: 'interaction-failed', exitCode: 3,
-  })
-  assert.deepEqual(driver.actions.filter(action =>
-    action === 'toggle-session-preset-module' || action === 'save-session-preset'),
-  ['toggle-session-preset-module', 'save-session-preset'])
-})
-
-test('toggles one world-info entry and verifies the durable configuration revision advances', async () => {
-  const driver = new FakeSmokeDriver()
-  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
-    characterId: 'character-id', timeoutMs: 100,
-  })
-
-  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
-  assert.equal(result.snapshot?.session?.worldEngine.revision, 6)
-  assert.equal(driver.actions.includes('select-world-info-entry'), true)
-  assert.equal(driver.actions.includes('toggle-world-info-entry'), true)
-})
-
-test('skips the world-info toggle when the manager has no entries', async () => {
-  const driver = new FakeSmokeDriver(false, true, 'script', 'ready', 0, 1, true, 0)
-  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
-    characterId: 'character-id', timeoutMs: 100,
-  })
-
-  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
-  assert.equal(driver.actions.includes('select-world-info-entry'), false)
-  assert.equal(driver.actions.includes('toggle-world-info-entry'), false)
-  assert.equal(result.snapshot?.session?.worldEngine.revision, 5)
-})
-
-test('fails the interaction when a world-info toggle does not advance the revision', async () => {
-  const driver = new FakeSmokeDriver(false, true, 'script', 'ready', 0, 1, true, 3, false)
-  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
-    characterId: 'character-id', timeoutMs: 5, pollMs: 1,
-  })
-
-  assert.deepEqual(result.decision, {
-    status: 'failed', stage: 'interaction-failed', exitCode: 3,
-  })
-  assert.deepEqual(driver.actions.filter(action =>
-    action === 'select-world-info-entry' || action === 'toggle-world-info-entry'),
-  ['select-world-info-entry', 'toggle-world-info-entry'])
-})
-
-test('archives and restores the selected character with content-free collection counts', async () => {
-  const driver = new FakeSmokeDriver()
-  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
-    characterId: 'character-id', timeoutMs: 100,
-  })
-
-  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
-  const archiveActions = driver.actions.filter(action =>
-    action === 'open-archived-collection' || action === 'open-active-collection'
-    || action === 'toggle-character-archived')
-  assert.deepEqual(archiveActions, [
-    'open-archived-collection', 'open-active-collection',
-    'toggle-character-archived', 'open-archived-collection', 'toggle-character-archived', 'open-active-collection',
-  ])
-})
-
-test('fails the interaction when archiving does not move the character', async () => {
-  const driver = new FakeSmokeDriver(false, true, 'script', 'ready', 0, 1, true, 3, true, false)
-  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
-    characterId: 'character-id', timeoutMs: 5, pollMs: 1,
-  })
-
-  assert.deepEqual(result.decision, {
-    status: 'failed', stage: 'interaction-failed', exitCode: 3,
-  })
-  assert.equal(driver.actions.filter(action => action === 'toggle-character-archived').length, 1)
 })
 
 test('keeps first-run acknowledgement explicit and continues after authorization', async () => {

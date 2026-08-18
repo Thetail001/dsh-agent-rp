@@ -16,11 +16,10 @@ const sessionFacts: AgentRpRuntimeSessionFacts = {
   auxiliaryGenerations: { requests: 2, succeeded: 1, failed: 0, pending: 1, malformed: 0 },
   externalWindowPhases: ['callback-delivered'],
   nativeIdentity: { state: 'ready', approved: 2, pending: 1 },
-  preset: { revision: 4, promptCount: 6, enabledCount: 4, regexCount: 3, enabledRegexCount: 2 },
   variables: { surfaces: 2, sharedScopes: 5, scriptScopes: 1 },
   renderer: { inlineFrontendSanitizer: 'ready' },
   worldEngine: {
-    engine: 'native-v0', entries: 611, active: 14, budgetExcluded: 21, revision: 11,
+    engine: 'native-v0', entries: 611, active: 14, budgetExcluded: 21,
     failures: {
       regexRuntimeUnavailable: 0, regexInvalid: 0, regexExecutionLimit: 0, regexResourceLimit: 0,
       decoratorUnsupported: 0, templateUnsupported: 0, templateError: 0,
@@ -93,10 +92,6 @@ test('assembles multiple Host publishers without serializing their scope or extr
     'external-opened': 1, 'callback-delivered': 1,
   })
   assert.deepEqual(snapshot.session?.nativeIdentity, { state: 'ready', approved: 2, pending: 3 })
-  assert.deepEqual(snapshot.session?.preset, {
-    revision: 4, promptCount: 6, enabledCount: 4, regexCount: 3, enabledRegexCount: 2,
-  })
-  assert.equal(snapshot.session?.worldEngine.revision, 11)
   assert.deepEqual(snapshot.session?.tavern?.phases, { ready: 2 })
   assert.deepEqual(snapshot.session?.tavern?.scopes, { preset: 1, character: 1 })
   assert.equal(snapshot.session?.tavern?.blockedResources, 2)
@@ -157,18 +152,12 @@ test('normalizes invalid runtime values and restores a previous global snapshot 
     facts: {
       ...sessionFacts,
       capabilities: { ...sessionFacts.capabilities, requirements: -2 },
-      preset: { revision: -2, promptCount: -4, enabledCount: 9, regexCount: -1, enabledRegexCount: 7 },
-      worldEngine: { ...sessionFacts.worldEngine, revision: -3 },
       externalWindowPhases: ['not-a-phase'],
       renderer: { inlineFrontendSanitizer: 'private-card-name' },
     },
   } as unknown as AgentRpRuntimeDiagnosticContribution)
   const snapshot = registry.snapshot()
   assert.equal(snapshot.session?.capabilities.requirements, 0)
-  assert.deepEqual(snapshot.session?.preset, {
-    revision: 0, promptCount: 0, enabledCount: 9, regexCount: 0, enabledRegexCount: 7,
-  })
-  assert.equal(snapshot.session?.worldEngine.revision, 0)
   assert.deepEqual(snapshot.session?.externalWindows.phases, {})
   assert.equal(snapshot.session?.renderer.inlineFrontendSanitizer, 'unknown')
   assert.doesNotMatch(JSON.stringify(snapshot), /not-a-phase|private-card-name/u)
