@@ -19,3 +19,12 @@ test('sidebar workbench owns current-workspace access while global settings stay
   assert.match(source, /当前工作区可直接在侧栏工作台切换/u)
   assert.match(source, /工作区入口范围（高级）/u)
 })
+
+test('roleplay launch keeps collection management secondary to choosing a character', () => {
+  assert.match(source, /data-agent-rp-character-launcher/u)
+  assert.match(source, /aria-label="开始角色对话"/u)
+  assert.match(source, /data-agent-rp-character-toolbar/u)
+  assert.match(source, /open-character-archive/u)
+  assert.match(source, /data-agent-rp-action="import-character"/u)
+  assert.doesNotMatch(source, /aria-label="角色库分区"/u)
+})

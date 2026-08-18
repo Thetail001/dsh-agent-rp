@@ -2122,7 +2122,7 @@ function SidebarRoleplayDestination({
               minHeight: '88px', opacity: blankSessionReady ? 1 : .42, padding: '13px', textAlign: 'left',
             }}><span aria-hidden="true" style={{ color, display: 'block', fontSize: '20px', lineHeight: 1 }}>✦</span>
               <strong style={{ display: 'block', fontSize: '14px', marginTop: '10px' }}>选择角色</strong>
-              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '4px', opacity: .58 }}>浏览、导入并开始角色对话</span>
+              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '4px', opacity: .58 }}>配置开场并开始角色对话</span>
             </button>
             <button type="button" disabled={!blankSessionReady} onClick={openMigration} style={{
               background: 'var(--dsw-alias-bg-layer-1, #292a2e)', border: '1px solid var(--dsw-alias-border-l2, #444)',
@@ -4160,10 +4160,10 @@ function CharacterLibraryDialog({
       setError(startError instanceof Error ? startError.message : String(startError))
     })
   }
-  return <div className="agent-rp-character-library-overlay" data-agent-rp-dialog
+  return <div className="agent-rp-character-library-overlay" data-agent-rp-dialog data-agent-rp-character-launcher
     data-agent-rp-selected-character-id={selected?.id ?? ''}
     data-agent-rp-selected-preset-id={selectedPresetId ?? ''}
-    data-agent-rp-surface="character-library" role="dialog" aria-modal="true" aria-label="角色库" style={{
+    data-agent-rp-surface="character-library" role="dialog" aria-modal="true" aria-label="开始角色对话" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.52)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: 'clamp(8px, 3vw, 24px)', position: 'fixed', zIndex: 1001,
   }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
@@ -4181,61 +4181,65 @@ function CharacterLibraryDialog({
         display: 'flex', flexDirection: 'column', minHeight: 0,
       }}>
         <div style={{ display: 'flex', flexDirection: 'column', padding: narrow ? '14px 14px 10px' : '22px 20px 14px' }}>
-          <h2 style={{ fontSize: '18px', margin: 0 }}>角色库</h2>
-          <div role="tablist" aria-label="角色库分区" style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', borderRadius: '9px', display: 'grid', gap: '3px', gridTemplateColumns: '1fr 1fr', marginTop: '12px', padding: '3px' }}>
-            {([['active', '角色卡'], ['archived', '收纳箱']] as const).map(([value, label]) => <button
-              key={value} type="button" role="tab" aria-selected={collection === value}
-              onClick={() => { setCollection(value); setCharacterQuery('') }} style={{
-                background: collection === value ? `color-mix(in srgb, ${color} 15%, transparent)` : 'transparent',
-                border: 0, borderRadius: '7px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px',
-                fontWeight: collection === value ? 620 : 400, padding: '7px 8px',
-              }}>{label}</button>)}
+          <div style={{ alignItems: 'center', display: 'flex', gap: '10px' }}>
+            <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+              <h2 style={{ fontSize: '18px', margin: 0 }}>{collection === 'active' ? '选择角色' : '收纳箱'}</h2>
+              <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .48 }}>
+                {collection === 'active' ? '选择一张角色卡开始新的对话' : '已收起的角色仍完整保存在本机'}
+              </span>
+            </div>
+            <button type="button"
+              data-agent-rp-action={collection === 'active' ? 'open-character-archive' : 'close-character-archive'}
+              onClick={() => { setCollection(collection === 'active' ? 'archived' : 'active'); setCharacterQuery('') }} style={{
+                background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
+                color: 'inherit', cursor: 'pointer', flex: '0 0 auto', font: 'inherit', fontSize: '11px', padding: '6px 9px',
+              }}>{collection === 'active' ? '收纳箱' : '返回选择'}</button>
           </div>
-          <input type="search" value={characterQuery} aria-label="搜索角色"
-            placeholder="搜索角色或文件名" onChange={event => {
-              const value = event.target.value
-              const normalized = value.trim().toLocaleLowerCase()
-              const matches = (entry: Pick<CharacterLibrarySummary, 'displayName' | 'name' | 'originalFilename'>): boolean => normalized === ''
-                || [entry.displayName, entry.name, entry.originalFilename]
-                  .some(text => text.toLocaleLowerCase().includes(normalized))
-              const next = (entries ?? []).find(matches)
-              setCharacterQuery(value)
-              if (next === undefined) {
-                selectionRequestRef.current += 1
-                setSelected(undefined)
-                setExpandedGreetingIndex(undefined)
-                setLoadingId(undefined)
-              } else if (selected === undefined || !matches(selected)) {
-                choose(next)
-              }
-            }} style={{
-              background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
-              borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', fontSize: '12px',
-              marginTop: '10px', order: 2, outline: 'none', padding: '8px 10px', width: '100%',
-            }} />
           <input ref={fileInputRef} type="file" accept=".png,.json,.charx,image/png,application/json,application/zip" hidden onChange={event => {
             const file = event.target.files?.[0]
             event.target.value = ''
             if (file !== undefined) importFile(file)
           }} />
-          <button type="button" disabled={importing} onClick={() => { fileInputRef.current?.click() }}
-            onDragEnter={event => { event.preventDefault(); setDraggingFile(true) }}
-            onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDraggingFile(true) }}
-            onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingFile(false) }}
-            onDrop={event => {
-              event.preventDefault()
-              const file = event.dataTransfer.files[0]
-              if (file === undefined) setDraggingFile(false)
-              else importFile(file)
-            }} style={{
-              background: `color-mix(in srgb, ${color} ${draggingFile ? 20 : 11}%, transparent)`,
-              border: `1px ${draggingFile ? 'solid' : 'dashed'} color-mix(in srgb, ${color} ${draggingFile ? 75 : 42}%, transparent)`,
-              borderRadius: '9px', color: 'inherit', cursor: importing ? 'wait' : 'pointer', display: 'block', font: 'inherit',
-              marginTop: '10px', opacity: importing ? .58 : 1, order: 1, padding: '11px 12px', textAlign: 'left', width: '100%',
-            }}>
-            <span style={{ display: 'block', fontSize: '13px', fontWeight: 650 }}>{importing ? '正在导入…' : draggingFile ? '松开即可导入' : '＋ 导入角色卡'}</span>
-            <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .5 }}>PNG · JSON · CHARX，也可拖到这里</span>
-          </button>
+          <div data-agent-rp-character-toolbar style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+            <input type="search" value={characterQuery} aria-label={collection === 'active' ? '搜索角色' : '搜索收纳箱'}
+              placeholder={collection === 'active' ? '搜索角色或文件名' : '搜索已收起的角色'} onChange={event => {
+                const value = event.target.value
+                const normalized = value.trim().toLocaleLowerCase()
+                const matches = (entry: Pick<CharacterLibrarySummary, 'displayName' | 'name' | 'originalFilename'>): boolean => normalized === ''
+                  || [entry.displayName, entry.name, entry.originalFilename]
+                    .some(text => text.toLocaleLowerCase().includes(normalized))
+                const next = (entries ?? []).find(matches)
+                setCharacterQuery(value)
+                if (next === undefined) {
+                  selectionRequestRef.current += 1
+                  setSelected(undefined)
+                  setExpandedGreetingIndex(undefined)
+                  setLoadingId(undefined)
+                } else if (selected === undefined || !matches(selected)) {
+                  choose(next)
+                }
+              }} style={{
+                background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+                borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', flex: '1 1 auto', font: 'inherit',
+                fontSize: '12px', minWidth: 0, outline: 'none', padding: '8px 10px',
+              }} />
+            {collection === 'active' && <button type="button" disabled={importing} title="导入 PNG、JSON 或 CHARX 角色卡"
+              data-agent-rp-action="import-character" onClick={() => { fileInputRef.current?.click() }}
+              onDragEnter={event => { event.preventDefault(); setDraggingFile(true) }}
+              onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDraggingFile(true) }}
+              onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingFile(false) }}
+              onDrop={event => {
+                event.preventDefault()
+                const file = event.dataTransfer.files[0]
+                if (file === undefined) setDraggingFile(false)
+                else importFile(file)
+              }} style={{
+                background: `color-mix(in srgb, ${color} ${draggingFile ? 20 : 11}%, transparent)`,
+                border: `1px solid color-mix(in srgb, ${color} ${draggingFile ? 75 : 38}%, transparent)`,
+                borderRadius: '9px', color: 'inherit', cursor: importing ? 'wait' : 'pointer', flex: '0 0 auto',
+                font: 'inherit', fontSize: '12px', fontWeight: 620, opacity: importing ? .58 : 1, padding: '8px 10px',
+              }}>{importing ? '导入中…' : draggingFile ? '松开导入' : '＋ 导入'}</button>}
+          </div>
         </div>
         <div style={{ display: 'grid', gap: '6px', minHeight: 0, overflowX: 'hidden', overflowY: 'auto', padding: '4px 10px 18px' }}>
           {entries === undefined && <div style={{ fontSize: '13px', opacity: .55, padding: '16px 10px' }}>正在读取角色…</div>}
@@ -4275,14 +4279,16 @@ function CharacterLibraryDialog({
         <header style={{ alignItems: 'center', display: 'flex', padding: '18px 20px 12px' }}>
           {selected !== undefined && <CharacterLibraryAvatar entry={selected} size={42} />}
           <div style={{ marginLeft: selected === undefined ? 0 : '11px', minWidth: 0 }}>
-            <strong style={{ display: 'block', fontSize: '17px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected?.displayName ?? '选择角色'}</strong>
+            <strong style={{ display: 'block', fontSize: '17px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {selected?.displayName ?? (collection === 'active' ? '选择角色' : '选择已收起角色')}
+            </strong>
             {selected !== undefined && <span title={selected.originalFilename} style={{ display: 'block', fontSize: '11px', marginTop: '3px', opacity: .46, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected.originalFilename}</span>}
           </div>
           {selected !== undefined && <button type="button" disabled={updating} onClick={updateArchiveState} style={{
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
             color: 'inherit', cursor: updating ? 'wait' : 'pointer', font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: '6px 10px',
           }}>{updating ? '处理中…' : collection === 'active' ? '移到收纳箱' : '移回角色库'}</button>}
-          <button type="button" aria-label="关闭角色库" data-agent-rp-action="close-character-library" onClick={onClose} style={{
+          <button type="button" aria-label="关闭开始角色对话" data-agent-rp-action="close-character-library" onClick={onClose} style={{
             background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', marginLeft: selected === undefined ? 'auto' : '8px', padding: '4px 6px',
           }}>×</button>
         </header>
@@ -4309,7 +4315,7 @@ function CharacterLibraryDialog({
               onClick={() => { fileInputRef.current?.click() }} style={{
                 background: color, border: 0, borderRadius: '9px', color: '#fff', cursor: importing ? 'wait' : 'pointer',
                 font: 'inherit', fontWeight: 620, marginTop: '18px', opacity: importing ? .58 : 1, padding: '9px 15px',
-              }}>{importing ? '正在导入…' : '选择角色卡'}</button>}
+              }}>{importing ? '正在导入…' : '导入角色卡'}</button>}
           </div>}
           {selected !== undefined && <>
             <CharacterWorldInfoSection key={selected.id} detail={selected} />
