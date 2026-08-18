@@ -10,10 +10,22 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { CommandRowProps, IConversation, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { createRoot, type Root } from 'react-dom/client'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+
+interface SidebarDestinationOwnerProps {
+  readonly wide: boolean
+  readonly width: number
+}
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    'sidebar.destinations': { kind: 'list'; scope: 'root'; owner: SidebarDestinationOwnerProps }
+  }
+}
 import type { AgentRpProjection } from '../projection-types.ts'
 import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/types.ts'
 import { parseTavernHelperScripts } from '../import/tavern-helper.ts'
@@ -1892,7 +1904,7 @@ function PersonaManagerDialog({ current, listPersonas, savePersona, deletePerson
   </div>
 }
 
-type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick<HeaderProps,
+type SidebarRoleplayDestinationProps = PropsRuntime<'sidebar.destinations'> & Pick<HeaderProps,
   | 'runtimeDiagnostics'
   | 'listCharacters'
   | 'readCharacter'
@@ -1911,16 +1923,30 @@ type BlankRoleplayLauncherProps = PropsRuntime<'conversation.input.left'> & Pick
   readonly workspaceList: WorkspaceListSource
 }
 
-function BlankRoleplayLauncher({
-  session, sessionId,
+function RoleplayDestinationIcon({ size }: { readonly size: number }) {
+  return <svg aria-hidden="true" viewBox="0 0 20 20" width={size} height={size} fill="none">
+    <path d="M5.25 3.75h9.5A2.5 2.5 0 0 1 17.25 6.25v5A2.5 2.5 0 0 1 14.75 13.75H9l-3.75 2.5.75-2.5h-.75a2.5 2.5 0 0 1-2.5-2.5v-5a2.5 2.5 0 0 1 2.5-2.5Z"
+      stroke="currentColor" strokeWidth="1.35" strokeLinejoin="round" />
+    <path d="M11.7 5.7c.18 1.24.86 1.92 2.1 2.1-1.24.18-1.92.86-2.1 2.1-.18-1.24-.86-1.92-2.1-2.1 1.24-.18 1.92-.86 2.1-2.1Z"
+      stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+    <path d="M7.15 7.1v2.2M6.05 8.2h2.2" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+  </svg>
+}
+
+function SidebarRoleplayDestination({
+  wide, width, useSessions,
   runtimeDiagnostics,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, migrateRpDistributionChat,
   startCharacterSession,
   listPresets, importPresetFile, listPersonas, savePersona, deletePersona,
   workspaceSettings, workspaceList,
-}: BlankRoleplayLauncherProps) {
+}: SidebarRoleplayDestinationProps) {
+  const [workbenchOpen, setWorkbenchOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [migrationOpen, setMigrationOpen] = useState(false)
+  const [launchSessionId, setLaunchSessionId] = useState<SessionId | undefined>(undefined)
+  const currentSessionId = useSessions(state => state.current)
+  const currentSession = useSessions(state => currentSessionId === undefined ? undefined : state.byId[currentSessionId])
   const settingsSnapshot = useSyncExternalStore(
     workspaceSettings.subscribe,
     workspaceSettings.getSnapshot,
@@ -1931,24 +1957,124 @@ function BlankRoleplayLauncher({
     workspaceList.getSnapshot,
     workspaceList.getSnapshot,
   )
-  const workspace = workspaceSnapshot.items.find(item => item.sessionIds.includes(sessionId))
-  if (!session.blank || !allowsAgentRpEntry(settingsSnapshot.value, workspace?.workspaceId)) return null
+  const workspace = currentSessionId === undefined
+    ? undefined
+    : workspaceSnapshot.items.find(item => item.sessionIds.includes(currentSessionId))
+  const blankSessionReady = currentSession?.blank === true
+    && allowsAgentRpEntry(settingsSnapshot.value, workspace?.workspaceId)
+  const unavailableReason = currentSessionId === undefined
+    ? '先点侧栏的“新会话”，再从这里选择角色或迁移聊天'
+    : !currentSession?.blank
+      ? '当前会话已经开始；新建一个空白会话即可开始另一段角色对话'
+      : '当前工作区尚未启用 Agent RP 启动入口，可在设置中调整工作区范围'
+  const closeWorkbench = (): void => { setWorkbenchOpen(false) }
+  const openLibrary = (): void => {
+    if (!blankSessionReady || currentSessionId === undefined) return
+    setLaunchSessionId(currentSessionId)
+    closeWorkbench()
+    setLibraryOpen(true)
+  }
+  const openMigration = (): void => {
+    if (!blankSessionReady || currentSessionId === undefined) return
+    setLaunchSessionId(currentSessionId)
+    closeWorkbench()
+    setMigrationOpen(true)
+  }
+  useEffect(() => {
+    if (!workbenchOpen) return
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setWorkbenchOpen(false)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => { document.removeEventListener('keydown', onKeyDown) }
+  }, [workbenchOpen])
+  const widestLeftWithUsableContent = Math.max(0, window.innerWidth - 320)
+  const drawerLeft = width <= widestLeftWithUsableContent
+    ? width
+    : Math.min(56, widestLeftWithUsableContent)
   return <>
-    <button type="button" data-agent-rp-action="open-character-library"
-      data-agent-rp-source-session={sessionId} onClick={() => { setLibraryOpen(true) }} style={{
-      alignItems: 'center', background: `color-mix(in srgb, ${color} 14%, transparent)`,
-      border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`, borderRadius: '8px',
-      color: 'inherit', cursor: 'pointer', display: 'inline-flex', font: 'inherit', fontSize: '12px',
-      fontWeight: 620, gap: '6px', padding: '5px 9px', whiteSpace: 'nowrap',
-    }}>
-      <span aria-hidden="true" style={{ color, fontSize: '15px', lineHeight: 1 }}>✦</span>
-      选择角色
-    </button>
-    <button type="button" onClick={() => { setMigrationOpen(true) }} style={{
-      background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
-      color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '5px 9px', whiteSpace: 'nowrap',
-    }}>迁移聊天</button>
-    {libraryOpen && <CharacterLibraryDialog
+    <Tooltip label="Agent RP" delayMs={500} disabled={wide}>
+      <button type="button" data-agent-rp-action="open-workbench" aria-label="Agent RP" aria-haspopup="dialog"
+        aria-expanded={workbenchOpen} onClick={() => { setWorkbenchOpen(true) }} style={{
+        alignItems: 'center', background: workbenchOpen ? 'var(--dsw-specific-sidebar-nav-item-active, rgba(255,255,255,.08))' : 'transparent',
+        border: 0, borderRadius: wide ? '12px' : '50%', color: 'inherit', cursor: 'pointer', display: 'flex',
+        font: 'inherit', fontSize: '14px', gap: wide ? '8px' : 0, height: wide ? '42px' : '36px',
+        justifyContent: wide ? 'flex-start' : 'center', margin: wide ? '2px 0' : '4px auto',
+        overflow: 'hidden', padding: wide ? '0 8px' : 0, width: wide ? '100%' : '36px',
+      }}>
+        <span style={{ color, display: 'inline-flex', flex: 'none' }}><RoleplayDestinationIcon size={wide ? 16 : 18} /></span>
+        {wide && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Agent RP</span>}
+      </button>
+    </Tooltip>
+    {workbenchOpen && <div role="presentation" style={{ inset: 0, position: 'fixed', zIndex: 980 }}>
+      <button type="button" aria-label="关闭 Agent RP 工作台" onClick={closeWorkbench} style={{
+        background: 'var(--dsw-alias-bg-mask-1, rgba(0,0,0,.34))', border: 0, cursor: 'default', inset: 0,
+        padding: 0, position: 'absolute', width: '100%',
+      }} />
+      <section role="dialog" aria-modal="true" aria-label="Agent RP 工作台" data-agent-rp-workbench
+        style={{
+          background: 'var(--dsw-alias-bg-layer-2, #202124)', borderLeft: '1px solid var(--dsw-alias-border-l2, #39393c)',
+          bottom: 0, boxShadow: 'var(--dsw-shadow-lv3, 0 12px 40px rgba(0,0,0,.28))', boxSizing: 'border-box',
+          color: 'var(--dsw-alias-label-primary, #f4f4f5)', display: 'flex', flexDirection: 'column',
+          left: `${drawerLeft}px`, maxWidth: `calc(100vw - ${drawerLeft}px)`, position: 'absolute', top: 0,
+          width: `min(460px, calc(100vw - ${drawerLeft}px))`,
+        }}>
+        <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '10px', padding: '16px 16px 14px' }}>
+          <span style={{ color, display: 'inline-flex' }}><RoleplayDestinationIcon size={22} /></span>
+          <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+            <strong style={{ display: 'block', fontSize: '16px' }}>Agent RP</strong>
+            <span style={{ display: 'block', fontSize: '11px', marginTop: '2px', opacity: .52 }}>角色体验工作台</span>
+          </div>
+          <button type="button" aria-label="关闭 Agent RP 工作台" onClick={closeWorkbench} style={{
+            alignItems: 'center', background: 'transparent', border: 0, borderRadius: '50%', color: 'inherit',
+            cursor: 'pointer', display: 'inline-flex', font: 'inherit', fontSize: '22px', height: '32px',
+            justifyContent: 'center', padding: 0, width: '32px',
+          }}>×</button>
+        </header>
+        <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: '18px 16px 24px' }}>
+          <h2 style={{ fontSize: '13px', margin: '0 0 10px', opacity: .62 }}>开始</h2>
+          <div style={{ display: 'grid', gap: '10px', gridTemplateColumns: 'repeat(auto-fit, minmax(132px, 1fr))' }}>
+            <button type="button" data-agent-rp-action="open-character-library"
+              data-agent-rp-source-session={currentSessionId} disabled={!blankSessionReady} onClick={openLibrary} style={{
+              background: `color-mix(in srgb, ${color} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
+              borderRadius: '12px', color: 'inherit', cursor: blankSessionReady ? 'pointer' : 'default', font: 'inherit',
+              minHeight: '88px', opacity: blankSessionReady ? 1 : .42, padding: '13px', textAlign: 'left',
+            }}><span aria-hidden="true" style={{ color, display: 'block', fontSize: '20px', lineHeight: 1 }}>✦</span>
+              <strong style={{ display: 'block', fontSize: '14px', marginTop: '10px' }}>选择角色</strong>
+              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '4px', opacity: .58 }}>浏览、导入并开始角色对话</span>
+            </button>
+            <button type="button" disabled={!blankSessionReady} onClick={openMigration} style={{
+              background: 'var(--dsw-alias-bg-layer-1, #292a2e)', border: '1px solid var(--dsw-alias-border-l2, #444)',
+              borderRadius: '12px', color: 'inherit', cursor: blankSessionReady ? 'pointer' : 'default', font: 'inherit',
+              minHeight: '88px', opacity: blankSessionReady ? 1 : .42, padding: '13px', textAlign: 'left',
+            }}><span aria-hidden="true" style={{ color, display: 'block', fontSize: '18px', lineHeight: 1 }}>↗</span>
+              <strong style={{ display: 'block', fontSize: '14px', marginTop: '10px' }}>迁移聊天</strong>
+              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '4px', opacity: .58 }}>从酒馆记录或模块化 RP 接续</span>
+            </button>
+          </div>
+          {!blankSessionReady && <p role="status" style={{
+            background: 'var(--dsw-alias-bg-layer-1, #292a2e)', borderRadius: '9px', fontSize: '11px',
+            lineHeight: 1.55, margin: '11px 0 0', opacity: .72, padding: '9px 10px',
+          }}>{unavailableReason}</p>}
+          <h2 style={{ fontSize: '13px', margin: '24px 0 10px', opacity: .62 }}>内容层级</h2>
+          <div style={{ border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '12px', overflow: 'hidden' }}>
+            {[
+              ['角色与世界书', '角色设定、开场、世界书与卡片资源'],
+              ['预设与身份', '提示词预设、Persona 与会话选择'],
+              ['扩展与诊断', '酒馆脚本、权限和兼容状态'],
+            ].map(([title, detail], index) => <div key={title} style={{
+              borderTop: index === 0 ? 'none' : '1px solid var(--dsw-alias-border-l2, #3d3d43)', padding: '10px 11px',
+            }}><strong style={{ display: 'block', fontSize: '12px' }}>{title}</strong>
+              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '3px', opacity: .52 }}>{detail}</span>
+            </div>)}
+          </div>
+          <p style={{ fontSize: '11px', lineHeight: 1.6, margin: '12px 2px 0', opacity: .46 }}>
+            工作台保持一个全局入口；具体能力按任务分组，不再占用发送栏，也不会为每项兼容功能增加常驻图标
+          </p>
+        </div>
+      </section>
+    </div>}
+    {libraryOpen && launchSessionId !== undefined && <CharacterLibraryDialog
       runtimeDiagnostics={runtimeDiagnostics}
       currentCharacterName=""
       listCharacters={listCharacters}
@@ -1957,7 +2083,7 @@ function BlankRoleplayLauncher({
       importCharacterFile={importCharacterFile}
       onClose={() => { setLibraryOpen(false) }}
       onStart={(character, greetingIndex, persona, presetId, memory, resourcePermissions) => startCharacterSession(
-        sessionId, character, greetingIndex, persona, presetId, memory, resourcePermissions,
+        launchSessionId, character, greetingIndex, persona, presetId, memory, resourcePermissions,
       )}
       listPresets={listPresets}
       importPresetFile={importPresetFile}
@@ -1965,10 +2091,10 @@ function BlankRoleplayLauncher({
       savePersona={savePersona}
       deletePersona={deletePersona}
     />}
-    {migrationOpen && <SillyTavernImportDialog listPresets={listPresets} onClose={() => { setMigrationOpen(false) }}
-      onImport={(chatFile, cardFile, presetId) => migrateChat(sessionId, chatFile, cardFile, presetId)}
+    {migrationOpen && launchSessionId !== undefined && <SillyTavernImportDialog listPresets={listPresets} onClose={() => { setMigrationOpen(false) }}
+      onImport={(chatFile, cardFile, presetId) => migrateChat(launchSessionId, chatFile, cardFile, presetId)}
       onImportRpDistribution={(target, remoteSessionId, presetId) => migrateRpDistributionChat(
-        sessionId,
+        launchSessionId,
         target,
         remoteSessionId,
         presetId,
@@ -2394,7 +2520,7 @@ function WorkspaceSettingsSection({
   return <section style={{ margin: '0 auto', maxWidth: '720px', padding: '8px 4px 32px' }}>
     <h2 style={{ fontSize: '18px', margin: '0 0 8px' }}>Agent RP</h2>
     <p style={{ fontSize: '13px', lineHeight: 1.6, margin: '0 0 22px', opacity: .62 }}>
-      控制哪些工作区显示“选择角色”和“迁移聊天”快捷入口，已有角色会话不受影响
+      控制哪些工作区允许从 Agent RP 工作台开始角色对话或迁移聊天，已有角色会话不受影响
     </p>
     <div style={{ display: 'grid', gap: '8px' }}>
       <button type="button" disabled={!writable} style={choiceStyle(settings.workspaceMode === 'all')}
@@ -2403,7 +2529,7 @@ function WorkspaceSettingsSection({
           {settings.workspaceMode === 'all' ? '●' : '○'}
         </span>
         <span><strong style={{ display: 'block', fontSize: '13px' }}>全部工作区</strong>
-          <span style={{ fontSize: '12px', opacity: .55 }}>每个工作区都显示“选择角色”和“迁移聊天”</span></span>
+          <span style={{ fontSize: '12px', opacity: .55 }}>每个工作区都允许使用 Agent RP 启动操作</span></span>
       </button>
       <button type="button" disabled={!writable} style={choiceStyle(settings.workspaceMode === 'selected')}
         onClick={() => { write({ ...settings, workspaceMode: 'selected' }) }}>
@@ -9679,9 +9805,9 @@ export function apply(ctx: ClientContext): void {
   }, props => <RpDistributionBridgeSection {...props} listCharacters={listCharacters} listPresets={listPresets}
     listPersonas={listPersonas} listWorldInfos={listWorldInfos}
     probe={probeRpDistribution} transfer={transferRpDistribution} receive={receiveRpDistribution} />))
-  ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
-    name: 'conversation.input.left', id: 'agent-rp-blank-launcher', order: -100,
-  }, props => <BlankRoleplayLauncher {...props} runtimeDiagnostics={runtimeDiagnostics} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} migrateRpDistributionChat={migrateRpDistributionChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} importPresetFile={importPresetFile} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
+  ctx.slots.inject('sidebar.destinations', () => ctx.slots.register({
+    name: 'sidebar.destinations', id: 'agent-rp-workbench', order: 20,
+  }, props => <SidebarRoleplayDestination {...props} runtimeDiagnostics={runtimeDiagnostics} workspaceSettings={workspaceSettings} workspaceList={workspaceList} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} migrateChat={migrateChatFromBlankSession} migrateRpDistributionChat={migrateRpDistributionChatFromBlankSession} startCharacterSession={startCharacterFromBlankSession} listPresets={listPresets} importPresetFile={importPresetFile} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-tavern-variables',
   }, () => null))
