@@ -1979,10 +1979,13 @@ function RoleplayDestinationIcon({ size }: { readonly size: number }) {
 function SidebarRoleplayFooterAction(props: SidebarRoleplayFooterActionProps) {
   const container = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(0)
+  const update = useCallback((): void => {
+    const trigger = container.current
+    if (trigger !== null) setWidth(resolveLegacySidebarWidth(trigger))
+  }, [])
   useLayoutEffect(() => {
     const trigger = container.current
     if (trigger === null) return
-    const update = (): void => { setWidth(resolveLegacySidebarWidth(trigger)) }
     update()
     window.addEventListener('resize', update)
     const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(update)
@@ -1995,8 +1998,9 @@ function SidebarRoleplayFooterAction(props: SidebarRoleplayFooterActionProps) {
       window.removeEventListener('resize', update)
       observer?.disconnect()
     }
-  }, [])
-  return <div ref={container} data-agent-rp-sidebar-slot="footer-action" style={{ width: props.wide ? '100%' : 'auto' }}>
+  }, [update])
+  return <div ref={container} data-agent-rp-sidebar-slot="footer-action" onClickCapture={update}
+    style={{ width: props.wide ? '100%' : 'auto' }}>
     <SidebarRoleplayDestination {...props} width={width} />
   </div>
 }
