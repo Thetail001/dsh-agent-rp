@@ -586,10 +586,14 @@ function withoutCall(
 /** Build one projection definition with an optional isolated EJS evaluator. */
 export function createAgentRpProjectionDefinition(
   ejsTemplateEngine?: EjsTemplateEngine,
-): ProjectionDefinition<'agentRp', AgentRpProjectionState> {
+): ProjectionDefinition<'agentRp', AgentRpProjectionState> & { readonly preload: false } {
   return {
   key: 'agentRp',
   schema: projectionSchema as never,
+  // The value contains full card, lorebook, preset, script, and transcript
+  // state. Opening a session reads it from history; bulk session discovery
+  // must never serialize it for every conversation.
+  preload: false,
   init: () => ({
     character: INITIAL_CHARACTER,
     cardWorldInfoCount: 0,
