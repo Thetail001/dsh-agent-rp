@@ -43,6 +43,30 @@ test('preserves legacy center markup until the compatibility stage normalizes it
   })
 })
 
+test('normalizes only high-confidence legacy symbol bars into responsive decorations', () => {
+  const source = [
+    '<style>.title::before{content:\'▄▄▄▄▄▄▄▄\';color:pink}.short::after{content:\'▀▀▀\'}</style>',
+    '<div class="footer">▀▀▀▀▀▀▀▀</div>',
+    '<div class="mixed">■■□□</div>',
+    '<pre>────────</pre>',
+    '<script>const css="content:\'▄▄▄▄\';";const sample="<div>▀▀▀▀</div>"</script>',
+  ].join('')
+
+  const normalized = normalizeLegacyCardHtml(source)
+
+  assert.match(normalized.source, /\.title::before\{content:"";display:block;flex:1 1 2em;/u)
+  assert.match(normalized.source, /<div class="footer" data-agent-rp-legacy-symbol-bar aria-hidden="true"><\/div>/u)
+  assert.match(normalized.source, /content:'▀▀▀'/u)
+  assert.match(normalized.source, /<div class="mixed">■■□□<\/div>/u)
+  assert.match(normalized.source, /<pre>────────<\/pre>/u)
+  assert.match(normalized.source, /const css="content:'▄▄▄▄';";const sample="<div>▀▀▀▀<\/div>"/u)
+  assert.deepEqual(normalized.diagnostics, [{ code: 'legacy-symbol-bar-normalized', count: 2 }])
+
+  const frame = compileCardFrameDocument(source, { origin: 'http://127.0.0.1:3091' })
+  assert.match(frame, /\[data-agent-rp-legacy-symbol-bar\]\{display:block!important;width:100%!important;/u)
+  assert.match(frame, /data-agent-rp-legacy-symbol-bar aria-hidden="true"/u)
+})
+
 test('keeps a leading style block in inline frontend source for sanitization', () => {
   const source = '<style>.card{display:grid}</style>\n<section class="card">content</section>'
   const compiled = compileCharacterDisplay(source)

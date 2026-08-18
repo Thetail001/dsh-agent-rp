@@ -8,9 +8,39 @@ export type CharacterDisplaySegment =
 
 /** Non-sensitive evidence about transformations applied before browser rendering. */
 export interface CardDisplayDiagnostic {
-  readonly code: 'frontend-document' | 'inline-html' | 'legacy-center-normalized' | 'unknown-wrapper-removed'
+  readonly code: 'frontend-document' | 'inline-html' | 'legacy-center-normalized'
+    | 'legacy-symbol-bar-normalized' | 'unknown-wrapper-removed'
   readonly count: number
   readonly tags?: readonly string[]
+}
+
+const LEGACY_SYMBOL_BAR_GLYPHS = '▄▀█▓▒░■□▰▱▮▯▬▪▫◼◻━─═—-'
+const legacySymbolBarCssContent = new RegExp(
+  String.raw`content\s*:\s*(["'])([${LEGACY_SYMBOL_BAR_GLYPHS}])\2{3,}\1\s*(?:!important\s*)?;`,
+  'gu',
+)
+const legacySymbolBarElement = new RegExp(
+  String.raw`<(div|span|p|footer|header|section|aside|li)(\s[^<>]*?)?>\s*([${LEGACY_SYMBOL_BAR_GLYPHS}])\3{3,}\s*<\/\1\s*>`,
+  'giu',
+)
+const legacyStyleBlock = /<style(\s[^<>]*?)?>([\s\S]*?)<\/style\s*>/giu
+const legacyScriptProtectedBlock = /<(script|pre|code|textarea)\b[^>]*>[\s\S]*?<\/\1\s*>/giu
+const legacyTextProtectedBlock = /<(script|style|pre|code|textarea)\b[^>]*>[\s\S]*?<\/\1\s*>/giu
+
+const responsiveLegacyPseudoBar = 'content:"";display:block;flex:1 1 2em;min-width:1em;max-width:8em;height:.25em;border-radius:999px;background:currentColor;overflow:hidden;'
+
+function replaceOutsideProtectedBlocks(
+  source: string,
+  pattern: RegExp,
+  replace: (value: string) => string,
+): string {
+  let result = ''
+  let cursor = 0
+  for (const match of source.matchAll(new RegExp(pattern.source, pattern.flags))) {
+    result += replace(source.slice(cursor, match.index)) + match[0]
+    cursor = match.index + match[0].length
+  }
+  return result + replace(source.slice(cursor))
 }
 
 /** Segments plus stage diagnostics that never include card prose or markup. */
@@ -244,13 +274,30 @@ export function normalizeLegacyCardHtml(source: string): {
   readonly source: string
   readonly diagnostics: readonly CardDisplayDiagnostic[]
 } {
-  const count = [...source.matchAll(/<center(?:\s[^>]*)?>/giu)].length
-  if (count === 0) return { source, diagnostics: [] }
+  const centerCount = [...source.matchAll(/<center(?:\s[^>]*)?>/giu)].length
+  let symbolBarCount = 0
+  const centered = centerCount === 0 ? source : source
+    .replace(/<center(\s[^>]*)?>/giu, '<div data-agent-rp-center$1>')
+    .replace(/<\/center\s*>/giu, '</div>')
+  const styled = replaceOutsideProtectedBlocks(centered, legacyScriptProtectedBlock, value => value
+    .replace(legacyStyleBlock, (_match, attributes: string | undefined, css: string) => {
+      const normalizedCss = css.replace(legacySymbolBarCssContent, () => {
+        symbolBarCount += 1
+        return responsiveLegacyPseudoBar
+      })
+      return `<style${attributes ?? ''}>${normalizedCss}</style>`
+    }))
+  const normalized = replaceOutsideProtectedBlocks(styled, legacyTextProtectedBlock, value => value
+    .replace(legacySymbolBarElement, (_match, tag: string, attributes: string | undefined) => {
+      symbolBarCount += 1
+      return `<${tag}${attributes ?? ''} data-agent-rp-legacy-symbol-bar aria-hidden="true"></${tag}>`
+    }))
   return {
-    source: source
-      .replace(/<center(\s[^>]*)?>/giu, '<div data-agent-rp-center$1>')
-      .replace(/<\/center\s*>/giu, '</div>'),
-    diagnostics: [{ code: 'legacy-center-normalized', count }],
+    source: normalized,
+    diagnostics: [
+      ...(centerCount === 0 ? [] : [{ code: 'legacy-center-normalized' as const, count: centerCount }]),
+      ...(symbolBarCount === 0 ? [] : [{ code: 'legacy-symbol-bar-normalized' as const, count: symbolBarCount }]),
+    ],
   }
 }
 

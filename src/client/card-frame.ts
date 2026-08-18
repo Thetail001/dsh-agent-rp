@@ -83,6 +83,7 @@ const cardFrameCompatibility = `<style>
 html{background:transparent!important;color-scheme:dark;scrollbar-color:rgba(145,158,181,.58) transparent;scrollbar-width:thin}
 *,*::before,*::after{box-sizing:border-box}
 [data-agent-rp-center]{display:block;text-align:center}
+[data-agent-rp-legacy-symbol-bar]{display:block!important;width:100%!important;height:.28em!important;min-height:2px;max-height:6px;border-radius:999px;background:currentColor!important;overflow:hidden;font-size:0!important;line-height:0!important;letter-spacing:0!important}
 ::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:999px;background:rgba(145,158,181,.58);background-clip:padding-box}
@@ -325,8 +326,9 @@ function cardFrameSource(source: string, options: CardFrameCompileOptions): stri
     ...asset,
     url: new URL(characterLibraryImageUrl(options.character!.id, asset.index), options.origin).href,
   }))
+  const legacy = normalizeLegacyCardHtml(source)
   const adapted = redirectKnownHostFacades(
-    assets.reduce((html, asset) => asset.sourceUri === '' ? html : html.replaceAll(asset.sourceUri, asset.url), source)
+    assets.reduce((html, asset) => asset.sourceUri === '' ? html : html.replaceAll(asset.sourceUri, asset.url), legacy.source)
       .replaceAll('window.parent?.document ?? window.document', 'window.document'),
   )
   const assetJson = JSON.stringify(assets).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
