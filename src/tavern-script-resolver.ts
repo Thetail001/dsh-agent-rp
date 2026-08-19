@@ -190,6 +190,39 @@ export function declaredTavernImageOrigins(source: string): readonly string[] {
   return [...origins].sort()
 }
 
+function declaredLoadedTavernImageOrigins(source: string): readonly string[] {
+  const origins = new Set<string>()
+  const literals = new Map<string, string>()
+  const imageVariables = new Set<string>()
+  const add = (value: string): void => {
+    try {
+      const url = new URL(value.replace(/[),.;]+$/u, ''))
+      if (url.protocol === 'https:' && url.username === '' && url.password === ''
+        && /\.(?:avif|gif|jpe?g|png|svg|webp)$/iu.test(url.pathname)) origins.add(url.origin)
+    } catch {
+      // Template fragments and URL-like script text are not static browser resources.
+    }
+  }
+  for (const match of source.matchAll(/\b(?:const|let|var)\s+([\p{L}_$][\p{L}\p{N}_$]*)\s*=\s*(['"])(https:\/\/[^\s"'<>`\\)]+)\2/giu)) {
+    literals.set(match[1]!, match[3]!)
+  }
+  for (const match of source.matchAll(/<img\b[^>]*\bsrc\s*=\s*(['"])(https:\/\/[^\s"'<>`\\)]+)\1/giu)) add(match[2]!)
+  for (const match of source.matchAll(/\burl\(\s*(['"]?)(https:\/\/[^\s"'<>`\\)]+)\1\s*\)/giu)) add(match[2]!)
+  for (const match of source.matchAll(/\b(?:const|let|var)\s+([\p{L}_$][\p{L}\p{N}_$]*)\s*=\s*(?:new\s+Image\s*\(\s*\)|document\.createElement\(\s*(['"])img\2\s*\))/giu)) {
+    imageVariables.add(match[1]!)
+  }
+  for (const variable of imageVariables) {
+    const escaped = variable.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+    const assignment = new RegExp(`\\b${escaped}\\s*\\.\\s*src\\s*=\\s*(?:(['"])(https:\\/\\/[^\\s"'<>\\x60\\\\)]+)\\1|([\\p{L}_$][\\p{L}\\p{N}_$]*))`, 'giu')
+    const setter = new RegExp(`\\b${escaped}\\s*\\.\\s*(?:setAttribute|attr)\\(\\s*['"]src['"]\\s*,\\s*(?:(['"])(https:\\/\\/[^\\s"'<>\\x60\\\\)]+)\\1|([\\p{L}_$][\\p{L}\\p{N}_$]*))`, 'giu')
+    for (const pattern of [assignment, setter]) for (const match of source.matchAll(pattern)) {
+      const value = match[2] ?? literals.get(match[3]!)
+      if (value !== undefined) add(value)
+    }
+  }
+  return [...origins].sort()
+}
+
 /** Find static HTTPS stylesheet origins without evaluating script source. */
 export function declaredTavernStyleOrigins(source: string): readonly string[] {
   const origins = new Set<string>()
@@ -325,7 +358,10 @@ export async function resolveTavernScriptExecution(
     needsDomPurify: /\bDOMPurify\b/u.test(dependencySource),
     needsFuse: /\bFuse\b/u.test(dependencySource),
     compatibilityMarkers: declaredTavernCompatibilityMarkers(dependencySource),
-    remoteImageOrigins: declaredTavernImageOrigins(dependencySource),
+    remoteImageOrigins: [...new Set([
+      ...declaredTavernImageOrigins(source),
+      ...sources.flatMap(declaredLoadedTavernImageOrigins),
+    ])].sort(),
     remoteStyleOrigins: declaredTavernStyleOrigins(dependencySource),
     remoteFrameOrigins: declaredTavernFrameOrigins(dependencySource),
   }

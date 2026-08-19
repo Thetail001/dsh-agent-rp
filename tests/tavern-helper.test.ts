@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { CommandId } from '@deepseek-ai/dsh-commands'
 import { AGENT_RP_CAPABILITIES } from '../src/extension-capability.ts'
@@ -21,7 +21,12 @@ import {
   tavernChatCompletionsEndpoint,
 } from '../src/tavern-generation-http.ts'
 import { tavernModelListEndpoint } from '../src/tavern-model-list-http.ts'
-import { advanceTavernTranscript, tavernMessageDepth, type TavernScriptSnapshot } from '../src/client/tavern-runtime.ts'
+import {
+  advanceTavernTranscript,
+  tavernMessageDepth,
+  tavernReasoningExtra,
+  type TavernScriptSnapshot,
+} from '../src/client/tavern-runtime.ts'
 import { tavernMutationMatchesCapability } from '../src/client/tavern-capability.ts'
 import { summarizeTavernAuxiliaryGenerations } from '../src/tavern-generation-log.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
@@ -68,6 +73,35 @@ function runtimeMessage(
 ): TavernScriptSnapshot['messages'][number] {
   return { messageId, seq, role, text, isHidden: false, data: {}, extra: {} }
 }
+
+test('projects model reasoning without exposing it as visible transcript text', () => {
+  const session = Session.create(SessionId('reasoning-projection'))
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' },
+      content: [
+        { type: 'reasoning', text: '<dream_plot>隐藏推理</dream_plot>' },
+        { type: 'text', text: '可见正文' },
+      ],
+    }),
+  }, { surfaceOp: 'append' })
+  let state = agentRpProjectionDefinition.init()
+  for (const event of session.events) state = agentRpProjectionDefinition.apply(state, event)
+
+  assert.deepEqual(state.surface, [{
+    seq: 0,
+    text: '可见正文',
+    reasoning: '<dream_plot>隐藏推理</dream_plot>',
+    role: 'assistant',
+  }])
+  assert.deepEqual(tavernReasoningExtra(state.surface[0]?.reasoning), {
+    reasoning: '<dream_plot>隐藏推理</dream_plot>',
+    reasoning_content: '<dream_plot>隐藏推理</dream_plot>',
+  })
+  assert.deepEqual(tavernReasoningExtra(undefined), {})
+})
 
 test('emits only transcript messages appended after the established runtime baseline', () => {
   const history = [

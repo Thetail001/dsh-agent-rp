@@ -453,7 +453,7 @@ function runtimeAcceptanceContext(preview: readonly unknown[]) {
   return context
 }
 
-test('builds a parseable Tavern runtime with dynamic script button APIs', () => {
+test('builds a parseable Tavern runtime with dynamic script button APIs', async () => {
   const html = tavernScriptFrameSource({
     id: 'travel', name: '地点选择', content: '', info: '测试', enabled: true,
     buttonEnabled: true, buttons: [{ name: '开始', visible: true }], data: {},
@@ -514,6 +514,10 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(source!, /\/api\/backends\/chat-completions\/generate/u)
   assert.match(source!, /window\.stopGenerationById=/u)
   assert.match(source!, /window\.stopAllGeneration=/u)
+  assert.match(source!, /window\.getTavernHelperVersion=/u)
+  assert.match(source!, /window\.getTavernVersion=/u)
+  assert.match(source!, /window\.SillyTavern\.stopGeneration=/u)
+  assert.match(source!, /window\.SillyTavern\.messageFormatting=/u)
   assert.match(source!, /generation-cancel/u)
   assert.match(source!, /CHAT_COMPLETION_PROMPT_READY:'chat_completion_prompt_ready'/u)
   assert.match(source!, /GENERATE_AFTER_DATA:'generate_after_data'/u)
@@ -525,6 +529,13 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   assert.match(source!, /window\.getModelList=/u)
   const context = runtimeAcceptanceContext([])
   runInNewContext(source!, context)
+  runInNewContext([
+    'window.__versions={helper:getTavernHelperVersion(),tavern:getTavernVersion()};',
+    'window.__formatted=SillyTavern.messageFormatting("old **正文**","白露",false,false,0);',
+    'window.__stopped=SillyTavern.stopGeneration();',
+    '$(async function(){window.__asyncHelperVersion=await getTavernHelperVersion()});',
+  ].join(''), context)
+  await new Promise<void>(resolve => { setImmediate(resolve) })
   assert.deepEqual(JSON.parse(JSON.stringify(context.__personaSnapshot)), {
     name: '小满', id: 'persona-12345678-1234-4123-8123-123456789abc',
   })
@@ -533,6 +544,11 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', () => 
   })
   assert.equal(context.__renderedMarkdown,
     '<p><strong>粗体</strong></p><pre><code class="language-yaml">key: value</code></pre>')
+  assert.deepEqual(JSON.parse(JSON.stringify(context.__versions)), { helper: '4.0.0', tavern: '1.13.5' })
+  assert.equal(context.__asyncHelperVersion, '4.0.0')
+  assert.equal(context.__formatted, '<p>new <strong>正文</strong></p>')
+  assert.equal(context.__stopped, true)
+  assert.equal((context.posted as Record<string, unknown>[]).some(message => message.action === 'generation-cancel-all'), true)
   const dispatchWindow = context.dispatchWindow as (type: string, event: unknown) => void
   dispatchWindow('securitypolicyviolation', {
     effectiveDirective: 'style-src-elem', blockedURI: 'https://styles.example.test/theme.css',
@@ -587,7 +603,9 @@ test('runs classic side-effect dependencies behind an isolated window facade', a
     'var core=window.parent||window;',
     'window.__classicCore=core;',
     'window.__classicDependency=true;',
-    "window.__wallpaper='https://images.example.test/wallpaper.webp';",
+    "var devtools={logo:'https://pinia.vuejs.org/logo.svg'};",
+    "var wallpaper=document.createElement('img');",
+    "wallpaper.src='https://images.example.test/wallpaper.webp';",
   ].join('\n')))
   try {
     const plan = await resolveTavernScriptExecution([
@@ -598,6 +616,7 @@ test('runs classic side-effect dependencies behind an isolated window facade', a
     assert.equal(plan.source, 'window.__classicEntry=true;')
     assert.equal(plan.inlineDependencies?.length, 1)
     assert.deepEqual(plan.remoteImageOrigins, ['https://images.example.test'])
+    assert.equal(plan.remoteImageOrigins?.includes('https://pinia.vuejs.org'), false)
     const html = tavernScriptFrameSource({
       id: 'classic-runtime', name: '经典依赖', content: '', info: '', enabled: true,
       buttonEnabled: false, buttons: [], data: {},
@@ -860,7 +879,7 @@ test('preflights selected character and preset resources without executing scrip
 
   const originalFetch = globalThis.fetch
   globalThis.fetch = () => Promise.resolve(new Response(
-    "window.cover='https://assets.example.test/cover.png';",
+    "var cover=document.createElement('img');cover.src='https://assets.example.test/cover.png';",
   ))
   try {
     const approved = await inspectTavernPreflight(sources, [{

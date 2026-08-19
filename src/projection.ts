@@ -113,6 +113,7 @@ interface AgentRpProjectionState {
   readonly surface: readonly {
     readonly seq: number
     readonly text?: string
+    readonly reasoning?: string
     readonly role?: 'user' | 'assistant'
   }[]
   readonly calls: Readonly<Record<string, ImportCall>>
@@ -218,6 +219,12 @@ function surfaceText(event: SessionEvent): string | undefined {
   return undefined
 }
 
+function surfaceReasoning(event: SessionEvent): string | undefined {
+  if (event.type !== 'assistant/message' || event.data.message.source.kind !== 'model') return undefined
+  const blocks = event.data.message.content.flatMap(block => block.type === 'reasoning' ? [block.text] : [])
+  return blocks.length === 0 ? undefined : blocks.join('\n')
+}
+
 function surfaceRole(event: SessionEvent): 'user' | 'assistant' | undefined {
   if (event.type === 'user/message' && (event.data.source.kind === 'user' || event.data.source.kind === 'model')) return 'user'
   if (event.type === 'assistant/message' && event.data.message.source.kind === 'model') return 'assistant'
@@ -233,10 +240,12 @@ function applySurface(
   if (event.type !== 'tool/result'
     && typeof (message.source as unknown as Record<string, unknown>)[PROMPT_REGEX_SOURCE_MARKER] === 'object') return surface
   const text = surfaceText(event)
+  const reasoning = surfaceReasoning(event)
   const role = surfaceRole(event)
   const node = {
     seq: event.seq,
     ...(text === undefined ? {} : { text }),
+    ...(reasoning === undefined ? {} : { reasoning }),
     ...(role === undefined ? {} : { role }),
   }
   const operation = event.surfaceOp
@@ -1031,9 +1040,9 @@ export function createAgentRpProjectionDefinition(
   view: state => {
     const worldInfo = worldInfoProjection(state, ejsTemplateEngine)
     const auxiliaryGenerations = summarizeTavernAuxiliaryGenerationReplay(state.auxiliaryGenerations)
-    const visibleTavernMessages = state.surface.flatMap(({ seq, text, role }) => text === undefined || role === undefined
+    const visibleTavernMessages = state.surface.flatMap(({ seq, text, reasoning, role }) => text === undefined || role === undefined
       ? []
-      : [{ seq, role, text, isHidden: false as const }])
+      : [{ seq, role, text, ...(reasoning === undefined ? {} : { reasoning }), isHidden: false as const }])
     const hiddenTavernMessages = state.tavern?.hiddenPrefix ?? []
     return {
       ...state.character,
@@ -1066,7 +1075,7 @@ export function createAgentRpProjectionDefinition(
       }),
     }
   },
-  stateVersion: 10,
+  stateVersion: 11,
   }
 }
 

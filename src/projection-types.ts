@@ -96,6 +96,8 @@ export interface AgentRpProjection {
       readonly seq: number
       readonly role: 'user' | 'assistant'
       readonly text: string
+      /** Model reasoning retained for read-only Tavern Helper compatibility. */
+      readonly reasoning?: string
       readonly isHidden: boolean
     }[]
   }
