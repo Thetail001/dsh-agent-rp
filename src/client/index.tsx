@@ -7842,7 +7842,6 @@ function TavernScriptRuntime({
     })
     return () => { window.cancelAnimationFrame(animation) }
   }, [panelOpen, panelScriptId])
-  if (scripts.length === 0) return null
   const failures = frames.flatMap(entry => {
     const error = entry.error ?? runtimeErrors.get(entry.key)
     return error === undefined ? [] : [{ script: entry.script, error }]
@@ -8210,6 +8209,7 @@ function TavernScriptRuntime({
       nativeIdentityPending: nativeIdentityRequests.size,
     },
   })
+  if (scripts.length === 0) return null
   return <>
     {runtimeToasts.length > 0 && <div aria-live="polite" style={{
       display: 'grid', gap: '8px', position: 'fixed', right: '14px', top: '14px', width: 'min(92vw, 420px)', zIndex: 1230,

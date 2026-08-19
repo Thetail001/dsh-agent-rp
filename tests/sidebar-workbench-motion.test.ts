@@ -55,3 +55,16 @@ test('sidebar exposes one resource-center drilldown for peer resource types', ()
   assert.match(resourceCenterSource, /可复用的对话预设/u)
   assert.match(resourceCenterSource, /玩家身份与人物设定/u)
 })
+
+test('Tavern runtime keeps Hook order stable while an empty projection gains scripts', () => {
+  const runtimeStart = source.indexOf('function TavernScriptRuntime(')
+  const runtimeEnd = source.indexOf('\nfunction ', runtimeStart + 1)
+  const runtimeSource = source.slice(runtimeStart, runtimeEnd < 0 ? undefined : runtimeEnd)
+  const emptyGuard = runtimeSource.indexOf('if (scripts.length === 0) return null')
+  const finalHook = runtimeSource.lastIndexOf('useAgentRpRuntimeDiagnosticContribution(')
+
+  assert.notEqual(runtimeStart, -1)
+  assert.notEqual(emptyGuard, -1)
+  assert.notEqual(finalHook, -1)
+  assert.ok(emptyGuard > finalHook, 'empty-script rendering must not skip a Hook used after scripts arrive')
+})
