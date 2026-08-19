@@ -11,6 +11,9 @@ test('sidebar workbench declares entry motion and reduced-motion fallback', () =
   assert.match(source, /@keyframes agent-rp-workbench-panel-in/u)
   assert.match(source, /@media \(prefers-reduced-motion: reduce\)/u)
   assert.match(source, /data-agent-rp-workbench-dismiss/u)
+  assert.match(source, /createPortal\(<div role="presentation" data-agent-rp-workbench-layer/u)
+  assert.match(source, /createPortal\(<CharacterLibraryDialog/u)
+  assert.match(source, /overflow-x: auto;/u)
   assert.match(source, /data-agent-rp-destination-icon/u)
   assert.match(source, /ctx\.slots\.inject\('sidebar\.destinations'/u)
   assert.match(source, /ctx\.slots\.inject\('sidebar\.footer\.action'/u)
@@ -38,6 +41,10 @@ test('roleplay launch keeps collection management secondary to choosing a charac
 
 test('sidebar exposes one resource-center drilldown for peer resource types', () => {
   assert.match(source, /data-agent-rp-action="open-resource-center"/u)
+  assert.match(source, /data-agent-rp-action="open-session-tools"/u)
+  assert.match(source, /new CustomEvent\(openRoleplaySessionToolsEvent/u)
+  assert.match(source, /className="agent-rp-session-menu"/u)
+  assert.match(source, /createPortal\(<div ref=\{settingsMenuRef\}/u)
   assert.match(source, /角色、世界书、预设与 Persona/u)
   assert.doesNotMatch(source, />内容层级</u)
   assert.match(resourceCenterSource, /data-agent-rp-surface="resource-center"/u)

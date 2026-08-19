@@ -14,6 +14,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
+import { createPortal } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
@@ -511,6 +512,23 @@ type GenerationTailProps = TurnTailOwnerProps & {
 
 const color = 'var(--dsw-alias-state-business-primary, #6f78e8)'
 const statusPlaceholder = '<StatusPlaceHolderImpl/>'
+const openRoleplaySessionToolsEvent = 'dsh-agent-rp-open-session-tools'
+
+function elapsedStartupMilliseconds(startedAt: number): number {
+  return Math.max(0, Math.round(performance.now() - startedAt))
+}
+
+function useLiveStartupElapsed(startedAt: number, active: boolean): number {
+  const [elapsed, setElapsed] = useState(() => elapsedStartupMilliseconds(startedAt))
+  useEffect(() => {
+    const update = (): void => { setElapsed(elapsedStartupMilliseconds(startedAt)) }
+    update()
+    if (!active) return
+    const timer = window.setInterval(update, 250)
+    return () => { window.clearInterval(timer) }
+  }, [active, startedAt])
+  return elapsed
+}
 
 function useAgentRpRuntimeDiagnosticContribution(
   registry: AgentRpRuntimeDiagnosticRegistry,
@@ -1637,6 +1655,38 @@ const agentRpResponsiveStyle = `
   .agent-rp-header-primary-action { display: none !important; }
   .agent-rp-header-settings { flex: 0 0 auto; margin-left: auto; }
   .agent-rp-mobile-only { display: block !important; }
+  .agent-rp-session-menu {
+    bottom: max(8px, env(safe-area-inset-bottom)) !important;
+    left: 8px !important;
+    max-height: min(70dvh, 560px) !important;
+    overflow-y: auto !important;
+    right: 8px !important;
+    top: auto !important;
+    width: auto !important;
+  }
+  [data-agent-rp-workbench-layer] { z-index: 1180 !important; }
+  [data-agent-rp-workbench] {
+    padding-bottom: env(safe-area-inset-bottom) !important;
+    padding-top: env(safe-area-inset-top) !important;
+  }
+  [data-agent-rp-status] {
+    box-sizing: border-box;
+    flex-wrap: nowrap !important;
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    padding: 2px 4px;
+    scrollbar-width: none;
+  }
+  [data-agent-rp-status]::-webkit-scrollbar { display: none; }
+  [data-agent-rp-status] > * { flex: 0 0 auto; }
+  [data-agent-rp-status-line] {
+    max-width: min(68vw, 320px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  [data-agent-rp-startup] { margin-inline: 4px; }
   [data-agent-rp-dialog] {
     align-items: flex-end !important;
     padding: max(8px, env(safe-area-inset-top)) 0 0 !important;
@@ -2111,6 +2161,11 @@ function SidebarRoleplayDestination({
     closeWorkbench()
     setResourceCenterOpen(true)
   }
+  const openCurrentSessionTools = (): void => {
+    if (currentSessionId === undefined || currentSession?.agentPreset !== 'agent-rp') return
+    closeWorkbench()
+    window.dispatchEvent(new CustomEvent(openRoleplaySessionToolsEvent, { detail: String(currentSessionId) }))
+  }
   const narrowResourceCenter = useNarrowCharacterLibrary()
   useEffect(() => {
     if (!workbenchOpen) return
@@ -2140,7 +2195,8 @@ function SidebarRoleplayDestination({
         {wide && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Agent RP</span>}
       </button>
     </Tooltip>
-    {workbenchOpen && <div role="presentation" style={{ inset: 0, position: 'fixed', zIndex: 980 }}>
+    {workbenchOpen && createPortal(<div role="presentation" data-agent-rp-workbench-layer
+      style={{ inset: 0, position: 'fixed', zIndex: 1180 }}>
       <button type="button" aria-label="关闭 Agent RP 工作台" data-agent-rp-workbench-dismiss onClick={closeWorkbench} style={{
         background: 'var(--dsw-alias-bg-mask-1, rgba(0,0,0,.34))', border: 0, cursor: 'default', inset: 0,
         padding: 0, position: 'absolute', width: '100%',
@@ -2192,6 +2248,22 @@ function SidebarRoleplayDestination({
           {accessError !== undefined && <p role="alert" style={{
             color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '11px', margin: '7px 2px 0',
           }}>{accessError}</p>}
+          {currentSession?.agentPreset === 'agent-rp' && <button type="button"
+            data-agent-rp-action="open-session-tools" onClick={openCurrentSessionTools} style={{
+              alignItems: 'center', background: `color-mix(in srgb, ${color} 10%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`, borderRadius: '12px',
+              color: 'inherit', cursor: 'pointer', display: 'flex', font: 'inherit', gap: '11px',
+              marginTop: '12px', padding: '12px', textAlign: 'left', width: '100%',
+            }}>
+            <span aria-hidden="true" style={{ color, fontSize: '19px', lineHeight: 1 }}>✦</span>
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <strong style={{ display: 'block', fontSize: '13px' }}>当前角色会话</strong>
+              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '3px', opacity: .54 }}>
+                角色、身份、世界书、预设与调试视图
+              </span>
+            </span>
+            <span aria-hidden="true" style={{ fontSize: '16px', opacity: .38 }}>›</span>
+          </button>}
           <h2 style={{ fontSize: '13px', margin: '22px 0 10px', opacity: .62 }}>开始</h2>
           <div style={{ display: 'grid', gap: '10px', gridTemplateColumns: 'repeat(auto-fit, minmax(132px, 1fr))' }}>
             <button type="button" data-agent-rp-action="open-character-library"
@@ -2236,8 +2308,8 @@ function SidebarRoleplayDestination({
           </p>
         </div>
       </section>
-    </div>}
-    {libraryOpen && launchSessionId !== undefined && <CharacterLibraryDialog
+    </div>, document.body)}
+    {libraryOpen && launchSessionId !== undefined && createPortal(<CharacterLibraryDialog
       runtimeDiagnostics={runtimeDiagnostics}
       currentCharacterName=""
       listCharacters={listCharacters}
@@ -2253,16 +2325,16 @@ function SidebarRoleplayDestination({
       listPersonas={listPersonas}
       savePersona={savePersona}
       deletePersona={deletePersona}
-    />}
-    {migrationOpen && launchSessionId !== undefined && <SillyTavernImportDialog listPresets={listPresets} onClose={() => { setMigrationOpen(false) }}
+    />, document.body)}
+    {migrationOpen && launchSessionId !== undefined && createPortal(<SillyTavernImportDialog listPresets={listPresets} onClose={() => { setMigrationOpen(false) }}
       onImport={(chatFile, cardFile, presetId) => migrateChat(launchSessionId, chatFile, cardFile, presetId)}
       onImportRpDistribution={(target, remoteSessionId, presetId) => migrateRpDistributionChat(
         launchSessionId,
         target,
         remoteSessionId,
         presetId,
-      )} />}
-    {resourceCenterOpen && <RoleplayResourceCenter
+      )} />, document.body)}
+    {resourceCenterOpen && createPortal(<RoleplayResourceCenter
       accent={color}
       narrow={narrowResourceCenter}
       listCharacters={listCharacters}
@@ -2277,7 +2349,7 @@ function SidebarRoleplayDestination({
       savePersona={savePersona}
       deletePersona={deletePersona}
       onClose={() => { setResourceCenterOpen(false) }}
-    />}
+    />, document.body)}
   </>
 }
 
@@ -2964,10 +3036,20 @@ function RoleplayHeader({
   const rootRef = useRef<HTMLDivElement | null>(null)
   const settingsRef = useRef<HTMLDetailsElement | null>(null)
   const settingsSummaryRef = useRef<HTMLElement | null>(null)
+  const settingsMenuRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const openSessionTools = (event: Event): void => {
+      if (!(event instanceof CustomEvent) || event.detail !== String(sessionId)) return
+      setSettingsOpen(true)
+    }
+    window.addEventListener(openRoleplaySessionToolsEvent, openSessionTools)
+    return () => { window.removeEventListener(openRoleplaySessionToolsEvent, openSessionTools) }
+  }, [sessionId])
   useEffect(() => {
     if (!settingsOpen) return
     const closeOutside = (event: PointerEvent): void => {
-      if (event.target instanceof Node && !settingsRef.current?.contains(event.target)) setSettingsOpen(false)
+      if (event.target instanceof Node && !settingsRef.current?.contains(event.target)
+        && !settingsMenuRef.current?.contains(event.target)) setSettingsOpen(false)
     }
     const closeWithEscape = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
@@ -3028,6 +3110,7 @@ function RoleplayHeader({
     index,
     ...summarizeCharacterRegexScript(script),
   }))
+  const settingsAnchor = settingsSummaryRef.current?.getBoundingClientRect()
   return <>
     <div ref={rootRef} className="agent-rp-header" data-agent-rp-header style={{ alignItems: 'center', display: 'flex', gap: '10px', marginRight: 'auto', minWidth: 0 }}>
       <Avatar projection={displayProjection} loadAvatar={loadAvatar}
@@ -3068,10 +3151,15 @@ function RoleplayHeader({
           border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px', color: 'inherit', cursor: 'pointer',
           fontSize: '12px', listStyle: 'none', padding: '6px 10px', whiteSpace: 'nowrap',
         }}>会话设置</summary>
-        <div role="menu" aria-label="角色会话设置" style={{
+      </details>
+      {settingsOpen && createPortal(<div ref={settingsMenuRef} className="agent-rp-session-menu"
+        role="menu" aria-label="角色会话设置" style={{
           background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
           borderRadius: '10px', boxShadow: '0 14px 38px rgba(0,0,0,.36)', display: 'grid', gap: '3px',
-          minWidth: '168px', padding: '6px', position: 'absolute', right: 0, top: 'calc(100% + 7px)', zIndex: 80,
+          maxHeight: `min(70vh, ${Math.max(180, window.innerHeight - (settingsAnchor?.bottom ?? 0) - 16)}px)`,
+          minWidth: '188px', overflowY: 'auto', padding: '6px', position: 'fixed',
+          right: `${Math.max(8, window.innerWidth - (settingsAnchor?.right ?? window.innerWidth - 8))}px`,
+          top: `${Math.min(window.innerHeight - 180, (settingsAnchor?.bottom ?? 8) + 7)}px`, zIndex: 1210,
         }}>
           <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setOpen(true) }} style={headerMenuItemStyle}>角色信息</button>
           <button className="agent-rp-mobile-only" type="button" role="menuitem" data-agent-rp-action="open-character-library"
@@ -3099,8 +3187,7 @@ function RoleplayHeader({
             setRoleplayViewMode(sessionId, viewMode === 'immersive' ? 'debug' : 'immersive')
           }} style={headerMenuItemStyle}>{viewMode === 'debug' ? '返回沉浸视图' : '打开调试视图'}</button>
           {exportError !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '11px', lineHeight: 1.45, margin: '4px 8px 3px', maxWidth: '240px' }}>{exportError}</p>}
-        </div>
-      </details>
+        </div>, document.body)}
       {statusSource !== undefined && <button className="agent-rp-header-primary-action" type="button" onClick={() => { setStatusOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
@@ -6590,6 +6677,12 @@ function TavernScriptRuntime({
   const signature = `${planSignature}\u0002${[...approvedImages].sort().join('\u0001')}\u0002${[...approvedStyles].sort().join('\u0001')}\u0002${[...approvedFonts].sort().join('\u0001')}\u0002${[...approvedFrames].sort().join('\u0001')}`
   const [frames, setFrames] = useState<readonly TavernScriptFrame[]>([])
   const [readyScriptIds, setReadyScriptIds] = useState<ReadonlySet<string>>(() => new Set())
+  const runtimeStartedAt = useRef(performance.now())
+  const [startupTiming, setStartupTiming] = useState<{
+    readonly planMs?: number
+    readonly firstReadyMs?: number
+    readonly settledMs?: number
+  }>({})
   const [compatibilityMarkersByScript, setCompatibilityMarkersByScript] = useState<ReadonlyMap<string, readonly string[]>>(
     () => new Map(),
   )
@@ -8054,6 +8147,24 @@ function TavernScriptRuntime({
   const failedScriptCount = [...scriptPhases.values()].filter(
     phase => phase === 'load-error' || phase === 'runtime-error',
   ).length
+  const scriptPlanReady = scripts.length === 0 || (scriptPhases.size === scripts.length
+    && [...scriptPhases.values()].every(phase => phase !== 'preparing'))
+  const scriptRuntimeSettled = permissionSummary.startup === 0
+    && readyScriptCount + failedScriptCount >= scripts.length
+  useEffect(() => {
+    setStartupTiming(current => {
+      const elapsed = elapsedStartupMilliseconds(runtimeStartedAt.current)
+      const next = {
+        ...current,
+        ...(current.planMs === undefined && scriptPlanReady ? { planMs: elapsed } : {}),
+        ...(current.firstReadyMs === undefined && (readyScriptCount > 0 || scripts.length === 0)
+          ? { firstReadyMs: elapsed } : {}),
+        ...(current.settledMs === undefined && scriptRuntimeSettled ? { settledMs: elapsed } : {}),
+      }
+      return next.planMs === current.planMs && next.firstReadyMs === current.firstReadyMs
+        && next.settledMs === current.settledMs ? current : next
+    })
+  }, [readyScriptCount, scriptPlanReady, scriptRuntimeSettled, scripts.length])
   const queuedGenerationCount = [...generationRequests.values()].reduce((total, count) => total + count, 0)
     + [...customGenerationRequests.values()].reduce((total, value) => total + value.count, 0)
   const queuedModelListCount = [...modelListRequests.values()].reduce((total, value) => total + value.count, 0)
@@ -8160,6 +8271,11 @@ function TavernScriptRuntime({
       data-agent-rp-tavern-startup-permissions={permissionSummary.startup}
       data-agent-rp-tavern-interaction-permissions={permissionSummary.interaction}
       data-agent-rp-tavern-permission-state={permissionSummary.state}
+      {...(startupTiming.planMs === undefined ? {} : { 'data-agent-rp-tavern-plan-ms': startupTiming.planMs })}
+      {...(startupTiming.firstReadyMs === undefined
+        ? {} : { 'data-agent-rp-tavern-first-ready-ms': startupTiming.firstReadyMs })}
+      {...(startupTiming.settledMs === undefined
+        ? {} : { 'data-agent-rp-tavern-settled-ms': startupTiming.settledMs })}
       data-agent-rp-tavern-permission-script={permissionSummary.counts.script}
       data-agent-rp-tavern-permission-image={permissionSummary.counts.image}
       data-agent-rp-tavern-permission-style={permissionSummary.counts.style}
@@ -8337,7 +8453,8 @@ function roleplayComposerDockComponent(
     inputActions, sessionId, useProjection, useSessions, useSession,
   }: ComposerDockProps) {
   const summary = useSessions(state => state.byId[sessionId])
-  const projection = roleplaySummary(summary, useProjection('agentRp'))
+  const projected = useProjection('agentRp')
+  const projection = roleplaySummary(summary, projected)
   const chat = useSession(state => state.chat)
   const viewMode = useRoleplayViewMode(sessionId)
   const [drawOpen, setDrawOpen] = useState(false)
@@ -8365,6 +8482,37 @@ function roleplayComposerDockComponent(
   const characterDetail = useMemo(() => storedCharacterDetail === undefined ? undefined
     : withAgentRpSessionCardPermissions(storedCharacterDetail, sessionResourcePermissions),
   [sessionResourcePermissions, storedCharacterDetail])
+  const roleplayExpected = summary?.agentPreset === 'agent-rp'
+  const startupStartedAt = useMemo(() => performance.now(), [sessionId])
+  const [startupTiming, setStartupTiming] = useState<{
+    readonly sessionId: SessionId
+    readonly projectionMs?: number
+    readonly characterMs?: number
+  }>(() => ({ sessionId }))
+  const currentStartupTiming = startupTiming.sessionId === sessionId ? startupTiming : { sessionId }
+  const waitingForCharacter = projection !== undefined && projection.avatarLibraryId !== undefined
+    && storedCharacterDetail === undefined
+  const startupActive = roleplayExpected && (projection === undefined || waitingForCharacter)
+  const liveStartupElapsed = useLiveStartupElapsed(startupStartedAt, startupActive)
+  useEffect(() => {
+    if (!roleplayExpected || projection === undefined) return
+    setStartupTiming(current => {
+      const value = current.sessionId === sessionId ? current : { sessionId }
+      return value.projectionMs === undefined
+        ? { ...value, projectionMs: elapsedStartupMilliseconds(startupStartedAt) } : value
+    })
+  }, [projection, roleplayExpected, sessionId, startupStartedAt])
+  useEffect(() => {
+    if (!roleplayExpected || projection === undefined || waitingForCharacter) return
+    setStartupTiming(current => {
+      const value = current.sessionId === sessionId ? current : { sessionId }
+      return value.characterMs === undefined
+        ? { ...value, characterMs: elapsedStartupMilliseconds(startupStartedAt) } : value
+    })
+  }, [projection, roleplayExpected, sessionId, startupStartedAt, waitingForCharacter])
+  const startupPhase = projection === undefined ? 'projection' : waitingForCharacter ? 'character' : 'ready'
+  const startupElapsed = startupActive ? liveStartupElapsed
+    : currentStartupTiming.characterMs ?? currentStartupTiming.projectionMs ?? liveStartupElapsed
   const displayStateRef = useRef({ chat, characterDetail, compatibilityMarkers, displayOverrides, projection, viewMode })
   const scanDisplayRef = useRef<() => void>(() => undefined)
   displayStateRef.current = { chat, characterDetail, compatibilityMarkers, displayOverrides, projection, viewMode }
@@ -9135,9 +9283,25 @@ function roleplayComposerDockComponent(
       },
     },
   )
-  if (projection === undefined) return null
+  if (projection === undefined) return roleplayExpected ? <div ref={rootRef} role="status"
+    data-agent-rp-status data-agent-rp-startup data-agent-rp-startup-phase="projection"
+    data-agent-rp-startup-elapsed-ms={startupElapsed} style={{
+      alignItems: 'center', color: 'inherit', display: 'flex', fontSize: '11px', gap: '7px',
+      minWidth: 0, opacity: .68, padding: '4px 8px',
+    }}>
+    <span aria-hidden="true" style={{ color }}>●</span>
+    <span>{startupElapsed < 1_200
+      ? '正在准备角色会话…'
+      : `会话投影仍在读取 · ${(startupElapsed / 1_000).toFixed(1)} 秒；输入区保持可用`}</span>
+  </div> : null
   const cardPermissionCount = cardExternalWindowRequests.size + cardNativeIdentityRequests.size
   return <div ref={rootRef} data-agent-rp-status
+    data-agent-rp-startup data-agent-rp-startup-phase={startupPhase}
+    data-agent-rp-startup-elapsed-ms={startupElapsed}
+    {...(currentStartupTiming.projectionMs === undefined
+      ? {} : { 'data-agent-rp-startup-projection-ms': currentStartupTiming.projectionMs })}
+    {...(currentStartupTiming.characterMs === undefined
+      ? {} : { 'data-agent-rp-startup-character-ms': currentStartupTiming.characterMs })}
     {...(cardExternalWindowPhase === undefined
       ? {} : { 'data-agent-rp-external-window-phase': cardExternalWindowPhase })}
     data-agent-rp-inline-frontend-sanitizer={inlineCardSanitizerProbeState()}
@@ -9316,7 +9480,7 @@ function RoleplayStatusLine({ projection, running }: {
     projection.importedMessageCount === 0 ? undefined : `已迁移 ${projection.importedMessageCount} 条历史`,
   ].filter((part): part is string => part !== undefined)
   if (!running && parts.length === 0) return null
-  return <div style={{ alignItems: 'center', display: 'flex', fontSize: '11px', gap: '8px', minHeight: '18px', opacity: 0.5, padding: '0 10px' }}>
+  return <div data-agent-rp-status-line style={{ alignItems: 'center', display: 'flex', fontSize: '11px', gap: '8px', minHeight: '18px', opacity: 0.5, padding: '0 10px' }}>
     {running && <span>{projection.characterName}正在回应</span>}
     {running && parts.length > 0 && <span>·</span>}
     {parts.length > 0 && <span>{parts.join(' · ')}</span>}

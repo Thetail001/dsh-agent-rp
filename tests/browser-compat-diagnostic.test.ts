@@ -75,6 +75,42 @@ const stableInteractionSelectors = {
   })],
 } as const
 
+test('locates a slow startup without treating an unfinished projection as an empty Session', () => {
+  const projection = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    '[data-agent-rp-status]': [new DiagnosticElement({
+      'data-agent-rp-startup': '',
+      'data-agent-rp-startup-phase': 'projection',
+      'data-agent-rp-startup-elapsed-ms': '2417',
+    })],
+  }))
+  assert.deepEqual(projection.startup, {
+    phase: 'projection', sessionElapsedMs: 2417,
+  })
+  assert.equal(projection.session, undefined)
+
+  const authorization = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    '[data-agent-rp-status]': [new DiagnosticElement({
+      'data-agent-rp-startup': '',
+      'data-agent-rp-startup-phase': 'ready',
+      'data-agent-rp-startup-elapsed-ms': '531',
+      'data-agent-rp-startup-projection-ms': '214',
+      'data-agent-rp-startup-character-ms': '531',
+    })],
+    '[data-agent-rp-tavern-total]': [new DiagnosticElement({
+      'data-agent-rp-tavern-total': '5',
+      'data-agent-rp-tavern-ready': '3',
+      'data-agent-rp-tavern-failed': '0',
+      'data-agent-rp-tavern-permission-state': 'startup-blocked',
+      'data-agent-rp-tavern-plan-ms': '92',
+      'data-agent-rp-tavern-first-ready-ms': '118',
+    })],
+  }))
+  assert.deepEqual(authorization.startup, {
+    phase: 'authorization', sessionElapsedMs: 531, projectionMs: 214, characterMs: 531,
+    tavernPlanMs: 92, tavernFirstReadyMs: 118,
+  })
+})
+
 test('collects one content-free healthy browser snapshot with expected permission waits', () => {
   const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
     '[data-agent-rp-status]': [new DiagnosticElement(capabilityAttributes)],

@@ -68,6 +68,16 @@ export interface AgentRpBrowserCompatibilitySnapshot {
       readonly state: 'closed' | 'open'
     }
   }
+  /** Content-free elapsed times locating the active startup bottleneck. */
+  readonly startup?: {
+    readonly phase: 'projection' | 'character' | 'authorization' | 'scripts' | 'ready' | 'unknown'
+    readonly sessionElapsedMs: number
+    readonly projectionMs?: number
+    readonly characterMs?: number
+    readonly tavernPlanMs?: number
+    readonly tavernFirstReadyMs?: number
+    readonly tavernSettledMs?: number
+  }
   readonly session?: {
     readonly capabilities: {
       readonly extensions: number
@@ -201,6 +211,14 @@ function integer(element: Element, name: string): number {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0
 }
 
+function optionalInteger(element: Element | null, name: string): number | undefined {
+  if (element === null) return undefined
+  const source = element.getAttribute(name)
+  if (source === null) return undefined
+  const parsed = Number(source)
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined
+}
+
 function value(element: Element, name: string): string {
   return element.getAttribute(name) ?? ''
 }
@@ -272,9 +290,37 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     ? tavernPanelStateValue
     : 'closed'
   const issues = new Set<AgentRpBrowserCompatibilityIssue>()
+  const startupPhaseValue = status?.getAttribute('data-agent-rp-startup-phase')
+  let startupPhase: NonNullable<AgentRpBrowserCompatibilitySnapshot['startup']>['phase']
+    = startupPhaseValue === 'projection' || startupPhaseValue === 'character' || startupPhaseValue === 'ready'
+      ? startupPhaseValue : 'unknown'
+  if (startupPhase === 'ready' && tavern !== null) {
+    if (tavern.getAttribute('data-agent-rp-tavern-permission-state') === 'startup-blocked') {
+      startupPhase = 'authorization'
+    } else if (integer(tavern, 'data-agent-rp-tavern-ready')
+      + integer(tavern, 'data-agent-rp-tavern-failed') < integer(tavern, 'data-agent-rp-tavern-total')) {
+      startupPhase = 'scripts'
+    }
+  }
+  const projectionMs = optionalInteger(status, 'data-agent-rp-startup-projection-ms')
+  const characterMs = optionalInteger(status, 'data-agent-rp-startup-character-ms')
+  const tavernPlanMs = optionalInteger(tavern, 'data-agent-rp-tavern-plan-ms')
+  const tavernFirstReadyMs = optionalInteger(tavern, 'data-agent-rp-tavern-first-ready-ms')
+  const tavernSettledMs = optionalInteger(tavern, 'data-agent-rp-tavern-settled-ms')
+  const startup = status?.getAttribute('data-agent-rp-startup') === null || status === null
+    ? undefined
+    : {
+        phase: startupPhase,
+        sessionElapsedMs: integer(status, 'data-agent-rp-startup-elapsed-ms'),
+        ...(projectionMs === undefined ? {} : { projectionMs }),
+        ...(characterMs === undefined ? {} : { characterMs }),
+        ...(tavernPlanMs === undefined ? {} : { tavernPlanMs }),
+        ...(tavernFirstReadyMs === undefined ? {} : { tavernFirstReadyMs }),
+        ...(tavernSettledMs === undefined ? {} : { tavernSettledMs }),
+      }
 
   let session: AgentRpBrowserCompatibilitySnapshot['session']
-  if (status !== null) {
+  if (status !== null && status.getAttribute('data-agent-rp-capability-extensions') !== null) {
     const capabilities = {
       extensions: integer(status, 'data-agent-rp-capability-extensions'),
       requirements: integer(status, 'data-agent-rp-capability-requirements'),
@@ -538,6 +584,7 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
         state: worldInfoManagerOpen ? 'open' : 'closed',
       },
     },
+    ...(startup === undefined ? {} : { startup }),
     ...(session === undefined ? {} : { session }),
     ...(preflight === undefined ? {} : { preflight }),
     checks: {
@@ -595,6 +642,11 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
     attributeFilter: [
       'sandbox',
       'data-agent-rp-status',
+      'data-agent-rp-startup',
+      'data-agent-rp-startup-phase',
+      'data-agent-rp-startup-elapsed-ms',
+      'data-agent-rp-startup-projection-ms',
+      'data-agent-rp-startup-character-ms',
       'data-agent-rp-inline-frontend-sanitizer',
       'data-agent-rp-capability-extensions',
       'data-agent-rp-capability-requirements',
@@ -634,6 +686,9 @@ export function installAgentRpBrowserCompatibilityDiagnostic(
       'data-agent-rp-tavern-startup-permissions',
       'data-agent-rp-tavern-interaction-permissions',
       'data-agent-rp-tavern-permission-state',
+      'data-agent-rp-tavern-plan-ms',
+      'data-agent-rp-tavern-first-ready-ms',
+      'data-agent-rp-tavern-settled-ms',
       'data-agent-rp-tavern-permission-script',
       'data-agent-rp-tavern-permission-image',
       'data-agent-rp-tavern-permission-style',
