@@ -60,6 +60,7 @@ import {
   resolveTavernScriptExecution,
   shouldResetTavernScriptRuntime,
   tavernMessageDepth,
+  tavernReasoningExtra,
   tavernScriptFrameNavigation,
   tavernScriptFrameSource,
   tavernScriptRuntimePhase,
@@ -123,7 +124,12 @@ import {
   type AgentRpRuntimeDiagnosticContribution,
   type AgentRpRuntimeDiagnosticSource,
 } from './runtime-diagnostic.ts'
-import { selectSillyTavernDraft, type DraftAttachmentLike } from './import-hint.ts'
+import {
+  classifySillyTavernJsonFile,
+  selectSillyTavernDraft,
+  type DraftAttachmentLike,
+  type SillyTavernJsonKind,
+} from './import-hint.ts'
 import { parseTavernSlashCommand } from './tavern-slash.ts'
 import {
   executeTavernStorageRequest,
@@ -4059,7 +4065,7 @@ function CharacterLibraryDialog({
       setError(updateError instanceof Error ? updateError.message : String(updateError))
     })
   }
-  const importFile = (file: File): void => {
+  const importCharacterSelection = (file: File): void => {
     setImporting(true)
     setDraggingFile(false)
     setError(undefined)
@@ -4081,6 +4087,32 @@ function CharacterLibraryDialog({
     }).catch(importError => {
       setImporting(false)
       setError(importError instanceof Error ? importError.message : String(importError))
+    })
+  }
+  const importFile = (file: File): void => {
+    setDraggingFile(false)
+    if (!/\.json$/iu.test(file.name)) {
+      importCharacterSelection(file)
+      return
+    }
+    setImporting(true)
+    setError(undefined)
+    setActionNotice(undefined)
+    void classifySillyTavernJsonFile(file).then(kind => {
+      if (kind === 'preset') {
+        setImporting(false)
+        importPresetSelection(file)
+        return
+      }
+      if (kind === 'world-info') {
+        setImporting(false)
+        setError('识别到世界书 JSON；请从 Agent RP「资源中心 → 世界书」导入')
+        return
+      }
+      importCharacterSelection(file)
+    }, reason => {
+      setImporting(false)
+      setError(reason instanceof Error ? reason.message : String(reason))
     })
   }
   const importPresetSelection = (file: File): void => {
@@ -6266,7 +6298,7 @@ function tavernScriptSnapshot(
     messages: (state?.messages ?? []).map((entry, index, entries) => ({
       ...entry,
       data: index === entries.length - 1 ? message : {},
-      extra: {},
+      extra: tavernReasoningExtra(entry.reasoning),
     })),
     characterRegexScripts: (projection.frontend?.regexScripts ?? [])
       .map((entry, index) => tavernRegex(entry, index, 'character')),
@@ -9316,19 +9348,41 @@ function importHintComponent(
   return function SillyTavernImportHint({ input, inputActions, sessionId }: ImportHintProps): JSX.Element | null {
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string>()
+    const [jsonKind, setJsonKind] = useState<SillyTavernJsonKind>()
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
     const { entries: loadedPresets, error: presetError, presetId, selectPreset } = usePresetPreference(
       listPresets,
       summary?.agentPreset === 'agent-rp',
     )
     const presets = loadedPresets ?? []
-    if (summary?.agentPreset !== 'agent-rp') return null
     const scoped = ctx.sessions.scope(sessionId)
     const conversation = scoped?.get('conversation') as (IConversation & Partial<DraftResolver>) | undefined
     const ids = [...new Set([...(input.attachmentIds ?? []), ...(input.imageIds ?? [])])]
     const draftAttachments = conversation?.draftAttachments
     const attachments = typeof draftAttachments === 'function' ? draftAttachments.call(conversation, ids) : []
     const selected = selectSillyTavernDraft(attachments)
+    const jsonFile = selected?.kind === 'json-resource' && attachments.length === 1
+      ? attachments[0]?.file : undefined
+    useEffect(() => {
+      let current = true
+      setJsonKind(undefined)
+      if (jsonFile === undefined) return () => { current = false }
+      void classifySillyTavernJsonFile(jsonFile).then(value => {
+        if (current) setJsonKind(value)
+      }, () => {
+        if (current) setJsonKind('unknown')
+      })
+      return () => { current = false }
+    }, [jsonFile])
+    const inferredDraft = jsonKind === 'character-card' ? '请导入这张角色卡'
+      : jsonKind === 'world-info' ? '请导入这本世界书'
+        : jsonKind === 'preset' ? '请导入这份预设' : undefined
+    useEffect(() => {
+      if (summary?.agentPreset === 'agent-rp' && input.draft.trim() === '' && inferredDraft !== undefined) {
+        inputActions.setDraft(inferredDraft)
+      }
+    }, [inferredDraft, input.draft, inputActions, summary?.agentPreset])
+    if (summary?.agentPreset !== 'agent-rp') return null
     if (selected === undefined) return null
     const blank = input.draft.trim() === ''
     const chat = selected.kind === 'chat'
@@ -9338,12 +9392,17 @@ function importHintComponent(
       <div style={{ flex: '1 1 220px', minWidth: 0 }}>
         <div style={{ fontSize: '13px', fontWeight: 600, lineHeight: 1.45 }}>
           {migration ? '迁移角色与对话' : chat ? '导入历史对话' : selected.kind === 'character-card'
-            ? '识别到 CHARX 角色卡' : selected.kind === 'json-resource' ? '识别到 JSON 资源' : '识别到 PNG 图片'}
+            ? '识别到 CHARX 角色卡' : jsonKind === 'character-card' ? '识别到角色卡'
+              : jsonKind === 'world-info' ? '识别到世界书' : jsonKind === 'preset' ? '识别到聊天补全预设'
+                : selected.kind === 'json-resource' ? '识别到 JSON 资源' : '识别到 PNG 图片'}
           <span style={{ fontWeight: 400, marginLeft: '6px', opacity: 0.72 }}>{selected.name}</span>
         </div>
         <div style={{ fontSize: '12px', lineHeight: 1.45, marginTop: '2px', opacity: 0.62 }}>{migration
           ? '将创建一个角色会话，并保留原聊天历史'
-          : chat ? '将从这份记录创建新的角色会话' : blank ? '请选择导入类型' : '发送后开始导入'}</div>
+          : chat ? '将从这份记录创建新的角色会话'
+            : selected.kind === 'json-resource' && jsonKind === undefined ? '正在安全识别资源类型…'
+              : inferredDraft !== undefined ? '已自动选择导入类型；发送后开始导入'
+                : blank ? '无法确定资源类型，请手动选择' : '发送后开始导入'}</div>
         {(error ?? presetError) !== undefined && <div style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '4px' }}>{error ?? presetError}</div>}
       </div>
       {(chat || migration) && <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
@@ -9362,7 +9421,7 @@ function importHintComponent(
           }).finally(() => { setBusy(false) })
         }}>{busy ? '正在迁移…' : migration ? '迁移' : '导入'}</button>
       </div>}
-      {!chat && !migration && blank && <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginLeft: 'auto' }}>
+      {!chat && !migration && blank && (selected.kind !== 'json-resource' || jsonKind === 'unknown') && <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginLeft: 'auto' }}>
         <button type="button" style={actionStyle} onClick={() => { inputActions.setDraft('请导入这张角色卡') }}>角色卡</button>
         {selected.kind === 'json-resource' && <button type="button" style={actionStyle} onClick={() => { inputActions.setDraft('请导入这本世界书') }}>世界书</button>}
         {selected.kind === 'json-resource' && <button type="button" style={actionStyle} onClick={() => { inputActions.setDraft('请导入这份预设') }}>预设</button>}

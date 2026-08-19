@@ -10,6 +10,7 @@ import type {
 import type { PersonaLibraryEntry, PersonaLibrarySaveRequest } from '../persona-library-protocol.ts'
 import type { PresetLibrarySummary } from '../preset-library-http-protocol.ts'
 import type { WorldInfoLibraryUpload } from '../world-info-library-protocol.ts'
+import { classifySillyTavernJsonFile } from './import-hint.ts'
 
 type ResourceSection = 'characters' | 'world-info' | 'presets' | 'personas'
 
@@ -134,6 +135,32 @@ export function RoleplayResourceCenter({
       setPresets(value => [entry, ...(value ?? []).filter(item => item.id !== entry.id)])
       setNotice(`已加入预设「${entry.name}」`)
     }).catch(reason => { setError(message(reason)) }).finally(finishAction)
+  }
+  const importResource = (file: File, fallback: Exclude<ResourceSection, 'personas'>): void => {
+    if (!/\.json$/iu.test(file.name)) {
+      if (fallback === 'characters') importCharacter(file)
+      else setError('这里只接受 JSON 资源')
+      return
+    }
+    startAction('classify-resource')
+    void classifySillyTavernJsonFile(file).then(kind => {
+      if (kind === 'character-card') {
+        setSection('characters')
+        importCharacter(file)
+      } else if (kind === 'world-info') {
+        setSection('world-info')
+        importWorldInfo(file)
+      } else if (kind === 'preset') {
+        setSection('presets')
+        importPreset(file)
+      } else {
+        finishAction()
+        setError('无法识别这份 JSON；请选择角色卡、SillyTavern 世界书或 Chat Completion 预设')
+      }
+    }, reason => {
+      finishAction()
+      setError(message(reason))
+    })
   }
   const toggleCharacterArchive = (entry: CharacterLibrarySummary): void => {
     startAction(`character:${entry.id}`)
@@ -261,13 +288,13 @@ export function RoleplayResourceCenter({
           }}>×</button>}
         </header>
         <input ref={characterInputRef} type="file" accept=".png,.json,.charx,image/png,application/json,application/zip" hidden onChange={event => {
-          const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file !== undefined) importCharacter(file)
+          const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file !== undefined) importResource(file, 'characters')
         }} />
         <input ref={worldInfoInputRef} type="file" accept=".json,application/json" hidden onChange={event => {
-          const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file !== undefined) importWorldInfo(file)
+          const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file !== undefined) importResource(file, 'world-info')
         }} />
         <input ref={presetInputRef} type="file" accept=".json,application/json" hidden onChange={event => {
-          const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file !== undefined) importPreset(file)
+          const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file !== undefined) importResource(file, 'presets')
         }} />
         <div style={{ padding: narrow ? '10px 12px' : '12px 18px' }}>
           <input type="search" value={query} aria-label={`搜索${sectionName(section)}`} placeholder={`搜索${sectionName(section)}`}

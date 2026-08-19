@@ -15,6 +15,54 @@ export interface SillyTavernDraftSelection {
   readonly name: string
 }
 
+/** Resource kind inferred from inert JSON fields without evaluating embedded content. */
+export type SillyTavernJsonKind = 'character-card' | 'world-info' | 'preset' | 'unknown'
+
+/** Maximum JSON size inspected in the browser before the authoritative importer validates it. */
+export const MAX_SILLYTAVERN_JSON_HINT_BYTES = 8 * 1024 * 1024
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function hasCharacterFields(value: Record<string, unknown>): boolean {
+  return ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example']
+    .every(key => typeof value[key] === 'string')
+}
+
+/**
+ * Classify one JSON resource by stable SillyTavern fields only.
+ * @param source - decoded JSON text; scripts and templates remain inert strings.
+ * @returns the unambiguous resource kind, or `unknown` for malformed and overlapping documents.
+ */
+export function classifySillyTavernJson(source: string): SillyTavernJsonKind {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(source.replace(/^\uFEFF/u, ''))
+  } catch {
+    return 'unknown'
+  }
+  const root = record(parsed)
+  if (root === undefined) return 'unknown'
+  if (Array.isArray(root.prompts) && Array.isArray(root.prompt_order)) return 'preset'
+  const data = record(root.data)
+  if ((typeof root.spec === 'string' && /^chara_card_v[23]$/u.test(root.spec) && data !== undefined
+      && hasCharacterFields(data))
+    || hasCharacterFields(root)) return 'character-card'
+  if (Array.isArray(root.entries) || record(root.entries) !== undefined) return 'world-info'
+  return 'unknown'
+}
+
+/** Read and classify one bounded browser file without evaluating any embedded field. */
+export async function classifySillyTavernJsonFile(
+  file: { readonly size: number; text(): Promise<string> },
+): Promise<SillyTavernJsonKind> {
+  if (file.size === 0 || file.size > MAX_SILLYTAVERN_JSON_HINT_BYTES) return 'unknown'
+  return classifySillyTavernJson(await file.text())
+}
+
 /**
  * Classify one standalone draft without inspecting or executing its contents.
  * @param attachments - ordered browser-only draft attachments.
