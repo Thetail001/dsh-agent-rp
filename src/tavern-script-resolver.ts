@@ -24,7 +24,7 @@ export interface TavernScriptExecution {
   readonly mode: 'classic' | 'module'
   /** Classic leaf dependencies evaluated in isolated scopes before the entry script. */
   readonly inlineDependencies?: readonly string[]
-  readonly preloads: readonly ('yaml' | 'zod')[]
+  readonly preloads: readonly ('vue' | 'yaml' | 'zod')[]
   readonly needsDomPurify: boolean
   readonly needsFuse: boolean
   /** Literal readiness flags assigned by authorized dependency modules. */
@@ -347,7 +347,8 @@ export async function resolveTavernScriptExecution(
   const source = removeSourceRanges(content, adapterRanges)
   const [, , , hasModuleSyntax] = parseModule(source)
   const dependencySource = [source, ...sources].join('\n')
-  const preloads: ('yaml' | 'zod')[] = []
+  const preloads: ('vue' | 'yaml' | 'zod')[] = []
+  if (/\bVue\b/u.test(dependencySource)) preloads.push('vue')
   if (/\bYAML\.(?:parse|parseDocument|stringify)\b/u.test(dependencySource)) preloads.push('yaml')
   if (/\bz\.(?:any|array|boolean|coerce|discriminatedUnion|enum|intersection|lazy|literal|nullable|number|object|optional|preprocess|record|string|tuple|union|unknown)\b/u.test(dependencySource)) preloads.push('zod')
   return {

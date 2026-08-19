@@ -288,6 +288,7 @@ const DOMPURIFY_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/dompurify@3.3.0/dist/
 const DOMPURIFY_SCRIPT_INTEGRITY = 'sha384-+qi1h9Ene5uYXijovnRnDpm2TZiNyVFgYjKIqjw6id8zLdWYt+tCPG9/1u6yLaNj'
 const FUSE_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.min.js'
 const FUSE_SCRIPT_INTEGRITY = 'sha384-P/y/5cwqUn6MDvJ9lCHJSaAi2EoH3JSeEdyaORsQMPgbpvA+NvvUqik7XH2YGBjb'
+const VUE_MODULE_URL = 'https://cdn.jsdelivr.net/npm/vue@3.5.27/dist/vue.esm-browser.prod.js'
 const ZOD_MODULE_URL = 'https://cdn.jsdelivr.net/npm/zod@4.4.3/+esm'
 const YAML_MODULE_URL = 'https://cdn.jsdelivr.net/npm/yaml@2.9.0/+esm'
 function safeJson(value: unknown): string {
@@ -712,9 +713,16 @@ export function tavernScriptFrameSource(
       ? `<script src="${FUSE_SCRIPT_URL}" integrity="${FUSE_SCRIPT_INTEGRITY}" crossorigin="anonymous"></script>`
       : '',
   ].join('')
-  const preloads = plan.preloads.map(preload => preload === 'zod'
-    ? `import(${safeJson(ZOD_MODULE_URL)}).then(function(module){window.z=module})`
-    : `import(${safeJson(YAML_MODULE_URL)}).then(function(module){window.YAML=module.default??module})`)
+  const preloads = plan.preloads.map(preload => {
+    switch (preload) {
+      case 'vue':
+        return `import(${safeJson(VUE_MODULE_URL)}).then(function(module){window.Vue=module})`
+      case 'yaml':
+        return `import(${safeJson(YAML_MODULE_URL)}).then(function(module){window.YAML=module.default??module})`
+      case 'zod':
+        return `import(${safeJson(ZOD_MODULE_URL)}).then(function(module){window.z=module})`
+    }
+  })
   const execute = plan.mode === 'module'
     ? `var __dshModuleUrl=URL.createObjectURL(new Blob([${encoded}],{type:'text/javascript'}));try{await import(__dshModuleUrl)}finally{URL.revokeObjectURL(__dshModuleUrl)}`
     : `__dshRunClassic(${encoded})`

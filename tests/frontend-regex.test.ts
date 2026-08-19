@@ -577,6 +577,7 @@ test('preserves authorized ESM imports and plans their required public globals',
     fetched.push(String(input))
     return Promise.resolve(new Response([
       'export function register() { return z.object({ value: z.string() }).parse(YAML.parse("value: ok")); }',
+      'export const panel = Vue.createApp;',
       'try { (window.parent || window).__辅助计算脚本_loaded__ = true; } catch { window.__辅助计算脚本_loaded__ = true; }',
     ].join('\n')))
   }
@@ -586,7 +587,7 @@ test('preserves authorized ESM imports and plans their required public globals',
       'window.__registered = register();',
     ].join('\n'), AbortSignal.timeout(5_000))
     assert.equal(plan.mode, 'module')
-    assert.deepEqual(plan.preloads, ['yaml', 'zod'])
+    assert.deepEqual(plan.preloads, ['vue', 'yaml', 'zod'])
     assert.equal(plan.needsDomPurify, false)
     assert.equal(plan.needsFuse, false)
     assert.deepEqual(plan.compatibilityMarkers, ['__辅助计算脚本_loaded__'])
@@ -1029,7 +1030,7 @@ test('runs module plans through a Blob and reports ready only after evaluation',
     id: 'module-runtime', name: '模块兼容', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
   }, {
-    source: 'export const ready = true;', mode: 'module', preloads: ['yaml', 'zod'],
+    source: 'export const ready = true;', mode: 'module', preloads: ['vue', 'yaml', 'zod'],
     needsDomPurify: false, needsFuse: false, compatibilityMarkers: ['__远程依赖_loaded__'],
   }, {
     scriptScope: 'character',
@@ -1048,6 +1049,8 @@ test('runs module plans through a Blob and reports ready only after evaluation',
   assert.match(source!, /var __dshDeclaredCompatibilityMarkers=\["__远程依赖_loaded__"\]/u)
   assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/yaml@2\.9\.0\/\+esm"\)/u)
   assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/zod@4\.4\.3\/\+esm"\)/u)
+  assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/vue@3\.5\.27\/dist\/vue\.esm-browser\.prod\.js"\)/u)
+  assert.match(source!, /then\(function\(module\)\{window\.Vue=module\}\)/u)
   assert.match(source!, /then\(function\(module\)\{window\.z=module\}\)/u)
   assert.ok(source!.indexOf('await import(__dshModuleUrl)') < source!.lastIndexOf("__dshPost('ready',"))
 })

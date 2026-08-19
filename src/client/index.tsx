@@ -6722,6 +6722,8 @@ function TavernScriptRuntime({
   const [runtimeToasts, setRuntimeToasts] = useState<readonly TavernToastMessage[]>([])
   const toastSequence = useRef(0)
   const frameRefs = useRef(new Map<string, HTMLIFrameElement>())
+  const framesRef = useRef(frames)
+  framesRef.current = frames
   const frameSources = useRef(new Map<string, string>())
   const readyScriptIdsRef = useRef(readyScriptIds)
   readyScriptIdsRef.current = readyScriptIds
@@ -7178,7 +7180,9 @@ function TavernScriptRuntime({
   }, [projection.tavern?.messages, sessionId])
   useEffect(() => {
     const bridge = (event: MessageEvent<unknown>): void => {
-      const entry = frames.find(candidate => frameRefs.current.get(candidate.key)?.contentWindow === event.source)
+      const entry = framesRef.current.find(
+        candidate => frameRefs.current.get(candidate.key)?.contentWindow === event.source,
+      )
       if (entry === undefined || typeof event.data !== 'object' || event.data === null) return
       const message = event.data as {
         readonly source?: unknown
@@ -7822,7 +7826,7 @@ function TavernScriptRuntime({
     }
     window.addEventListener('message', bridge)
     return () => { window.removeEventListener('message', bridge) }
-  }, [approvedCustomGenerations, approvedGenerations, approvedModels, approvedNativeIdentities, frames, inputActions,
+  }, [approvedCustomGenerations, approvedGenerations, approvedModels, approvedNativeIdentities, inputActions,
     onDisplayOverride, runGeneration, runModelList, runMutation, runPresetConfiguration, runPromptPreview, runTrigger,
     sessionId])
   useEffect(() => {
