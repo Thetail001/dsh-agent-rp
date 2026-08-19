@@ -1055,6 +1055,7 @@ test('runs module plans through a Blob and reports ready only after evaluation',
   assert.match(source!, /document\.__dshScriptWindow/u)
   assert.match(source!, /const window=__dshModuleWindow,parent=__dshModuleWindow,top=__dshModuleWindow/u)
   assert.match(html, /jquery@3\.7\.1\/dist\/jquery\.min\.js/u)
+  assert.match(html, /lodash@4\.17\.21\/lodash\.min\.js/u)
   assert.match(source!, /var __dshDeclaredCompatibilityMarkers=\["__远程依赖_loaded__"\]/u)
   assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/yaml@2\.9\.0\/\+esm"\)/u)
   assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/zod@4\.4\.3\/\+esm"\)/u)
