@@ -598,6 +598,12 @@ test('preserves authorized ESM imports and plans their required public globals',
   }
 })
 
+test('preloads YAML when a bundled script aliases the global parser', async () => {
+  const plan = await resolveTavernScriptExecution('const parser = YAML; window.result = parser.parse("value: ok");',
+    AbortSignal.timeout(5_000))
+  assert.deepEqual(plan.preloads, ['yaml'])
+})
+
 test('runs classic side-effect dependencies behind an isolated window facade', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = () => Promise.resolve(new Response([
@@ -1046,6 +1052,9 @@ test('runs module plans through a Blob and reports ready only after evaluation',
   assert.match(html, /script-src 'unsafe-inline' 'unsafe-eval' blob:/u)
   assert.match(html, /connect-src 'none'/u)
   assert.match(source!, /URL\.createObjectURL\(new Blob/u)
+  assert.match(source!, /document\.__dshScriptWindow/u)
+  assert.match(source!, /const window=__dshModuleWindow,parent=__dshModuleWindow,top=__dshModuleWindow/u)
+  assert.match(html, /jquery@3\.7\.1\/dist\/jquery\.min\.js/u)
   assert.match(source!, /var __dshDeclaredCompatibilityMarkers=\["__远程依赖_loaded__"\]/u)
   assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/yaml@2\.9\.0\/\+esm"\)/u)
   assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/zod@4\.4\.3\/\+esm"\)/u)

@@ -349,7 +349,7 @@ export async function resolveTavernScriptExecution(
   const dependencySource = [source, ...sources].join('\n')
   const preloads: ('vue' | 'yaml' | 'zod')[] = []
   if (/\bVue\b/u.test(dependencySource)) preloads.push('vue')
-  if (/\bYAML\.(?:parse|parseDocument|stringify)\b/u.test(dependencySource)) preloads.push('yaml')
+  if (/\bYAML\b/u.test(dependencySource)) preloads.push('yaml')
   if (/\bz\.(?:any|array|boolean|coerce|discriminatedUnion|enum|intersection|lazy|literal|nullable|number|object|optional|preprocess|record|string|tuple|union|unknown)\b/u.test(dependencySource)) preloads.push('zod')
   return {
     source,
