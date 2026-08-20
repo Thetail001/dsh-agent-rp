@@ -8,8 +8,15 @@ import {
   type ContentBlock,
 } from '@deepseek-ai/dsh-llm'
 import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
-import { readCurrentSessionMvuState } from './mvu.ts'
+import { appendMvuState, applyMvuReply, readCurrentMvuState, readCurrentSessionMvuState } from './mvu.ts'
 import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
+import {
+  appendTavernHelperState,
+  readTavernHelperStateSnapshot,
+  readTavernHelperStateSnapshotAt,
+  type TavernHelperState,
+} from './tavern-helper.ts'
+import { prepareTavernHelperState } from './tavern-helper-command.ts'
 
 /** A complete reply-version group snapshot stored after every mutation. */
 export interface GenerationStateRecord {
@@ -22,7 +29,19 @@ export interface GenerationStateRecord {
   readonly versions: readonly {
     readonly seq: number
     readonly text: string
+    readonly tavernStateSeq?: number
+    readonly mvu?: {
+      readonly statData: JsonValue
+      readonly updateCount: number
+      readonly lastError?: string
+    }
   }[]
+  readonly baseTavernStateSeq?: number
+  readonly baseMvu?: {
+    readonly statData: JsonValue
+    readonly updateCount: number
+    readonly lastError?: string
+  }
   readonly selectedVersionSeq: number
   readonly surfaceSeq: number
   readonly mvu?: {
@@ -85,6 +104,11 @@ function uniqueSeqs(value: readonly number[], label: string): readonly number[] 
   return value
 }
 
+function validMvu(value: GenerationStateRecord['mvu']): boolean {
+  return value === undefined || (Number.isSafeInteger(value.updateCount) && value.updateCount >= 0
+    && (value.lastError === undefined || typeof value.lastError === 'string'))
+}
+
 function parseGenerationState(data: GenerationStateRecord, eventSeq: number): ActiveGenerationGroup {
   const assistantSeqs = uniqueSeqs(data.assistantSeqs, '回复来源序号')
   const versionSeqs = uniqueSeqs(data.versions.map(version => version.seq), '回复版本序号')
@@ -94,7 +118,13 @@ function parseGenerationState(data: GenerationStateRecord, eventSeq: number): Ac
     || !Number.isSafeInteger(data.anchorSeq) || data.anchorSeq < 0
     || !Number.isSafeInteger(data.selectedVersionSeq) || data.selectedVersionSeq < 0
     || !Number.isSafeInteger(data.surfaceSeq) || data.surfaceSeq < 0
+    || (data.baseTavernStateSeq !== undefined
+      && (!Number.isSafeInteger(data.baseTavernStateSeq) || data.baseTavernStateSeq < 0))
     || data.versions.some(version => typeof version.text !== 'string' || version.text.trim() === '')
+    || data.versions.some(version => version.tavernStateSeq !== undefined
+      && (!Number.isSafeInteger(version.tavernStateSeq) || version.tavernStateSeq < 0))
+    || data.versions.some(version => !validMvu(version.mvu))
+    || !validMvu(data.baseMvu) || !validMvu(data.mvu)
     || versionSeqs[0] !== data.originSeq
     || !versionSeqs.includes(data.selectedVersionSeq)
     || !assistantSeqs.includes(data.originSeq)) throw new Error('回复版本事件无效')
@@ -131,6 +161,11 @@ export function readGenerationGroups(events: readonly SessionEvent[]): readonly 
     const group = parseGenerationState(data, event.seq)
     for (const seq of [...group.assistantSeqs, ...group.versions.map(version => version.seq), group.anchorSeq, group.surfaceSeq]) {
       if (seq >= event.seq || events[seq]?.type !== 'assistant/message') throw new Error('回复版本引用了不存在的助手消息')
+    }
+    for (const seq of [group.baseTavernStateSeq, ...group.versions.map(version => version.tavernStateSeq)]) {
+      if (seq === undefined) continue
+      if (seq >= event.seq) throw new Error('回复版本引用了未来的脚本状态')
+      readTavernHelperStateSnapshotAt(events, seq)
     }
     groups.set(group.groupId, group)
   }
@@ -223,6 +258,30 @@ function mvuSnapshot(agent: Agent): GenerationStateRecord['mvu'] {
   return readCurrentSessionMvuState(cardFromImportMeta(active.meta), agent.session)
 }
 
+function mvuBeforeReply(agent: Agent, replySeq: number): GenerationStateRecord['mvu'] {
+  const active = readActiveSessionCharacter(agent.session.events)
+  if (active === undefined) return undefined
+  const visiblePrefix = new Set(agent.session.surface.nodes.filter(seq => seq < replySeq))
+  return readCurrentMvuState(cardFromImportMeta(active.meta), agent.session.events
+    .slice(0, replySeq)
+    .filter(event => event.type !== 'assistant/message' || visiblePrefix.has(event.seq)))
+}
+
+function continuedMvuState(
+  current: GenerationStateRecord['mvu'],
+  generated: Extract<SessionEvent, { type: 'assistant/message' }>,
+): GenerationStateRecord['mvu'] {
+  if (current === undefined) return undefined
+  try {
+    const update = applyMvuReply(current.statData, visibleText(generated))
+    return update === undefined
+      ? current
+      : { statData: update.statData, updateCount: current.updateCount + 1 }
+  } catch (error: unknown) {
+    return { ...current, lastError: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 function appendState(
   agent: Agent,
   record: Omit<GenerationStateRecord, 'format' | 'mvu'>,
@@ -233,6 +292,26 @@ function appendState(
     ...record,
     ...(mvu === undefined ? {} : { mvu }),
   }
+}
+
+function selectedTavernState(
+  agent: Agent,
+  eventSeq: number | undefined,
+): TavernHelperState | undefined {
+  return eventSeq === undefined
+    ? undefined
+    : readTavernHelperStateSnapshotAt(agent.session.events, eventSeq).state
+}
+
+function restoreTavernState(agent: Agent, state: TavernHelperState | undefined): number | undefined {
+  if (state === undefined) return undefined
+  return appendTavernHelperState(agent.session, state).eventSeq
+}
+
+function initialTavernState(agent: Agent): TavernHelperState | undefined {
+  return readTavernHelperStateSnapshot(agent.session.events) === undefined
+    ? undefined
+    : prepareTavernHelperState(agent, undefined)
 }
 
 function instruction(operation: 'regenerate' | 'continue'): string {
@@ -281,10 +360,16 @@ export async function executeGenerationCommand(invocation: {
   const groupId = existing?.groupId ?? crypto.randomUUID()
   const originSeq = existing?.originSeq ?? current.selectedSeq
   const assistantSeqs = [...(existing?.assistantSeqs ?? [originSeq])]
+  const currentTavern = readTavernHelperStateSnapshot(events)
+  const currentMvu = mvuSnapshot(invocation.agent)
   const versions = [...(existing?.versions ?? [{
     seq: originSeq,
     text: visibleText(assistantEvent(events, originSeq)),
-  }])]
+  }])].map(version => version.seq !== current.selectedSeq ? version : {
+    ...version,
+    ...(currentTavern === undefined ? {} : { tavernStateSeq: currentTavern.eventSeq }),
+    ...(currentMvu === undefined ? {} : { mvu: currentMvu }),
+  })
 
   if (request.operation === 'select') {
     const selectedVersion = versions[request.versionIndex]
@@ -296,16 +381,24 @@ export async function executeGenerationCommand(invocation: {
     }
     const selected = assistantEvent(events, selectedSeq)
     const surface = appendCurrentReplySurface(invocation.agent, current.surfaceSeq, selected)
+    const selectedVersionState = selectedTavernState(invocation.agent, selectedVersion.tavernStateSeq)
+      ?? (currentTavern === undefined ? undefined : initialTavernState(invocation.agent))
+    restoreTavernState(invocation.agent, selectedVersionState)
+    if (selectedVersion.mvu !== undefined) appendMvuState(invocation.agent.session, selectedVersion.mvu)
     const state = appendState(invocation.agent, {
       groupId, operation: 'select', originSeq,
       anchorSeq: existing?.anchorSeq ?? originSeq,
       assistantSeqs, versions, selectedVersionSeq: selectedSeq, surfaceSeq: surface.seq,
+      ...(existing?.baseTavernStateSeq === undefined ? {} : { baseTavernStateSeq: existing.baseTavernStateSeq }),
+      ...(existing?.baseMvu === undefined ? {} : { baseMvu: existing.baseMvu }),
     })
     return { kind: 'success', text: encodeGenerationState(state), sourceEventSeq: state.surfaceSeq }
   }
 
   let generatedSeq: number | undefined
   let replacementStartSeq = current.surfaceSeq
+  let baseTavernStateSeq = existing?.baseTavernStateSeq
+  const baseMvu = existing?.baseMvu ?? mvuBeforeReply(invocation.agent, originSeq)
   try {
     if (request.operation === 'regenerate') {
       const selected = assistantEvent(invocation.agent.session.events, current.selectedSeq)
@@ -315,6 +408,12 @@ export async function executeGenerationCommand(invocation: {
         selected,
         [],
       ).seq
+      let baseTavern = baseTavernStateSeq === undefined
+        ? readTavernHelperStateSnapshot(events, originSeq)?.state
+        : readTavernHelperStateSnapshotAt(events, baseTavernStateSeq).state
+      baseTavern ??= currentTavern === undefined ? undefined : initialTavernState(invocation.agent)
+      baseTavernStateSeq = restoreTavernState(invocation.agent, baseTavern)
+      if (baseMvu !== undefined) appendMvuState(invocation.agent.session, baseMvu)
     }
     generatedSeq = await generate(invocation.agent, request.operation, invocation.signal)
     const generated = assistantEvent(invocation.agent.session.events, generatedSeq)
@@ -326,18 +425,31 @@ export async function executeGenerationCommand(invocation: {
       const content = continuedContent(selected.data.message.content, generated.data.message.content)
       surface = appendCurrentReplySurface(invocation.agent, replacementStartSeq, generated, content)
       selectedSeq = surface.seq
+      const continuedMvu = continuedMvuState(currentMvu, generated) ?? mvuSnapshot(invocation.agent)
+      if (continuedMvu !== undefined) appendMvuState(invocation.agent.session, continuedMvu)
       versions.push({
         seq: selectedSeq,
         text: content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim(),
+        ...(currentTavern === undefined ? {} : { tavernStateSeq: currentTavern.eventSeq }),
+        ...(continuedMvu === undefined ? {} : { mvu: continuedMvu }),
       })
     } else {
       surface = appendCurrentReplySurface(invocation.agent, replacementStartSeq, generated)
-      versions.push({ seq: selectedSeq, text: visibleText(generated) })
+      const generatedTavern = readTavernHelperStateSnapshot(invocation.agent.session.events)
+      const generatedMvu = mvuSnapshot(invocation.agent)
+      versions.push({
+        seq: selectedSeq,
+        text: visibleText(generated),
+        ...(generatedTavern === undefined ? {} : { tavernStateSeq: generatedTavern.eventSeq }),
+        ...(generatedMvu === undefined ? {} : { mvu: generatedMvu }),
+      })
     }
     const state = appendState(invocation.agent, {
       groupId, operation: request.operation, originSeq,
       anchorSeq: existing?.anchorSeq ?? request.replySeq,
       assistantSeqs, versions, selectedVersionSeq: selectedSeq, surfaceSeq: surface.seq,
+      ...(baseTavernStateSeq === undefined ? {} : { baseTavernStateSeq }),
+      ...(baseMvu === undefined ? {} : { baseMvu }),
     })
     return { kind: 'success', text: encodeGenerationState(state), sourceEventSeq: state.surfaceSeq }
   } catch (error: unknown) {
@@ -348,6 +460,8 @@ export async function executeGenerationCommand(invocation: {
       const selected = assistantEvent(invocation.agent.session.events, current.selectedSeq)
       appendCurrentReplySurface(invocation.agent, replacementStartSeq, selected)
     }
+    restoreTavernState(invocation.agent, currentTavern?.state)
+    if (currentMvu !== undefined) appendMvuState(invocation.agent.session, currentMvu)
     throw error
   }
 }

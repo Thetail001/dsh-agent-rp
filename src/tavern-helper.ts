@@ -1,6 +1,6 @@
 /** Session-owned Tavern Helper variable compatibility. */
 
-import { snapshotJsonValue, type JsonValue, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { snapshotJsonValue, type JsonValue, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ImportedCharacterFrontend, ImportedTavernHelperScript } from './import/types.ts'
 import { AGENT_RP_CAPABILITIES } from './extension-capability.ts'
 import {
@@ -170,6 +170,19 @@ export interface TavernHelperState {
     readonly scriptScope?: TavernScriptTreeScope
     readonly scriptId?: string
   }
+}
+
+declare module '@deepseek-ai/dsh-session' {
+  interface SessionEventMap {
+    /** @mode event Complete Tavern Helper state selected for the active reply version. */
+    'agent-rp/tavern-state': TavernHelperState
+  }
+}
+
+/** One durable Tavern Helper snapshot and the event that owns it. */
+export interface TavernHelperStateSnapshot {
+  readonly eventSeq: number
+  readonly state: TavernHelperState
 }
 
 /** One validated model prompt owned by an isolated Tavern Helper script. */
@@ -1030,6 +1043,44 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
   }
 }
 
+function stateFromEvent(event: SessionEvent): TavernHelperState | undefined {
+  if (event.type === 'agent-rp/tavern-state') return event.data
+  return event.type === 'command/done' && event.data.kind === 'success'
+    ? decodeTavernHelperState(event.data.text)
+    : undefined
+}
+
+/** Append an explicit state selection used by reply regeneration and swipe changes. */
+export function appendTavernHelperState(session: Session, state: TavernHelperState): TavernHelperStateSnapshot {
+  const event = session.append('agent-rp/tavern-state', state)
+  return { eventSeq: event.seq, state }
+}
+
+/** Read the latest Tavern Helper snapshot before an optional Session event. */
+export function readTavernHelperStateSnapshot(
+  events: readonly SessionEvent[],
+  beforeSeq: number = Number.POSITIVE_INFINITY,
+): TavernHelperStateSnapshot | undefined {
+  for (let index = Math.min(events.length, beforeSeq) - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event === undefined || event.seq >= beforeSeq) continue
+    const state = stateFromEvent(event)
+    if (state !== undefined) return { eventSeq: event.seq, state }
+  }
+  return undefined
+}
+
+/** Resolve one exact Tavern Helper snapshot reference. */
+export function readTavernHelperStateSnapshotAt(
+  events: readonly SessionEvent[],
+  eventSeq: number,
+): TavernHelperStateSnapshot {
+  const event = events[eventSeq]
+  const state = event === undefined ? undefined : stateFromEvent(event)
+  if (state === undefined) throw new Error('回复版本引用的脚本状态不存在')
+  return { eventSeq, state }
+}
+
 /** Project durable script injections into the existing in-chat prompt inserter. */
 export function tavernInjectedInChatPrompts(state: TavernHelperState | undefined): readonly {
   readonly role: 'system' | 'assistant' | 'user'
@@ -1051,11 +1102,5 @@ export function tavernInjectedScanText(state: TavernHelperState | undefined): re
 
 /** Fold the latest Tavern Helper state from private command results. */
 export function readTavernHelperState(events: readonly SessionEvent[]): TavernHelperState | undefined {
-  let state: TavernHelperState | undefined
-  for (const event of events) {
-    if (event.type !== 'command/done' || event.data.kind !== 'success') continue
-    const decoded = decodeTavernHelperState(event.data.text)
-    if (decoded !== undefined) state = decoded
-  }
-  return state
+  return readTavernHelperStateSnapshot(events)?.state
 }

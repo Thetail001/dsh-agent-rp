@@ -10,7 +10,19 @@ import {
   readGenerationGroups,
 } from '../src/generation.ts'
 import { CommandId } from '@deepseek-ai/dsh-commands'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { executeTavernTrigger } from '../src/tavern-trigger.ts'
+import {
+  appendTavernHelperState,
+  applyTavernHelperMutation,
+  initializeTavernHelperState,
+  readTavernHelperState,
+  type TavernHelperState,
+} from '../src/tavern-helper.ts'
+import { encodeWorldInfoConfiguration, readWorldInfoConfiguration } from '../src/world-info-configuration-core.ts'
+import { parseCharacterCardJson } from '../src/import/character-card.ts'
+import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
+import { appendMvuState, readCurrentSessionMvuState } from '../src/mvu.ts'
 
 function appendAssistant(session: Session, turn: number, text: string, surfaceOp: 'append' | { op: 'replace'; start: number; end: number } = 'append') {
   const sourceEventSeqs = surfaceOp === 'append' ? [] : [...session.surface.nodes]
@@ -19,6 +31,46 @@ function appendAssistant(session: Session, turn: number, text: string, surfaceOp
     step: 1,
     message: createAssistantMessage({ content: [{ type: 'text', text }], source: { provider: 'fixture', model: 'fixture' } }),
   }, { surfaceOp, sourceEventSeqs })
+}
+
+function scriptState(marker: string, prompt: string): TavernHelperState {
+  const initial = initializeTavernHelperState({
+    regexScripts: [], tavernHelperScriptNames: ['状态同步'], tavernHelperVariables: {},
+    tavernHelperScripts: [{
+      id: 'state', name: '状态同步', content: '', info: '', enabled: true,
+      buttonEnabled: false, buttons: [], data: {},
+    }],
+  }, 'generation-state-card')
+  const variables = applyTavernHelperMutation(initial, {
+    format: 0, scope: 'message', variables: { stat_data: { marker } },
+  })
+  return applyTavernHelperMutation(variables, {
+    format: 0, operation: 'replace-script-injections', scriptScope: 'character', scriptId: 'state',
+    prompts: [{
+      id: 'next-request', position: 'in_chat', depth: 0, role: 'system', content: prompt,
+      shouldScan: true, once: true,
+    }],
+  })
+}
+
+function mvuCardSession(id: string) {
+  const card = parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v2', spec_version: '2.0',
+    data: {
+      name: '变量角色', description: '', personality: '', scenario: '', first_mes: '', mes_example: '',
+      creator_notes: '', system_prompt: '', post_history_instructions: '', alternate_greetings: [], tags: [],
+      creator: 'fixture', character_version: '1.0', extensions: {},
+      character_book: { recursive_scanning: false, extensions: {}, entries: [{
+        id: 1, comment: '[initvar]', keys: [], content: '角色:\n  等级: 1', enabled: false,
+        insertion_order: 1, constant: false, extensions: {},
+      }] },
+    },
+  }))
+  const seed = createCharacterCardSessionSeed(card, {
+    kind: 'file', attachmentId: AttachmentId(`sha256:${id}`), bytes: 1,
+    name: 'mvu.json', mediaType: 'application/json',
+  }, 0, '')
+  return { card, session: Session.create(SessionId(id), seed) }
 }
 
 test('parses only the three private reply-version operations', () => {
@@ -68,6 +120,31 @@ test('folds latest selectable reply group snapshots across replacement events', 
   assert.deepEqual(session.deriveMessages().map(message => message.content[0]?.type === 'text' ? message.content[0].text : ''), ['第一版'])
 })
 
+test('rejects reply versions that reference a non-state event', () => {
+  const session = Session.create(SessionId('generation-invalid-state-reference'))
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '你好' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  const reply = appendAssistant(session, 1, '回复')
+  session.append('command/done', {
+    commandId: CommandId('generation-invalid-state-reference'),
+    kind: 'success',
+    text: encodeGenerationState({
+      format: 0,
+      groupId: '00000000-0000-4000-8000-000000000099',
+      operation: 'regenerate',
+      originSeq: reply.seq,
+      anchorSeq: reply.seq,
+      assistantSeqs: [reply.seq],
+      versions: [{ seq: reply.seq, text: '回复', tavernStateSeq: reply.seq }],
+      selectedVersionSeq: reply.seq,
+      surfaceSeq: reply.seq,
+    }),
+  })
+
+  assert.throws(() => readGenerationGroups(session.events), /脚本状态不存在/u)
+})
+
 test('regenerates without exposing the rejected reply to the replacement request', async () => {
   const session = Session.create(SessionId('generation-isolated-regenerate'))
   session.append('user/message', createUserMessage({
@@ -108,12 +185,105 @@ test('regenerates without exposing the rejected reply to the replacement request
   ])
 })
 
+test('regenerates from pre-reply script state and restores each swipe state', async () => {
+  const { card, session } = mvuCardSession('generation-script-state')
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '请重新描写房间。' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  const baseline = scriptState('before-reply', 'fresh-context')
+  appendTavernHelperState(session, baseline)
+  appendMvuState(session, { statData: { 角色: { 等级: 2 } }, updateCount: 1 })
+  const original = appendAssistant(session, 1,
+    '错误版本带状态栏<UpdateVariable><JSONPatch>[{"op":"delta","path":"/角色/等级","value":7}]</JSONPatch></UpdateVariable>')
+  const rejected = scriptState('rejected-reply', 'rejected-context')
+  appendTavernHelperState(session, rejected)
+  appendMvuState(session, { statData: { 角色: { 等级: 9 } }, updateCount: 2 })
+  session.append('command/done', {
+    commandId: CommandId('generation-world-info-latest'),
+    kind: 'success',
+    text: encodeWorldInfoConfiguration({ format: 0, revision: 7, overrides: [], tokenBudget: 4_096 }),
+  })
+  let requestState: TavernHelperState | undefined
+  let requestWorldInfoRevision: number | undefined
+  let requestMvu: ReturnType<typeof readCurrentSessionMvuState>
+  const agent = {
+    session,
+    status: 'idle',
+    inbox: { hasPending: false },
+    followup(message: ReturnType<typeof createUserMessage>) {
+      session.append('user/message', message, { surfaceOp: 'append' })
+      requestState = readTavernHelperState(session.events)
+      requestWorldInfoRevision = readWorldInfoConfiguration(session.events).revision
+      requestMvu = readCurrentSessionMvuState(card, session)
+      appendAssistant(session, 2,
+        '干净的新版本<UpdateVariable><JSONPatch>[{"op":"delta","path":"/角色/等级","value":2}]</JSONPatch></UpdateVariable>')
+    },
+    whenIdle: async () => {},
+    cancel: () => {},
+  }
+
+  const regenerated = await executeGenerationCommand({
+    agent: agent as never,
+    rawInput: JSON.stringify({ operation: 'regenerate', replySeq: original.seq }),
+    signal: new AbortController().signal,
+  })
+  session.append('command/done', {
+    commandId: CommandId('generation-script-state-regenerate'), kind: 'success', text: regenerated.text,
+  })
+
+  assert.deepEqual(requestState?.scopes.message, { stat_data: { marker: 'before-reply' } })
+  assert.deepEqual(requestState?.injectedPrompts?.map(prompt => prompt.content), ['fresh-context'])
+  assert.equal(requestWorldInfoRevision, 7)
+  assert.deepEqual(requestMvu, { statData: { 角色: { 等级: 2 } }, updateCount: 1 })
+  assert.deepEqual(decodeGenerationState(regenerated.text)?.mvu, {
+    statData: { 角色: { 等级: 4 } }, updateCount: 2,
+  })
+  assert.deepEqual(readTavernHelperState(session.events)?.scopes.message, { stat_data: { marker: 'before-reply' } })
+
+  const accepted = scriptState('replacement-reply', 'replacement-context')
+  appendTavernHelperState(session, accepted)
+  const originalSelected = await executeGenerationCommand({
+    agent: agent as never,
+    rawInput: JSON.stringify({ operation: 'select', replySeq: original.seq, versionIndex: 0 }),
+    signal: new AbortController().signal,
+  })
+  session.append('command/done', {
+    commandId: CommandId('generation-script-state-original'), kind: 'success', text: originalSelected.text,
+  })
+  assert.deepEqual(readTavernHelperState(session.events)?.scopes.message, { stat_data: { marker: 'rejected-reply' } })
+  assert.deepEqual(readCurrentSessionMvuState(card, session), {
+    statData: { 角色: { 等级: 9 } }, updateCount: 2,
+  })
+
+  const replacementSelected = await executeGenerationCommand({
+    agent: agent as never,
+    rawInput: JSON.stringify({ operation: 'select', replySeq: original.seq, versionIndex: 1 }),
+    signal: new AbortController().signal,
+  })
+  session.append('command/done', {
+    commandId: CommandId('generation-script-state-replacement'), kind: 'success', text: replacementSelected.text,
+  })
+  assert.deepEqual(readTavernHelperState(session.events)?.scopes.message, { stat_data: { marker: 'replacement-reply' } })
+  assert.deepEqual(readCurrentSessionMvuState(card, session), {
+    statData: { 角色: { 等级: 4 } }, updateCount: 2,
+  })
+  assert.equal(decodeGenerationState(replacementSelected.text)?.selectedVersionSeq,
+    decodeGenerationState(regenerated.text)?.versions[1]?.seq)
+  const reopened = Session.create(session.id, session.events)
+  assert.deepEqual(readTavernHelperState(reopened.events)?.scopes.message, { stat_data: { marker: 'replacement-reply' } })
+  assert.equal(readGenerationGroups(reopened.events)[0]?.selectedVersionSeq,
+    decodeGenerationState(regenerated.text)?.versions[1]?.seq)
+})
+
 test('restores the selected reply when isolated regeneration produces no replacement', async () => {
   const session = Session.create(SessionId('generation-isolated-regenerate-failure'))
   session.append('user/message', createUserMessage({
     content: [{ type: 'text', text: '继续。' }], source: { kind: 'user' },
   }), { surfaceOp: 'append' })
+  appendTavernHelperState(session, scriptState('before-retained-reply', 'before-retained-context'))
   const original = appendAssistant(session, 1, '保留这一版。')
+  const retainedState = scriptState('retained-reply', 'retained-context')
+  appendTavernHelperState(session, retainedState)
   const agent = {
     session,
     status: 'idle',
@@ -133,6 +303,41 @@ test('restores the selected reply when isolated regeneration produces no replace
 
   assert.deepEqual(session.deriveMessages().map(message => message.content.flatMap(block =>
     block.type === 'text' ? [block.text] : []).join('\n')), ['继续。', '保留这一版。'])
+  assert.deepEqual(readTavernHelperState(session.events)?.scopes.message, { stat_data: { marker: 'retained-reply' } })
+})
+
+test('continues from the selected MVU checkpoint without applying its old patch twice', async () => {
+  const { card, session } = mvuCardSession('generation-continue-mvu')
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '提升等级。' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  const original = appendAssistant(session, 1,
+    '第一段<UpdateVariable><JSONPatch>[{"op":"delta","path":"/角色/等级","value":1}]</JSONPatch></UpdateVariable>')
+  const agent = {
+    session,
+    status: 'idle',
+    inbox: { hasPending: false },
+    followup(message: ReturnType<typeof createUserMessage>) {
+      session.append('user/message', message, { surfaceOp: 'append' })
+      appendAssistant(session, 2,
+        '第二段<UpdateVariable><JSONPatch>[{"op":"delta","path":"/角色/等级","value":2}]</JSONPatch></UpdateVariable>')
+    },
+    whenIdle: async () => {},
+    cancel: () => {},
+  }
+
+  const result = await executeGenerationCommand({
+    agent: agent as never,
+    rawInput: JSON.stringify({ operation: 'continue', replySeq: original.seq }),
+    signal: new AbortController().signal,
+  })
+
+  assert.deepEqual(decodeGenerationState(result.text)?.mvu, {
+    statData: { 角色: { 等级: 4 } }, updateCount: 2,
+  })
+  assert.deepEqual(readCurrentSessionMvuState(card, session), {
+    statData: { 角色: { 等级: 4 } }, updateCount: 2,
+  })
 })
 
 test('triggers one reply after a Tavern script appends a user message', async () => {

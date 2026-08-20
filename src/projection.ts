@@ -621,6 +621,7 @@ export function createAgentRpProjectionDefinition(
     const withSurface = surface === state.surface && auxiliaryGenerations === state.auxiliaryGenerations
       ? state
       : { ...state, surface, auxiliaryGenerations }
+    if (event.type === 'agent-rp/mvu-state') return { ...withSurface, mvu: event.data }
     const trace = promptRegexTrace(event)
     if (trace !== undefined) return { ...withSurface, promptRegex: trace }
     if (event.type === 'command/run' && event.data.name === 'rp-persona') {
@@ -657,9 +658,11 @@ export function createAgentRpProjectionDefinition(
         }
       }
     }
-    if (event.type === 'command/done' && event.data.kind === 'success') {
+    if (event.type === 'agent-rp/tavern-state' || (event.type === 'command/done' && event.data.kind === 'success')) {
       try {
-        const tavern = decodeTavernHelperState(event.data.text)
+        const tavern = event.type === 'agent-rp/tavern-state'
+          ? event.data
+          : decodeTavernHelperState(event.data.text)
         if (tavern !== undefined) {
           const mvu = mvuAfterTavernMutation(withSurface.mvu, tavern)
           return {
