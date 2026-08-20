@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
+import { parseDocument, type Scalar, type YAMLMap, type YAMLSeq } from 'yaml'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import { createScope } from '@deepseek-ai/dsh-scope'
@@ -37,7 +38,56 @@ test('installs one idempotent managed preset', (context) => {
   const agentConfig = readFileSync(join(root, 'agent-rp', 'agent.cordis.yml'), 'utf8')
   assert.match(agentConfig, /mode: character/u)
   assert.match(agentConfig, /@deepseek-ai\/dsh-tool-pwsh/u)
+  assert.match(agentConfig, /@deepseek-ai\/dsh-tool-bash/u)
+  assert.match(agentConfig, /disabled: !!js process\.platform !== 'win32'/u)
+  assert.match(agentConfig, /disabled: !!js process\.platform === 'win32'/u)
   assert.match(readFileSync(join(root, 'agent-rp', 'preset.yml'), 'utf8'), /角色会话/u)
+})
+
+test('gates the managed shell tools on host platform through evaluable !!js expressions', (context) => {
+  const root = temporaryRoot()
+  context.after(() => rmSync(root, { recursive: true, force: true }))
+  installBundledAgentRpPreset({ presetRoot: root, sourceDir: SOURCE })
+
+  // Text assertions alone cannot prove the loader accepts this dialect. The DSH loader
+  // registers `!!js` as `tag:yaml.org,2002:js` (a scalar Type whose construct yields
+  // `{ __jsExpr }`) and resolves it with `new Function('ctx','expr','with (ctx) { return
+  // eval(expr) }')`. So assert the real parse shape and then evaluate the expressions the
+  // same way, for both platforms.
+  const document = parseDocument(readFileSync(join(root, 'agent-rp', 'agent.cordis.yml'), 'utf8'))
+  assert.deepEqual(document.errors, [])
+
+  const gates = new Map<string, { readonly name: string; readonly expression: string }>()
+  for (const entry of (document.contents as YAMLSeq).items as YAMLMap[]) {
+    const disabled = entry.get('disabled', true) as Scalar | undefined
+    if (disabled === undefined) continue
+    assert.equal(disabled.tag, 'tag:yaml.org,2002:js')
+    assert.equal(typeof disabled.value, 'string')
+    gates.set(String(entry.get('id')), {
+      name: String(entry.get('name')),
+      expression: String(disabled.value),
+    })
+  }
+
+  const bash = gates.get('agent-rp-bash')
+  const pwsh = gates.get('agent-rp-pwsh')
+  assert.ok(bash, 'the managed preset must gate a bash tool entry')
+  assert.ok(pwsh, 'the managed preset must gate a pwsh tool entry')
+  assert.equal(bash.name, '@deepseek-ai/dsh-tool-bash')
+  assert.equal(pwsh.name, '@deepseek-ai/dsh-tool-pwsh')
+
+  const disabledOn = (platform: string, expression: string): boolean => {
+    const evaluate = new Function('ctx', 'expr', 'with (ctx) { return eval(expr) }') as
+      (ctx: object, expr: string) => unknown
+    return Boolean(evaluate({ process: { platform } }, expression))
+  }
+  // Exactly one shell tool is live per platform, and never both or neither.
+  assert.equal(disabledOn('win32', bash.expression), true)
+  assert.equal(disabledOn('win32', pwsh.expression), false)
+  assert.equal(disabledOn('linux', bash.expression), false)
+  assert.equal(disabledOn('linux', pwsh.expression), true)
+  assert.equal(disabledOn('darwin', bash.expression), false)
+  assert.equal(disabledOn('darwin', pwsh.expression), true)
 })
 
 test('refuses to replace a locally edited managed preset', (context) => {
