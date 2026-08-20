@@ -389,7 +389,8 @@ var __dshWindowFunctions=new WeakMap();var __dshScriptWindow;
 __dshScriptWindow=new Proxy(window,{get:function(target,property){if(property==='window'||property==='self'||property==='parent'||property==='top'||property==='globalThis')return __dshScriptWindow;var value=Reflect.get(target,property,target);if(typeof value!=='function')return value;var bound=__dshWindowFunctions.get(value);if(bound===undefined){bound=value.bind(target);__dshWindowFunctions.set(value,bound)}return bound},set:function(target,property,value){return Reflect.set(target,property,value,target)}});
   try{Object.defineProperty(document,'defaultView',{configurable:true,value:__dshScriptWindow});Object.defineProperty(document,'parentWindow',{configurable:true,value:__dshScriptWindow})}catch(error){}
   Object.defineProperty(document,'__dshScriptWindow',{configurable:false,enumerable:false,value:__dshScriptWindow});
-function __dshRunClassic(source){return Function('window','parent','top','self','globalThis','localStorage','sessionStorage',source)(__dshScriptWindow,__dshScriptWindow,__dshScriptWindow,__dshScriptWindow,__dshScriptWindow,__dshLocalStorage,__dshSessionStorage)}
+var __dshAsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+function __dshRunClassic(source){return __dshAsyncFunction('window','parent','top','self','globalThis','localStorage','sessionStorage',source)(__dshScriptWindow,__dshScriptWindow,__dshScriptWindow,__dshScriptWindow,__dshScriptWindow,__dshLocalStorage,__dshSessionStorage)}
 function __dshInstallCompatibilitySurface(name){if(name!=='mobile-trigger'||document.getElementById('mobile-trigger-btn'))return;var button=document.createElement('button');button.id='mobile-trigger-btn';button.type='button';button.textContent='小手机';button.dataset.dshCompatibilitySurface='mobile-trigger';button.setAttribute('aria-label','打开小手机');Object.assign(button.style,{bottom:'18px',position:'fixed',right:'18px',zIndex:'20'});document.body.appendChild(button)}
 function __dshActivateCompatibilitySurface(name){if(name!=='mobile-trigger')return;var overlay=document.getElementById('mobile-phone-overlay');if(overlay?.classList.contains('active'))return;if(typeof window.openMobilePhone==='function'){window.openMobilePhone();return}var button=document.getElementById('mobile-trigger-btn');if(!button)return;if(typeof PointerEvent!=='function'){button.click();return}var rect=button.getBoundingClientRect(),x=rect.left+rect.width/2,y=rect.top+rect.height/2,init={bubbles:true,cancelable:true,clientX:x,clientY:y,isPrimary:true,pointerId:1,pointerType:'mouse'};var capture=Object.getOwnPropertyDescriptor(button,'setPointerCapture'),release=Object.getOwnPropertyDescriptor(button,'releasePointerCapture');try{Object.defineProperty(button,'setPointerCapture',{configurable:true,value:function(){}});Object.defineProperty(button,'releasePointerCapture',{configurable:true,value:function(){}});var down=new PointerEvent('pointerdown',init);button.dispatchEvent(down);window.dispatchEvent(new PointerEvent('pointerup',init));if(!down.defaultPrevented)button.click()}finally{if(capture)Object.defineProperty(button,'setPointerCapture',capture);else delete button.setPointerCapture;if(release)Object.defineProperty(button,'releasePointerCapture',release);else delete button.releasePointerCapture}}
 function __dshCompatibilityMarkers(){var markers=__dshDeclaredCompatibilityMarkers.slice(),seen=new Set(markers);for(var name of Object.getOwnPropertyNames(window)){if(markers.length>=32)break;if(typeof name!=='string'||name.length>128||!/^__[\\p{L}\\p{N}_-]{1,112}_loaded__$/u.test(name)||seen.has(name))continue;var descriptor=Object.getOwnPropertyDescriptor(window,name);if(descriptor&&Object.prototype.hasOwnProperty.call(descriptor,'value')&&descriptor.value===true){seen.add(name);markers.push(name)}}return markers.sort()}
@@ -747,7 +748,7 @@ export function tavernScriptFrameSource(
   const encoded = safeJson(`${moduleFacade}${source}\n//# sourceURL=dsh-agent-rp:${snapshot.scriptScope}:${script.id}`)
   const moduleDependencies = safeJson(plan.moduleDependencies ?? [])
   const dependencies = (plan.inlineDependencies ?? []).map((dependency, index) =>
-    `__dshRunClassic(${safeJson(`${dependency}\n//# sourceURL=dsh-agent-rp-dependency:${index + 1}`)})`).join(';')
+    `await __dshRunClassic(${safeJson(`${dependency}\n//# sourceURL=dsh-agent-rp-dependency:${index + 1}`)})`).join(';')
   const origins = [...new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...snapshot.approvedScriptOrigins])]
     .map(origin => new URL(origin).origin).join(' ')
   const libraries = [
@@ -773,7 +774,7 @@ export function tavernScriptFrameSource(
   })
   const execute = plan.mode === 'module'
     ? `var __dshRemoteModulePlans=${moduleDependencies},__dshRemoteModuleById=new Map(__dshRemoteModulePlans.map(function(plan){return [plan.id,plan]})),__dshRemoteModuleUrls=new Map(),__dshRemoteModuleResolving=new Set();function __dshRemoteModuleUrl(id){var existing=__dshRemoteModuleUrls.get(id);if(existing)return existing;if(__dshRemoteModuleResolving.has(id))throw new Error('远程模块依赖存在循环，无法在隔离环境中加载');var plan=__dshRemoteModuleById.get(id);if(!plan)throw new Error('远程模块依赖图不完整');__dshRemoteModuleResolving.add(id);try{var value=plan.source;for(var dependencyId of plan.dependencies){var dependency=__dshRemoteModuleById.get(dependencyId);if(!dependency)throw new Error('远程模块依赖图不完整');value=value.replaceAll(dependency.placeholder,__dshRemoteModuleUrl(dependencyId))}var url=URL.createObjectURL(new Blob([value+'\\n//# sourceURL=dsh-agent-rp-module:'+plan.id],{type:'text/javascript'}));__dshRemoteModuleUrls.set(id,url);return url}finally{__dshRemoteModuleResolving.delete(id)}}var __dshEntrySource=${encoded};for(var __dshRemotePlan of __dshRemoteModulePlans)__dshEntrySource=__dshEntrySource.replaceAll(__dshRemotePlan.placeholder,__dshRemoteModuleUrl(__dshRemotePlan.id));var __dshModuleUrl=URL.createObjectURL(new Blob([__dshEntrySource],{type:'text/javascript'}));try{await import(__dshModuleUrl)}finally{URL.revokeObjectURL(__dshModuleUrl);for(var __dshRemoteUrl of __dshRemoteModuleUrls.values())URL.revokeObjectURL(__dshRemoteUrl)}`
-    : `__dshRunClassic(${encoded})`
+    : `await __dshRunClassic(${encoded})`
   const preload = preloads.length === 0 ? '' : `await Promise.all([${preloads.join(',')}]);`
   const mobileCompatibility = plan.compatibilityMarkers.includes('__小手机脚本_loaded__')
   const compatibilitySetup = mobileCompatibility ? "__dshInstallCompatibilitySurface('mobile-trigger');" : ''
@@ -786,7 +787,7 @@ export function tavernScriptFrameSource(
       return []
     }
   })
-  const imageSource = mobileCompatibility ? ['data:', ...new Set(approvedImageOrigins)].join(' ') : "'none'"
+  const imageSource = ['data:', 'blob:', ...new Set(approvedImageOrigins)].join(' ')
   const approvedStyleOrigins = (snapshot.approvedStyleOrigins ?? []).flatMap(origin => {
     try {
       const url = new URL(origin)

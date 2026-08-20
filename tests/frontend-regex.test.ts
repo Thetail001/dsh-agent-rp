@@ -493,7 +493,7 @@ test('builds a parseable Tavern runtime with dynamic script button APIs', async 
   assert.match(html, /integrity="sha384-\+qi1h9Ene5uYXijovnRnDpm2TZiNyVFgYjKIqjw6id8zLdWYt\+tCPG9\/1u6yLaNj"/u)
   assert.match(html, /src="https:\/\/cdn\.jsdelivr\.net\/npm\/fuse\.js@7\.1\.0\/dist\/fuse\.min\.js"/u)
   assert.match(html, /integrity="sha384-P\/y\/5cwqUn6MDvJ9lCHJSaAi2EoH3JSeEdyaORsQMPgbpvA\+NvvUqik7XH2YGBjb"/u)
-  assert.match(html, /img-src 'none'/u)
+  assert.match(html, /img-src data: blob:/u)
   assert.doesNotMatch(html, /data:image\/svg\+xml/u)
   assert.match(source!, /window\.getPreset=/u)
   assert.match(source!, /window\.updatePresetWith=/u)
@@ -637,6 +637,9 @@ test('localizes maintained jsDelivr modules without fetching or duplicating thei
     assert.match(localizedSources, /export const compare=__dshModule\.compare\?\?__dshDefault\.compare/u)
     assert.match(localizedSources, /export const createPinia=__dshModule\.createPinia\?\?__dshDefault\.createPinia/u)
     assert.match(localizedSources, /export const klona=__dshModule\.klona\?\?__dshDefault\.klona/u)
+    assert.match(localizedSources,
+      /const __dshModule=__dshModuleRoot\?\.core\?\?__dshModuleRoot\?\.default\?\.core/u)
+    assert.match(localizedSources, /export const toDotPath=__dshModule\.toDotPath\?\?__dshDefault\.toDotPath/u)
     assert.equal(JSON.stringify(plan).includes('https://testingcf.jsdelivr.net'), false)
   } finally {
     globalThis.fetch = originalFetch
@@ -731,6 +734,7 @@ test('runs classic side-effect dependencies behind an isolated window facade', a
     assert.notEqual(source, undefined)
     const context = runtimeAcceptanceContext([])
     runInNewContext(source!, context)
+    await new Promise(resolve => { setTimeout(resolve, 0) })
     const core = context.__classicCore as { readonly parent?: unknown }
     assert.equal(core.parent, core)
     assert.equal((context.document as { readonly defaultView?: unknown }).defaultView, core)
@@ -1146,6 +1150,7 @@ test('runs module plans through a Blob and reports ready only after evaluation',
   assert.notEqual(source, undefined)
   assert.match(html, /script-src 'unsafe-inline' 'unsafe-eval' blob:/u)
   assert.match(html, /connect-src 'none'/u)
+  assert.match(html, /img-src data: blob:/u)
   assert.match(source!, /URL\.createObjectURL\(new Blob/u)
   assert.match(source!, /document\.__dshScriptWindow/u)
   assert.match(source!, /const window=__dshModuleWindow,parent=__dshModuleWindow,top=__dshModuleWindow/u)
@@ -1161,7 +1166,34 @@ test('runs module plans through a Blob and reports ready only after evaluation',
   assert.ok(source!.indexOf('await import(__dshModuleUrl)') < source!.lastIndexOf("__dshPost('ready',"))
 })
 
-test('reports only bounded true compatibility markers after startup and on request', () => {
+test('runs classic plans in an async function context', async () => {
+  const html = tavernScriptFrameSource({
+    id: 'classic-await-runtime', name: '异步经典脚本', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, {
+    source: 'await Promise.resolve();window.__classicAwaitReady=true;', mode: 'classic', preloads: [],
+    inlineDependencies: [], needsDomPurify: false, needsFuse: false, compatibilityMarkers: [],
+  }, {
+    scriptScope: 'character',
+    scriptId: 'classic-await-runtime', scriptName: '异步经典脚本', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  assert.match(source!, /await __dshRunClassic/u)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  await new Promise(resolve => { setTimeout(resolve, 0) })
+  assert.equal(context.__classicAwaitReady, true)
+  assert.equal((context.posted as Record<string, unknown>[])
+    .some(message => message.action === 'ready'), true)
+})
+
+test('reports only bounded true compatibility markers after startup and on request', async () => {
   const html = tavernScriptFrameSource({
     id: 'marker-runtime', name: '依赖标记', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
@@ -1178,6 +1210,7 @@ test('reports only bounded true compatibility markers after startup and on reque
   assert.notEqual(source, undefined)
   const context = runtimeAcceptanceContext([])
   runInNewContext(source!, context)
+  await new Promise(resolve => { setTimeout(resolve, 0) })
   const ready = (context.posted as Record<string, unknown>[]).find(message => message.action === 'ready')
 
   assert.deepEqual(JSON.parse(JSON.stringify(ready?.markers)), ['__辅助计算脚本_loaded__'])
@@ -1212,7 +1245,7 @@ test('provides the isolated trigger required by the public mobile-phone module',
     approvedImageOrigins: ['https://images.example.test'],
     approvedFontOrigins: ['https://fonts.example.test'],
   })
-  assert.match(html, /img-src data: https:\/\/images\.example\.test/u)
+  assert.match(html, /img-src data: blob: https:\/\/images\.example\.test/u)
   assert.match(html, /font-src https:\/\/fonts\.example\.test/u)
   assert.match(html, /\.fa-cloud::before/u)
   assert.match(html, /data:image\/svg\+xml/u)

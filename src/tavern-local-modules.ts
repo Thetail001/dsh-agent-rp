@@ -19,21 +19,23 @@ export interface TavernLocalModule {
 }
 
 interface LocalModuleDefinition {
-  readonly packageName: keyof typeof TAVERN_LOCAL_MODULE_FACADES
+  readonly packageName: string
+  readonly facade: keyof typeof TAVERN_LOCAL_MODULE_FACADES
   readonly major: number
   readonly subpath: RegExp
   readonly preloads: readonly TavernScriptPreload[]
 }
 
 const definitions: readonly LocalModuleDefinition[] = [
-  { packageName: 'compare-versions', major: 6, subpath: /^$/u, preloads: ['compare-versions'] },
-  { packageName: 'json5', major: 2, subpath: /^$/u, preloads: ['json5'] },
-  { packageName: 'jsonrepair', major: 3, subpath: /^$/u, preloads: ['jsonrepair'] },
-  { packageName: 'klona', major: 2, subpath: /^$/u, preloads: ['klona'] },
-  { packageName: 'pinia', major: 3, subpath: /^$/u, preloads: ['vue', 'pinia'] },
-  { packageName: 'vue', major: 3, subpath: /^$/u, preloads: ['vue'] },
-  { packageName: 'yaml', major: 2, subpath: /^$/u, preloads: ['yaml'] },
-  { packageName: 'zod', major: 4, subpath: /^(?:\/v4\/core)?$/u, preloads: ['zod'] },
+  { packageName: 'compare-versions', facade: 'compare-versions', major: 6, subpath: /^$/u, preloads: ['compare-versions'] },
+  { packageName: 'json5', facade: 'json5', major: 2, subpath: /^$/u, preloads: ['json5'] },
+  { packageName: 'jsonrepair', facade: 'jsonrepair', major: 3, subpath: /^$/u, preloads: ['jsonrepair'] },
+  { packageName: 'klona', facade: 'klona', major: 2, subpath: /^$/u, preloads: ['klona'] },
+  { packageName: 'pinia', facade: 'pinia', major: 3, subpath: /^$/u, preloads: ['vue', 'pinia'] },
+  { packageName: 'vue', facade: 'vue', major: 3, subpath: /^$/u, preloads: ['vue'] },
+  { packageName: 'yaml', facade: 'yaml', major: 2, subpath: /^$/u, preloads: ['yaml'] },
+  { packageName: 'zod', facade: 'zod', major: 4, subpath: /^$/u, preloads: ['zod'] },
+  { packageName: 'zod', facade: 'zod/v4/core', major: 4, subpath: /^\/v4\/core$/u, preloads: ['zod'] },
 ]
 
 function versionMatches(value: string | undefined, major: number): boolean {
@@ -52,7 +54,7 @@ export function localTavernModule(url: URL): TavernLocalModule | undefined {
     if (match === null || !versionMatches(match[1], definition.major)
       || !definition.subpath.test(match[2] ?? '')) continue
     return {
-      source: TAVERN_LOCAL_MODULE_FACADES[definition.packageName],
+      source: TAVERN_LOCAL_MODULE_FACADES[definition.facade],
       preloads: definition.preloads,
     }
   }

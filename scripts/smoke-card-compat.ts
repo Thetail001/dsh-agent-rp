@@ -172,6 +172,7 @@ async function probePlugin(options: CliOptions): Promise<void> {
 async function bootstrapSourceSession(options: CliOptions): Promise<string | undefined> {
   if (options.workspacePath === undefined) return options.sourceSessionId
   try {
+    await mkdir(options.workspacePath, { recursive: true })
     return await bootstrapAgentRpCompatSmokeSourceSession({
       call: async (method, payload): Promise<unknown> => {
         const response = await localFetch(new URL(`/api/${method}`, options.url), {
