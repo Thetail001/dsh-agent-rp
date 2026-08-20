@@ -14,11 +14,19 @@ export const AGENT_RP_IMAGE_CREDENTIAL_REFS = {
   comfyui: 'DSH_AGENT_RP_COMFYUI_API_KEY',
 } as const
 
-/** Image provider names shared by settings, jobs, and credential routes. */
-export type ImageGenerationProvider = keyof typeof AGENT_RP_IMAGE_CREDENTIAL_REFS
+/** Providers Agent RP calls itself, and therefore the only ones owning a credential slot. */
+export type CredentialedImageProvider = keyof typeof AGENT_RP_IMAGE_CREDENTIAL_REFS
 
-/** Resolve the credential slot owned by one image provider. */
-export function imageCredentialRefName(provider: ImageGenerationProvider): string {
+/**
+ * Recorded origin of one stored image. `external` covers images Agent RP did not generate:
+ * an outside service (typically an MCP image tool) produced them and the Agent published
+ * them through `publish_roleplay_image`. It owns no credential slot and is never offered as
+ * a user-selectable provider, so it stays out of `AGENT_RP_IMAGE_PROVIDERS`.
+ */
+export type ImageGenerationProvider = CredentialedImageProvider | 'external'
+
+/** Resolve the credential slot owned by one image provider Agent RP calls itself. */
+export function imageCredentialRefName(provider: CredentialedImageProvider): string {
   return AGENT_RP_IMAGE_CREDENTIAL_REFS[provider]
 }
 
@@ -27,6 +35,33 @@ export const IMAGE_GENERATION_MODES = ['scene', 'portrait', 'avatar', 'custom'] 
 
 /** Image generation intent selected by the user. */
 export type ImageGenerationMode = typeof IMAGE_GENERATION_MODES[number]
+
+/** Media types the generated-image library stores, and therefore the publishable set. */
+export const PUBLISHABLE_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/webp'] as const
+
+/** Media type of one stored roleplay illustration. */
+export type PublishableMediaType = typeof PUBLISHABLE_MEDIA_TYPES[number]
+
+/** Narrow one arbitrary media type to the publishable set. */
+export function publishableMediaType(mediaType: string): PublishableMediaType | undefined {
+  return (PUBLISHABLE_MEDIA_TYPES as readonly string[]).includes(mediaType)
+    ? mediaType as PublishableMediaType
+    : undefined
+}
+
+/**
+ * One published illustration, addressed by its generated-image library job.
+ *
+ * Deliberately not an attachment reference: the browser fetches these bytes from
+ * `generatedImageAssetUrl(jobId)`, so no image block has to appear anywhere in the
+ * model-visible transcript to authorize the read.
+ */
+export interface PublishedRoleplayImageRef {
+  readonly jobId: string
+  readonly mediaType: PublishableMediaType
+  readonly bytes: number
+  readonly name?: string
+}
 
 /** One durable image request recorded in the conversation command. */
 export interface ImageGenerationRequest {

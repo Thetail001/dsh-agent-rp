@@ -1,5 +1,6 @@
 /** Publication boundary between arbitrary image tools and the Agent RP transcript. */
 
+import { randomUUID } from 'node:crypto'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -10,6 +11,16 @@ import type {
 } from '@deepseek-ai/dsh-attachment'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
+import type { GeneratedImageLibrary } from './generated-image-library.ts'
+import {
+  isImageJobId,
+  PUBLISHABLE_MEDIA_TYPES,
+  publishableMediaType,
+  type PublishableMediaType,
+  type PublishedRoleplayImageRef,
+} from './image-generation-protocol.ts'
+
+export type { PublishedRoleplayImageRef } from './image-generation-protocol.ts'
 
 /** Stable name exposed to the model. */
 export const PUBLISH_ROLEPLAY_IMAGE_TOOL = 'publish_roleplay_image'
@@ -25,7 +36,7 @@ export interface PublishedRoleplayImageValue {
   readonly version: 0
   readonly sourceEventSeq: number
   readonly sourceCallId?: string
-  readonly images: ImageAttachmentRef[]
+  readonly images: PublishedRoleplayImageRef[]
   readonly caption?: string
 }
 
@@ -49,15 +60,13 @@ export const PUBLISHED_ROLEPLAY_IMAGE_VALUE_SCHEMA = {
         type: 'object',
         additionalProperties: false,
         properties: {
-          attachmentId: { type: 'string', required: true },
+          jobId: { type: 'string', required: true },
           mediaType: {
             type: 'string',
             required: true,
-            enum: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
+            enum: [...PUBLISHABLE_MEDIA_TYPES],
           },
           bytes: { type: 'integer', required: true },
-          width: { type: 'integer', required: true },
-          height: { type: 'integer', required: true },
           name: { type: 'string' },
         },
       },
@@ -103,40 +112,93 @@ function isInsideWorkspace(workspace: string, candidate: string): boolean {
     && !isAbsolute(path)
 }
 
+/**
+ * Store one illustration in the generated-image library and address it by job id.
+ *
+ * The library is the same store `/rp-draw` writes to, so publication reuses the existing
+ * same-origin asset route and the browser needs no attachment authorization.
+ */
+function storePublishedImage(
+  library: GeneratedImageLibrary,
+  data: Uint8Array,
+  mediaType: PublishableMediaType,
+  caption: string | undefined,
+  name: string | undefined,
+): PublishedRoleplayImageRef {
+  const jobId = `image-${randomUUID()}`
+  library.begin({
+    format: 0,
+    jobId,
+    mode: 'scene',
+    prompt: caption ?? name ?? '角色插图',
+  }, 'external')
+  library.complete(jobId, { data, mediaType })
+  return {
+    jobId,
+    mediaType,
+    bytes: data.byteLength,
+    ...(name === undefined ? {} : { name }),
+  }
+}
+
 async function saveWorkspaceImage(
   store: AttachmentStore,
+  library: GeneratedImageLibrary,
   agent: Agent,
   path: string,
+  caption: string | undefined,
   signal?: AbortSignal,
-): Promise<ImageAttachmentRef> {
+): Promise<PublishedRoleplayImageRef> {
   const workspacePath = agent.session.header.cwd
   if (workspacePath === undefined) {
-    throw new Error('publish_roleplay_image(path) requires this Session to have a workspace cwd')
+    throw new Error('publish_roleplay_image(path) requires this Session to have a workspace cwd. Use the available shell tool to materialize the image inside the current workspace, then pass that workspace path.')
   }
   const requested = path.trim()
+  // Defensive: the only caller already normalizes an all-whitespace `path` to "omitted",
+  // so this is unreachable through the tool. Kept so a future caller cannot skip the check.
   if (requested === '') throw new TypeError('path must contain non-whitespace text')
   if (requested.length > 4_000) throw new TypeError('path is too long')
   if (/^[a-z][a-z\d+.-]*:\/\//iu.test(requested)) {
-    throw new Error('path must be a downloaded file in the Session workspace, not a URL')
+    throw new Error('path must be a local file inside the Session workspace, not a URL. Use the available shell tool (curl/wget) to download the URL into the workspace, then pass the resulting file path.')
   }
   signal?.throwIfAborted()
   const workspace = await realpath(workspacePath)
   const candidate = await realpath(resolve(workspace, requested))
   if (!isInsideWorkspace(workspace, candidate)) {
-    throw new Error('path must resolve to a file inside the Session workspace')
+    throw new Error(`path must resolve to a file inside the Session workspace (${workspace}). Move or copy the file there with the available shell tool, then pass that path.`)
   }
   const file = await stat(candidate)
-  if (!file.isFile()) throw new Error('path must resolve to a regular image file')
+  if (!file.isFile()) throw new Error('path must resolve to a regular image file. Check the path with the shell tool and pass the actual downloaded or decoded image file.')
   if (file.size > store.imageLimits.maxImageBytes) {
     throw new Error(`image exceeds the configured ${store.imageLimits.maxImageBytes}-byte limit`)
   }
   const data = await readFile(candidate, { signal })
-  const mediaType = inferredMediaType(data)
-  if (mediaType === undefined) throw new Error('path is not a supported PNG, JPEG, WebP, or GIF image')
-  if (!store.imageLimits.mediaTypes.includes(mediaType)) {
-    throw new Error(`${mediaType} images are disabled by the attachment policy`)
+  const detected = inferredMediaType(data)
+  if (detected === undefined) throw new Error('path is not a supported PNG, JPEG, WebP, or GIF image. Re-download or convert the file with the shell tool, then pass the resulting path.')
+  if (!store.imageLimits.mediaTypes.includes(detected)) {
+    throw new Error(`${detected} images are disabled by the attachment policy`)
   }
-  return store.saveImage({ data, mediaType, name: basename(candidate) })
+  const mediaType = publishableMediaType(detected)
+  if (mediaType === undefined) {
+    throw new Error(`${detected} cannot be published as a roleplay illustration. Convert the file to PNG, JPEG, or WebP with the available shell tool, then pass the converted workspace path.`)
+  }
+  return storePublishedImage(library, data, mediaType, caption, basename(candidate))
+}
+
+/** Copy one same-turn native tool image out of attachment storage into the library. */
+async function adoptNativeToolImage(
+  store: AttachmentStore,
+  library: GeneratedImageLibrary,
+  ref: ImageAttachmentRef,
+  caption: string | undefined,
+  signal?: AbortSignal,
+): Promise<PublishedRoleplayImageRef> {
+  const mediaType = publishableMediaType(ref.mediaType)
+  if (mediaType === undefined) {
+    throw new Error(`the image returned by the earlier tool is ${ref.mediaType}, which cannot be published as a roleplay illustration. Save it into the Session workspace as PNG, JPEG, or WebP with the available shell tool, then call publish_roleplay_image with that path.`)
+  }
+  const stored = await store.readImage(ref, signal)
+  return storePublishedImage(library, stored.data, mediaType, caption, ref.name)
 }
 
 function currentPublisherCall(agent: Agent, callId: string): Extract<SessionEvent, { type: 'tool/call' }> {
@@ -179,9 +241,12 @@ function latestSameTurnToolImages(
   return undefined
 }
 
+const PUBLISH_NO_SOURCE_GUIDANCE = 'No image can be published yet. No same-turn tool returned a native image attachment and no workspace path was provided. Do not retry this exact call. If a previous tool returned a URL, download it into the Session workspace with the available shell tool (curl/wget); if it returned base64, decode it into a workspace file with the shell tool; if it returned a file path or file attachment, move/copy that file into the Session workspace. Then call publish_roleplay_image again with the real workspace path. If you cannot produce such a file, stop calling this tool and continue the roleplay reply without an image.'
+
 /** Validate and retain either a same-turn native tool image or one downloaded workspace file. */
 export async function preparePublishedRoleplayImage(
   store: AttachmentStore,
+  library: GeneratedImageLibrary,
   agent: Agent,
   callId: string,
   args: PublishRoleplayImageArgs,
@@ -189,8 +254,11 @@ export async function preparePublishedRoleplayImage(
 ): Promise<PublishedRoleplayImageValue> {
   const currentCall = currentPublisherCall(agent, callId)
   const caption = normalizedCaption(args.caption)
-  if (args.path !== undefined) {
-    const image = await saveWorkspaceImage(store, agent, args.path, signal)
+  // An all-whitespace `path` is treated as omitted: models that mean "reuse this turn's
+  // native attachment" often send "" instead of dropping the field.
+  const requestedPath = typeof args.path === 'string' && args.path.trim() === '' ? undefined : args.path
+  if (requestedPath !== undefined) {
+    const image = await saveWorkspaceImage(store, library, agent, requestedPath, caption, signal)
     return {
       version: 0,
       sourceEventSeq: currentCall.seq,
@@ -200,31 +268,32 @@ export async function preparePublishedRoleplayImage(
   }
   const native = latestSameTurnToolImages(agent, currentCall)
   if (native === undefined) {
-    throw new Error('no unpublished image attachment was returned by an earlier tool in this turn; if the image tool returned a URL or download command, download it into the Session workspace and pass that local path')
+    throw new Error(PUBLISH_NO_SOURCE_GUIDANCE)
   }
   if (native.images.length > store.imageLimits.maxImagesPerMessage) {
     throw new Error(`image tool returned ${native.images.length} images; at most ${store.imageLimits.maxImagesPerMessage} may be published together`)
+  }
+  const images: PublishedRoleplayImageRef[] = []
+  for (const ref of native.images) {
+    images.push(await adoptNativeToolImage(store, library, ref, caption, signal))
   }
   return {
     version: 0,
     sourceEventSeq: native.eventSeq,
     sourceCallId: native.callId,
-    images: [...native.images],
+    images,
     ...(caption === undefined ? {} : { caption }),
   }
 }
 
-function imageRef(value: JsonValue): ImageAttachmentRef | undefined {
+function imageRef(value: JsonValue): PublishedRoleplayImageRef | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const record = value as Record<string, JsonValue>
-  if (typeof record.attachmentId !== 'string' || record.attachmentId === ''
-    || (record.mediaType !== 'image/png' && record.mediaType !== 'image/jpeg'
-      && record.mediaType !== 'image/webp' && record.mediaType !== 'image/gif')
+  if (typeof record.jobId !== 'string' || !isImageJobId(record.jobId)
+    || typeof record.mediaType !== 'string' || publishableMediaType(record.mediaType) === undefined
     || typeof record.bytes !== 'number' || !Number.isSafeInteger(record.bytes) || record.bytes <= 0
-    || typeof record.width !== 'number' || !Number.isSafeInteger(record.width) || record.width <= 0
-    || typeof record.height !== 'number' || !Number.isSafeInteger(record.height) || record.height <= 0
     || (record.name !== undefined && typeof record.name !== 'string')) return undefined
-  return value as unknown as ImageAttachmentRef
+  return value as unknown as PublishedRoleplayImageRef
 }
 
 /** Parse replay metadata without trusting arbitrary tool-result JSON. */
@@ -244,7 +313,7 @@ export function parsePublishedRoleplayImageMeta(value: JsonValue | undefined): P
     version: 0,
     sourceEventSeq: record.sourceEventSeq,
     ...(record.sourceCallId === undefined ? {} : { sourceCallId: record.sourceCallId as string }),
-    images: images as ImageAttachmentRef[],
+    images: images as PublishedRoleplayImageRef[],
     ...(record.caption === undefined ? {} : { caption: record.caption as string }),
   }
 }

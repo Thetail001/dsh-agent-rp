@@ -6,7 +6,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
 import type { TavernHelperState } from './tavern-helper.ts'
 import type { PromptRegexTraceRecord } from './frontend-regex.ts'
-import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { PublishedRoleplayImageRef } from './image-generation-protocol.ts'
 
 /** Current character identity and migration summary for one Roleplay Session. */
 export interface AgentRpProjection {
@@ -111,7 +111,7 @@ export interface AgentRpProjection {
     readonly publishResultSeq: number
     readonly sourceEventSeq: number
     readonly sourceCallId?: string
-    readonly images: readonly ImageAttachmentRef[]
+    readonly images: readonly PublishedRoleplayImageRef[]
     readonly caption?: string
   }[]
   readonly preset?: {

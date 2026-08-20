@@ -147,6 +147,13 @@ export const name = 'dsh-agent-rp'
 export { Config }
 export const inject = ['attachments', 'commands', 'credentials', 'llm', 'systemPrompt', 'tools']
 
+/**
+ * Failed `publish_roleplay_image` calls tolerated within one turn before the tool is
+ * hidden for the rest of that turn. The first failure returns actionable guidance, so a
+ * model that can recover still gets exactly one corrected attempt.
+ */
+const PUBLISH_FAILURE_LIMIT = 2
+
 interface PromptAttachmentGateway {
   registerPromptAttachmentConsumer?(
     name: string,
@@ -508,6 +515,47 @@ export function installAgentRp(
     : { path: options.workspaceSettingsPath })
   const currentToolGuidance = () => workspaceSettings.get().toolGuidance
   const guidedPersona = (persona: string): string => withToolGuidance(persona, currentToolGuidance())
+  // Agent-keyed state is held weakly, like the other per-Agent maps above: a missed
+  // `agent/disposed` must never pin an Agent, and `publishRestrictions` also retains a
+  // `dispose()` closure over live tool state.
+  const publishFailures = new WeakMap<Agent, { readonly turn: number; readonly count: number }>()
+  const publishRestrictions = new WeakMap<Agent, { readonly turn: number; readonly dispose: () => void }>()
+  const publishTurnByAgent = new WeakMap<Agent, number>()
+
+  const liftPublishRestriction = (agent: Agent, turn: number): void => {
+    const restriction = publishRestrictions.get(agent)
+    if (restriction === undefined || restriction.turn === turn) return
+    publishRestrictions.delete(agent)
+    publishFailures.delete(agent)
+    try {
+      restriction.dispose()
+    } catch (error) {
+      ctx.logger.warn(`agent-rp: failed to lift publish_roleplay_image restriction: ${String(error)}`)
+    }
+  }
+
+  const recordPublishFailure = (agent: Agent, turn: number): void => {
+    const previous = publishFailures.get(agent)
+    const count = previous?.turn === turn ? previous.count + 1 : 1
+    publishFailures.set(agent, { turn, count })
+    if (count < PUBLISH_FAILURE_LIMIT || publishRestrictions.has(agent)) return
+    try {
+      const dispose = agent.ctx.tools.restrict({ deny: [PUBLISH_ROLEPLAY_IMAGE_TOOL] })
+      publishRestrictions.set(agent, { turn, dispose })
+      ctx.logger.warn(`agent-rp: hiding publish_roleplay_image for session ${agent.id} turn ${turn} after repeated failed publications`)
+    } catch (error) {
+      ctx.logger.warn(`agent-rp: could not hide publish_roleplay_image after repeated failed publications: ${String(error)}`)
+    }
+  }
+
+  const publisherCallTurn = (agent: Agent, callId: string): number | undefined => {
+    for (let index = agent.session.events.length - 1; index >= 0; index -= 1) {
+      const event = agent.session.events[index]
+      if (event?.type === 'tool/call' && event.data.name === PUBLISH_ROLEPLAY_IMAGE_TOOL
+        && String(event.data.callId) === callId) return event.data.turn
+    }
+    return undefined
+  }
 
   commands.register({
     name: 'rp-tavern-variables',
@@ -830,12 +878,26 @@ export function installAgentRp(
     agentsByScope.set(agent, agent)
     agentsBySession.set(String(agent.session.id), agent)
   })
+  ctx.on('agent/pre-step', async ({ agent, turn }, next) => {
+    publishTurnByAgent.set(agent, turn)
+    liftPublishRestriction(agent, turn)
+    return await next()
+  })
   ctx.on('agent/disposed', ({ agent }) => {
     agentsByScope.delete(agent)
     agentsBySession.delete(String(agent.session.id))
     pendingMessagesByAgent.delete(agent)
     presetAfterHistoryByAgent.delete(agent)
     presetInChatByAgent.delete(agent)
+    publishFailures.delete(agent)
+    publishTurnByAgent.delete(agent)
+    const restriction = publishRestrictions.get(agent)
+    publishRestrictions.delete(agent)
+    try {
+      restriction?.dispose()
+    } catch (error) {
+      ctx.logger.warn(`agent-rp: failed to dispose publish_roleplay_image restriction: ${String(error)}`)
+    }
   })
   installPromptRegexStream(
     ctx,
@@ -898,11 +960,11 @@ export function installAgentRp(
   ctx.systemPrompt.context({ name: 'approval:policy', order: 0, text: '' })
   ctx.tools.register(defineTool({
     name: PUBLISH_ROLEPLAY_IMAGE_TOOL,
-    description: 'Publish image output beside this turn\'s final Agent RP reply. Omit path only when an earlier tool in this same turn returned a native image attachment. If an image service returned a URL or download command, first use an available shell/download tool to save it inside the Session workspace, then pass the resulting local path. This tool never downloads URLs.',
+    description: 'Attach one image to this turn\'s final roleplay reply. If an earlier tool in this same turn returned a native image attachment, omit path. Otherwise use the available shell tool to download a URL, decode base64, or move/copy a returned file into the Session workspace, then pass that real workspace path. Never pass a URL, base64 text, empty string, or guessed path. On failure, follow the returned guidance once instead of repeating identical arguments.',
     parameters: {
       path: {
         type: 'string',
-        description: 'Optional local image path inside the current Session workspace. Never pass a URL, data URI, or guessed path.',
+        description: 'Optional path to an image file already inside the current Session workspace. Omit the field entirely when reusing a native image attachment from the same turn. Never pass a URL, data URI, base64 text, empty string, or guessed path.',
       },
       caption: {
         type: 'string',
@@ -911,15 +973,25 @@ export function installAgentRp(
     },
     output: {
       schema: PUBLISHED_ROLEPLAY_IMAGE_VALUE_SCHEMA,
+      // Text only, deliberately. The published bytes live in the generated-image library and
+      // the browser fetches them from /api/agent-rp/images, exactly like `/rp-draw` output,
+      // so nothing here has to carry a native image block. Emitting one would put image
+      // content into the model-visible transcript, and every later turn would then fail on
+      // a text-only chat adapter (the DeepSeek adapter rejects image content outright with
+      // UNSUPPORTED_CONTENT). The model also gains nothing from seeing an illustration it
+      // just commissioned.
       render: (_args, value) => {
         const published = value as unknown as PublishedRoleplayImageValue
-        return [
-          ...published.images.map(attachment => ({ type: 'image' as const, attachment })),
-          {
+        if (published.images.length === 0) {
+          return [{
             type: 'text' as const,
-            text: `Published ${published.images.length} roleplay image${published.images.length === 1 ? '' : 's'} for the final reply.`,
-          },
-        ]
+            text: 'No roleplay image was published. Do not retry this call; continue with the final roleplay reply.',
+          }]
+        }
+        return [{
+          type: 'text' as const,
+          text: `Published ${published.images.length} roleplay image${published.images.length === 1 ? '' : 's'} for the final reply.`,
+        }]
       },
       presentationMeta: (_args, value) => {
         const meta = { format: 0, ...value } as unknown as PublishedRoleplayImageMeta
@@ -935,7 +1007,17 @@ export function installAgentRp(
       if (!guidance.enabled || !guidance.includeAgentRp || guidance.imageMode === 'never') {
         throw new Error(`${PUBLISH_ROLEPLAY_IMAGE_TOOL} is disabled by the current Agent RP settings`)
       }
-      return preparePublishedRoleplayImage(ctx.attachments, exec.agent, String(exec.callId), args, exec.signal)
+      try {
+        return await preparePublishedRoleplayImage(ctx.attachments, generatedImageLibrary, exec.agent, String(exec.callId), args, exec.signal)
+      } catch (error) {
+        const turn = publisherCallTurn(exec.agent, String(exec.callId)) ?? publishTurnByAgent.get(exec.agent)
+        if (turn === undefined) {
+          ctx.logger.warn(`agent-rp: could not attribute a failed ${PUBLISH_ROLEPLAY_IMAGE_TOOL} call to a turn; repeated-failure throttling is inactive for session ${exec.agent.id}`)
+        } else {
+          recordPublishFailure(exec.agent, turn)
+        }
+        throw error
+      }
     },
     presentCall: args => ({
       card: 'generic',
@@ -943,10 +1025,15 @@ export function installAgentRp(
       kind: 'other',
       ...(args.caption === undefined ? {} : { rawInput: args.caption }),
     }),
-    presentResult: (_args, result) => ({
-      card: 'generic',
-      title: result.isError ? '角色插图发布失败' : '角色插图已发布',
-    }),
+    presentResult: (_args, result) => {
+      const meta = result.meta as unknown as PublishedRoleplayImageMeta | undefined
+      return {
+        card: 'generic',
+        title: result.isError
+          ? '角色插图发布失败'
+          : meta !== undefined && meta.images.length > 0 ? '角色插图已发布' : '角色插图未发布',
+      }
+    },
     isConcurrencySafe: () => false,
   }))
   ctx.tools.register(defineTool({

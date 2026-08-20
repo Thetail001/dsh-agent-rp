@@ -35,14 +35,14 @@ export const DEFAULT_COMFY_CLOUD_GUIDANCE_TEXT = `使用当前已配置且实际
 
 run_saved_workflow 返回任务后，按照实际返回值调用 wait_for_job 等待完成，再调用 get_output 获取输出。不要循环调用 get_job_status。
 
-get_output 若返回已经准备好的下载命令，使用当前可用的命令或终端工具原样执行；不要改写、重新编码或手工拼接临时 URL。将图片下载到当前 Session 工作区，并使用命令实际产生的本地文件路径调用：
+get_output 返回下载命令后，使用当前可用的 bash/shell 工具执行下载。URL 和查询参数必须原样保留；只允许把输出路径调整到当前 Session 工作区（例如 comfy-output.png），不要保存到 get_output 建议的 Downloads 目录。下载成功后，把命令实际写入的工作区文件路径传给 publish_roleplay_image：
 
 publish_roleplay_image({
-  path: "<实际下载得到的本地图片路径>",
+  path: "<命令实际写入的工作区文件路径>",
   caption: "<可选的简短角色内配文>"
 })
 
-不得把 URL、猜测的路径或尚未生成的文件传给 publish_roleplay_image。如果生图工具直接返回了本轮可用的标准图片附件，则可以省略 path。
+不要把 URL、base64、空字符串或猜测路径直接传给 path。publish_roleplay_image 失败时先阅读它返回的下一步指导；如果无法在工作区得到图片文件，就停止调用并继续角色回复。绝对不要把 get_output 的临时 URL 以 Markdown 图片写进最终回复。
 
 任一步失败、工具不可见、工作流不存在或输出路径无法确认时，不循环重试，不编造成功结果；继续正常角色回复，只在确有必要时简短说明图片未生成。`
 

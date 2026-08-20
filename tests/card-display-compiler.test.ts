@@ -86,6 +86,39 @@ test('keeps application greetings isolated while redirecting only known Host fac
   assert.match(frame.srcDoc, /parent\.document\.body/u)
 })
 
+test('reports card frame size through timers when offscreen iframes throttle animation frames', () => {
+  const source = '<!doctype html><html><body><div>tall card</div></body></html>'
+  const frames = compileCardFrames(compileCharacterDisplay(`\`\`\`html\n${source}\n\`\`\``), {
+    origin: 'http://127.0.0.1:3091',
+  })
+  const frame = frames.segments[0]
+  assert.equal(frame?.kind, 'frame')
+  if (frame?.kind !== 'frame') return
+  assert.match(frame.srcDoc, /function __dshReportSoon\(\)\{requestAnimationFrame\(__dshReportSize\);setTimeout\(__dshReportSize,120\)\}/u)
+  assert.match(frame.srcDoc, /__dshReportSoon\(\);setTimeout\(__dshReportSoon,400\)/u)
+  assert.match(frame.srcDoc, /addEventListener\('load',__dshReportSoon\)/u)
+})
+
+test('keeps the reported card height able to shrink instead of ratcheting up', () => {
+  const source = '<!doctype html><html><body><div>tall card</div></body></html>'
+  const frames = compileCardFrames(compileCharacterDisplay(`\`\`\`html\n${source}\n\`\`\``), {
+    origin: 'http://127.0.0.1:3091',
+  })
+  const frame = frames.segments[0]
+  assert.equal(frame?.kind, 'frame')
+  if (frame?.kind !== 'frame') return
+  // The Host applies the reported value verbatim as the iframe height, and
+  // `documentElement.scrollHeight` is never smaller than the current viewport. Taking
+  // `scrollHeight` unconditionally would therefore report at least the height just
+  // applied, so the frame could only grow and stale whitespace would never collapse.
+  assert.match(frame.srcDoc, /var viewport=Math\.max\(0,window\.innerHeight\|\|0\)/u)
+  assert.match(
+    frame.srcDoc,
+    /var value=contentBottom>0\?Math\.max\(contentBottom,overflow>viewport\+1\?overflow:0\):overflow;/u,
+  )
+  assert.doesNotMatch(frame.srcDoc, /var value=Math\.max\(contentBottom,overflow\)/u)
+})
+
 test('allows only explicitly approved card resource origins in the frame CSP', () => {
   const source = '<!doctype html><html><body><script>fetch("https://app.example.com/view")</script></body></html>'
   const blocked = compileCardFrameDocument(source, { origin: 'http://127.0.0.1:3091' })

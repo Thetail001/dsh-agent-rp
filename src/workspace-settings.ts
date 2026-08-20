@@ -1,6 +1,6 @@
 /** Workspace preferences for new Agent RP entry points. */
 
-import type { ImageGenerationProvider } from './image-generation-protocol.ts'
+import type { CredentialedImageProvider } from './image-generation-protocol.ts'
 import {
   DEFAULT_TOOL_GUIDANCE,
   normalizeToolGuidanceConfig,
@@ -20,11 +20,11 @@ export const AGENT_RP_WORKSPACE_IDS_FIELD = 'workspaceIds'
 export const AGENT_RP_WORKSPACE_MODES = ['all', 'selected'] as const
 
 /** Image providers available for explicit roleplay illustrations. */
-export const AGENT_RP_IMAGE_PROVIDERS = ['openai', 'novelai', 'a1111', 'comfyui'] as const satisfies readonly ImageGenerationProvider[]
+export const AGENT_RP_IMAGE_PROVIDERS = ['openai', 'novelai', 'a1111', 'comfyui'] as const satisfies readonly CredentialedImageProvider[]
 
 /** Durable image provider settings; credentials are stored separately. */
 export interface ImageGenerationSettings {
-  readonly provider: ImageGenerationProvider
+  readonly provider: CredentialedImageProvider
   readonly openai: {
     readonly endpoint: string
     readonly model: string
@@ -199,7 +199,7 @@ export function normalizeImageGenerationSettings(value: unknown): ImageGeneratio
   if (value === undefined) return structuredClone(DEFAULT_AGENT_RP_SETTINGS.imageGeneration)
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Agent RP 图片设置不是对象')
   const record = value as Record<string, unknown>
-  if (!AGENT_RP_IMAGE_PROVIDERS.includes(record.provider as ImageGenerationProvider)) {
+  if (!AGENT_RP_IMAGE_PROVIDERS.includes(record.provider as CredentialedImageProvider)) {
     throw new Error('Agent RP 图片提供方无效')
   }
   const openai = typeof record.openai === 'object' && record.openai !== null && !Array.isArray(record.openai)
@@ -217,7 +217,7 @@ export function normalizeImageGenerationSettings(value: unknown): ImageGeneratio
     throw new Error('NovelAI 图片模型无效')
   }
   return {
-    provider: record.provider as ImageGenerationProvider,
+    provider: record.provider as CredentialedImageProvider,
     openai: {
       endpoint: endpoint(openai.endpoint, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.openai.endpoint, 'OpenAI 图片服务地址'),
       model: text(openai.model, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.openai.model, 200, 'OpenAI 图片模型'),

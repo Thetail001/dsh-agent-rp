@@ -349,7 +349,6 @@ type GenerationTailProps = TurnTailOwnerProps & {
   readonly rewriteTurn: (sessionId: SessionId, turn: number, draft: string) => Promise<void>
   readonly continueFromTurn: (sessionId: SessionId, atSeq: number) => Promise<void>
   readonly runImageGeneration: RunImageGeneration
-  readonly loadPublishedImage: (attachmentId: string) => Promise<string | undefined>
   readonly useProjection: PropsRuntime<'conversation.composer.dock'>['useProjection']
   readonly useSession: PropsRuntime<'conversation.composer.dock'>['useSession']
 }
@@ -961,52 +960,29 @@ function RewriteTurnDialog({ initialText, busy, error, onClose, onRewrite }: {
   </div>
 }
 
-function PublishedRoleplayImageAsset({ attachment, alt, load }: {
-  readonly attachment: ImageAttachmentRef
+/**
+ * Published illustrations come from the generated-image library, so they load over the same
+ * same-origin asset route `/rp-draw` results use. No attachment read, and therefore no image
+ * block in the model-visible transcript, is involved.
+ */
+function PublishedRoleplayImageAsset({ image, alt }: {
+  readonly image: AgentRpProjection['publishedImages'][number]['images'][number]
   readonly alt: string
-  readonly load: GenerationTailProps['loadPublishedImage']
 }) {
-  const [src, setSrc] = useState<string>()
   const [failed, setFailed] = useState(false)
-  useEffect(() => {
-    let active = true
-    let objectUrl: string | undefined
-    setSrc(undefined)
-    setFailed(false)
-    void load(String(attachment.attachmentId)).then(url => {
-      if (!active) {
-        if (url?.startsWith('blob:') === true) URL.revokeObjectURL(url)
-        return
-      }
-      if (url === undefined) {
-        setFailed(true)
-        return
-      }
-      objectUrl = url
-      setSrc(url)
-    }, () => {
-      if (active) setFailed(true)
-    })
-    return () => {
-      active = false
-      if (objectUrl?.startsWith('blob:') === true) URL.revokeObjectURL(objectUrl)
-    }
-  }, [attachment.attachmentId, load])
-  if (failed) return <div role="alert" style={{ fontSize: '12px', opacity: .62, padding: '18px' }}>图片附件读取失败</div>
-  if (src === undefined) return <div role="status" style={{ fontSize: '12px', opacity: .55, padding: '18px' }}>正在载入插图…</div>
+  if (failed) return <div role="alert" style={{ fontSize: '12px', opacity: .62, padding: '18px' }}>插图读取失败</div>
   return <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-    <img src={src} alt={alt} loading="lazy" style={{
+    <img src={generatedImageAssetUrl(image.jobId)} alt={alt} loading="lazy" onError={() => { setFailed(true) }} style={{
       background: 'rgba(0,0,0,.2)', display: 'block', maxHeight: '720px', objectFit: 'contain', width: '100%',
     }} />
-    <a href={src} download={attachment.name ?? 'roleplay-image'} style={{
+    <a href={generatedImageAssetUrl(image.jobId, true)} download={image.name ?? 'roleplay-image'} style={{
       ...generationButtonStyle, alignSelf: 'flex-start', margin: '9px 12px 11px', textDecoration: 'none',
     }}>下载</a>
   </div>
 }
 
-function PublishedRoleplayImageCard({ publication, load }: {
+function PublishedRoleplayImageCard({ publication }: {
   readonly publication: AgentRpProjection['publishedImages'][number]
-  readonly load: GenerationTailProps['loadPublishedImage']
 }) {
   const title = publication.caption?.trim() || '角色插图'
   return <article data-agent-rp-published-image style={{
@@ -1019,16 +995,16 @@ function PublishedRoleplayImageCard({ publication, load }: {
       <strong style={{ fontSize: '12px', fontWeight: 620 }}>{title}</strong>
     </header>
     <div style={{ display: 'grid', gap: '1px', gridTemplateColumns: publication.images.length > 1 ? 'repeat(2, minmax(0, 1fr))' : '1fr' }}>
-      {publication.images.map((attachment, index) => <PublishedRoleplayImageAsset
-        key={String(attachment.attachmentId)} attachment={attachment}
-        alt={publication.caption ?? `角色插图 ${index + 1}`} load={load}
+      {publication.images.map((image, index) => <PublishedRoleplayImageAsset
+        key={image.jobId} image={image}
+        alt={publication.caption ?? `角色插图 ${index + 1}`}
       />)}
     </div>
   </article>
 }
 
 function GenerationTail({
-  matched, runGeneration, rewriteTurn, continueFromTurn, runImageGeneration, loadPublishedImage,
+  matched, runGeneration, rewriteTurn, continueFromTurn, runImageGeneration,
   sessionId, turn, useProjection, useSession,
 }: GenerationTailProps) {
   const projection = useProjection('agentRp') as AgentRpProjection | undefined
@@ -1072,7 +1048,7 @@ function GenerationTail({
   const disabled = running || busy !== undefined
   return <>
     {publishedImages.map(publication => <PublishedRoleplayImageCard
-      key={publication.id} publication={publication} load={loadPublishedImage}
+      key={publication.id} publication={publication}
     />)}
     <div data-agent-rp-generation-tail style={{
     alignItems: 'center', background: 'color-mix(in srgb, currentColor 4%, transparent)',
@@ -8249,7 +8225,7 @@ export function apply(ctx: ClientContext): void {
       return closing === null || closing === undefined ? null : { replySeq: closing.finalNode.seq }
     },
   }, props => <GenerationTail {...props} runGeneration={runGeneration} rewriteTurn={rewriteTurn}
-    continueFromTurn={continueFromTurn} runImageGeneration={runImageGeneration} loadPublishedImage={loadAvatar} />))
+    continueFromTurn={continueFromTurn} runImageGeneration={runImageGeneration} />))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
   }, roleplayComposerDockComponent(

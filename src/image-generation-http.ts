@@ -11,7 +11,7 @@ import {
   AGENT_RP_IMAGE_PATH,
   imageCredentialRefName,
   isImageJobId,
-  type ImageGenerationProvider,
+  type CredentialedImageProvider,
 } from './image-generation-protocol.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
 import { AGENT_RP_IMAGE_PROVIDERS, normalizeImageGenerationSettings } from './workspace-settings.ts'
@@ -19,10 +19,10 @@ import { AGENT_RP_IMAGE_PROVIDERS, normalizeImageGenerationSettings } from './wo
 const MAX_CREDENTIAL_REQUEST_BYTES = 16 * 1024
 const MAX_TEST_REQUEST_BYTES = 512 * 1024
 
-function requestProvider(request: IncomingMessage): ImageGenerationProvider {
+function requestProvider(request: IncomingMessage): CredentialedImageProvider {
   const value = new URL(request.url ?? '/', 'http://agent-rp.local').searchParams.get('provider') ?? 'openai'
-  if (!AGENT_RP_IMAGE_PROVIDERS.includes(value as ImageGenerationProvider)) throw new Error('图片提供方无效')
-  return value as ImageGenerationProvider
+  if (!AGENT_RP_IMAGE_PROVIDERS.includes(value as CredentialedImageProvider)) throw new Error('图片提供方无效')
+  return value as CredentialedImageProvider
 }
 
 function trustedBrowserRequest(request: IncomingMessage, sandboxedImage: boolean): boolean {
