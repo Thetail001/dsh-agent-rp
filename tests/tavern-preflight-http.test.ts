@@ -7,8 +7,8 @@ import type { CharacterLibrary } from '../src/character-library.ts'
 import type { AgentRpHttpServer } from '../src/host-http.ts'
 import type { ImportedTavernHelperScript } from '../src/import/types.ts'
 import type { PresetLibrary } from '../src/preset-library.ts'
-import { installTavernPreflightHttp } from '../src/tavern-preflight-http.ts'
-import { TAVERN_PREFLIGHT_PATH } from '../src/tavern-preflight-protocol.ts'
+import { installTavernExecutionHttp, installTavernPreflightHttp } from '../src/tavern-preflight-http.ts'
+import { TAVERN_EXECUTION_PATH, TAVERN_PREFLIGHT_PATH } from '../src/tavern-preflight-protocol.ts'
 
 type RegisteredRoute = Parameters<AgentRpHttpServer['register']>[0]
 
@@ -83,6 +83,26 @@ function registeredRoute(
   return route
 }
 
+function registeredExecutionRoute(
+  libraries: { readonly characters: CharacterLibrary; readonly presets: PresetLibrary } = testLibraries(),
+): RegisteredRoute {
+  let route: RegisteredRoute | undefined
+  const ctx = {
+    effect(register: () => unknown) { register() },
+  } as unknown as Context
+  const server: AgentRpHttpServer = {
+    register(next) {
+      route = next
+      return () => {}
+    },
+  }
+  installTavernExecutionHttp(ctx, libraries.characters, libraries.presets, server)
+  assert.ok(route)
+  assert.equal(route.kind, 'exact')
+  assert.equal(route.path, TAVERN_EXECUTION_PATH)
+  return route
+}
+
 function responseCapture(): { readonly response: ServerResponse; readonly result: () => HttpResult } {
   let status: number | undefined
   let body = Buffer.alloc(0)
@@ -142,6 +162,17 @@ function request(overrides: Readonly<Record<string, unknown>> = {}): string {
   return JSON.stringify({ format: 0, characterId: 'character-ok', scriptApprovals: [], ...overrides })
 }
 
+function executionRequest(overrides: Readonly<Record<string, unknown>> = {}): string {
+  return JSON.stringify({
+    format: 0,
+    characterId: 'character-ok',
+    scope: 'character',
+    scriptId: 'character-script',
+    approvedOrigins: [],
+    ...overrides,
+  })
+}
+
 test('registers a same-origin POST-only Tavern preflight route', async () => {
   const route = registeredRoute()
   const method = await invoke(route, { method: 'GET' })
@@ -157,6 +188,44 @@ test('registers a same-origin POST-only Tavern preflight route', async () => {
     const forbidden = await invoke(route, { body: request(), headers })
     assert.equal(forbidden.status, 403)
     assert.deepEqual(forbidden.json, { error: 'forbidden' })
+  }
+})
+
+test('returns and caches a Host-resolved execution graph without browser-side module fetching', async () => {
+  const origin = 'https://execution-plan.example'
+  const entry = `${origin}/entry.js`
+  const libraries = testLibraries([script('character-script', `import value from '${entry}'; window.value=value;`)])
+  const route = registeredExecutionRoute(libraries)
+  const originalFetch = globalThis.fetch
+  let fetches = 0
+  globalThis.fetch = async input => {
+    assert.equal(String(input), entry)
+    fetches += 1
+    return new Response('export default 42', {
+      status: 200,
+      headers: { 'content-type': 'text/javascript', 'content-length': '17' },
+    })
+  }
+  try {
+    const body = executionRequest({ approvedOrigins: [origin] })
+    const first = await invoke(route, { body })
+    const second = await invoke(route, { body })
+    assert.equal(first.status, 200)
+    assert.equal(second.status, 200)
+    assert.equal(fetches, 1)
+    const result = first.json as {
+      readonly format: number
+      readonly execution: { readonly source: string; readonly moduleDependencies: readonly unknown[] }
+    }
+    assert.equal(result.format, 0)
+    assert.doesNotMatch(result.execution.source, new RegExp(entry, 'u'))
+    assert.equal(result.execution.moduleDependencies.length, 1)
+
+    const approval = await invoke(route, { body: executionRequest() })
+    assert.equal(approval.status, 409)
+    assert.deepEqual(approval.json, { error: '脚本来源需要授权', requestedOrigin: origin })
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })
 

@@ -55,6 +55,10 @@ import {
   type TavernPreflightResult,
 } from '../tavern-preflight-protocol.ts'
 import {
+  fetchTavernExecution,
+  TavernExecutionOriginApprovalError,
+} from './tavern-preflight.ts'
+import {
   advanceTavernTranscript,
   BUILT_IN_TAVERN_SCRIPT_ORIGINS,
   parseTavernResourceBlockedReport,
@@ -6663,6 +6667,8 @@ function TavernScriptRuntime({
   const presetApprovalId = tavernPermissionOwnerId(
     projection.preset?.libraryId, projection.tavern?.presetSourceId,
   )
+  const characterExecutionLibraryId = projection.avatarLibraryId ?? projection.tavern?.characterSourceId
+  const presetExecutionLibraryId = projection.preset?.libraryId ?? projection.tavern?.presetSourceId
   const scriptOrigins = (entry: Pick<TavernScriptFrame, 'scope' | 'script'>): readonly string[] => [...new Set([
     ...BUILT_IN_TAVERN_SCRIPT_ORIGINS,
     ...approvedTavernScriptOrigins(
@@ -6891,8 +6897,22 @@ function TavernScriptRuntime({
         const { key, scope, script } = scopedScript
         try {
           const approvedScriptOrigins = scriptOrigins(scopedScript)
+          const hostExecution = scope === 'character' && characterExecutionLibraryId !== undefined
+            || scope === 'preset' && characterExecutionLibraryId !== undefined
+              && presetExecutionLibraryId !== undefined
           const [execution, extensionSettings] = await Promise.all([
-            resolveTavernScriptExecution(script.content, controller.signal, approvedScriptOrigins),
+            hostExecution ? fetchTavernExecution({
+              format: 0,
+              characterId: characterExecutionLibraryId!,
+              ...(presetExecutionLibraryId === undefined ? {} : { presetId: presetExecutionLibraryId }),
+              scope: scope as 'character' | 'preset',
+              scriptId: script.id,
+              approvedOrigins: approvedScriptOrigins,
+            }, controller.signal) : resolveTavernScriptExecution(
+              script.content,
+              controller.signal,
+              approvedScriptOrigins,
+            ),
             extensionSettingsFor(scope),
           ])
           const approvedImageOrigins = (execution.remoteImageOrigins ?? []).filter(origin => approvedImages.has(
@@ -6939,7 +6959,8 @@ function TavernScriptRuntime({
           return {
             key, scope, script,
             error: reason instanceof Error ? reason.message : String(reason),
-            ...(reason instanceof TavernScriptOriginApprovalError ? { requestedOrigin: reason.origin } : {}),
+            ...(reason instanceof TavernScriptOriginApprovalError
+              || reason instanceof TavernExecutionOriginApprovalError ? { requestedOrigin: reason.origin } : {}),
           }
         }
       })().then(installFrame)

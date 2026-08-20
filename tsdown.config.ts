@@ -65,6 +65,12 @@ const client: UserConfig = {
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'production'),
   },
+  plugins: [{
+    name: 'bundle-browser-safe-fflate',
+    resolveId(id) {
+      return id === 'fflate' ? resolve('node_modules/fflate/esm/browser.js') : null
+    },
+  }],
   outputOptions: {
     entryFileNames: 'client.js',
     banner: 'window.__ModuleLoader__.load({ id: "@dsh-external/dsh-agent-rp", factory: (require) => {',

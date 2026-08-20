@@ -608,6 +608,41 @@ test('preloads YAML when a bundled script aliases the global parser', async () =
   assert.deepEqual(plan.preloads, ['yaml'])
 })
 
+test('localizes maintained jsDelivr modules without fetching or duplicating their browser graphs', async () => {
+  const originalFetch = globalThis.fetch
+  const fetched: string[] = []
+  globalThis.fetch = (input: string | URL | Request) => {
+    fetched.push(String(input))
+    return Promise.reject(new Error('localized modules must not use the network'))
+  }
+  try {
+    const plan = await resolveTavernScriptExecution([
+      "import { compare } from 'https://testingcf.jsdelivr.net/npm/compare-versions/+esm';",
+      "import 'https://testingcf.jsdelivr.net/npm/json5/+esm';",
+      "import 'https://testingcf.jsdelivr.net/npm/jsonrepair/+esm';",
+      "import 'https://testingcf.jsdelivr.net/npm/zod/v4/core/+esm';",
+      "import { createPinia } from 'https://testingcf.jsdelivr.net/npm/pinia@3.0.4/+esm';",
+      "import { klona } from 'https://testingcf.jsdelivr.net/npm/klona/+esm';",
+      'window.result = [compare("1", "1", "="), createPinia, klona, YAML];',
+    ].join('\n'), AbortSignal.timeout(5_000))
+    assert.deepEqual(fetched, [])
+    assert.equal(plan.mode, 'module')
+    assert.deepEqual(plan.preloads, [
+      'compare-versions', 'json5', 'jsonrepair', 'zod', 'vue', 'pinia', 'klona', 'yaml',
+    ])
+    assert.equal(plan.moduleDependencies?.length, 6)
+    assert.ok((plan.moduleDependencies ?? [])
+      .reduce((total, module) => total + module.source.length, 0) < 100_000)
+    const localizedSources = (plan.moduleDependencies ?? []).map(module => module.source).join('\n')
+    assert.match(localizedSources, /export const compare=__dshModule\.compare\?\?__dshDefault\.compare/u)
+    assert.match(localizedSources, /export const createPinia=__dshModule\.createPinia\?\?__dshDefault\.createPinia/u)
+    assert.match(localizedSources, /export const klona=__dshModule\.klona\?\?__dshDefault\.klona/u)
+    assert.equal(JSON.stringify(plan).includes('https://testingcf.jsdelivr.net'), false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('resolves nested fixed ESM dependencies into one isolated local module graph', async () => {
   const originalFetch = globalThis.fetch
   const fetched: string[] = []
@@ -758,6 +793,10 @@ test('keeps an approved nested web frame on its own HTTPS origin inside an opaqu
   ))
   assert.match(navigationShell, /dsh-agent-rp-tavern-loader/u)
   assert.doesNotMatch(navigationShell, /__PRIVATE_CARD_PAYLOAD__/u)
+  assert.doesNotMatch(navigationShell, /data-dsh-runtime-vendor/u)
+  assert.match(navigation.program, /jquery 3\.7\.1/iu)
+  assert.ok(navigationShell.length < 20_000)
+  assert.ok(navigation.program.length > navigationShell.length)
 })
 
 test('shares one in-flight dependency across concurrent Tavern script plans', async () => {

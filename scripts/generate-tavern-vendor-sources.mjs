@@ -1,25 +1,52 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
+import { gzipSync } from 'node:zlib'
 import { rolldown } from 'rolldown'
 
 const require = createRequire(import.meta.url)
 const target = resolve(import.meta.dirname, '../src/client/tavern-vendor-sources.generated.ts')
+const localModuleTarget = resolve(import.meta.dirname, '../src/tavern-local-modules.generated.ts')
+
+function packageRoot(packageName) {
+  try {
+    return dirname(require.resolve(`${packageName}/package.json`))
+  } catch {
+    let directory = dirname(require.resolve(packageName))
+    while (true) {
+      const packageFile = resolve(directory, 'package.json')
+      if (existsSync(packageFile)) {
+        const metadata = JSON.parse(readFileSync(packageFile, 'utf8'))
+        if (metadata.name === packageName) return directory
+      }
+      const parent = dirname(directory)
+      if (parent === directory) throw new Error(`Could not locate package root for ${packageName}`)
+      directory = parent
+    }
+  }
+}
 
 function licensedSource(packageName, source, licenseFile = 'LICENSE') {
-  const root = dirname(require.resolve(`${packageName}/package.json`))
+  const root = packageRoot(packageName)
   const metadata = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
   const license = readFileSync(resolve(root, licenseFile), 'utf8').trim().replace(/\*\//gu, '* /')
   return `/*! ${packageName} ${metadata.version}\n${license}\n*/\n${source}`
 }
 
-async function bundledNamespaceSource(input, name, expose = name) {
-  const bundle = await rolldown({ input })
+async function bundledNamespaceSource(input, name, option = {}) {
+  const bundle = await rolldown({ input, external: option.external ?? [] })
   try {
-    const result = await bundle.generate({ exports: 'named', format: 'iife', minify: true, name })
+    const result = await bundle.generate({
+      exports: 'named', format: 'iife', minify: true, name, globals: option.globals ?? {},
+    })
     const chunks = result.output.filter(output => output.type === 'chunk')
     if (chunks.length !== 1) throw new Error(`Expected one ${name} browser chunk, received ${chunks.length}`)
-    return `${chunks[0].code}\nglobalThis.${expose}=${name}.default??${name};`
+    const moduleKey = option.moduleKey ?? name
+    const expose = option.expose ?? name
+    const publicValue = option.preferred === undefined
+      ? `${name}.default??${name}`
+      : `${name}.${option.preferred}??${name}.default??${name}`
+    return `${chunks[0].code}\nglobalThis.__dshTavernModules??=Object.create(null);globalThis.__dshTavernModules[${JSON.stringify(moduleKey)}]=${name};globalThis.${expose}=${publicValue};`
   } finally {
     await bundle.close()
   }
@@ -29,12 +56,41 @@ const sources = {
   jquery: licensedSource('jquery', readFileSync(require.resolve('jquery/dist/jquery.min.js'), 'utf8'), 'LICENSE.txt'),
   lodash: licensedSource('lodash', readFileSync(require.resolve('lodash/lodash.min.js'), 'utf8')),
   yaml: licensedSource('yaml', await bundledNamespaceSource(
-    resolve(dirname(require.resolve('yaml')), '../browser/index.js'), 'YAML',
+    resolve(dirname(require.resolve('yaml')), '../browser/index.js'), 'YAML', { moduleKey: 'yaml' },
   )),
   vue: licensedSource('vue', await bundledNamespaceSource(
-    require.resolve('vue/dist/vue.esm-browser.prod.js'), 'Vue',
+    require.resolve('vue/dist/vue.esm-browser.prod.js'), 'Vue', { moduleKey: 'vue' },
   )),
-  zod: licensedSource('zod', await bundledNamespaceSource(require.resolve('zod'), 'Zod', 'z')),
+  zod: licensedSource('zod', await bundledNamespaceSource(
+    require.resolve('zod'), 'Zod', { moduleKey: 'zod', expose: 'z' },
+  )),
+  pinia: licensedSource('pinia', `${readFileSync(
+    resolve(packageRoot('pinia'), 'dist/pinia.iife.prod.js'),
+    'utf8',
+  )}\nglobalThis.__dshTavernModules??=Object.create(null);globalThis.__dshTavernModules.pinia=Pinia;globalThis.Pinia=Pinia;`),
+  compareVersions: licensedSource('compare-versions', await bundledNamespaceSource(
+    require.resolve('compare-versions'), 'CompareVersions', {
+      moduleKey: 'compare-versions', expose: 'CompareVersions',
+    },
+  )),
+  json5: licensedSource('json5', await bundledNamespaceSource(
+    require.resolve('json5'), 'JSON5Module', { moduleKey: 'json5', expose: 'JSON5' },
+  ), 'LICENSE.md'),
+  jsonrepair: licensedSource('jsonrepair', await bundledNamespaceSource(
+    require.resolve('jsonrepair'), 'JSONRepairModule', {
+      moduleKey: 'jsonrepair', expose: 'jsonrepair', preferred: 'jsonrepair',
+    },
+  ), 'LICENSE.md'),
+  klona: licensedSource('klona', await bundledNamespaceSource(
+    require.resolve('klona'), 'KlonaModule', { moduleKey: 'klona', expose: 'Klona' },
+  ), 'license'),
+}
+
+for (const [name, source] of Object.entries(sources)) {
+  if (name === 'jquery' || name === 'lodash') continue
+  if (/\brequire\s*\(/u.test(source)) {
+    throw new Error(`Tavern browser vendor ${name} contains an unbound CommonJS require call`)
+  }
 }
 
 function safeInlineScript(source) {
@@ -45,13 +101,59 @@ function safeInlineScript(source) {
     .replace(/\u2029/gu, '\\u2029')
 }
 
+function compressedSource(source) {
+  return gzipSync(safeInlineScript(source), { level: 9 }).toString('base64')
+}
+
 const generated = [
   '/** Generated by scripts/generate-tavern-vendor-sources.mjs. */',
-  `export const TAVERN_JQUERY_SOURCE = ${JSON.stringify(safeInlineScript(sources.jquery))}`,
-  `export const TAVERN_LODASH_SOURCE = ${JSON.stringify(safeInlineScript(sources.lodash))}`,
-  `export const TAVERN_YAML_SOURCE = ${JSON.stringify(safeInlineScript(sources.yaml))}`,
-  `export const TAVERN_VUE_SOURCE = ${JSON.stringify(safeInlineScript(sources.vue))}`,
-  `export const TAVERN_ZOD_SOURCE = ${JSON.stringify(safeInlineScript(sources.zod))}`,
+  `export const TAVERN_JQUERY_GZIP_BASE64 = ${JSON.stringify(compressedSource(sources.jquery))}`,
+  `export const TAVERN_LODASH_GZIP_BASE64 = ${JSON.stringify(compressedSource(sources.lodash))}`,
+  `export const TAVERN_YAML_GZIP_BASE64 = ${JSON.stringify(compressedSource(sources.yaml))}`,
+  `export const TAVERN_VUE_GZIP_BASE64 = ${JSON.stringify(compressedSource(sources.vue))}`,
+  `export const TAVERN_ZOD_GZIP_BASE64 = ${JSON.stringify(compressedSource(sources.zod))}`,
+  `export const TAVERN_PINIA_GZIP_BASE64 = ${JSON.stringify(compressedSource(sources.pinia))}`,
+  `export const TAVERN_COMPARE_VERSIONS_GZIP_BASE64 = ${JSON.stringify(compressedSource(sources.compareVersions))}`,
+  `export const TAVERN_JSON5_GZIP_BASE64 = ${JSON.stringify(compressedSource(sources.json5))}`,
+  `export const TAVERN_JSON_REPAIR_GZIP_BASE64 = ${JSON.stringify(compressedSource(sources.jsonrepair))}`,
+  `export const TAVERN_KLONA_GZIP_BASE64 = ${JSON.stringify(compressedSource(sources.klona))}`,
+  '',
+].join('\n')
+
+const reservedWords = new Set([
+  'await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do',
+  'else', 'enum', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'implements', 'import',
+  'in', 'instanceof', 'interface', 'let', 'new', 'null', 'package', 'private', 'protected', 'public', 'return',
+  'static', 'super', 'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield',
+])
+
+async function moduleFacade(packageName, moduleKey) {
+  const imported = await import(packageName)
+  const exports = Object.keys(imported)
+    .filter(name => name !== 'default' && /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(name) && !reservedWords.has(name))
+    .sort()
+  return [
+    `const __dshModule=globalThis.__dshTavernModules?.[${JSON.stringify(moduleKey)}];`,
+    `if(!__dshModule)throw new Error(${JSON.stringify(`本地兼容模块未加载：${moduleKey}`)});`,
+    'const __dshDefault=__dshModule.default??__dshModule;',
+    'export default __dshDefault;',
+    ...exports.map(name => `export const ${name}=__dshModule.${name}??__dshDefault.${name};`),
+  ].join('')
+}
+
+const localModuleFacades = Object.fromEntries(await Promise.all([
+  ['compare-versions', 'compare-versions'],
+  ['json5', 'json5'],
+  ['jsonrepair', 'jsonrepair'],
+  ['klona', 'klona'],
+  ['pinia', 'pinia'],
+  ['vue', 'vue'],
+  ['yaml', 'yaml'],
+  ['zod', 'zod'],
+].map(async ([packageName, moduleKey]) => [moduleKey, await moduleFacade(packageName, moduleKey)])))
+const generatedLocalModules = [
+  '/** Generated by scripts/generate-tavern-vendor-sources.mjs. */',
+  `export const TAVERN_LOCAL_MODULE_FACADES = ${JSON.stringify(localModuleFacades)} as const`,
   '',
 ].join('\n')
 
@@ -62,10 +164,17 @@ if (process.argv.includes('--check')) {
   } catch {
     current = undefined
   }
-  if (current !== generated) {
+  let currentLocalModules
+  try {
+    currentLocalModules = readFileSync(localModuleTarget, 'utf8')
+  } catch {
+    currentLocalModules = undefined
+  }
+  if (current !== generated || currentLocalModules !== generatedLocalModules) {
     process.stderr.write('Tavern vendor sources are stale; run pnpm run generate:tavern-vendor.\n')
     process.exitCode = 1
   }
 } else {
   writeFileSync(target, generated)
+  writeFileSync(localModuleTarget, generatedLocalModules)
 }

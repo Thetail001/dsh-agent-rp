@@ -89,7 +89,7 @@ import { configurePresetFromCommand } from './preset-configuration.ts'
 import { PresetLibrary } from './preset-library.ts'
 import { installPresetLibraryHttp } from './preset-library-http.ts'
 import { executePresetLibraryCommand } from './preset-library-command.ts'
-import { installTavernPreflightHttp } from './tavern-preflight-http.ts'
+import { installTavernExecutionHttp, installTavernPreflightHttp } from './tavern-preflight-http.ts'
 import { CharacterLibrary } from './character-library.ts'
 import { executeCharacterLibraryCommand } from './character-library-command.ts'
 import { installCharacterLibraryHttp } from './character-library-http.ts'
@@ -1150,6 +1150,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
         installPresetLibraryHttp(webCtx, presetLibrary, server)
         installTavernPreflightHttp(webCtx, characterLibrary, presetLibrary, server)
+        installTavernExecutionHttp(webCtx, characterLibrary, presetLibrary, server)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)
         installSillyTavernChatExportHttp(webCtx, ctx, server)
         installAgentRpMemoryHttp(webCtx, ctx, server)

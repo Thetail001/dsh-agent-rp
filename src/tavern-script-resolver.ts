@@ -1,6 +1,9 @@
 /** Static Tavern Helper dependency resolution shared by Host preflight and isolated browser runtimes. */
 
 import { parse as parseModule } from 'es-module-lexer/js'
+import { localTavernModule, type TavernScriptPreload } from './tavern-local-modules.ts'
+
+export type { TavernScriptPreload } from './tavern-local-modules.ts'
 
 const tavernCompatibilityMarkerPattern = /^__[\p{L}\p{N}_-]{1,112}_loaded__$/u
 const remoteCache = new Map<string, string>()
@@ -32,7 +35,7 @@ export interface TavernScriptExecution {
   readonly mode: 'classic' | 'module'
   /** Classic leaf dependencies evaluated in isolated scopes before the entry script. */
   readonly inlineDependencies?: readonly string[]
-  readonly preloads: readonly ('vue' | 'yaml' | 'zod')[]
+  readonly preloads: readonly TavernScriptPreload[]
   readonly needsDomPurify: boolean
   readonly needsFuse: boolean
   /** Authorized fixed-URL ESM graph fetched once by the Host and instantiated inside the isolated frame. */
@@ -245,18 +248,23 @@ async function loadModuleGraph(
 ): Promise<{
   readonly loaded: ReadonlyMap<string, LoadedTavernModule>
   readonly modulesByHref: ReadonlyMap<string, TavernScriptModuleDependency>
+  readonly preloads: readonly TavernScriptPreload[]
 }> {
   const loaded = new Map<string, LoadedTavernModule>()
   const scheduled = new Set<string>()
+  const preloads = new Set<TavernScriptPreload>()
   let queue = [...roots]
   while (queue.length > 0) {
     const batch = [...new Map(queue.flatMap(url => scheduled.has(url.href) ? [] : [[url.href, url]])).values()]
     queue = []
     for (const url of batch) scheduled.add(url.href)
-    const sources = await Promise.all(batch.map(url => remoteSource(url, signal)))
+    const localModules = batch.map(localTavernModule)
+    const sources = await Promise.all(batch.map((url, index) =>
+      localModules[index]?.source ?? remoteSource(url, signal)))
     for (let index = 0; index < batch.length; index += 1) {
       const url = batch[index]!
       const source = sources[index]!
+      for (const preload of localModules[index]?.preloads ?? []) preloads.add(preload)
       const references = moduleReferences(source, origins, url)
       loaded.set(url.href, { url, source, references })
       queue.push(...references.map(reference => reference.url))
@@ -280,7 +288,7 @@ async function loadModuleGraph(
       dependencies,
     }] as const
   }))
-  return { loaded, modulesByHref }
+  return { loaded, modulesByHref, preloads: [...preloads] }
 }
 
 const trueCompatibilityMarkerAssignmentPattern = /(?:\bwindow\b(?:\s*\.\s*(?:parent|top))?|\(\s*window\s*\.\s*(?:parent|top)\s*\|\|\s*window\s*\))\s*(?:\.\s*(__[\p{L}\p{N}_-]{1,112}_loaded__)|\[\s*(['"])(__[\p{L}\p{N}_-]{1,112}_loaded__)\2\s*\])\s*=\s*true\b/gu
@@ -445,7 +453,7 @@ export async function resolveTavernScriptExecution(
     })
   }
   const uniqueUrls = [...new Map(urls.map(url => [url.href, url])).values()]
-  const sources = await Promise.all(uniqueUrls.map(url => remoteSource(url, signal)))
+  const sources = await Promise.all(uniqueUrls.map(url => localTavernModule(url)?.source ?? remoteSource(url, signal)))
   const sourceByUrl = new Map(uniqueUrls.map((url, index) => [url.href, sources[index]!]))
   const inlineDependencies: string[] = []
   for (const url of uniqueUrls) {
@@ -471,15 +479,15 @@ export async function resolveTavernScriptExecution(
   const resolvedSource = replaceModuleReferences(source, remainingReferences, graph.modulesByHref)
   const dependencySources = [...allRemoteSources.values()]
   const dependencySource = [resolvedSource, ...dependencySources].join('\n')
-  const preloads: ('vue' | 'yaml' | 'zod')[] = []
-  if (/\bVue\b/u.test(dependencySource)) preloads.push('vue')
-  if (/\bYAML\b/u.test(dependencySource)) preloads.push('yaml')
-  if (/\bz\.(?:any|array|boolean|coerce|discriminatedUnion|enum|intersection|lazy|literal|nullable|number|object|optional|preprocess|record|string|tuple|union|unknown)\b/u.test(dependencySource)) preloads.push('zod')
+  const preloads = new Set<TavernScriptPreload>(graph.preloads)
+  if (/\bVue\b/u.test(dependencySource)) preloads.add('vue')
+  if (/\bYAML\b/u.test(dependencySource)) preloads.add('yaml')
+  if (/\bz\.(?:any|array|boolean|coerce|discriminatedUnion|enum|intersection|lazy|literal|nullable|number|object|optional|preprocess|record|string|tuple|union|unknown)\b/u.test(dependencySource)) preloads.add('zod')
   return {
     source: resolvedSource,
     mode: hasModuleSyntax ? 'module' : 'classic',
     inlineDependencies,
-    preloads,
+    preloads: [...preloads],
     needsDomPurify: /\bDOMPurify\b/u.test(dependencySource),
     needsFuse: /\bFuse\b/u.test(dependencySource),
     moduleDependencies: [...graph.modulesByHref.values()],

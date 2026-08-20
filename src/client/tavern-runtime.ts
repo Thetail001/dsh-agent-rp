@@ -9,6 +9,7 @@ import {
   faPaperPlane, faSave, faSpinner, faStop, faThumbsUp, faThumbtack, faTriangleExclamation, faUndo,
   faUnlockKeyhole, faUpload, faUserGroup, faXmark,
 } from '@fortawesome/free-solid-svg-icons'
+import { gunzipSync, strFromU8 } from 'fflate'
 import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/types.ts'
 import type { SessionPersonaSnapshot } from '../persona-library-protocol.ts'
 import { characterRemoteResourceOrigin, isCharacterRemoteResourceType } from '../card-remote-resource.ts'
@@ -17,13 +18,16 @@ import {
   BUILT_IN_TAVERN_SCRIPT_ORIGINS, declaredTavernCompatibilityMarkers, declaredTavernFrameOrigins,
   declaredTavernImageOrigins, declaredTavernStyleOrigins,
   type TavernScriptExecution,
+  type TavernScriptPreload,
 } from '../tavern-script-resolver.ts'
 import type {
   TavernInjectedPrompt, TavernScriptTree, TavernScriptTreeScope, TavernWorldbookBindings, TavernWorldbookEntry,
 } from '../tavern-helper.ts'
 import { embeddedNativeIdentityRelayRuntime } from './embedded-identity.ts'
 import {
-  TAVERN_JQUERY_SOURCE, TAVERN_LODASH_SOURCE, TAVERN_VUE_SOURCE, TAVERN_YAML_SOURCE, TAVERN_ZOD_SOURCE,
+  TAVERN_COMPARE_VERSIONS_GZIP_BASE64, TAVERN_JQUERY_GZIP_BASE64, TAVERN_JSON5_GZIP_BASE64,
+  TAVERN_JSON_REPAIR_GZIP_BASE64, TAVERN_KLONA_GZIP_BASE64, TAVERN_LODASH_GZIP_BASE64,
+  TAVERN_PINIA_GZIP_BASE64, TAVERN_VUE_GZIP_BASE64, TAVERN_YAML_GZIP_BASE64, TAVERN_ZOD_GZIP_BASE64,
 } from './tavern-vendor-sources.generated.ts'
 
 export {
@@ -291,6 +295,40 @@ const DOMPURIFY_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/dompurify@3.3.0/dist/
 const DOMPURIFY_SCRIPT_INTEGRITY = 'sha384-+qi1h9Ene5uYXijovnRnDpm2TZiNyVFgYjKIqjw6id8zLdWYt+tCPG9/1u6yLaNj'
 const FUSE_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.min.js'
 const FUSE_SCRIPT_INTEGRITY = 'sha384-P/y/5cwqUn6MDvJ9lCHJSaAi2EoH3JSeEdyaORsQMPgbpvA+NvvUqik7XH2YGBjb'
+const tavernVendorSourceCache = new Map<string, string>()
+
+function tavernVendorSource(name: string, compressed: string): string {
+  const cached = tavernVendorSourceCache.get(name)
+  if (cached !== undefined) return cached
+  const binary = atob(compressed)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  const source = strFromU8(gunzipSync(bytes))
+  tavernVendorSourceCache.set(name, source)
+  return source
+}
+
+function tavernPreloadScript(preload: TavernScriptPreload): string {
+  switch (preload) {
+    case 'compare-versions':
+      return `<script data-dsh-runtime-vendor="compare-versions">${tavernVendorSource(preload, TAVERN_COMPARE_VERSIONS_GZIP_BASE64)}</script>`
+    case 'json5':
+      return `<script data-dsh-runtime-vendor="json5">${tavernVendorSource(preload, TAVERN_JSON5_GZIP_BASE64)}</script>`
+    case 'jsonrepair':
+      return `<script data-dsh-runtime-vendor="jsonrepair">${tavernVendorSource(preload, TAVERN_JSON_REPAIR_GZIP_BASE64)}</script>`
+    case 'klona':
+      return `<script data-dsh-runtime-vendor="klona">${tavernVendorSource(preload, TAVERN_KLONA_GZIP_BASE64)}</script>`
+    case 'pinia':
+      return `<script data-dsh-runtime-vendor="pinia">${tavernVendorSource(preload, TAVERN_PINIA_GZIP_BASE64)}</script>`
+    case 'vue':
+      return `<script data-dsh-runtime-vendor="vue">${tavernVendorSource(preload, TAVERN_VUE_GZIP_BASE64)}</script>`
+    case 'yaml':
+      return `<script data-dsh-runtime-vendor="yaml">${tavernVendorSource(preload, TAVERN_YAML_GZIP_BASE64)}</script>`
+    case 'zod':
+      return `<script data-dsh-runtime-vendor="zod">${tavernVendorSource(preload, TAVERN_ZOD_GZIP_BASE64)}</script>`
+  }
+}
+
 function safeJson(value: unknown): string {
   return JSON.stringify(value).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
 }
@@ -713,17 +751,9 @@ export function tavernScriptFrameSource(
   const origins = [...new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...snapshot.approvedScriptOrigins])]
     .map(origin => new URL(origin).origin).join(' ')
   const libraries = [
-    `<script data-dsh-runtime-vendor="jquery">${TAVERN_JQUERY_SOURCE}</script>`,
-    `<script data-dsh-runtime-vendor="lodash">${TAVERN_LODASH_SOURCE}</script>`,
-    plan.preloads.includes('yaml')
-      ? `<script data-dsh-runtime-vendor="yaml">${TAVERN_YAML_SOURCE}</script>`
-      : '',
-    plan.preloads.includes('vue')
-      ? `<script data-dsh-runtime-vendor="vue">${TAVERN_VUE_SOURCE}</script>`
-      : '',
-    plan.preloads.includes('zod')
-      ? `<script data-dsh-runtime-vendor="zod">${TAVERN_ZOD_SOURCE}</script>`
-      : '',
+    `<script data-dsh-runtime-vendor="jquery">${tavernVendorSource('jquery', TAVERN_JQUERY_GZIP_BASE64)}</script>`,
+    `<script data-dsh-runtime-vendor="lodash">${tavernVendorSource('lodash', TAVERN_LODASH_GZIP_BASE64)}</script>`,
+    ...plan.preloads.map(tavernPreloadScript),
     plan.needsDomPurify
       ? `<script src="${DOMPURIFY_SCRIPT_URL}" integrity="${DOMPURIFY_SCRIPT_INTEGRITY}" crossorigin="anonymous"></script>`
       : '',
@@ -805,16 +835,26 @@ function tavernProgramKey(program: string): string {
 
 /** Keep large scripts and private Session state out of the iframe navigation URL. */
 export function tavernScriptFrameNavigation(source: string): TavernScriptFrameNavigation {
-  const scriptOpen = source.lastIndexOf('<script>')
-  const scriptClose = source.lastIndexOf('</script>')
-  if (scriptOpen < 0 || scriptClose <= scriptOpen) throw new Error('酒馆脚本文档缺少运行入口')
-  const programStart = scriptOpen + '<script>'.length
-  const program = source.slice(programStart, scriptClose)
+  const programs: string[] = []
+  const inlineScript = /<script([^>]*)>([\s\S]*?)<\/script>/gu
+  let shell = ''
+  let cursor = 0
+  for (const match of source.matchAll(inlineScript)) {
+    shell += source.slice(cursor, match.index)
+    cursor = match.index + match[0].length
+    if (/\bsrc\s*=/iu.test(match[1] ?? '')) shell += match[0]
+    else programs.push(match[2] ?? '')
+  }
+  shell += source.slice(cursor)
+  if (programs.length === 0) throw new Error('酒馆脚本文档缺少运行入口')
+  const program = programs.join('\n;\n')
   const key = tavernProgramKey(program)
   const loader = `(function(){var started=false,timer;function request(){parent.postMessage({source:'dsh-agent-rp-tavern-loader',action:'bootstrap-request'},'*')}addEventListener('message',function(event){var message=event.data;if(started||event.source!==parent||!message||message.source!=='dsh-agent-rp-host'||message.action!=='runtime-bootstrap'||typeof message.program!=='string'||!message.snapshot||typeof message.snapshot!=='object')return;started=true;clearInterval(timer);Object.defineProperty(globalThis,'__dshBootSnapshot',{configurable:true,value:message.snapshot});try{Function(message.program)()}catch(error){parent.postMessage({source:'dsh-agent-rp-tavern-script',action:'runtime-error',value:String(error&&error.message||error)},'*')}finally{delete globalThis.__dshBootSnapshot}},false);request();timer=setInterval(request,250)})();`
-  const shell = `${source.slice(0, scriptOpen)}<script>${loader}</script>${source.slice(scriptClose + '</script>'.length)}`
+  const bodyClose = shell.lastIndexOf('</body>')
+  if (bodyClose < 0) throw new Error('酒馆脚本文档缺少 body')
+  const navigationShell = `${shell.slice(0, bodyClose)}<script>${loader}</script>${shell.slice(bodyClose)}`
     .replace('<body>', `<body data-dsh-program="${key}">`)
-  return { url: tavernScriptFrameUrl(shell), program }
+  return { url: tavernScriptFrameUrl(navigationShell), program }
 }
 
 /** Encode one script document as an opaque-origin navigation URL for a sandboxed runtime frame. */

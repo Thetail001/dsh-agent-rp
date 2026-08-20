@@ -12,8 +12,12 @@ import {
 import { PresetLibrary } from './preset-library.ts'
 import { inspectTavernPreflight } from './tavern-preflight.ts'
 import {
-  TAVERN_PREFLIGHT_PATH, type TavernPreflightRequest, type TavernPreflightScope, type TavernPreflightScriptApproval,
+  TAVERN_EXECUTION_PATH, TAVERN_PREFLIGHT_PATH, type TavernExecutionRequest,
+  type TavernPreflightRequest, type TavernPreflightScope, type TavernPreflightScriptApproval,
 } from './tavern-preflight-protocol.ts'
+import {
+  resolveTavernScriptExecution, TavernScriptOriginApprovalError, type TavernScriptExecution,
+} from './tavern-script-resolver.ts'
 
 const MAX_PREFLIGHT_REQUEST_BYTES = 64 * 1024
 const MAX_PREFLIGHT_APPROVALS = 256
@@ -115,6 +119,25 @@ function parseRequest(value: unknown): TavernPreflightRequest {
   return { format: 0, characterId, ...(presetId === undefined ? {} : { presetId }), scriptApprovals }
 }
 
+function parseExecutionRequest(value: unknown): TavernExecutionRequest {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalidRequest('脚本执行计划请求无效')
+  const request = value as Record<string, unknown>
+  if (request.format !== 0 || !Array.isArray(request.approvedOrigins)
+    || request.approvedOrigins.length > MAX_ORIGINS_PER_SCRIPT) invalidRequest('脚本执行计划请求无效')
+  const scope = safeScope(request.scope)
+  const characterId = safeLibraryId(request.characterId, '角色卡 id')
+  const presetId = request.presetId === undefined ? undefined : safeLibraryId(request.presetId, '预设 id')
+  if (scope === 'preset' && presetId === undefined) invalidRequest('预设 id 无效')
+  return {
+    format: 0,
+    characterId,
+    ...(presetId === undefined ? {} : { presetId }),
+    scope,
+    scriptId: safeScriptId(request.scriptId, '脚本 id'),
+    approvedOrigins: [...new Set(request.approvedOrigins.map(safeOrigin))].sort(),
+  }
+}
+
 /** Register a model-free resource preflight for the selected character and optional preset. */
 export function installTavernPreflightHttp(
   ctx: Context,
@@ -163,4 +186,73 @@ export function installTavernPreflightHttp(
       }
     },
   }), 'agent-rp: Tavern Helper resource preflight HTTP')
+}
+
+/** Register same-origin Host resolution for one imported Tavern Helper script. */
+export function installTavernExecutionHttp(
+  ctx: Context,
+  characters: CharacterLibrary,
+  presets: PresetLibrary,
+  server: AgentRpHttpServer,
+): void {
+  const plans = new Map<string, TavernScriptExecution>()
+  const remember = (key: string, execution: TavernScriptExecution): TavernScriptExecution => {
+    plans.delete(key)
+    plans.set(key, execution)
+    while (plans.size > 64) plans.delete(plans.keys().next().value!)
+    return execution
+  }
+  ctx.effect(() => server.register({
+    kind: 'exact',
+    path: TAVERN_EXECUTION_PATH,
+    async handler(request, response) {
+      if (!trustedBrowserRequest(request)) {
+        json(response, 403, { error: 'forbidden' })
+        return
+      }
+      if (request.method !== 'POST') {
+        response.setHeader('allow', 'POST')
+        json(response, 405, { error: 'method not allowed' })
+        return
+      }
+      try {
+        const input = parseExecutionRequest(await readJson(request))
+        let scripts: readonly import('./import/types.ts').ImportedTavernHelperScript[]
+        let ownerId: string
+        if (input.scope === 'character') {
+          try {
+            scripts = characters.resolve(input.characterId).card.frontend.tavernHelperScripts
+          } catch (error: unknown) {
+            invalidRequest('角色卡不可用', { cause: error })
+          }
+          ownerId = input.characterId
+        } else {
+          try {
+            scripts = presets.get(input.presetId!).preset.tavernHelperScripts ?? []
+          } catch (error: unknown) {
+            invalidRequest('预设不可用', { cause: error })
+          }
+          ownerId = input.presetId!
+        }
+        const script = scripts.find(candidate => candidate.id === input.scriptId)
+        if (script === undefined || !script.enabled || script.content.trim() === '') invalidRequest('脚本不可用')
+        const key = JSON.stringify([input.scope, ownerId, input.scriptId, input.approvedOrigins])
+        const cached = plans.get(key)
+        const execution = cached ?? remember(key, await resolveTavernScriptExecution(
+          script.content,
+          AbortSignal.timeout(30_000),
+          input.approvedOrigins,
+        ))
+        json(response, 200, { format: 0, execution })
+      } catch (error: unknown) {
+        if (response.destroyed) return
+        if (error instanceof TavernScriptOriginApprovalError) {
+          json(response, 409, { error: '脚本来源需要授权', requestedOrigin: error.origin })
+          return
+        }
+        const known = error instanceof TavernPreflightHttpError ? error : undefined
+        json(response, known?.status ?? 502, { error: known?.message ?? '脚本执行计划暂时不可用' })
+      }
+    },
+  }), 'agent-rp: Tavern Helper execution HTTP')
 }
