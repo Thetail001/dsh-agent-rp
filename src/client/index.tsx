@@ -1643,6 +1643,7 @@ const characterLibraryNarrowQuery = '(max-width: 720px)'
 
 const agentRpResponsiveStyle = `
 .agent-rp-mobile-only { display: none !important; }
+.agent-rp-character-library-back { display: none; }
 [data-agent-rp-action='open-workbench'] {
   transition:
     background-color var(--ds-transition-duration-slow, 180ms) var(--ds-ease-in-out, ease),
@@ -1797,6 +1798,26 @@ const agentRpResponsiveStyle = `
     height: 100dvh !important;
     max-height: 100dvh !important;
   }
+  .agent-rp-character-library-back {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 50%;
+    color: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    flex: 0 0 auto;
+    height: 36px;
+    justify-content: center;
+    margin-left: -6px;
+    padding: 0;
+    width: 36px;
+  }
+  .agent-rp-character-library-back:hover,
+  .agent-rp-character-library-back:focus-visible {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+  .agent-rp-character-library-detail-close { display: none !important; }
   .agent-rp-character-library-footer {
     padding: 12px 14px max(12px, env(safe-area-inset-bottom)) !important;
   }
@@ -4514,6 +4535,10 @@ function CharacterLibraryDialog({
       }}>
         <div style={{ display: 'flex', flexDirection: 'column', padding: narrow ? '14px 14px 10px' : '22px 20px 14px' }}>
           <div style={{ alignItems: 'center', display: 'flex', gap: '10px' }}>
+            <button type="button" className="agent-rp-character-library-back" aria-label="返回对话"
+              title="返回对话" onClick={onClose}>
+              <IconChevronLeftOutline14 size={18} />
+            </button>
             <div style={{ flex: '1 1 auto', minWidth: 0 }}>
               <h2 style={{ fontSize: '18px', margin: 0 }}>{collection === 'active' ? '选择角色' : '收纳箱'}</h2>
               <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .48 }}>
@@ -4618,9 +4643,11 @@ function CharacterLibraryDialog({
           </div>
           {selected !== undefined && <button type="button" disabled={updating} onClick={updateArchiveState} style={{
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '8px',
-            color: 'inherit', cursor: updating ? 'wait' : 'pointer', font: 'inherit', fontSize: '12px', marginLeft: 'auto', padding: '6px 10px',
+            color: 'inherit', cursor: updating ? 'wait' : 'pointer', flex: '0 0 auto', font: 'inherit', fontSize: '12px',
+            marginLeft: 'auto', padding: '6px 10px', whiteSpace: 'nowrap',
           }}>{updating ? '处理中…' : collection === 'active' ? '移到收纳箱' : '移回角色库'}</button>}
-          <button type="button" aria-label="关闭开始角色对话" data-agent-rp-action="close-character-library" onClick={onClose} style={{
+          <button className="agent-rp-character-library-detail-close" type="button" aria-label="关闭开始角色对话"
+            data-agent-rp-action="close-character-library" onClick={onClose} style={{
             background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', marginLeft: selected === undefined ? 'auto' : '8px', padding: '4px 6px',
           }}>×</button>
         </header>
