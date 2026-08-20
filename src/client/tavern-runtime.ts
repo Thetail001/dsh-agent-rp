@@ -22,6 +22,9 @@ import type {
   TavernInjectedPrompt, TavernScriptTree, TavernScriptTreeScope, TavernWorldbookBindings, TavernWorldbookEntry,
 } from '../tavern-helper.ts'
 import { embeddedNativeIdentityRelayRuntime } from './embedded-identity.ts'
+import {
+  TAVERN_JQUERY_SOURCE, TAVERN_LODASH_SOURCE, TAVERN_VUE_SOURCE, TAVERN_YAML_SOURCE, TAVERN_ZOD_SOURCE,
+} from './tavern-vendor-sources.generated.ts'
 
 export {
   BUILT_IN_TAVERN_SCRIPT_ORIGINS, resolveTavernScriptExecution, TavernScriptOriginApprovalError,
@@ -288,13 +291,6 @@ const DOMPURIFY_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/dompurify@3.3.0/dist/
 const DOMPURIFY_SCRIPT_INTEGRITY = 'sha384-+qi1h9Ene5uYXijovnRnDpm2TZiNyVFgYjKIqjw6id8zLdWYt+tCPG9/1u6yLaNj'
 const FUSE_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.min.js'
 const FUSE_SCRIPT_INTEGRITY = 'sha384-P/y/5cwqUn6MDvJ9lCHJSaAi2EoH3JSeEdyaORsQMPgbpvA+NvvUqik7XH2YGBjb'
-const JQUERY_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js'
-const JQUERY_SCRIPT_INTEGRITY = 'sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo='
-const LODASH_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js'
-const LODASH_SCRIPT_INTEGRITY = 'sha256-qXBd/EfAdjOA2FGrGAG+b3YBn2tn5A6bhz+LSgYD96k='
-const VUE_MODULE_URL = 'https://cdn.jsdelivr.net/npm/vue@3.5.27/dist/vue.esm-browser.prod.js'
-const ZOD_MODULE_URL = 'https://cdn.jsdelivr.net/npm/zod@4.4.3/+esm'
-const YAML_MODULE_URL = 'https://cdn.jsdelivr.net/npm/yaml@2.9.0/+esm'
 function safeJson(value: unknown): string {
   return JSON.stringify(value).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
 }
@@ -711,13 +707,23 @@ export function tavernScriptFrameSource(
     ? 'const __dshModuleWindow=document.__dshScriptWindow;const window=__dshModuleWindow,parent=__dshModuleWindow,top=__dshModuleWindow,self=__dshModuleWindow,globalThis=__dshModuleWindow;\n'
     : ''
   const encoded = safeJson(`${moduleFacade}${source}\n//# sourceURL=dsh-agent-rp:${snapshot.scriptScope}:${script.id}`)
+  const moduleDependencies = safeJson(plan.moduleDependencies ?? [])
   const dependencies = (plan.inlineDependencies ?? []).map((dependency, index) =>
     `__dshRunClassic(${safeJson(`${dependency}\n//# sourceURL=dsh-agent-rp-dependency:${index + 1}`)})`).join(';')
   const origins = [...new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...snapshot.approvedScriptOrigins])]
     .map(origin => new URL(origin).origin).join(' ')
   const libraries = [
-    `<script src="${JQUERY_SCRIPT_URL}" integrity="${JQUERY_SCRIPT_INTEGRITY}" crossorigin="anonymous"></script>`,
-    `<script src="${LODASH_SCRIPT_URL}" integrity="${LODASH_SCRIPT_INTEGRITY}" crossorigin="anonymous"></script>`,
+    `<script data-dsh-runtime-vendor="jquery">${TAVERN_JQUERY_SOURCE}</script>`,
+    `<script data-dsh-runtime-vendor="lodash">${TAVERN_LODASH_SOURCE}</script>`,
+    plan.preloads.includes('yaml')
+      ? `<script data-dsh-runtime-vendor="yaml">${TAVERN_YAML_SOURCE}</script>`
+      : '',
+    plan.preloads.includes('vue')
+      ? `<script data-dsh-runtime-vendor="vue">${TAVERN_VUE_SOURCE}</script>`
+      : '',
+    plan.preloads.includes('zod')
+      ? `<script data-dsh-runtime-vendor="zod">${TAVERN_ZOD_SOURCE}</script>`
+      : '',
     plan.needsDomPurify
       ? `<script src="${DOMPURIFY_SCRIPT_URL}" integrity="${DOMPURIFY_SCRIPT_INTEGRITY}" crossorigin="anonymous"></script>`
       : '',
@@ -728,15 +734,15 @@ export function tavernScriptFrameSource(
   const preloads = plan.preloads.map(preload => {
     switch (preload) {
       case 'vue':
-        return `import(${safeJson(VUE_MODULE_URL)}).then(function(module){window.Vue=module})`
+        return 'Promise.resolve()'
       case 'yaml':
-        return `import(${safeJson(YAML_MODULE_URL)}).then(function(module){window.YAML=module.default??module})`
+        return 'Promise.resolve()'
       case 'zod':
-        return `import(${safeJson(ZOD_MODULE_URL)}).then(function(module){window.z=module})`
+        return 'Promise.resolve()'
     }
   })
   const execute = plan.mode === 'module'
-    ? `var __dshModuleUrl=URL.createObjectURL(new Blob([${encoded}],{type:'text/javascript'}));try{await import(__dshModuleUrl)}finally{URL.revokeObjectURL(__dshModuleUrl)}`
+    ? `var __dshRemoteModulePlans=${moduleDependencies},__dshRemoteModuleById=new Map(__dshRemoteModulePlans.map(function(plan){return [plan.id,plan]})),__dshRemoteModuleUrls=new Map(),__dshRemoteModuleResolving=new Set();function __dshRemoteModuleUrl(id){var existing=__dshRemoteModuleUrls.get(id);if(existing)return existing;if(__dshRemoteModuleResolving.has(id))throw new Error('远程模块依赖存在循环，无法在隔离环境中加载');var plan=__dshRemoteModuleById.get(id);if(!plan)throw new Error('远程模块依赖图不完整');__dshRemoteModuleResolving.add(id);try{var value=plan.source;for(var dependencyId of plan.dependencies){var dependency=__dshRemoteModuleById.get(dependencyId);if(!dependency)throw new Error('远程模块依赖图不完整');value=value.replaceAll(dependency.placeholder,__dshRemoteModuleUrl(dependencyId))}var url=URL.createObjectURL(new Blob([value+'\\n//# sourceURL=dsh-agent-rp-module:'+plan.id],{type:'text/javascript'}));__dshRemoteModuleUrls.set(id,url);return url}finally{__dshRemoteModuleResolving.delete(id)}}var __dshEntrySource=${encoded};for(var __dshRemotePlan of __dshRemoteModulePlans)__dshEntrySource=__dshEntrySource.replaceAll(__dshRemotePlan.placeholder,__dshRemoteModuleUrl(__dshRemotePlan.id));var __dshModuleUrl=URL.createObjectURL(new Blob([__dshEntrySource],{type:'text/javascript'}));try{await import(__dshModuleUrl)}finally{URL.revokeObjectURL(__dshModuleUrl);for(var __dshRemoteUrl of __dshRemoteModuleUrls.values())URL.revokeObjectURL(__dshRemoteUrl)}`
     : `__dshRunClassic(${encoded})`
   const preload = preloads.length === 0 ? '' : `await Promise.all([${preloads.join(',')}]);`
   const mobileCompatibility = plan.compatibilityMarkers.includes('__小手机脚本_loaded__')

@@ -18,6 +18,14 @@ export const BUILT_IN_TAVERN_SCRIPT_ORIGINS = ['https://cdn.jsdelivr.net', 'http
 const MAX_REMOTE_SCRIPT_BYTES = 2 * 1024 * 1024
 const MAX_REMOTE_SCRIPTS_BYTES = 4 * 1024 * 1024
 
+/** One authorized fixed-URL module copied into an isolated Tavern Helper execution plan. */
+export interface TavernScriptModuleDependency {
+  readonly id: string
+  readonly placeholder: string
+  readonly source: string
+  readonly dependencies: readonly string[]
+}
+
 /** Browser execution plan for one isolated Tavern Helper script. */
 export interface TavernScriptExecution {
   readonly source: string
@@ -27,6 +35,8 @@ export interface TavernScriptExecution {
   readonly preloads: readonly ('vue' | 'yaml' | 'zod')[]
   readonly needsDomPurify: boolean
   readonly needsFuse: boolean
+  /** Authorized fixed-URL ESM graph fetched once by the Host and instantiated inside the isolated frame. */
+  readonly moduleDependencies?: readonly TavernScriptModuleDependency[]
   /** Literal readiness flags assigned by authorized dependency modules. */
   readonly compatibilityMarkers: readonly string[]
   /** Static HTTPS image origins declared by the entry script and inspected dependencies. */
@@ -60,10 +70,13 @@ function approvedOrigins(additional: readonly string[]): ReadonlySet<string> {
   return new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...additional].map(value => new URL(value).origin))
 }
 
-function approvedModuleUrl(specifier: string, origins: ReadonlySet<string>): URL {
+function approvedModuleUrl(specifier: string, origins: ReadonlySet<string>, base?: URL): URL {
   let parsed: URL
   try {
-    parsed = new URL(specifier)
+    if (base !== undefined && !/^(?:https:\/\/|\/|\.\.?\/)/u.test(specifier)) {
+      throw new Error('nested module specifier is not relative')
+    }
+    parsed = base === undefined ? new URL(specifier) : new URL(specifier, base)
   } catch {
     throw new Error(`远程模块必须使用完整 HTTPS 地址：${specifier}`)
   }
@@ -166,6 +179,108 @@ function removeSourceRanges(source: string, ranges: readonly { readonly start: n
     result = `${result.slice(0, range.start)}${result.slice(range.end)}`
   }
   return result.trim()
+}
+
+interface TavernModuleReference {
+  readonly url: URL
+  readonly start: number
+  readonly end: number
+  readonly dynamic: boolean
+}
+
+interface LoadedTavernModule {
+  readonly url: URL
+  readonly source: string
+  readonly references: readonly TavernModuleReference[]
+}
+
+function moduleReferences(
+  source: string,
+  origins: ReadonlySet<string>,
+  base?: URL,
+): readonly TavernModuleReference[] {
+  const [imports] = parseModule(source)
+  return imports.flatMap(imported => {
+    if (imported.d === -2) return []
+    if (imported.n === undefined) throw new Error('远程模块的动态 import 必须使用固定 HTTPS 地址')
+    return [{
+      url: approvedModuleUrl(imported.n, origins, base),
+      start: imported.s,
+      end: imported.e,
+      dynamic: imported.d !== -1,
+    }]
+  })
+}
+
+function modulePlaceholder(index: number, sources: readonly string[]): string {
+  let attempt = 0
+  while (true) {
+    const suffix = attempt === 0 ? '' : `_${attempt}`
+    const placeholder = `__dsh_tavern_remote_module_${index}${suffix}__`
+    if (sources.every(source => !source.includes(placeholder))) return placeholder
+    attempt += 1
+  }
+}
+
+function replaceModuleReferences(
+  source: string,
+  references: readonly TavernModuleReference[],
+  modulesByHref: ReadonlyMap<string, TavernScriptModuleDependency>,
+): string {
+  let result = source
+  for (const reference of [...references].sort((left, right) => right.start - left.start)) {
+    const module = modulesByHref.get(reference.url.href)
+    if (module === undefined) throw new Error('远程模块依赖图不完整')
+    const replacement = reference.dynamic ? JSON.stringify(module.placeholder) : module.placeholder
+    result = `${result.slice(0, reference.start)}${replacement}${result.slice(reference.end)}`
+  }
+  return result
+}
+
+async function loadModuleGraph(
+  roots: readonly URL[],
+  origins: ReadonlySet<string>,
+  signal: AbortSignal,
+  entrySource: string,
+): Promise<{
+  readonly loaded: ReadonlyMap<string, LoadedTavernModule>
+  readonly modulesByHref: ReadonlyMap<string, TavernScriptModuleDependency>
+}> {
+  const loaded = new Map<string, LoadedTavernModule>()
+  const scheduled = new Set<string>()
+  let queue = [...roots]
+  while (queue.length > 0) {
+    const batch = [...new Map(queue.flatMap(url => scheduled.has(url.href) ? [] : [[url.href, url]])).values()]
+    queue = []
+    for (const url of batch) scheduled.add(url.href)
+    const sources = await Promise.all(batch.map(url => remoteSource(url, signal)))
+    for (let index = 0; index < batch.length; index += 1) {
+      const url = batch[index]!
+      const source = sources[index]!
+      const references = moduleReferences(source, origins, url)
+      loaded.set(url.href, { url, source, references })
+      queue.push(...references.map(reference => reference.url))
+    }
+  }
+  const sources = [entrySource, ...[...loaded.values()].map(module => module.source)]
+  const identities = new Map([...loaded.keys()].map((href, index) => [href, {
+    id: `remote-module-${index}`,
+    placeholder: modulePlaceholder(index, sources),
+  }] as const))
+  const skeletons = new Map([...loaded.keys()].map(href => {
+    const identity = identities.get(href)!
+    return [href, { ...identity, source: '', dependencies: [] }] as const
+  }))
+  const modulesByHref = new Map([...loaded.values()].map(entry => {
+    const identity = identities.get(entry.url.href)!
+    const dependencies = [...new Set(entry.references.map(reference => identities.get(reference.url.href)!.id))]
+    return [entry.url.href, {
+      ...identity,
+      source: replaceModuleReferences(entry.source, entry.references, skeletons),
+      dependencies,
+    }] as const
+  }))
+  return { loaded, modulesByHref }
 }
 
 const trueCompatibilityMarkerAssignmentPattern = /(?:\bwindow\b(?:\s*\.\s*(?:parent|top))?|\(\s*window\s*\.\s*(?:parent|top)\s*\|\|\s*window\s*\))\s*(?:\.\s*(__[\p{L}\p{N}_-]{1,112}_loaded__)|\[\s*(['"])(__[\p{L}\p{N}_-]{1,112}_loaded__)\2\s*\])\s*=\s*true\b/gu
@@ -346,22 +461,32 @@ export async function resolveTavernScriptExecution(
   if (total > MAX_REMOTE_SCRIPTS_BYTES) throw new Error('远程脚本合计超过 4 MiB')
   const source = removeSourceRanges(content, adapterRanges)
   const [, , , hasModuleSyntax] = parseModule(source)
-  const dependencySource = [source, ...sources].join('\n')
+  const remainingReferences = hasModuleSyntax ? moduleReferences(source, origins) : []
+  const graph = await loadModuleGraph(remainingReferences.map(reference => reference.url), origins, signal, source)
+  const allRemoteSources = new Map(sourceByUrl)
+  for (const [href, entry] of graph.loaded) allRemoteSources.set(href, entry.source)
+  const allRemoteBytes = [...allRemoteSources.values()]
+    .reduce((size, remote) => size + new TextEncoder().encode(remote).byteLength, 0)
+  if (allRemoteBytes > MAX_REMOTE_SCRIPTS_BYTES) throw new Error('远程脚本合计超过 4 MiB')
+  const resolvedSource = replaceModuleReferences(source, remainingReferences, graph.modulesByHref)
+  const dependencySources = [...allRemoteSources.values()]
+  const dependencySource = [resolvedSource, ...dependencySources].join('\n')
   const preloads: ('vue' | 'yaml' | 'zod')[] = []
   if (/\bVue\b/u.test(dependencySource)) preloads.push('vue')
   if (/\bYAML\b/u.test(dependencySource)) preloads.push('yaml')
   if (/\bz\.(?:any|array|boolean|coerce|discriminatedUnion|enum|intersection|lazy|literal|nullable|number|object|optional|preprocess|record|string|tuple|union|unknown)\b/u.test(dependencySource)) preloads.push('zod')
   return {
-    source,
+    source: resolvedSource,
     mode: hasModuleSyntax ? 'module' : 'classic',
     inlineDependencies,
     preloads,
     needsDomPurify: /\bDOMPurify\b/u.test(dependencySource),
     needsFuse: /\bFuse\b/u.test(dependencySource),
+    moduleDependencies: [...graph.modulesByHref.values()],
     compatibilityMarkers: declaredTavernCompatibilityMarkers(dependencySource),
     remoteImageOrigins: [...new Set([
-      ...declaredTavernImageOrigins(source),
-      ...sources.flatMap(declaredLoadedTavernImageOrigins),
+      ...declaredTavernImageOrigins(resolvedSource),
+      ...dependencySources.flatMap(declaredLoadedTavernImageOrigins),
     ])].sort(),
     remoteStyleOrigins: declaredTavernStyleOrigins(dependencySource),
     remoteFrameOrigins: declaredTavernFrameOrigins(dependencySource),

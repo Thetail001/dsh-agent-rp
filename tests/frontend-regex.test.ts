@@ -591,7 +591,11 @@ test('preserves authorized ESM imports and plans their required public globals',
     assert.equal(plan.needsDomPurify, false)
     assert.equal(plan.needsFuse, false)
     assert.deepEqual(plan.compatibilityMarkers, ['__辅助计算脚本_loaded__'])
-    assert.match(plan.source, /import \{ register \} from 'https:\/\/cdn\.jsdelivr\.net/u)
+    assert.match(plan.source, /import \{ register \} from '__dsh_tavern_remote_module_0__'/u)
+    assert.equal(plan.source.includes('https://cdn.jsdelivr.net'), false)
+    assert.equal(plan.moduleDependencies?.length, 1)
+    assert.match(plan.moduleDependencies?.[0]?.source ?? '', /export function register/u)
+    assert.deepEqual(plan.moduleDependencies?.[0]?.dependencies, [])
     assert.deepEqual(fetched, ['https://cdn.jsdelivr.net/gh/example/project@1.0.0/module.js'])
   } finally {
     globalThis.fetch = originalFetch
@@ -602,6 +606,58 @@ test('preloads YAML when a bundled script aliases the global parser', async () =
   const plan = await resolveTavernScriptExecution('const parser = YAML; window.result = parser.parse("value: ok");',
     AbortSignal.timeout(5_000))
   assert.deepEqual(plan.preloads, ['yaml'])
+})
+
+test('resolves nested fixed ESM dependencies into one isolated local module graph', async () => {
+  const originalFetch = globalThis.fetch
+  const fetched: string[] = []
+  globalThis.fetch = (input: string | URL | Request) => {
+    const url = String(input)
+    fetched.push(url)
+    if (url.endsWith('/root.js')) {
+      return Promise.resolve(new Response("import { value } from './leaf.js'; export const result = value;"))
+    }
+    if (url.endsWith('/leaf.js')) return Promise.resolve(new Response("export const value = 'local';"))
+    return Promise.resolve(new Response('', { status: 404 }))
+  }
+  try {
+    const plan = await resolveTavernScriptExecution(
+      "import { result } from 'https://cdn.jsdelivr.net/gh/example/module-graph@1/root.js'; window.result=result;",
+      AbortSignal.timeout(5_000),
+    )
+    assert.deepEqual(fetched, [
+      'https://cdn.jsdelivr.net/gh/example/module-graph@1/root.js',
+      'https://cdn.jsdelivr.net/gh/example/module-graph@1/leaf.js',
+    ])
+    assert.equal(plan.moduleDependencies?.length, 2)
+    assert.match(plan.source, /__dsh_tavern_remote_module_0__/u)
+    assert.match(plan.moduleDependencies?.[0]?.source ?? '', /__dsh_tavern_remote_module_1__/u)
+    assert.deepEqual(plan.moduleDependencies?.[0]?.dependencies, ['remote-module-1'])
+    assert.deepEqual(plan.moduleDependencies?.[1]?.dependencies, [])
+    assert.equal(JSON.stringify(plan).includes('https://cdn.jsdelivr.net/gh/example/module-graph'), false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('chooses local module placeholders that cannot rewrite script data', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = () => Promise.resolve(new Response(
+    "export const text = '__dsh_tavern_remote_module_0__';",
+  ))
+  try {
+    const plan = await resolveTavernScriptExecution([
+      "const original = '__dsh_tavern_remote_module_0__';",
+      "import { text } from 'https://cdn.jsdelivr.net/gh/example/placeholders@1/module.js';",
+      'window.result = original + text;',
+    ].join('\n'), AbortSignal.timeout(5_000))
+    assert.match(plan.source, /const original = '__dsh_tavern_remote_module_0__'/u)
+    assert.match(plan.source, /from '__dsh_tavern_remote_module_0_1__'/u)
+    assert.equal(plan.moduleDependencies?.[0]?.placeholder, '__dsh_tavern_remote_module_0_1__')
+    assert.match(plan.moduleDependencies?.[0]?.source ?? '', /text = '__dsh_tavern_remote_module_0__'/u)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('runs classic side-effect dependencies behind an isolated window facade', async () => {
@@ -1054,14 +1110,15 @@ test('runs module plans through a Blob and reports ready only after evaluation',
   assert.match(source!, /URL\.createObjectURL\(new Blob/u)
   assert.match(source!, /document\.__dshScriptWindow/u)
   assert.match(source!, /const window=__dshModuleWindow,parent=__dshModuleWindow,top=__dshModuleWindow/u)
-  assert.match(html, /jquery@3\.7\.1\/dist\/jquery\.min\.js/u)
-  assert.match(html, /lodash@4\.17\.21\/lodash\.min\.js/u)
+  assert.match(html, /data-dsh-runtime-vendor="jquery"/u)
+  assert.match(html, /data-dsh-runtime-vendor="lodash"/u)
+  assert.match(html, /data-dsh-runtime-vendor="yaml"/u)
+  assert.match(html, /data-dsh-runtime-vendor="vue"/u)
+  assert.match(html, /data-dsh-runtime-vendor="zod"/u)
+  assert.doesNotMatch(html, /cdn\.jsdelivr\.net\/npm\/(?:jquery|lodash|vue|yaml|zod)@/u)
   assert.match(source!, /var __dshDeclaredCompatibilityMarkers=\["__远程依赖_loaded__"\]/u)
-  assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/yaml@2\.9\.0\/\+esm"\)/u)
-  assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/zod@4\.4\.3\/\+esm"\)/u)
-  assert.match(source!, /import\("https:\/\/cdn\.jsdelivr\.net\/npm\/vue@3\.5\.27\/dist\/vue\.esm-browser\.prod\.js"\)/u)
-  assert.match(source!, /then\(function\(module\)\{window\.Vue=module\}\)/u)
-  assert.match(source!, /then\(function\(module\)\{window\.z=module\}\)/u)
+  assert.doesNotMatch(html, /cdn\.jsdelivr\.net\/npm\/yaml@2\.9\.0/u)
+  assert.doesNotMatch(html, /cdn\.jsdelivr\.net\/npm\/(?:vue|zod)@/u)
   assert.ok(source!.indexOf('await import(__dshModuleUrl)') < source!.lastIndexOf("__dshPost('ready',"))
 })
 
@@ -1354,6 +1411,31 @@ window.__lodashSurface = {
     sorted: [1, 2], flattened: [1, 2, 3], some: true, updated: { nested: { value: 8 } },
     nil: [true, true, false], dropped: [1], pulled: { removed: ['a', 'c'], value: ['b'] }, last: 'b',
   })
+})
+
+test('embeds the common Tavern Helper browser libraries without remote startup requests', () => {
+  const html = tavernScriptFrameSource({
+    id: 'offline-runtime', name: '离线运行时', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, {
+    source: '', mode: 'classic', preloads: ['vue', 'yaml', 'zod'], inlineDependencies: [],
+    needsDomPurify: false, needsFuse: false, compatibilityMarkers: [],
+  }, {
+    scriptScope: 'character',
+    scriptId: 'offline-runtime', scriptName: '离线运行时', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  })
+
+  assert.match(html, /data-dsh-runtime-vendor="jquery"/u)
+  assert.match(html, /data-dsh-runtime-vendor="lodash"/u)
+  assert.match(html, /data-dsh-runtime-vendor="yaml"/u)
+  assert.match(html, /data-dsh-runtime-vendor="vue"/u)
+  assert.match(html, /data-dsh-runtime-vendor="zod"/u)
+  assert.doesNotMatch(html, /cdn\.jsdelivr\.net\/npm\/(?:jquery|lodash|vue|yaml|zod)@/u)
 })
 
 test('bridges external OAuth windows without relaxing the Tavern script sandbox', () => {
