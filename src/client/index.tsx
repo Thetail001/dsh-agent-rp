@@ -11,7 +11,11 @@ import type { CommandRowProps, IConversation, TurnTailOwnerProps } from '@deepse
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  IconChevronLeftOutline14, IconChevronRightOutline14, IconEditOutline16, IconEllipsisOutline16,
+  IconLoadingOutline16, IconPlayOutline16, IconRefreshOutline16, IconSparkle16, IconWarningOutline16,
+  Menu, Tooltip,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { createPortal } from 'react-dom'
@@ -26,6 +30,7 @@ interface SidebarDestinationOwnerProps {
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
     'sidebar.destinations': { kind: 'list'; scope: 'root'; owner: SidebarDestinationOwnerProps }
+    'conversation.chat.turnActions': { kind: 'list'; scope: 'session'; owner: TurnTailOwnerProps }
   }
 }
 import type { AgentRpProjection } from '../projection-types.ts'
@@ -498,9 +503,6 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
 type ComposerDockProps = PropsRuntime<'conversation.composer.dock'>
 
 type GenerationTailProps = TurnTailOwnerProps & {
-  readonly matched: {
-    readonly replySeq: number
-  }
   readonly sessionId: SessionId
   readonly runGeneration: (
     sessionId: SessionId,
@@ -508,7 +510,6 @@ type GenerationTailProps = TurnTailOwnerProps & {
       | { readonly operation: 'select'; readonly replySeq: number; readonly versionIndex: number },
   ) => Promise<void>
   readonly rewriteTurn: (sessionId: SessionId, turn: number, draft: string) => Promise<void>
-  readonly continueFromTurn: (sessionId: SessionId, atSeq: number) => Promise<void>
   readonly runImageGeneration: RunImageGeneration
   readonly useProjection: PropsRuntime<'conversation.composer.dock'>['useProjection']
   readonly useSession: PropsRuntime<'conversation.composer.dock'>['useSession']
@@ -926,13 +927,13 @@ function RewriteTurnDialog({ initialText, busy, error, onClose, onRewrite }: {
 }
 
 function GenerationTail({
-  matched, runGeneration, rewriteTurn, continueFromTurn, runImageGeneration,
+  runGeneration, rewriteTurn, runImageGeneration, seq: replySeq,
   sessionId, turn, useProjection, useSession,
 }: GenerationTailProps) {
   const projection = useProjection('agentRp') as AgentRpProjection | undefined
   const running = useSession(snapshot => snapshot.running)
   const replyText = useSession(snapshot => {
-    const node = snapshot.chat.legacy.nodes.find(candidate => candidate.kind === 'assistant' && candidate.seq === matched.replySeq)
+    const node = snapshot.chat.legacy.nodes.find(candidate => candidate.kind === 'assistant' && candidate.seq === replySeq)
     return node?.kind === 'assistant' ? node.blocks
       .filter((block): block is Extract<typeof block, { readonly kind: 'text' }> => block.kind === 'text')
       .map(block => block.text)
@@ -945,17 +946,21 @@ function GenerationTail({
     if (node?.kind !== 'user' || node.content.length === 0 || node.content.some(block => block.type !== 'text')) return undefined
     return node.content.map(block => block.type === 'text' ? block.text : '').join('\n')
   })
-  const [busy, setBusy] = useState<'regenerate' | 'continue' | 'select' | 'rewrite' | 'fork'>()
+  const [busy, setBusy] = useState<'regenerate' | 'continue' | 'select-previous' | 'select-next' | 'rewrite'>()
   const [error, setError] = useState<string>()
   const [drawOpen, setDrawOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
   const [rewriteOpen, setRewriteOpen] = useState(false)
-  const group = projection?.generations.find(candidate => candidate.anchorSeq === matched.replySeq)
+  const group = projection?.generations.find(candidate => candidate.anchorSeq === replySeq)
   if (projection === undefined) return null
-  const currentReply = projection.currentReplySeq === matched.replySeq
+  const currentReply = projection.currentReplySeq === replySeq
   const sceneNote = replySceneNote(replyText)
   const selectedIndex = group?.versions.findIndex(version => version.seq === group.selectedVersionSeq) ?? 0
-  const invoke = (request: Parameters<GenerationTailProps['runGeneration']>[1]): void => {
-    setBusy(request.operation)
+  const invoke = (
+    request: Parameters<GenerationTailProps['runGeneration']>[1],
+    pending: Exclude<typeof busy, undefined> = request.operation === 'select' ? 'select-next' : request.operation,
+  ): void => {
+    setBusy(pending)
     setError(undefined)
     void runGeneration(sessionId, request).then(
       () => { setBusy(undefined) },
@@ -966,47 +971,83 @@ function GenerationTail({
     )
   }
   const disabled = running || busy !== undefined
-  return <div data-agent-rp-generation-tail style={{
-    alignItems: 'center', background: 'color-mix(in srgb, currentColor 4%, transparent)',
-    border: '1px solid color-mix(in srgb, currentColor 10%, transparent)', borderRadius: '9px',
-    display: 'flex', flexWrap: 'wrap', gap: '2px', marginRight: 'auto', padding: '3px',
-  }}>
-    {currentReply && group !== undefined && group.versions.length > 1 && <>
-      <button type="button" aria-label="上一版回复" disabled={disabled || selectedIndex <= 0} onClick={() => {
-        invoke({ operation: 'select', replySeq: matched.replySeq, versionIndex: selectedIndex - 1 })
-      }} style={generationActionButtonStyle}>‹</button>
-      <span style={{ fontSize: '11px', minWidth: '34px', opacity: 0.56, textAlign: 'center' }}>{selectedIndex + 1} / {group.versions.length}</span>
-      <button type="button" aria-label="下一版回复" disabled={disabled || selectedIndex >= group.versions.length - 1} onClick={() => {
-        invoke({ operation: 'select', replySeq: matched.replySeq, versionIndex: selectedIndex + 1 })
-      }} style={generationActionButtonStyle}>›</button>
-      <span aria-hidden="true" style={generationActionDividerStyle} />
-    </>}
-    {currentReply && <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'regenerate', replySeq: matched.replySeq }) }} style={generationActionButtonStyle}>
-      {busy === 'regenerate' ? '生成中…' : '重新生成'}
-    </button>}
-    {currentReply && <button type="button" disabled={disabled} onClick={() => { invoke({ operation: 'continue', replySeq: matched.replySeq }) }} style={generationActionButtonStyle}>
-      {busy === 'continue' ? '生成中…' : '继续生成'}
-    </button>}
-    {currentReply && <button type="button" disabled={disabled || sceneNote === ''} onClick={() => { setDrawOpen(true) }} style={generationActionButtonStyle}>
-      生成插图
-    </button>}
-    <button type="button" title={editableUserText === undefined ? '这一轮含附件或没有用户消息，暂时不能修改' : '保留当前对话，从修改后的输入创建新分支'}
-      disabled={disabled || editableUserText === undefined} onClick={() => { setError(undefined); setRewriteOpen(true) }} style={generationActionButtonStyle}>
-      修改输入
-    </button>
-    <button type="button" title="保留截至这里的对话，并创建一个新分支" disabled={disabled || turn.end === undefined} onClick={() => {
-      if (turn.end === undefined) return
-      setBusy('fork')
-      setError(undefined)
-      void continueFromTurn(sessionId, turn.end.seq).then(
-        () => { setBusy(undefined) },
-        (reason: unknown) => {
-          setBusy(undefined)
-          setError(reason instanceof Error ? reason.message : '无法从这里继续')
-        },
-      )
-    }} style={generationActionButtonStyle}>{busy === 'fork' ? '正在创建…' : '创建分支'}</button>
-    {error !== undefined && <span role="alert" title={error} style={{ color: '#dc7777', fontSize: '10px', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{error}</span>}
+  const unavailableReason = running ? '回复生成期间暂不可用' : busy !== undefined ? '正在处理回复' : undefined
+  const previousUnavailable = disabled || selectedIndex <= 0
+  const nextUnavailable = disabled || group === undefined || selectedIndex >= group.versions.length - 1
+  return <span data-agent-rp-generation-actions>
+    {currentReply && group !== undefined && group.versions.length > 1 && <span data-agent-rp-version-switcher
+      aria-label={`回复版本 ${selectedIndex + 1}/${group.versions.length}`}>
+      <Tooltip label={previousUnavailable ? unavailableReason ?? '已经是第一版回复' : '上一版回复'} side="bottom">
+        <button type="button" data-agent-rp-generation-action aria-label={busy === 'select-previous' ? '正在切换到上一版回复' : '上一版回复'}
+          aria-disabled={previousUnavailable || undefined} data-unavailable={previousUnavailable || undefined}
+          onClick={previousUnavailable ? undefined : () => {
+            invoke({ operation: 'select', replySeq, versionIndex: selectedIndex - 1 }, 'select-previous')
+          }}>
+          {busy === 'select-previous' ? <IconLoadingOutline16 className="agent-rp-generation-loading" /> : <IconChevronLeftOutline14 />}
+        </button>
+      </Tooltip>
+      <span data-agent-rp-version-label aria-live="polite">{selectedIndex + 1}/{group.versions.length}</span>
+      <Tooltip label={nextUnavailable ? unavailableReason ?? '已经是最后一版回复' : '下一版回复'} side="bottom">
+        <button type="button" data-agent-rp-generation-action aria-label={busy === 'select-next' ? '正在切换到下一版回复' : '下一版回复'}
+          aria-disabled={nextUnavailable || undefined} data-unavailable={nextUnavailable || undefined}
+          onClick={nextUnavailable ? undefined : () => {
+            invoke({ operation: 'select', replySeq, versionIndex: selectedIndex + 1 }, 'select-next')
+          }}>
+          {busy === 'select-next' ? <IconLoadingOutline16 className="agent-rp-generation-loading" /> : <IconChevronRightOutline14 />}
+        </button>
+      </Tooltip>
+    </span>}
+    {currentReply && <Tooltip label={disabled ? unavailableReason ?? '重新生成' : '重新生成'} side="bottom">
+      <button type="button" data-agent-rp-generation-action aria-label={busy === 'regenerate' ? '正在重新生成' : '重新生成'}
+        aria-disabled={disabled || undefined} data-unavailable={disabled || undefined}
+        onClick={disabled ? undefined : () => { invoke({ operation: 'regenerate', replySeq }) }}>
+        {busy === 'regenerate' ? <IconLoadingOutline16 className="agent-rp-generation-loading" /> : <IconRefreshOutline16 />}
+      </button>
+    </Tooltip>}
+    {currentReply && <Tooltip label={disabled ? unavailableReason ?? '继续生成' : '继续生成'} side="bottom">
+      <button type="button" data-agent-rp-generation-action aria-label={busy === 'continue' ? '正在继续生成' : '继续生成'}
+        aria-disabled={disabled || undefined} data-unavailable={disabled || undefined}
+        onClick={disabled ? undefined : () => { invoke({ operation: 'continue', replySeq }) }}>
+        {busy === 'continue' ? <IconLoadingOutline16 className="agent-rp-generation-loading" /> : <IconPlayOutline16 />}
+      </button>
+    </Tooltip>}
+    {currentReply && <Tooltip label={sceneNote === '' ? '当前回复没有可绘制的场景' : disabled ? unavailableReason ?? '生成插图' : '生成插图'} side="bottom">
+      <button type="button" data-agent-rp-generation-action aria-label="生成插图"
+        aria-disabled={(disabled || sceneNote === '') || undefined} data-unavailable={(disabled || sceneNote === '') || undefined}
+        onClick={disabled || sceneNote === '' ? undefined : () => { setDrawOpen(true) }}>
+        <IconSparkle16 />
+      </button>
+    </Tooltip>}
+    <Menu
+      open={moreOpen}
+      onClose={() => { setMoreOpen(false) }}
+      side="top"
+      align="end"
+      portal
+      compact
+      items={[{
+        id: 'rewrite',
+        label: '修改输入',
+        icon: <IconEditOutline16 />,
+        disabled: disabled || editableUserText === undefined,
+      }]}
+      onSelect={(id) => {
+        setMoreOpen(false)
+        if (id !== 'rewrite' || disabled || editableUserText === undefined) return
+        setError(undefined)
+        setRewriteOpen(true)
+      }}
+      anchor={<Tooltip label={editableUserText === undefined ? '这一轮含附件或没有可修改的用户消息' : disabled ? unavailableReason ?? '更多操作' : '更多操作'} side="bottom">
+        <button type="button" data-agent-rp-generation-action aria-label={busy === 'rewrite' ? '正在修改输入' : '更多操作'}
+          aria-haspopup="menu" aria-expanded={moreOpen} aria-disabled={disabled || undefined} data-unavailable={disabled || undefined}
+          onClick={disabled ? undefined : () => { setMoreOpen(open => !open) }}>
+          {busy === 'rewrite' ? <IconLoadingOutline16 className="agent-rp-generation-loading" /> : <IconEllipsisOutline16 />}
+        </button>
+      </Tooltip>}
+    />
+    {error !== undefined && <Tooltip label={error} side="bottom">
+      <span data-agent-rp-generation-error role="alert" aria-label={`操作失败：${error}`} tabIndex={0}><IconWarningOutline16 /></span>
+    </Tooltip>}
     {currentReply && drawOpen && <ImageGenerationDialog projection={projection} initialMode="scene" initialNote={sceneNote}
       onClose={() => { setDrawOpen(false) }} onGenerate={request => { runImageGeneration(sessionId, request) }} />}
     {rewriteOpen && editableUserText !== undefined && <RewriteTurnDialog initialText={editableUserText}
@@ -1022,25 +1063,13 @@ function GenerationTail({
           },
         )
       }} />}
-  </div>
+  </span>
 }
 
 const generationButtonStyle = {
   background: 'transparent', border: '1px solid color-mix(in srgb, currentColor 18%, transparent)',
   borderRadius: '6px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '10px',
   lineHeight: 1, minHeight: '24px', minWidth: '24px', opacity: 0.58, padding: '4px 7px',
-} as const
-
-const generationActionButtonStyle = {
-  alignItems: 'center', background: 'transparent', border: 0, borderRadius: '6px', color: 'inherit',
-  cursor: 'pointer', display: 'inline-flex', font: 'inherit', fontSize: '11px', fontWeight: 520,
-  justifyContent: 'center', lineHeight: 1.2, minHeight: '28px', minWidth: '28px', opacity: 0.68,
-  padding: '5px 8px', whiteSpace: 'nowrap',
-} as const
-
-const generationActionDividerStyle = {
-  alignSelf: 'stretch', background: 'color-mix(in srgb, currentColor 10%, transparent)',
-  margin: '3px 2px', width: '1px',
 } as const
 
 const headerMenuItemStyle = {
@@ -1626,6 +1655,64 @@ const agentRpResponsiveStyle = `
 [data-agent-rp-action='open-workbench'][aria-expanded='true'] [data-agent-rp-destination-icon] {
   transform: scale(1.08);
 }
+[data-agent-rp-generation-actions] {
+  align-items: center;
+  display: inline-flex;
+  gap: 2px;
+  min-width: 0;
+}
+[data-agent-rp-generation-action],
+[data-agent-rp-generation-error] {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 28px;
+  box-sizing: border-box;
+  color: var(--dsw-alias-label-tertiary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 28px;
+  justify-content: center;
+  padding: 6px;
+  width: 28px;
+}
+[data-agent-rp-generation-action] { cursor: pointer; }
+[data-agent-rp-generation-action]:hover,
+[data-agent-rp-generation-action]:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+}
+[data-agent-rp-generation-action][data-unavailable] {
+  cursor: default;
+  opacity: .4;
+}
+[data-agent-rp-generation-action][data-unavailable]:hover {
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+}
+[data-agent-rp-generation-action] svg { flex: 0 0 auto; }
+[data-agent-rp-generation-action] .agent-rp-generation-loading {
+  animation: agent-rp-action-spin 900ms linear infinite;
+}
+[data-agent-rp-version-switcher] {
+  align-items: center;
+  color: var(--dsw-alias-label-tertiary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0;
+}
+[data-agent-rp-version-label] {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  min-width: 28px;
+  opacity: .72;
+  text-align: center;
+}
+[data-agent-rp-generation-error] {
+  color: var(--dsw-alias-state-danger, #dc7777);
+  outline: none;
+}
+@keyframes agent-rp-action-spin { to { transform: rotate(360deg); } }
 [data-agent-rp-workbench-dismiss] {
   animation: agent-rp-workbench-mask-in var(--ds-transition-duration-slow, 180ms) var(--ds-ease-in-out, ease) both;
 }
@@ -1645,6 +1732,7 @@ const agentRpResponsiveStyle = `
   [data-agent-rp-destination-icon] { transition: none; }
   [data-agent-rp-workbench-dismiss],
   [data-agent-rp-workbench] { animation: none; }
+  [data-agent-rp-generation-action] svg { animation: none !important; }
 }
 @media (max-width: 720px) {
   .agent-rp-header {
@@ -9805,10 +9893,6 @@ export function apply(ctx: ClientContext): void {
       text: draft,
     })
   }
-  const continueFromTurn = async (sourceSessionId: SessionId, atSeq: number): Promise<void> => {
-    const sessionId = await ctx.sessions.fork({ sessionId: sourceSessionId, atSeq, increaseTitle: true })
-    ctx.sessions.open(sessionId)
-  }
   const retainRpDistributionChat = async (
     target: string,
     sessionId: string,
@@ -10303,15 +10387,22 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-world-info-import',
   }, () => null))
+  ctx.slots.inject('conversation.chat.turnActions', () => ctx.slots.register({
+    name: 'conversation.chat.turnActions',
+    id: 'agent-rp-generation',
+    order: 100,
+  }, props => <GenerationTail {...props} runGeneration={runGeneration} rewriteTurn={rewriteTurn}
+    runImageGeneration={runImageGeneration} />))
   ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
     name: 'conversation.chat.turnTail',
     priority: 100,
     select: owner => {
+      if (ctx.slots.spec('conversation.chat.turnActions') !== undefined) return null
       const closing = owner.turn.data.get('turn-tail')?.closing
       return closing === null || closing === undefined ? null : { replySeq: closing.finalNode.seq }
     },
   }, props => <GenerationTail {...props} runGeneration={runGeneration} rewriteTurn={rewriteTurn}
-    continueFromTurn={continueFromTurn} runImageGeneration={runImageGeneration} />))
+    runImageGeneration={runImageGeneration} />))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
   }, roleplayComposerDockComponent(
