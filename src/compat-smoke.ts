@@ -175,6 +175,8 @@ export interface AgentRpCompatSmokeDriver {
   readonly delay: (milliseconds: number) => Promise<void>
   readonly clientGate: () => Promise<AgentRpCompatSmokeClientGate>
   readonly acknowledgeOnboarding: () => Promise<void>
+  /** Reveal launch controls that the product groups inside its Agent RP workbench. */
+  readonly revealSourceLaunchers: () => Promise<void>
   readonly approveRuntimeFont: () => Promise<boolean>
   readonly closeRuntimePermissions: () => Promise<void>
   readonly snapshot: () => Promise<AgentRpBrowserCompatibilitySnapshot | undefined>
@@ -450,6 +452,11 @@ export async function runAgentRpBrowserCompatibilitySmoke(
       return { decision: failed('client-load-failed') }
     }
   }
+  try {
+    await driver.revealSourceLaunchers()
+  } catch {
+    return { decision: failed('client-load-failed') }
+  }
   const launcherDeadline = Date.now() + input.timeoutMs
   while (await driver.sourceLauncherCount(input.sourceSessionId) === 0) {
     if (Date.now() >= launcherDeadline) {
@@ -546,6 +553,16 @@ export async function runAgentRpBrowserCompatibilitySmoke(
   const interaction = await exerciseStableInteractions(
     driver, runtimeSnapshot, input.timeoutMs, pollMs,
   )
-  const finalSnapshot = await driver.snapshot()
-  return { decision: interaction, snapshot: finalSnapshot ?? runtimeSnapshot }
+  if (interaction.status !== 'healthy') {
+    const finalSnapshot = await driver.snapshot()
+    return { decision: interaction, snapshot: finalSnapshot ?? runtimeSnapshot }
+  }
+  // Opening nested managers may refresh the Session projection and briefly
+  // remount script frames. Do not report a healthy run from the pre-interaction
+  // snapshot while the final product state is still booting.
+  return poll(
+    driver, input.timeoutMs, pollMs,
+    (snapshot, timedOut) => classifyAgentRpRuntime(snapshot, timedOut, input.approveRuntimeFonts),
+    input.waitForManualApproval,
+  )
 }

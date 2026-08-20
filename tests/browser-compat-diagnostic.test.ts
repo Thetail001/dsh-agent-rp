@@ -433,6 +433,26 @@ test('reports missing stable interaction entries without reading labels or conte
   assert.deepEqual(report.issues, ['interactive-entry-missing'])
 })
 
+test('accepts nested managers while settings are closed and requires them once opened', () => {
+  const selectors = {
+    '[data-agent-rp-status]': [new DiagnosticElement(capabilityAttributes)],
+    '[data-agent-rp-action="open-character-library"]': [new DiagnosticElement({})],
+    '[data-agent-rp-action="toggle-session-settings"]': [new DiagnosticElement({})],
+  }
+  const closed = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot(selectors))
+  assert.equal(closed.checks.interactiveEntriesPresent, true)
+  assert.deepEqual(closed.issues, [])
+
+  const open = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    ...selectors,
+    '[data-agent-rp-surface="session-settings"]': [new DiagnosticElement({
+      'data-agent-rp-surface-state': 'open',
+    })],
+  }))
+  assert.equal(open.checks.interactiveEntriesPresent, false)
+  assert.deepEqual(open.issues, ['interactive-entry-missing'])
+})
+
 test('reports open interaction surfaces through stable content-free states', () => {
   const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
     ...stableInteractionSelectors,

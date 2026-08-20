@@ -188,8 +188,11 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
   permissionDuration: AgentRpCompatSmokePermissionDuration = 'remember'
   readonly approvalAttempts: number[] = []
   onboardingAcknowledgements = 0
+  sourceLauncherReveals = 0
   runtimeFontApprovals = 0
   readonly actions: AgentRpCompatSmokeAction[] = []
+  private remainingPostInteractionPendingSnapshots = 0
+  private mobileSurfaceOpened = false
 
   constructor(
     private readonly preflightNeedsApproval = false,
@@ -197,6 +200,7 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
     private readonly genericTavernPanel: 'script' | 'mobile' = 'script',
     private clientGateState: 'ready' | 'onboarding' = 'ready',
     private remainingRuntimeFonts = 0,
+    private readonly postInteractionPendingSnapshots = 0,
   ) {}
 
   delay(): Promise<void> { return Promise.resolve() }
@@ -206,6 +210,11 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
   acknowledgeOnboarding(): Promise<void> {
     this.onboardingAcknowledgements += 1
     this.clientGateState = 'ready'
+    return Promise.resolve()
+  }
+
+  revealSourceLaunchers(): Promise<void> {
+    this.sourceLauncherReveals += 1
     return Promise.resolve()
   }
 
@@ -221,6 +230,9 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
   snapshot(): Promise<AgentRpBrowserCompatibilitySnapshot> {
     const approvalRequired = this.preflightNeedsApproval
       && (!this.approvalClears || this.approvalAttempts.length === 0)
+    const runtime = this.launched && this.remainingPostInteractionPendingSnapshots > 0
+      ? (this.remainingPostInteractionPendingSnapshots -= 1, 'pending' as const)
+      : this.launched ? 'healthy' as const : undefined
     return Promise.resolve(browserSnapshot({
       ...(this.selected && !this.launched
         ? {
@@ -228,7 +240,7 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
             permissionDuration: this.permissionDuration,
           }
         : {}),
-      ...(this.launched ? { runtime: 'healthy' as const } : {}),
+      ...(runtime === undefined ? {} : { runtime }),
       blockedFonts: this.launched ? this.remainingRuntimeFonts : 0,
       characterLibrary: this.characterLibrary,
       presetManager: this.presetManager,
@@ -255,8 +267,13 @@ class FakeSmokeDriver implements AgentRpCompatSmokeDriver {
       case 'open-world-info-manager': this.sessionSettings = 'closed'; this.worldInfoManager = 'open'; break
       case 'close-world-info-manager': this.worldInfoManager = 'closed'; break
       case 'open-tavern-panel': this.tavernPanel = this.genericTavernPanel; break
-      case 'open-mobile-surface': this.tavernPanel = 'mobile'; break
-      case 'close-tavern-panel': this.tavernPanel = 'closed'; break
+      case 'open-mobile-surface': this.tavernPanel = 'mobile'; this.mobileSurfaceOpened = true; break
+      case 'close-tavern-panel':
+        this.tavernPanel = 'closed'
+        if (this.mobileSurfaceOpened) {
+          this.remainingPostInteractionPendingSnapshots = this.postInteractionPendingSnapshots
+        }
+        break
     }
     return Promise.resolve()
   }
@@ -295,6 +312,7 @@ test('drives one content-free launch and all applicable stable interaction surfa
   })
 
   assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
+  assert.equal(driver.sourceLauncherReveals, 1)
   assert.deepEqual(driver.actions, [
     'open-character-library',
     'open-character-library', 'close-character-library',
@@ -418,4 +436,14 @@ test('accepts a mobile script as the first visible generic Tavern panel', async 
   })
 
   assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
+})
+
+test('waits for scripts remounted by the final interaction before reporting healthy', async () => {
+  const driver = new FakeSmokeDriver(false, true, 'script', 'ready', 0, 3)
+  const result = await runAgentRpBrowserCompatibilitySmoke(driver, {
+    characterId: 'character-id', timeoutMs: 100, pollMs: 1,
+  })
+
+  assert.deepEqual(result.decision, { status: 'healthy', stage: 'healthy', exitCode: 0 })
+  assert.equal(result.snapshot?.session?.tavern?.ready, 1)
 })

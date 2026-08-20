@@ -282,7 +282,7 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
 
   async clientGate(): Promise<'ready' | 'onboarding'> {
     await this.page.waitForFunction(() => document.querySelector(
-      '[data-agent-rp-action="open-character-library"], section[role="region"][aria-labelledby="welcome-notice-title"]',
+      '[data-agent-rp-action="open-workbench"], [data-agent-rp-action="open-character-library"], section[role="region"][aria-labelledby="welcome-notice-title"]',
     ) !== null, undefined, { timeout: this.timeoutMs })
     return await this.page.locator(
       'section[role="region"][aria-labelledby="welcome-notice-title"]',
@@ -298,6 +298,13 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
     }
     await welcome.getByRole('button').click({ timeout: this.timeoutMs })
     await welcome.waitFor({ state: 'detached', timeout: this.timeoutMs })
+  }
+
+  async revealSourceLaunchers(): Promise<void> {
+    if (await this.page.locator('[data-agent-rp-action="open-character-library"]').count() > 0) return
+    const workbench = this.page.locator('[data-agent-rp-action="open-workbench"]').first()
+    await workbench.click({ timeout: this.timeoutMs })
+    await this.page.locator('[data-agent-rp-workbench]').waitFor({ state: 'visible', timeout: this.timeoutMs })
   }
 
   async approveRuntimeFont(): Promise<boolean> {
@@ -510,6 +517,12 @@ async function main(argv: readonly string[]): Promise<void> {
       headless: !options.headed,
       viewport: { width: 1440, height: 1000 },
     })
+    if (sourceSessionId !== undefined) {
+      await context.addInitScript(({ sessionId, origin }: { sessionId: string; origin: string }) => {
+        if (location.origin !== origin) return
+        localStorage.setItem('dsh.sessions.current', JSON.stringify({ sessionId }))
+      }, { sessionId: sourceSessionId, origin: options.url.origin })
+    }
     page = context.pages()[0] ?? await context.newPage()
     page.on('console', message => {
       if (message.type() !== 'error') return

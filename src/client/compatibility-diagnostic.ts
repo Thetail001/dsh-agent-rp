@@ -455,8 +455,7 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
   const interactiveEntriesPresent = session === undefined || (
     characterLibraryLaunchers > 0
     && sessionSettingsLaunchers > 0
-    && presetManagerLaunchers > 0
-    && worldInfoManagerLaunchers > 0
+    && (!sessionSettingsOpen || (presetManagerLaunchers > 0 && worldInfoManagerLaunchers > 0))
     && (session.tavern === undefined || session.tavern.scripts === 0 || tavernPanelLaunchers > 0)
     && (session.tavern === undefined || session.tavern.pendingPermissions === 0 || tavernPermissionLaunchers > 0)
   )
