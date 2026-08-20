@@ -17,7 +17,7 @@ export interface AgentRpRuntimePreflightFacts {
   readonly launch: 'checking' | 'approval-required' | 'ready' | 'unknown'
   readonly startReadiness?: 'checking' | 'approval-required' | 'ready' | 'unknown'
   readonly startAction?: 'checking' | 'approve-and-start' | 'start' | 'unknown'
-  readonly permissionDuration: 'session' | 'remember' | 'unknown'
+  readonly permissionDuration: 'session' | 'remember' | 'trust' | 'unknown'
   readonly scripts: number
   readonly cardResources: number
   readonly pendingCardPermissions: number
@@ -252,7 +252,7 @@ function normalizePreflight(facts: AgentRpRuntimePreflightFacts): AgentRpRuntime
     ...(facts.startAction === undefined ? {} : {
       startAction: oneOf(facts.startAction, ['checking', 'approve-and-start', 'start', 'unknown'] as const, 'unknown'),
     }),
-    permissionDuration: oneOf(facts.permissionDuration, ['session', 'remember', 'unknown'] as const, 'unknown'),
+    permissionDuration: oneOf(facts.permissionDuration, ['session', 'remember', 'trust', 'unknown'] as const, 'unknown'),
     scripts: count(facts.scripts),
     cardResources: count(facts.cardResources),
     pendingCardPermissions: count(facts.pendingCardPermissions),

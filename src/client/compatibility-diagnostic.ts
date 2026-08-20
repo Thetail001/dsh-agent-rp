@@ -172,7 +172,7 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly launch: string
     readonly startReadiness?: string
     readonly startAction?: string
-    readonly permissionDuration: 'session' | 'remember' | 'unknown'
+    readonly permissionDuration: 'session' | 'remember' | 'trust' | 'unknown'
     readonly scripts: number
     readonly cardResources: number
     readonly pendingCardPermissions: number
@@ -498,6 +498,7 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
     const startAction = startElement?.getAttribute('data-agent-rp-start-action') ?? undefined
     const permissionDurationValue = value(preflightElement, 'data-agent-rp-resource-permission-duration')
     const permissionDuration = permissionDurationValue === 'session' || permissionDurationValue === 'remember'
+      || permissionDurationValue === 'trust'
       ? permissionDurationValue : 'unknown'
     preflight = {
       status: statusValue,

@@ -77,7 +77,7 @@ test('assembles multiple Host publishers without serializing their scope or extr
     kind: 'preflight',
     facts: {
       status: 'permission-required', launch: 'approval-required', startReadiness: 'approval-required',
-      startAction: 'approve-and-start', permissionDuration: 'session', scripts: 2, cardResources: 7,
+      startAction: 'approve-and-start', permissionDuration: 'trust', scripts: 2, cardResources: 7,
       pendingCardPermissions: 1, pendingScriptPermissions: 1, pendingScriptOrigins: 0,
       pendingImageOrigins: 0, pendingStyleOrigins: 0, pendingFrameOrigins: 1, pendingPermissions: 2, failed: 0,
     },
@@ -102,7 +102,7 @@ test('assembles multiple Host publishers without serializing their scope or extr
     runtimePhases: { 'content-present': 1 }, resourceMonitors: { 'listener-restored': 1 },
     blockedResourceClasses: { image: 1 },
   })
-  assert.equal(snapshot.preflight?.permissionDuration, 'session')
+  assert.equal(snapshot.preflight?.permissionDuration, 'trust')
   assert.doesNotMatch(JSON.stringify(snapshot), /private|example|must not appear|session-id|scriptName/u)
 
   registry.publish(session, { kind: 'session', scope: 'private-session-id', facts: sessionFacts })

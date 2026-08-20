@@ -1240,9 +1240,9 @@ function CharacterRemoteResourcesSection({ detail, onChange }: {
       display: 'flex', gap: '9px', padding: '9px 11px',
     }}>
       <span style={{ flex: '1 1 auto', fontSize: '11px', lineHeight: 1.45, minWidth: 0 }}>
-        <strong style={{ display: 'block' }}>{detail.remoteResourcePolicy === 'isolated-https' ? '兼容测试模式' : '按需确认模式'}</strong>
+        <strong style={{ display: 'block' }}>{detail.remoteResourcePolicy === 'isolated-https' ? '信任此卡界面' : '按需确认'}</strong>
         <span style={{ opacity: .48 }}>{detail.remoteResourcePolicy === 'isolated-https'
-          ? '本卡 HTTPS 资源已全部放行；隔离边界仍保留'
+          ? '自动允许隔离界面加载 HTTPS 资源；登录与外部 API 仍需确认'
           : '只加载逐项确认过的来源和资源类型'}</span>
       </span>
       <button type="button" data-agent-rp-action="toggle-card-resource-policy"
@@ -1259,7 +1259,7 @@ function CharacterRemoteResourcesSection({ detail, onChange }: {
           setError(reason instanceof Error ? reason.message : String(reason))
         })
       }} style={{ ...miniButtonStyle, flex: 'none', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
-        {workingResource === 'policy' ? '处理中…' : detail.remoteResourcePolicy === 'isolated-https' ? '恢复按需确认' : '启用测试模式'}
+        {workingResource === 'policy' ? '处理中…' : detail.remoteResourcePolicy === 'isolated-https' ? '恢复按需' : '信任界面'}
       </button>
     </div>
     {detail.remoteResourceOrigins.map(origin => {
@@ -1796,6 +1796,19 @@ const agentRpResponsiveStyle = `
     border-radius: 0 !important;
     height: 100dvh !important;
     max-height: 100dvh !important;
+  }
+  .agent-rp-character-library-footer {
+    padding: 12px 14px max(12px, env(safe-area-inset-bottom)) !important;
+  }
+  .agent-rp-character-library-cancel { display: none !important; }
+  .agent-rp-character-library-start {
+    min-height: 44px;
+    width: 100%;
+  }
+  .agent-rp-character-library-toast {
+    bottom: calc(68px + env(safe-area-inset-bottom)) !important;
+    left: 14px !important;
+    right: 14px !important;
   }
   .agent-rp-character-info {
     border-left: 0 !important;
@@ -4029,7 +4042,7 @@ type TavernPreflightLoadState = {
   readonly error: string
 }
 
-type PreflightPermissionDuration = 'session' | 'remember'
+type PreflightPermissionDuration = 'session' | 'remember' | 'trust'
 
 interface PreflightApprovalResult {
   readonly character: CharacterLibraryDetail
@@ -4100,6 +4113,15 @@ function CharacterLibraryDialog({
   const selectionRequestRef = useRef(0)
   const selectedPresetId = presetId === '' ? undefined : presetId
   const selectedPresetSummary = presets?.find(entry => entry.id === selectedPresetId)
+  useEffect(() => {
+    if (actionNotice === undefined) return
+    const timeout = window.setTimeout(() => { setActionNotice(undefined) }, 2400)
+    return () => { window.clearTimeout(timeout) }
+  }, [actionNotice])
+  useEffect(() => {
+    if (selected === undefined) return
+    setPreflightPermissionDuration(selected.remoteResourcePolicy === 'isolated-https' ? 'trust' : 'remember')
+  }, [selected?.id, selected?.remoteResourcePolicy])
   const expectsTavernPreflight = (selected?.tavernHelper?.enabledScriptCount ?? 0) > 0
     || (selectedPresetId !== undefined
       && (presets === undefined || (selectedPresetSummary?.tavernHelper?.enabledScriptCount ?? 0) > 0))
@@ -4259,10 +4281,8 @@ function CharacterLibraryDialog({
       setExpandedGreetingIndex(0)
       setLoadingId(undefined)
       setImporting(false)
-      const notice = outcome === 'created' ? `已加入角色库「${entry.displayName}」`
-        : outcome === 'restored' ? `已恢复「${entry.displayName}」`
-          : `角色库中已有「${entry.displayName}」`
-      setActionNotice(`${notice}${entry.tavernHelper === undefined ? '' : ` · Tavern Helper：${tavernHelperSummaryText(entry.tavernHelper)}`}`)
+      setActionNotice(outcome === 'created' ? '已加入角色库'
+        : outcome === 'restored' ? '已恢复到角色库' : '角色库中已有这张卡')
     }).catch(importError => {
       setImporting(false)
       setError(importError instanceof Error ? importError.message : String(importError))
@@ -4301,7 +4321,7 @@ function CharacterLibraryDialog({
     void importPresetFile(file).then(entry => {
       selectImportedPreset(entry)
       setImportingPreset(false)
-      setActionNotice(`已导入并选中预设「${entry.name}」`)
+      setActionNotice('预设已导入并选中')
     }, importError => {
       setImportingPreset(false)
       setError(importError instanceof Error ? importError.message : String(importError))
@@ -4390,9 +4410,17 @@ function CharacterLibraryDialog({
     if (selected === undefined) throw new Error('请先选择角色卡')
     setApprovingPreflight(true)
     try {
+      let detail = selected
+      const exactCardResources = duration === 'trust' ? [] : blockedCardFrameResources(
+        selected.remoteResources, { ...selected, remoteResourcePolicy: 'prompt' },
+      )
+      if (duration !== 'trust' && detail.remoteResourcePolicy === 'isolated-https') {
+        detail = await updateCharacterRemoteResourcePolicy(detail.id, 'prompt')
+        setSelected(current => current?.id === detail.id ? detail : current)
+      }
       if (duration === 'session') {
         return {
-          character: selected,
+          character: detail,
           resourcePermissions: {
             tavern: {
               scripts: pendingPreflightScripts.map(permission => permission.approvalKey),
@@ -4401,7 +4429,7 @@ function CharacterLibraryDialog({
               fonts: [],
               frames: pendingPreflightFrames.map(permission => permission.approvalKey),
             },
-            card: pendingCardResources,
+            card: exactCardResources,
           },
         }
       }
@@ -4429,23 +4457,20 @@ function CharacterLibraryDialog({
         writeApprovedTavernScriptFrames(next)
         setApprovedScriptFrames(next)
       }
-      let detail = selected
-      for (const resource of pendingCardResources) {
-        detail = await updateCharacterRemoteResource(detail.id, resource.origin, resource.type, true)
+      if (duration === 'trust') {
+        detail = await updateCharacterRemoteResourcePolicy(detail.id, 'isolated-https')
         setSelected(current => current?.id === detail.id ? detail : current)
+      } else {
+        for (const resource of exactCardResources) {
+          detail = await updateCharacterRemoteResource(detail.id, resource.origin, resource.type, true)
+          setSelected(current => current?.id === detail.id ? detail : current)
+        }
       }
-      setActionNotice('已记住这张角色卡所列的精确界面权限')
+      setActionNotice(duration === 'trust' ? '已信任这张卡的界面资源' : '已记住确认过的权限')
       return { character: detail }
     } finally {
       setApprovingPreflight(false)
     }
-  }
-  const approvePreflightOnly = (): void => {
-    if (approvingPreflight) return
-    setError(undefined)
-    void approvePreflightResources('remember').catch(reason => {
-      setError(reason instanceof Error ? reason.message : String(reason))
-    })
   }
   const startSelectedCharacter = (): void => {
     if (selected === undefined || starting || approvingPreflight || preflightChecking) return
@@ -4480,7 +4505,7 @@ function CharacterLibraryDialog({
       gridTemplateColumns: narrow ? 'minmax(0, 1fr)' : 'minmax(260px, 320px) minmax(0, 1fr)',
       gridTemplateRows: narrow ? 'minmax(240px, .8fr) minmax(0, 1.2fr)' : undefined,
       height: 'min(680px, calc(100vh - clamp(16px, 6vw, 48px)))',
-      maxWidth: '1180px', overflow: 'hidden', width: 'min(1180px, calc(100vw - clamp(16px, 6vw, 48px)))',
+      maxWidth: '1180px', overflow: 'hidden', position: 'relative', width: 'min(1180px, calc(100vw - clamp(16px, 6vw, 48px)))',
     }}>
       <div style={{
         borderBottom: narrow ? '1px solid var(--dsw-alias-border-l2, #39393c)' : undefined,
@@ -4674,11 +4699,10 @@ function CharacterLibraryDialog({
                 <div title={pendingPreflightHosts.join('\n')} style={{
                   marginTop: '5px', opacity: .66, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>{pendingPreflightHosts.join('、')}</div>
-                <div role="radiogroup" aria-label="界面权限保存时长" style={{
-                  display: 'grid', gap: '6px', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', marginTop: '8px',
+                <div role="radiogroup" aria-label="界面权限方式" style={{
+                  display: 'grid', gap: '6px', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', marginTop: '8px',
                 }}>
-                  {([['session', '仅这段对话', '只保存在当前浏览器标签的这段对话中'],
-                    ['remember', '记住这张卡', '按角色卡、预设、脚本和精确来源保存']] as const).map(([value, label, detail]) => <button
+                  {([['session', '仅本次'], ['remember', '记住'], ['trust', '信任界面']] as const).map(([value, label]) => <button
                       key={value} type="button" role="radio" aria-checked={preflightPermissionDuration === value}
                       data-agent-rp-permission-duration={value}
                       onClick={() => { setPreflightPermissionDuration(value) }} style={{
@@ -4687,19 +4711,19 @@ function CharacterLibraryDialog({
                         border: preflightPermissionDuration === value
                           ? `1px solid color-mix(in srgb, ${color} 42%, transparent)`
                           : '1px solid var(--dsw-alias-border-l2, #444)',
-                        borderRadius: '7px', color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '6px 8px',
-                        textAlign: 'left',
+                        borderRadius: '7px', color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '7px 6px',
+                        textAlign: 'center', whiteSpace: 'nowrap',
                       }}>
                       <strong style={{ display: 'block', fontSize: '11px' }}>{label}</strong>
-                      <span style={{ display: 'block', fontSize: '9px', lineHeight: 1.4, marginTop: '2px', opacity: .5 }}>{detail}</span>
                     </button>)}
                 </div>
-                <button type="button" data-agent-rp-action="approve-preflight-resources"
-                  disabled={approvingPreflight || starting} onClick={approvePreflightOnly} style={{
-                  background: 'transparent', border: '1px solid var(--dsw-alias-state-warning, #9f7934)',
-                  borderRadius: '7px', color: 'inherit', cursor: approvingPreflight ? 'wait' : 'pointer', font: 'inherit', fontSize: '11px',
-                  marginTop: '7px', padding: '5px 9px',
-                }}>{approvingPreflight ? '正在保存…' : '记住所列精确权限'}</button>
+                <div style={{ fontSize: '10px', lineHeight: 1.5, marginTop: '6px', opacity: .52 }}>
+                  {preflightPermissionDuration === 'session'
+                    ? '只允许这次发现的资源，之后仍会询问'
+                    : preflightPermissionDuration === 'remember'
+                      ? '记住当前角色与预设中已确认的精确来源'
+                      : '自动允许这张卡的隔离界面加载 HTTPS 资源'}
+                </div>
               </>}
               {(tavernPreflight?.failed ?? 0) > 0 && <div style={{ color: 'var(--dsw-alias-state-warning, #d5a64c)', marginTop: '5px' }}>
                 {tavernPreflight!.failed} 个脚本无法完成静态解析，开聊后也不会执行
@@ -4949,31 +4973,35 @@ function CharacterLibraryDialog({
           </>}
           {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.55, marginTop: '14px' }}>{error}</div>}
         </div>
-        <footer style={{ alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '10px', justifyContent: 'flex-end', padding: '14px 20px' }}>
-          {actionNotice !== undefined && <span role="status" style={{ fontSize: '12px', marginRight: 'auto', opacity: .62 }}>{actionNotice}</span>}
-          {actionNotice === undefined && collection === 'archived' && <span style={{ fontSize: '12px', marginRight: 'auto', opacity: .52 }}>移回角色库后即可开始新对话</span>}
-          <button type="button" onClick={onClose} style={{
+        <footer className="agent-rp-character-library-footer" style={{
+          alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex',
+          gap: '10px', justifyContent: 'flex-end', padding: '14px 20px',
+        }}>
+          <button className="agent-rp-character-library-cancel" type="button" onClick={onClose} style={{
             background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #444)', borderRadius: '9px',
-            color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '8px 13px',
+            color: 'inherit', cursor: 'pointer', flex: '0 0 auto', font: 'inherit', padding: '8px 13px', whiteSpace: 'nowrap',
           }}>取消</button>
-          <button type="button" data-agent-rp-start-readiness={preflightLaunchPhase}
+          <button className="agent-rp-character-library-start" type="button" data-agent-rp-start-readiness={preflightLaunchPhase}
             data-agent-rp-start-action={preflightChecking ? 'checking'
               : preflightLaunchPhase === 'approval-required' ? 'approve-and-start' : 'start'}
             disabled={collection === 'archived' || selected === undefined || starting || approvingPreflight
               || importingPreset || preflightChecking} onClick={startSelectedCharacter} style={{
             background: color, border: 0, borderRadius: '9px', color: '#fff',
             cursor: starting || approvingPreflight || preflightChecking ? 'wait' : 'pointer',
-            font: 'inherit', fontWeight: 620,
+            flex: '0 0 auto', font: 'inherit', fontWeight: 620,
             opacity: collection === 'archived' || selected === undefined || preflightChecking ? .45 : 1,
-            padding: '8px 15px',
+            padding: '8px 18px', whiteSpace: 'nowrap',
           }}>{starting ? '正在开始…'
-              : approvingPreflight ? '正在保存权限…'
-                : preflightChecking ? '正在检查界面资源…'
-                  : preflightLaunchPhase === 'approval-required'
-                    ? preflightPermissionDuration === 'session' ? '本次允许并开始' : '记住权限并开始'
-                  : '开始新对话'}</button>
+              : approvingPreflight ? '准备中…'
+                : preflightChecking ? '准备中…' : '开始'}</button>
         </footer>
       </div>
+      {actionNotice !== undefined && <div className="agent-rp-character-library-toast" role="status" style={{
+        background: 'var(--dsw-alias-bg-layer-2, #29292d)', border: '1px solid var(--dsw-alias-border-l2, #444)',
+        borderRadius: '9px', bottom: '72px', boxShadow: '0 10px 32px rgba(0,0,0,.3)', fontSize: '12px',
+        left: narrow ? '14px' : '340px', lineHeight: 1.45, padding: '8px 11px', pointerEvents: 'none',
+        position: 'absolute', right: '20px', textAlign: 'center', zIndex: 2,
+      }}>{actionNotice}</div>}
     </section>
   </div>
 }
