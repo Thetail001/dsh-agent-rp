@@ -41,6 +41,8 @@ test('roleplay launch keeps collection management secondary to choosing a charac
 
 test('sidebar exposes one resource-center drilldown for peer resource types', () => {
   assert.match(source, /data-agent-rp-action="open-resource-center"/u)
+  assert.match(source, /data-agent-rp-action="open-world-info-library"/u)
+  assert.match(source, /无需角色卡，从独立世界书开始/u)
   assert.match(source, /data-agent-rp-action="open-session-tools"/u)
   assert.match(source, /new CustomEvent\(openRoleplaySessionToolsEvent/u)
   assert.match(source, /className="agent-rp-session-menu"/u)
@@ -52,6 +54,7 @@ test('sidebar exposes one resource-center drilldown for peer resource types', ()
   assert.match(resourceCenterSource, /\['characters', 'world-info', 'presets', 'personas'\]/u)
   assert.match(resourceCenterSource, /角色卡与收藏状态/u)
   assert.match(resourceCenterSource, /独立世界书来源/u)
+  assert.match(resourceCenterSource, /start-world-info:/u)
   assert.match(resourceCenterSource, /可复用的对话预设/u)
   assert.match(resourceCenterSource, /玩家身份与人物设定/u)
 })

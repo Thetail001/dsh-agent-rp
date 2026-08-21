@@ -36,6 +36,20 @@ export interface ActiveSessionWorldInfo {
   readonly worldInfo: ImportedWorldInfo
 }
 
+/** Durable model-free activation of one Host-owned World Info source. */
+export interface WorldInfoLibrarySeedRecord {
+  readonly format: 0
+  readonly worldInfoLibraryId: string
+  readonly meta: WorldInfoImportMeta
+}
+
+declare module '@deepseek-ai/dsh-session' {
+  interface SessionEventMap {
+    /** Skippable World Info activation available before the Agent is constructed. */
+    'agent-rp/world-info-library-seed': WorldInfoLibrarySeedRecord
+  }
+}
+
 function jsonObject(value: JsonValue | undefined, label: string): Record<string, JsonValue> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${label} must be an object`)
   return value
@@ -129,6 +143,24 @@ function validateImport(events: readonly SessionEvent[], resultEvent: SessionEve
 export function readActiveSessionWorldInfos(events: readonly SessionEvent[]): ActiveSessionWorldInfo[] {
   const active = new Map<string, ActiveSessionWorldInfo>()
   for (const event of events) {
+    if (event.type === 'agent-rp/world-info-library-seed') {
+      if (event.data.format !== 0 || !/^world-info-[a-f0-9]{32}$/u.test(event.data.worldInfoLibraryId)) {
+        throw new Error('世界书启动种子字段无效')
+      }
+      const expectedAttachment = `library:${event.data.worldInfoLibraryId}`
+      const meta = parseWorldInfoImportMeta(event.data.meta as unknown as JsonValue)
+      if (meta.result.sourceEventSeq !== event.seq || meta.result.sourceAttachmentId !== expectedAttachment) {
+        throw new Error('世界书启动种子与来源不一致')
+      }
+      const worldInfo = parseWorldInfoJson(JSON.stringify(meta.raw))
+      if (meta.result.name !== (worldInfo.name?.trim() || meta.result.name)
+        || meta.result.entryCount !== worldInfo.lorebook.entries.length
+        || JSON.stringify(meta.result.degradations) !== JSON.stringify(worldInfo.degradations)) {
+        throw new Error('世界书启动种子与内容不一致')
+      }
+      active.set(expectedAttachment, { result: meta.result, meta, worldInfo })
+      continue
+    }
     if (event.type === 'command/done' && event.data.kind === 'success') {
       const direct = decodeWorldInfoLibraryImport(event.data.text)
       if (direct === undefined) continue
@@ -157,6 +189,17 @@ export function readActiveSessionWorldInfos(events: readonly SessionEvent[]): Ac
     active.set(imported.result.sourceAttachmentId, imported)
   }
   return [...active.values()]
+}
+
+/** Return the latest marker proving this Session was deliberately started from standalone World Info. */
+export function readWorldInfoLibrarySessionSeed(
+  events: readonly SessionEvent[],
+): WorldInfoLibrarySeedRecord | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event?.type === 'agent-rp/world-info-library-seed') return event.data
+  }
+  return undefined
 }
 
 /**

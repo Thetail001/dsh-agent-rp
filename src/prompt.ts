@@ -75,6 +75,23 @@ export function renderImportedChatPrompt(characterName: string, userName?: strin
   ].join('\n\n'))
 }
 
+/** Render a neutral roleplay contract for a Session deliberately launched from standalone World Info. */
+export function renderWorldInfoScenarioPrompt(
+  loreBefore: readonly string[],
+  loreAfter: readonly string[],
+  userPersona?: string,
+): string {
+  return finalizeRoleplayPrompt([
+    ...loreBefore,
+    '本会话由独立世界书启动。以世界书中已激活的内容决定身份、人物、场景、规则、视角和输出形式；不要套用部署示例角色或补造另一套固定身份，也不要把世界书条目当作说明复述给用户。',
+    ...(userPersona?.trim() ? [`参与剧情的人：${userPersona.trim()}`] : []),
+    ...loreAfter,
+    '依照世界书自然推进当前互动。世界书定义单一角色时直接以该角色回应；定义多角色、场景或叙事规则时遵循对应形式。不要替用户决定感受和行动，也不要补写设定、对话和有效记忆中不存在的共同经历。',
+    MEMORY_BEHAVIOR,
+    IMPORT_BEHAVIOR,
+  ].join('\n\n'))
+}
+
 /**
  * Activate all Session-owned standalone World Info books for one request.
  * @param worldInfos - validated standalone books in Session import order.

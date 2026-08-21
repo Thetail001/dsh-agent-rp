@@ -2146,6 +2146,7 @@ type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
 > & {
   readonly listWorldInfos: () => Promise<readonly WorldInfoLibraryUpload[]>
   readonly importWorldInfoFile: (file: File) => Promise<WorldInfoLibraryUpload>
+  readonly startWorldInfoSession: (sessionId: SessionId, worldInfo: WorldInfoLibraryUpload) => Promise<void>
   readonly renamePreset: (id: string, name: string) => Promise<PresetLibrarySummary>
   readonly workspaceSettings: WorkspaceSettingsSource
   readonly workspaceList: WorkspaceListSource
@@ -2222,12 +2223,14 @@ function SidebarRoleplayDestination({
   startCharacterSession,
   listPresets, importPresetFile, listPersonas, savePersona, deletePersona,
   listWorldInfos, importWorldInfoFile, renamePreset,
+  startWorldInfoSession,
   workspaceSettings, workspaceList,
 }: SidebarRoleplayDestinationProps) {
   const [workbenchOpen, setWorkbenchOpen] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [migrationOpen, setMigrationOpen] = useState(false)
   const [resourceCenterOpen, setResourceCenterOpen] = useState(false)
+  const [resourceCenterSection, setResourceCenterSection] = useState<'characters' | 'world-info'>('characters')
   const [launchSessionId, setLaunchSessionId] = useState<SessionId | undefined>(undefined)
   const [accessSaving, setAccessSaving] = useState(false)
   const [accessError, setAccessError] = useState<string>()
@@ -2285,6 +2288,15 @@ function SidebarRoleplayDestination({
   }
   const openResourceCenter = (): void => {
     closeWorkbench()
+    setResourceCenterSection('characters')
+    setLaunchSessionId(blankSessionReady ? currentSessionId : undefined)
+    setResourceCenterOpen(true)
+  }
+  const openWorldInfoLibrary = (): void => {
+    if (!blankSessionReady || currentSessionId === undefined) return
+    closeWorkbench()
+    setLaunchSessionId(currentSessionId)
+    setResourceCenterSection('world-info')
     setResourceCenterOpen(true)
   }
   const openCurrentSessionTools = (): void => {
@@ -2409,6 +2421,15 @@ function SidebarRoleplayDestination({
               <strong style={{ display: 'block', fontSize: '14px', marginTop: '10px' }}>迁移聊天</strong>
               <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '4px', opacity: .58 }}>从酒馆记录或模块化 RP 接续</span>
             </button>
+            <button type="button" data-agent-rp-action="open-world-info-library"
+              disabled={!blankSessionReady} onClick={openWorldInfoLibrary} style={{
+                background: 'var(--dsw-alias-bg-layer-1, #292a2e)', border: '1px solid var(--dsw-alias-border-l2, #444)',
+                borderRadius: '12px', color: 'inherit', cursor: blankSessionReady ? 'pointer' : 'default', font: 'inherit',
+                minHeight: '88px', opacity: blankSessionReady ? 1 : .42, padding: '13px', textAlign: 'left',
+              }}><span aria-hidden="true" style={{ color, display: 'block', fontSize: '18px', lineHeight: 1 }}>◇</span>
+              <strong style={{ display: 'block', fontSize: '14px', marginTop: '10px' }}>世界书剧情</strong>
+              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '4px', opacity: .58 }}>无需角色卡，从独立世界书开始</span>
+            </button>
           </div>
           {!blankSessionReady && <p role="status" style={{
             background: 'var(--dsw-alias-bg-layer-1, #292a2e)', borderRadius: '9px', fontSize: '11px',
@@ -2463,6 +2484,7 @@ function SidebarRoleplayDestination({
     {resourceCenterOpen && createPortal(<RoleplayResourceCenter
       accent={color}
       narrow={narrowResourceCenter}
+      initialSection={resourceCenterSection}
       listCharacters={listCharacters}
       setCharacterArchived={setCharacterArchived}
       importCharacterFile={importCharacterFile}
@@ -2474,6 +2496,9 @@ function SidebarRoleplayDestination({
       listPersonas={listPersonas}
       savePersona={savePersona}
       deletePersona={deletePersona}
+      {...(launchSessionId === undefined ? {} : {
+        onStartWorldInfo: (worldInfo: WorldInfoLibraryUpload) => startWorldInfoSession(launchSessionId, worldInfo),
+      })}
       onClose={() => { setResourceCenterOpen(false) }}
     />, document.body)}
   </>
@@ -9987,6 +10012,17 @@ export function apply(ctx: ClientContext): void {
       ...(memory === undefined ? {} : { memory }),
     }, resourcePermissions)
   }
+  const startWorldInfoSession = async (
+    sessionId: SessionId,
+    worldInfo: WorldInfoLibraryUpload,
+  ): Promise<void> => {
+    await launchRoleplaySession({
+      format: 0,
+      sourceSessionId: sessionId,
+      kind: 'world-info',
+      importId: worldInfo.id,
+    })
+  }
   const archiveConsumedBlankSession = async (sessionId: SessionId): Promise<void> => {
     if (ctx.sessions.list.getSnapshot().byId[sessionId]?.blank !== true) return
     try {
@@ -10007,6 +10043,15 @@ export function apply(ctx: ClientContext): void {
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
     if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话选择角色')
     await startCharacterSession(sessionId, character, greetingIndex, persona, presetId, undefined, resourcePermissions)
+    await archiveConsumedBlankSession(sessionId)
+  }
+  const startWorldInfoFromBlankSession = async (
+    sessionId: SessionId,
+    worldInfo: WorldInfoLibraryUpload,
+  ): Promise<void> => {
+    const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
+    if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话选择世界书剧情')
+    await startWorldInfoSession(sessionId, worldInfo)
     await archiveConsumedBlankSession(sessionId)
   }
   const startCharacterFromCurrentSession = async (
@@ -10395,7 +10440,7 @@ export function apply(ctx: ClientContext): void {
     migrateRpDistributionChat: migrateRpDistributionChatFromBlankSession,
     startCharacterSession: startCharacterFromBlankSession, listPresets, importPresetFile,
     renamePreset: renamePresetLibraryEntry, listPersonas, savePersona, deletePersona,
-    listWorldInfos, importWorldInfoFile,
+    listWorldInfos, importWorldInfoFile, startWorldInfoSession: startWorldInfoFromBlankSession,
   }
   ctx.slots.inject('sidebar.destinations', () => ctx.slots.register({
     name: 'sidebar.destinations', id: 'agent-rp-workbench', order: 20,

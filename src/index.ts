@@ -60,6 +60,7 @@ import {
 import {
   isJsonWorldInfoAttachment,
   prepareWorldInfoImportResult,
+  readWorldInfoLibrarySessionSeed,
   type WorldInfoImportMeta,
 } from './import/session-world-info.ts'
 import {
@@ -72,6 +73,7 @@ import {
   renderCharacterPrompt,
   renderImportedChatPrompt,
   renderImportedCharacterPrompt,
+  renderWorldInfoScenarioPrompt,
   renderMemoryContext,
   roleplayVisibleDialogue,
   roleplayVisibleTranscript,
@@ -752,9 +754,10 @@ export function installAgentRp(
       }
       if (active === undefined) {
         const importedChat = readSillyTavernChatIdentity(agent.session.events)
+        const worldInfoSeed = readWorldInfoLibrarySessionSeed(agent.session.events)
         const identity = resolveSessionPersonaIdentity(agent.session.events, undefined, importedChat?.userName)
         const templateOptions = ejsLorebookOptions(options.ejsTemplateEngine, {
-          characterName: importedChat?.characterName ?? config.characterName,
+          characterName: importedChat?.characterName ?? worldInfoSeed?.meta.result.name ?? config.characterName,
           userName: identity.userName ?? '用户',
           messages: [...roleplayVisibleDialogue(agent.session, pendingMessages), ...injectedScanText],
           transcript: roleplayVisibleTranscript(agent.session, pendingMessages),
@@ -775,6 +778,13 @@ export function installAgentRp(
             renderImportedChatPrompt(importedChat.characterName, identity.userName, identity.persona?.description),
             ...standaloneLore.afterCharacter,
           ].join('\n\n')
+        }
+        if (worldInfoSeed !== undefined) {
+          return renderWorldInfoScenarioPrompt(
+            standaloneLore.beforeCharacter,
+            standaloneLore.afterCharacter,
+            identity.persona?.description,
+          )
         }
         return renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter)
       }
@@ -1178,7 +1188,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         installSillyTavernChatHttp(webCtx, chatLibrary, server)
         installSillyTavernChatExportHttp(webCtx, ctx, server)
         installAgentRpMemoryHttp(webCtx, ctx, server)
-        installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, server)
+        installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, worldInfoLibrary, server)
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
         installNativeIdentityHttp(webCtx, new NativeIdentityStore(webCtx.credentials), server)

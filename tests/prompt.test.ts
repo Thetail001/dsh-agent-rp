@@ -10,6 +10,7 @@ import {
   renderImportedChatPrompt,
   renderImportedLorebook,
   renderImportedWorldInfos,
+  renderWorldInfoScenarioPrompt,
   renderMemoryContext,
   renderImportedCharacterPrompt,
   substituteCardMacros,
@@ -50,6 +51,21 @@ test('adds a selected Persona to an imported chat without a Character Card', () 
 
   assert.match(prompt, /名为小满/u)
   assert.match(prompt, /怕冷，喜欢旧书/u)
+})
+
+test('lets standalone World Info own the roleplay identity without the deployment example character', () => {
+  const prompt = renderWorldInfoScenarioPrompt(
+    ['海城终年多雾。'],
+    ['守钟人负责回应来访者。'],
+    '旅人刚刚抵达海城。',
+  )
+
+  assert.match(prompt, /独立世界书启动/u)
+  assert.match(prompt, /海城终年多雾/u)
+  assert.match(prompt, /守钟人负责回应/u)
+  assert.match(prompt, /旅人刚刚抵达海城/u)
+  assert.match(prompt, /定义多角色、场景或叙事规则/u)
+  assert.doesNotMatch(prompt, /岚|旧书修复铺/u)
 })
 
 test('resolves stable SillyTavern identity macros across imported card prose', () => {

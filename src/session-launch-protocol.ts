@@ -18,6 +18,16 @@ export interface CharacterSessionLaunchRequest {
   readonly memory?: 'copy-active'
 }
 
+/** Start a new Session from one retained standalone World Info source. */
+export interface WorldInfoSessionLaunchRequest {
+  readonly format: 0
+  readonly sourceSessionId: string
+  readonly kind: 'world-info'
+  readonly importId: string
+  readonly persona?: SessionPersonaSnapshot
+  readonly presetId?: string
+}
+
 /** Start a new Session from one retained SillyTavern JSONL import. */
 export interface ChatSessionLaunchRequest {
   readonly format: 0
@@ -40,11 +50,12 @@ export interface RewriteSessionLaunchRequest {
 /** Complete model-free Session launch accepted by the Agent RP Host. */
 export type AgentRpSessionLaunchRequest =
   | CharacterSessionLaunchRequest
+  | WorldInfoSessionLaunchRequest
   | ChatSessionLaunchRequest
   | RewriteSessionLaunchRequest
 
 /** Library-backed launch request that does not depend on an existing RP transcript. */
-export type LibrarySessionLaunchRequest = CharacterSessionLaunchRequest | ChatSessionLaunchRequest
+export type LibrarySessionLaunchRequest = CharacterSessionLaunchRequest | WorldInfoSessionLaunchRequest | ChatSessionLaunchRequest
 
 /** Successful launch result returned after the Agent is published. */
 export interface AgentRpSessionLaunchResponse {
