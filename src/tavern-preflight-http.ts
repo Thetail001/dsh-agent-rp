@@ -10,18 +10,19 @@ import {
   type AgentRpHttpServer,
 } from './host-http.ts'
 import { PresetLibrary } from './preset-library.ts'
-import { inspectTavernPreflight } from './tavern-preflight.ts'
+import { inspectTavernPreflight, TavernExecutionPlanCache } from './tavern-preflight.ts'
 import {
-  TAVERN_EXECUTION_PATH, TAVERN_PREFLIGHT_PATH, type TavernExecutionRequest,
+  TAVERN_EXECUTION_PATH, TAVERN_PREFLIGHT_PATH, type TavernExecutionBatchRequest, type TavernExecutionRequest,
   type TavernPreflightRequest, type TavernPreflightScope, type TavernPreflightScriptApproval,
 } from './tavern-preflight-protocol.ts'
 import {
-  resolveTavernScriptExecution, TavernScriptOriginApprovalError, type TavernScriptExecution,
+  TavernScriptOriginApprovalError,
 } from './tavern-script-resolver.ts'
 
 const MAX_PREFLIGHT_REQUEST_BYTES = 64 * 1024
 const MAX_PREFLIGHT_APPROVALS = 256
 const MAX_ORIGINS_PER_SCRIPT = 32
+const MAX_EXECUTION_BATCH_ENTRIES = 64
 
 class TavernPreflightHttpError extends Error {
   readonly status: 400 | 413
@@ -31,6 +32,10 @@ class TavernPreflightHttpError extends Error {
     this.name = 'TavernPreflightHttpError'
     this.status = status
   }
+}
+
+class TavernExecutionBatchCacheMiss extends Error {
+  override readonly name = 'TavernExecutionBatchCacheMiss'
 }
 
 function invalidRequest(message: string, options?: ErrorOptions): never {
@@ -149,12 +154,49 @@ function parseExecutionRequest(value: unknown): TavernExecutionRequest {
   }
 }
 
+function parseExecutionBatchRequest(value: unknown): TavernExecutionBatchRequest {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalidRequest('批量脚本执行计划请求无效')
+  const request = value as Record<string, unknown>
+  if (request.format !== 1 || !Array.isArray(request.entries) || request.entries.length < 2
+    || request.entries.length > MAX_EXECUTION_BATCH_ENTRIES) invalidRequest('批量脚本执行计划请求无效')
+  const characterId = request.characterId === undefined ? undefined : safeLibraryId(request.characterId, '角色卡 id')
+  const presetId = request.presetId === undefined ? undefined : safeLibraryId(request.presetId, '预设 id')
+  const identities = new Set<string>()
+  const entries = request.entries.map((candidate, index) => {
+    if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
+      invalidRequest(`批量脚本 ${index + 1} 无效`)
+    }
+    const entry = candidate as Record<string, unknown>
+    const scope = safeScope(entry.scope)
+    if ((scope === 'character' && characterId === undefined) || (scope === 'preset' && presetId === undefined)
+      || !Array.isArray(entry.approvedOrigins) || entry.approvedOrigins.length > MAX_ORIGINS_PER_SCRIPT) {
+      invalidRequest(`批量脚本 ${index + 1} 无效`)
+    }
+    const scriptId = safeScriptId(entry.scriptId, `批量脚本 ${index + 1} id`)
+    const identity = JSON.stringify([scope, scriptId])
+    if (identities.has(identity)) invalidRequest('批量脚本执行计划包含重复脚本')
+    identities.add(identity)
+    return {
+      scope,
+      scriptId,
+      approvedOrigins: [...new Set(entry.approvedOrigins.map(safeOrigin))].sort(),
+    }
+  })
+  return {
+    format: 1,
+    ...(characterId === undefined ? {} : { characterId }),
+    ...(presetId === undefined ? {} : { presetId }),
+    entries,
+  }
+}
+
 /** Register a model-free resource preflight for any selected character/preset combination. */
 export function installTavernPreflightHttp(
   ctx: Context,
   characters: CharacterLibrary,
   presets: PresetLibrary,
   server: AgentRpHttpServer,
+  plans: TavernExecutionPlanCache,
 ): void {
   ctx.effect(() => server.register({
     kind: 'exact',
@@ -188,9 +230,15 @@ export function installTavernPreflightHttp(
           }
         }
         const result = await inspectTavernPreflight([
-          { scope: 'character', scripts: character?.card.frontend.tavernHelperScripts ?? [] },
-          { scope: 'preset', scripts: preset?.preset.tavernHelperScripts ?? [] },
-        ], input.scriptApprovals, AbortSignal.timeout(30_000))
+          {
+            scope: 'character', ownerId: input.characterId ?? '',
+            scripts: character?.card.frontend.tavernHelperScripts ?? [],
+          },
+          {
+            scope: 'preset', ownerId: input.presetId ?? '',
+            scripts: preset?.preset.tavernHelperScripts ?? [],
+          },
+        ], input.scriptApprovals, AbortSignal.timeout(30_000), plans)
         json(response, 200, result)
       } catch (error: unknown) {
         if (response.destroyed) return
@@ -207,14 +255,8 @@ export function installTavernExecutionHttp(
   characters: CharacterLibrary,
   presets: PresetLibrary,
   server: AgentRpHttpServer,
+  plans: TavernExecutionPlanCache,
 ): void {
-  const plans = new Map<string, TavernScriptExecution>()
-  const remember = (key: string, execution: TavernScriptExecution): TavernScriptExecution => {
-    plans.delete(key)
-    plans.set(key, execution)
-    while (plans.size > 64) plans.delete(plans.keys().next().value!)
-    return execution
-  }
   ctx.effect(() => server.register({
     kind: 'exact',
     path: TAVERN_EXECUTION_PATH,
@@ -229,36 +271,61 @@ export function installTavernExecutionHttp(
         return
       }
       try {
-        const input = parseExecutionRequest(await readJson(request))
+        const value = await readJson(request)
+        if (typeof value === 'object' && value !== null && !Array.isArray(value)
+          && (value as { readonly format?: unknown }).format === 1) {
+          const input = parseExecutionBatchRequest(value)
+          const entries = input.entries.map(entry => {
+            const ownerId = entry.scope === 'character' ? input.characterId! : input.presetId!
+            const execution = plans.get({
+              scope: entry.scope,
+              ownerId,
+              scriptId: entry.scriptId,
+              approvedOrigins: entry.approvedOrigins,
+            })
+            if (execution === undefined) throw new TavernExecutionBatchCacheMiss()
+            return { scope: entry.scope, scriptId: entry.scriptId, execution }
+          })
+          json(response, 200, { format: 1, entries })
+          return
+        }
+        const input = parseExecutionRequest(value)
+        const ownerId = input.scope === 'character' ? input.characterId! : input.presetId!
+        const identity = {
+          scope: input.scope,
+          ownerId,
+          scriptId: input.scriptId,
+          approvedOrigins: input.approvedOrigins,
+        }
+        const cached = plans.get(identity)
+        if (cached !== undefined) {
+          json(response, 200, { format: 0, execution: cached })
+          return
+        }
         let scripts: readonly import('./import/types.ts').ImportedTavernHelperScript[]
-        let ownerId: string
         if (input.scope === 'character') {
           try {
             scripts = characters.resolve(input.characterId!).card.frontend.tavernHelperScripts
           } catch (error: unknown) {
             invalidRequest('角色卡不可用', { cause: error })
           }
-          ownerId = input.characterId!
         } else {
           try {
             scripts = presets.get(input.presetId!).preset.tavernHelperScripts ?? []
           } catch (error: unknown) {
             invalidRequest('预设不可用', { cause: error })
           }
-          ownerId = input.presetId!
         }
         const script = scripts.find(candidate => candidate.id === input.scriptId)
         if (script === undefined || !script.enabled || script.content.trim() === '') invalidRequest('脚本不可用')
-        const key = JSON.stringify([input.scope, ownerId, input.scriptId, input.approvedOrigins])
-        const cached = plans.get(key)
-        const execution = cached ?? remember(key, await resolveTavernScriptExecution(
-          script.content,
-          AbortSignal.timeout(30_000),
-          input.approvedOrigins,
-        ))
+        const execution = await plans.resolve(identity, script.content, AbortSignal.timeout(30_000))
         json(response, 200, { format: 0, execution })
       } catch (error: unknown) {
         if (response.destroyed) return
+        if (error instanceof TavernExecutionBatchCacheMiss) {
+          json(response, 409, { error: '批量脚本计划需要逐项解析' })
+          return
+        }
         if (error instanceof TavernScriptOriginApprovalError) {
           json(response, 409, { error: '脚本来源需要授权', requestedOrigin: error.origin })
           return

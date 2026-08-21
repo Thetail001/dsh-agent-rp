@@ -60,6 +60,7 @@ import {
   type TavernPreflightResult,
 } from '../tavern-preflight-protocol.ts'
 import {
+  fetchCachedTavernExecutions,
   fetchTavernExecution,
   TavernExecutionOriginApprovalError,
 } from './tavern-preflight.ts'
@@ -76,6 +77,7 @@ import {
   tavernScriptRuntimePhase,
   validatedTavernCompatibilityMarkers,
   TavernScriptOriginApprovalError,
+  type TavernScriptExecution,
   type TavernTranscriptCursor,
   type TavernResourceBlockedReport,
   type TavernScriptSnapshot,
@@ -7570,6 +7572,25 @@ function TavernScriptRuntime({
         scriptBootstrapTimers.current.set(entry.key, timer)
       }
     }
+    const hostExecutionEntries = scopedScripts.flatMap(entry => {
+      const hostExecution = entry.scope === 'character' && characterExecutionLibraryId !== undefined
+        || entry.scope === 'preset' && presetExecutionLibraryId !== undefined
+      return hostExecution ? [{
+        scope: entry.scope as 'character' | 'preset',
+        scriptId: entry.script.id,
+        approvedOrigins: scriptOrigins(entry),
+      }] : []
+    })
+    const cachedHostExecutions = hostExecutionEntries.length < 2
+      ? Promise.resolve<ReadonlyMap<string, TavernScriptExecution> | undefined>(undefined)
+      : fetchCachedTavernExecutions({
+          format: 1,
+          ...(characterExecutionLibraryId === undefined ? {} : { characterId: characterExecutionLibraryId }),
+          ...(presetExecutionLibraryId === undefined ? {} : { presetId: presetExecutionLibraryId }),
+          entries: hostExecutionEntries,
+        }, controller.signal).then(entries => entries === undefined ? undefined : new Map(entries.map(entry => [
+          tavernScriptIdentity(entry.scope, entry.scriptId), entry.execution,
+        ]))).catch(() => undefined)
     for (const scopedScript of scopedScripts) {
       void (async (): Promise<TavernScriptFrame> => {
         const { key, scope, script } = scopedScript
@@ -7578,14 +7599,14 @@ function TavernScriptRuntime({
           const hostExecution = scope === 'character' && characterExecutionLibraryId !== undefined
             || scope === 'preset' && presetExecutionLibraryId !== undefined
           const [execution, extensionSettings] = await Promise.all([
-            hostExecution ? fetchTavernExecution({
-              format: 0,
-              ...(characterExecutionLibraryId === undefined ? {} : { characterId: characterExecutionLibraryId }),
-              ...(presetExecutionLibraryId === undefined ? {} : { presetId: presetExecutionLibraryId }),
-              scope: scope as 'character' | 'preset',
-              scriptId: script.id,
-              approvedOrigins: approvedScriptOrigins,
-            }, controller.signal) : resolveTavernScriptExecution(
+            hostExecution ? cachedHostExecutions.then(cached => cached?.get(key) ?? fetchTavernExecution({
+                format: 0,
+                ...(characterExecutionLibraryId === undefined ? {} : { characterId: characterExecutionLibraryId }),
+                ...(presetExecutionLibraryId === undefined ? {} : { presetId: presetExecutionLibraryId }),
+                scope: scope as 'character' | 'preset',
+                scriptId: script.id,
+                approvedOrigins: approvedScriptOrigins,
+              }, controller.signal)) : resolveTavernScriptExecution(
               script.content,
               controller.signal,
               approvedScriptOrigins,

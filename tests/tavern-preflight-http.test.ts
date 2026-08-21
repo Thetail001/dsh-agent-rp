@@ -7,8 +7,10 @@ import type { CharacterLibrary } from '../src/character-library.ts'
 import type { AgentRpHttpServer } from '../src/host-http.ts'
 import type { ImportedTavernHelperScript } from '../src/import/types.ts'
 import type { PresetLibrary } from '../src/preset-library.ts'
+import { TavernExecutionPlanCache } from '../src/tavern-preflight.ts'
 import { installTavernExecutionHttp, installTavernPreflightHttp } from '../src/tavern-preflight-http.ts'
 import { TAVERN_EXECUTION_PATH, TAVERN_PREFLIGHT_PATH } from '../src/tavern-preflight-protocol.ts'
+import type { TavernScriptExecution } from '../src/tavern-script-resolver.ts'
 
 type RegisteredRoute = Parameters<AgentRpHttpServer['register']>[0]
 
@@ -44,7 +46,10 @@ function script(id: string, content = `window.__private=${JSON.stringify(PRIVATE
   }
 }
 
-function testLibraries(characterScripts: readonly ImportedTavernHelperScript[] = [script('character-script')]): {
+function testLibraries(
+  characterScripts: readonly ImportedTavernHelperScript[] = [script('character-script')],
+  presetScripts: readonly ImportedTavernHelperScript[] = [script('preset-script')],
+): {
   readonly characters: CharacterLibrary
   readonly presets: PresetLibrary
 } {
@@ -57,7 +62,7 @@ function testLibraries(characterScripts: readonly ImportedTavernHelperScript[] =
   const presets = {
     get(id: string) {
       if (id !== 'preset-ok') throw new Error(`cannot read ${PRIVATE_PATH}`)
-      return { preset: { tavernHelperScripts: [script('preset-script')] } }
+      return { preset: { tavernHelperScripts: presetScripts } }
     },
   } as unknown as PresetLibrary
   return { characters, presets }
@@ -65,6 +70,7 @@ function testLibraries(characterScripts: readonly ImportedTavernHelperScript[] =
 
 function registeredRoute(
   libraries: { readonly characters: CharacterLibrary; readonly presets: PresetLibrary } = testLibraries(),
+  plans = new TavernExecutionPlanCache(),
 ): RegisteredRoute {
   let route: RegisteredRoute | undefined
   const ctx = {
@@ -76,7 +82,7 @@ function registeredRoute(
       return () => {}
     },
   }
-  installTavernPreflightHttp(ctx, libraries.characters, libraries.presets, server)
+  installTavernPreflightHttp(ctx, libraries.characters, libraries.presets, server, plans)
   assert.ok(route)
   assert.equal(route.kind, 'exact')
   assert.equal(route.path, TAVERN_PREFLIGHT_PATH)
@@ -85,6 +91,7 @@ function registeredRoute(
 
 function registeredExecutionRoute(
   libraries: { readonly characters: CharacterLibrary; readonly presets: PresetLibrary } = testLibraries(),
+  plans = new TavernExecutionPlanCache(),
 ): RegisteredRoute {
   let route: RegisteredRoute | undefined
   const ctx = {
@@ -96,7 +103,7 @@ function registeredExecutionRoute(
       return () => {}
     },
   }
-  installTavernExecutionHttp(ctx, libraries.characters, libraries.presets, server)
+  installTavernExecutionHttp(ctx, libraries.characters, libraries.presets, server, plans)
   assert.ok(route)
   assert.equal(route.kind, 'exact')
   assert.equal(route.path, TAVERN_EXECUTION_PATH)
@@ -173,6 +180,34 @@ function executionRequest(overrides: Readonly<Record<string, unknown>> = {}): st
   })
 }
 
+function executionBatchRequest(
+  entries: readonly Readonly<Record<string, unknown>>[],
+  overrides: Readonly<Record<string, unknown>> = {},
+): string {
+  return JSON.stringify({
+    format: 1,
+    characterId: 'character-ok',
+    entries,
+    ...overrides,
+  })
+}
+
+function execution(source: string): TavernScriptExecution {
+  return {
+    source,
+    mode: 'classic',
+    inlineDependencies: [],
+    preloads: [],
+    needsDomPurify: false,
+    needsFuse: false,
+    moduleDependencies: [],
+    compatibilityMarkers: [],
+    remoteImageOrigins: [],
+    remoteStyleOrigins: [],
+    remoteFrameOrigins: [],
+  }
+}
+
 test('registers a same-origin POST-only Tavern preflight route', async () => {
   const route = registeredRoute()
   const method = await invoke(route, { method: 'GET' })
@@ -227,6 +262,189 @@ test('returns and caches a Host-resolved execution graph without browser-side mo
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('preflights independent scripts concurrently while preserving library order', async () => {
+  let active = 0
+  let maximumActive = 0
+  const plans = new TavernExecutionPlanCache(async source => {
+    active += 1
+    maximumActive = Math.max(maximumActive, active)
+    await new Promise(resolve => setTimeout(resolve, 15))
+    active -= 1
+    return execution(source)
+  })
+  const libraries = testLibraries([
+    script('first', 'window.first=true'),
+    script('second', 'window.second=true'),
+    script('third', 'window.third=true'),
+  ])
+  const result = await invoke(registeredRoute(libraries, plans), { body: request() })
+  assert.equal(result.status, 200)
+  assert.equal(maximumActive, 3)
+  assert.deepEqual((result.json as { readonly entries: readonly { readonly scriptId: string }[] }).entries
+    .map(entry => entry.scriptId), ['first', 'second', 'third'])
+})
+
+test('reuses successful preflight plans for runtime despite explicit built-in origins', async () => {
+  const calls: { readonly source: string; readonly origins: readonly string[] }[] = []
+  const plans = new TavernExecutionPlanCache(async (source, _signal, origins = []) => {
+    calls.push({ source, origins })
+    return execution(source)
+  })
+  let characterReads = 0
+  let cacheHitRequired = true
+  const base = testLibraries()
+  const libraries = {
+    characters: {
+      resolve(id: string) {
+        characterReads += 1
+        if (cacheHitRequired && characterReads > 1) {
+          throw new Error('runtime must reuse the preflight plan before reading the card')
+        }
+        return base.characters.resolve(id)
+      },
+    } as unknown as CharacterLibrary,
+    presets: base.presets,
+  }
+  const preflight = await invoke(registeredRoute(libraries, plans), { body: request() })
+  assert.equal(preflight.status, 200)
+  const runtime = await invoke(registeredExecutionRoute(libraries, plans), {
+    body: executionRequest({
+      approvedOrigins: ['https://testingcf.jsdelivr.net', 'https://cdn.jsdelivr.net'],
+    }),
+  })
+  assert.equal(runtime.status, 200)
+  assert.equal(calls.length, 1)
+  assert.equal(characterReads, 1)
+  assert.deepEqual(calls[0]?.origins, ['https://cdn.jsdelivr.net', 'https://testingcf.jsdelivr.net'])
+
+  cacheHitRequired = false
+  const expandedGrant = await invoke(registeredExecutionRoute(libraries, plans), {
+    body: executionRequest({ approvedOrigins: ['https://additional.example'] }),
+  })
+  assert.equal(expandedGrant.status, 200)
+  assert.equal(calls.length, 2)
+  assert.equal(characterReads, 2)
+  assert.deepEqual(calls[1]?.origins, [
+    'https://additional.example', 'https://cdn.jsdelivr.net', 'https://testingcf.jsdelivr.net',
+  ])
+})
+
+test('keeps equal script ids isolated between character and preset owners', async () => {
+  const calls: string[] = []
+  const plans = new TavernExecutionPlanCache(async source => {
+    calls.push(source)
+    return execution(source)
+  })
+  const libraries = testLibraries(
+    [script('shared-script', 'window.owner="character"')],
+    [script('shared-script', 'window.owner="preset"')],
+  )
+  const preflight = await invoke(registeredRoute(libraries, plans), {
+    body: request({ presetId: 'preset-ok' }),
+  })
+  assert.equal(preflight.status, 200)
+  assert.deepEqual(calls, ['window.owner="character"', 'window.owner="preset"'])
+
+  const character = await invoke(registeredExecutionRoute(libraries, plans), {
+    body: executionRequest({ scriptId: 'shared-script' }),
+  })
+  const preset = await invoke(registeredExecutionRoute(libraries, plans), {
+    body: executionRequest({
+      characterId: undefined,
+      presetId: 'preset-ok',
+      scope: 'preset',
+      scriptId: 'shared-script',
+    }),
+  })
+  assert.equal(character.status, 200)
+  assert.equal(preset.status, 200)
+  assert.equal(calls.length, 2)
+  assert.equal((character.json as { readonly execution: TavernScriptExecution }).execution.source, 'window.owner="character"')
+  assert.equal((preset.json as { readonly execution: TavernScriptExecution }).execution.source, 'window.owner="preset"')
+})
+
+test('returns an exact preflight cache batch through one execution request', async () => {
+  let resolutions = 0
+  const plans = new TavernExecutionPlanCache(async source => {
+    resolutions += 1
+    return execution(source)
+  })
+  const libraries = testLibraries([
+    script('first', 'window.first=true'),
+    script('second', 'window.second=true'),
+  ])
+  const preflight = await invoke(registeredRoute(libraries, plans), { body: request() })
+  assert.equal(preflight.status, 200)
+  assert.equal(resolutions, 2)
+
+  const entries = [
+    { scope: 'character', scriptId: 'first', approvedOrigins: ['https://cdn.jsdelivr.net'] },
+    { scope: 'character', scriptId: 'second', approvedOrigins: ['https://testingcf.jsdelivr.net'] },
+  ]
+  const batch = await invoke(registeredExecutionRoute(libraries, plans), {
+    body: executionBatchRequest(entries),
+  })
+  assert.equal(batch.status, 200)
+  assert.deepEqual(batch.json, {
+    format: 1,
+    entries: [{
+      scope: 'character', scriptId: 'first', execution: execution('window.first=true'),
+    }, {
+      scope: 'character', scriptId: 'second', execution: execution('window.second=true'),
+    }],
+  })
+  assert.equal(resolutions, 2)
+
+  const miss = await invoke(registeredExecutionRoute(libraries, plans), {
+    body: executionBatchRequest([
+      entries[0]!,
+      { ...entries[1]!, approvedOrigins: ['https://additional.example'] },
+    ]),
+  })
+  assert.equal(miss.status, 409)
+  assert.deepEqual(miss.json, { error: '批量脚本计划需要逐项解析' })
+  assert.equal(resolutions, 2)
+})
+
+test('does not retain failed execution resolutions', async () => {
+  let calls = 0
+  const plans = new TavernExecutionPlanCache(async source => {
+    calls += 1
+    if (calls === 1) throw new Error('temporary resolution failure')
+    return execution(source)
+  })
+  const libraries = testLibraries()
+  const first = await invoke(registeredExecutionRoute(libraries, plans), { body: executionRequest() })
+  const second = await invoke(registeredExecutionRoute(libraries, plans), { body: executionRequest() })
+  assert.equal(first.status, 502)
+  assert.equal(second.status, 200)
+  assert.equal(calls, 2)
+})
+
+test('invalidates an older successful plan when the source changes under one owner id', async () => {
+  let calls = 0
+  const plans = new TavernExecutionPlanCache(async source => {
+    calls += 1
+    if (source === 'window.version=3') throw new Error('new source is invalid')
+    return execution(source)
+  })
+  const identity = {
+    scope: 'character' as const,
+    ownerId: 'character-ok',
+    scriptId: 'mutable-script',
+    approvedOrigins: [] as readonly string[],
+  }
+  const signal = AbortSignal.timeout(5_000)
+  assert.equal((await plans.resolve(identity, 'window.version=1', signal)).source, 'window.version=1')
+  assert.equal((await plans.resolve(identity, 'window.version=1', signal)).source, 'window.version=1')
+  assert.equal(calls, 1)
+  assert.equal((await plans.resolve(identity, 'window.version=2', signal)).source, 'window.version=2')
+  assert.equal(calls, 2)
+  await assert.rejects(plans.resolve(identity, 'window.version=3', signal), /new source is invalid/u)
+  assert.equal(calls, 3)
+  assert.equal(plans.get(identity), undefined)
 })
 
 test('preflights and executes a preset without requiring a character card', async () => {

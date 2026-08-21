@@ -947,6 +947,7 @@ test('preflights selected character and preset resources without executing scrip
   })
   const sources = [{
     scope: 'character' as const,
+    ownerId: 'card-a',
     scripts: [
       script('remote-ui', "import 'https://preflight.example.test/runtime.js';"),
       script('local-ui', [
@@ -959,6 +960,7 @@ test('preflights selected character and preset resources without executing scrip
     ],
   }, {
     scope: 'preset' as const,
+    ownerId: 'preset-a',
     scripts: [script('invalid-ui', 'const path = location.hash; import(path);')],
   }]
   const first = await inspectTavernPreflight(sources, [], AbortSignal.timeout(5_000))

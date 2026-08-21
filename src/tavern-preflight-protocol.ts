@@ -64,3 +64,31 @@ export interface TavernExecutionResult {
   readonly format: 0
   readonly execution: import('./tavern-script-resolver.ts').TavernScriptExecution
 }
+
+/** One script identity requested from the successful preflight cache. */
+export interface TavernExecutionBatchEntry {
+  readonly scope: TavernPreflightScope
+  readonly scriptId: string
+  readonly approvedOrigins: readonly string[]
+}
+
+/** Request several already-preflighted plans through one browser connection. */
+export interface TavernExecutionBatchRequest {
+  readonly format: 1
+  readonly characterId?: string
+  readonly presetId?: string
+  readonly entries: readonly TavernExecutionBatchEntry[]
+}
+
+/** One cached plan retaining its scope and script identity. */
+export interface TavernExecutionBatchResultEntry {
+  readonly scope: TavernPreflightScope
+  readonly scriptId: string
+  readonly execution: import('./tavern-script-resolver.ts').TavernScriptExecution
+}
+
+/** Host-resolved plans returned together only after every exact cache key matches. */
+export interface TavernExecutionBatchResult {
+  readonly format: 1
+  readonly entries: readonly TavernExecutionBatchResultEntry[]
+}
