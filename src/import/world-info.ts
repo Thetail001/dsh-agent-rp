@@ -4,6 +4,7 @@ import { snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-session'
 import type {
   ImportedLorebookEntry,
   ImportedWorldInfo,
+  LorebookEntryCompatibilityBlocker,
   WorldInfoImportDegradation,
 } from './types.ts'
 
@@ -108,6 +109,14 @@ function parseEntry(
   if (vectorized) degradations.add('vector-matching')
   if (timed) degradations.add('timed-effects')
   if (recursive) degradations.add('lorebook-recursion')
+  const compatibilityBlockers: LorebookEntryCompatibilityBlocker[] = [
+    ...(usesProbability ? ['entry-probability' as const] : []),
+    ...(advancedMatching ? ['entry-advanced-matching' as const] : []),
+    ...(vectorized ? ['vector-matching' as const] : []),
+    ...(timed ? ['timed-effects' as const] : []),
+    ...(recursive ? ['lorebook-recursion' as const] : []),
+    ...(!supportedPosition ? ['entry-unsupported-position' as const] : []),
+  ]
   const scanDepth = optionalFiniteNumber(entry.scanDepth, `${path}.scanDepth`)
   if (scanDepth !== undefined && scanDepth < 0) throw new Error(`${path}.scanDepth must not be negative`)
   return {
@@ -116,8 +125,7 @@ function parseEntry(
     keys,
     secondaryKeys,
     content,
-    enabled: !boolean(entry.disable, `${path}.disable`, false) && supportedPosition
-      && !usesProbability && !advancedMatching && !vectorized && !timed && !recursive,
+    enabled: !boolean(entry.disable, `${path}.disable`, false),
     insertionOrder: finiteNumber(entry.order, `${path}.order`, 100),
     selective: boolean(entry.selective, `${path}.selective`, secondaryKeys.length > 0),
     constant: boolean(entry.constant, `${path}.constant`, false),
@@ -129,6 +137,7 @@ function parseEntry(
     ignoreBudget: false,
     useRegex,
     hasDecorators: decorated,
+    ...(compatibilityBlockers.length === 0 ? {} : { compatibilityBlockers }),
   }
 }
 

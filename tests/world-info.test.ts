@@ -115,10 +115,27 @@ test('preserves but does not execute advanced World Info behavior', () => {
     'timed-effects',
     'vector-matching',
   ])
+  assert.equal(book.lorebook.entries.every(entry => entry.enabled), true)
+  assert.deepEqual(book.lorebook.entries.map(entry => entry.compatibilityBlockers ?? []), [
+    [],
+    [],
+    ['entry-probability'],
+    ['vector-matching'],
+    ['timed-effects'],
+    ['entry-unsupported-position'],
+  ])
   assert.deepEqual(activateLorebook(book.lorebook, ['秘密 港口 蓝灯 潮汐 船票 旧港']), {
     beforeCharacter: [],
     afterCharacter: [],
   })
+  assert.deepEqual(inspectLorebook(book.lorebook, ['秘密 港口 蓝灯 潮汐 船票 旧港']).entries.map(entry => entry.reason), [
+    'regex-runtime-unavailable',
+    'decorator-unsupported',
+    'compatibility-unsupported',
+    'compatibility-unsupported',
+    'compatibility-unsupported',
+    'compatibility-unsupported',
+  ])
 })
 
 test('decodes standalone World Info as strict UTF-8 and rejects malformed entries', () => {

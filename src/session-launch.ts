@@ -39,7 +39,7 @@ function parseAdditionalWorldInfoIds(value: unknown, primaryId?: string): readon
   if (new Set(ids).size !== ids.length || (primaryId !== undefined && ids.includes(primaryId))) {
     throw new Error('附加世界书不能重复')
   }
-  return ids.length === 0 ? undefined : [...ids]
+  return [...ids]
 }
 
 /** Validate one same-origin browser request without accepting filesystem paths. */
@@ -150,8 +150,10 @@ function seedWithWorldInfos(
   seed: readonly SessionEvent[],
   worldInfos: WorldInfoLibrary,
   worldInfoIds: readonly string[] | undefined,
+  excludedId?: string,
 ): readonly SessionEvent[] {
-  return (worldInfoIds ?? []).reduce(
+  const selected = (worldInfoIds ?? worldInfos.defaultIds()).filter(id => id !== excludedId)
+  return selected.reduce(
     (events, id) => appendWorldInfoLibrarySessionSeed(events, worldInfos.asset(id)),
     seed,
   )
@@ -226,6 +228,7 @@ export function prepareAgentRpSession(
           createWorldInfoLibrarySessionSeed(asset, request.persona),
           worldInfos,
           request.worldInfoIds,
+          request.importId,
         ),
         presets,
         request.presetId,

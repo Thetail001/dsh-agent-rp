@@ -185,6 +185,12 @@ function target(record: Record<string, unknown>, label: string): { readonly book
   return { bookId, entryIndex: nonNegativeInteger(record.entryIndex, `${label}.entryIndex`) }
 }
 
+function requestedBookId(record: Record<string, unknown>, label: string): string {
+  const bookId = text(record.bookId, `${label}.bookId`)
+  if (bookId.trim() === '') throw new Error(`${label}.bookId 不能为空`)
+  return bookId
+}
+
 /** Parse one private World Info manager request. */
 export function parseWorldInfoConfigurationRequest(source: string): WorldInfoConfigurationRequest {
   let value: unknown
@@ -198,6 +204,18 @@ export function parseWorldInfoConfigurationRequest(source: string): WorldInfoCon
     const tokenBudget = nonNegativeInteger(record.tokenBudget, 'tokenBudget')
     if (tokenBudget > MAX_SESSION_WORLD_INFO_TOKEN_BUDGET) throw new Error('tokenBudget 过大')
     return { operation: 'set-budget', revision, tokenBudget }
+  }
+  if (record.operation === 'reset-book') {
+    return { operation: 'reset-book', revision, bookId: requestedBookId(record, '世界书操作请求') }
+  }
+  if (record.operation === 'set-book-enabled') {
+    if (typeof record.enabled !== 'boolean') throw new Error('enabled 必须是布尔值')
+    return {
+      operation: 'set-book-enabled',
+      revision,
+      bookId: requestedBookId(record, '世界书操作请求'),
+      enabled: record.enabled,
+    }
   }
   const addressed = target(record, '世界书操作请求')
   if (record.operation === 'toggle') {
@@ -297,6 +315,7 @@ function applyEditable(entry: ImportedLorebookEntry, value: WorldInfoEditableEnt
     ...value,
     useRegex: entry.useRegex,
     hasDecorators: entry.hasDecorators,
+    ...(entry.compatibilityBlockers === undefined ? {} : { compatibilityBlockers: entry.compatibilityBlockers }),
   }
 }
 
@@ -346,6 +365,40 @@ export function configureWorldInfo(
   if (request.operation === 'reset-all') return { ...state, revision: state.revision + 1, overrides: [] }
   if (request.operation === 'set-budget') {
     return { ...state, revision: state.revision + 1, tokenBudget: request.tokenBudget }
+  }
+  if (request.operation === 'reset-book') {
+    if (!sources.some(source => source.id === request.bookId)) throw new Error('目标世界书不存在')
+    return {
+      ...state,
+      revision: state.revision + 1,
+      overrides: state.overrides.filter(item => item.bookId !== request.bookId),
+    }
+  }
+  if (request.operation === 'set-book-enabled') {
+    const source = sources.find(book => book.id === request.bookId)
+    if (source === undefined) throw new Error('目标世界书不存在')
+    const current = new Map(state.overrides.filter(item => item.bookId === request.bookId)
+      .map(item => [item.entryIndex, item]))
+    const overrides = source.lorebook.entries.flatMap((original, entryIndex) => {
+      const prior = current.get(entryIndex) ?? { bookId: request.bookId, entryIndex, deleted: false }
+      const entry = { ...(prior.entry ?? editableWorldInfoEntry(original)), enabled: request.enabled }
+      const matchesOriginal = JSON.stringify(entry) === JSON.stringify(editableWorldInfoEntry(original))
+      if (!prior.deleted && matchesOriginal) return []
+      return [{
+        bookId: request.bookId,
+        entryIndex,
+        deleted: prior.deleted,
+        ...(matchesOriginal ? {} : { entry }),
+      }]
+    })
+    return {
+      ...state,
+      revision: state.revision + 1,
+      overrides: [
+        ...state.overrides.filter(item => item.bookId !== request.bookId),
+        ...overrides,
+      ],
+    }
   }
   const source = sources.find(book => book.id === request.bookId)
   const original = source?.lorebook.entries[request.entryIndex]

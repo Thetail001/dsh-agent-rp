@@ -331,6 +331,7 @@ function worldInfoProjection(
           ...editableWorldInfoEntry(entry),
           useRegex: entry.useRegex,
           hasDecorators: entry.hasDecorators,
+          compatibilityBlockers: entry.compatibilityBlockers ?? [],
           active: decision.active && !deleted,
           reason: deleted ? 'deleted' as const : decision.reason,
           matchedKeys: decision.matchedKeys,

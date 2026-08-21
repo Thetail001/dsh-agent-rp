@@ -41,10 +41,11 @@ test('roleplay launch keeps collection management secondary to choosing a charac
 
 test('character launch keeps additional World Info in one collapsed resource selection', () => {
   assert.match(source, /const \[worldInfoOpen, setWorldInfoOpen\] = useState\(false\)/u)
-  assert.match(source, /data-agent-rp-world-info-selection=\{selectedWorldInfoIds\.length\}/u)
+  assert.match(source, /data-agent-rp-world-info-selection=\{selection\.length\}/u)
   assert.match(source, /data-agent-rp-world-info-option=\{entry\.id\}/u)
-  assert.match(source, /按选择顺序加载，最多 16 本；不会修改角色卡或世界书原文件/u)
-  assert.match(source, /selectedWorldInfoIds\.length === 0 \? undefined : selectedWorldInfoIds/u)
+  assert.match(source, /标记为新会话默认的世界书会自动选中/u)
+  assert.match(source, /const \[selectedWorldInfoIds, setSelectedWorldInfoIds\] = useState<readonly string\[\]>\(\)/u)
+  assert.match(source, /selectedWorldInfoIds !== undefined \|\| availableWorldInfos === undefined/u)
 })
 
 test('World Info launch configures peer resources before creating a Session', () => {

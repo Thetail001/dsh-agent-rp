@@ -70,6 +70,7 @@ export interface AgentRpProjection {
         readonly ignoreBudget: boolean
         readonly useRegex: boolean
         readonly hasDecorators: boolean
+        readonly compatibilityBlockers: readonly import('./import/types.ts').LorebookEntryCompatibilityBlocker[]
         readonly active: boolean
         readonly reason: import('./import/lorebook.ts').LorebookActivationReason
         readonly matchedKeys: readonly string[]

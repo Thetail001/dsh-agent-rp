@@ -16,6 +16,7 @@ export type LorebookActivationReason =
   | 'disabled'
   | 'deleted'
   | 'empty-content'
+  | 'compatibility-unsupported'
   | 'decorator-unsupported'
   | 'template-unsupported'
   | 'template-error'
@@ -187,6 +188,7 @@ function candidate(
   })
   if (!entry.enabled) return decision(false, 'disabled')
   if (entry.content.trim().length === 0) return decision(false, 'empty-content')
+  if ((entry.compatibilityBlockers?.length ?? 0) > 0) return decision(false, 'compatibility-unsupported')
   if (entry.hasDecorators) return decision(false, 'decorator-unsupported')
 
   let activation: CandidateDecision

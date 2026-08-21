@@ -23,6 +23,7 @@ interface ResourceCenterProps {
   readonly importCharacterFile: (file: File) => Promise<CharacterLibraryImportResult>
   readonly listWorldInfos: () => Promise<readonly WorldInfoLibraryUpload[]>
   readonly importWorldInfoFile: (file: File) => Promise<WorldInfoLibraryUpload>
+  readonly setWorldInfoDefault: (id: string, enabled: boolean) => Promise<WorldInfoLibraryUpload>
   readonly listPresets: () => Promise<readonly PresetLibrarySummary[]>
   readonly importPresetFile: (file: File) => Promise<PresetLibrarySummary>
   readonly renamePreset: (id: string, name: string) => Promise<PresetLibrarySummary>
@@ -59,7 +60,7 @@ function sectionName(section: ResourceSection): string {
 export function RoleplayResourceCenter({
   accent, narrow, initialSection = 'characters',
   listCharacters, setCharacterArchived, importCharacterFile,
-  listWorldInfos, importWorldInfoFile,
+  listWorldInfos, importWorldInfoFile, setWorldInfoDefault,
   listPresets, importPresetFile, renamePreset,
   listPersonas, savePersona, deletePersona,
   onConfigureWorldInfo,
@@ -179,6 +180,15 @@ export function RoleplayResourceCenter({
       setPresets(value => (value ?? []).map(item => item.id === entry.id ? entry : item))
       setPresetDraft(undefined)
       setNotice(`预设已改名为「${entry.name}」`)
+    }).catch(reason => { setError(message(reason)) }).finally(finishAction)
+  }
+  const toggleWorldInfoDefault = (entry: WorldInfoLibraryUpload): void => {
+    startAction(`world-info-default:${entry.id}`)
+    void setWorldInfoDefault(entry.id, !entry.defaultForNewSessions).then(updated => {
+      setWorldInfos(value => (value ?? []).map(item => item.id === updated.id ? updated : item))
+      setNotice(updated.defaultForNewSessions
+        ? `「${updated.name}」会在新 RP 会话中默认加载`
+        : `「${updated.name}」改为开聊时手动选择`)
     }).catch(reason => { setError(message(reason)) }).finally(finishAction)
   }
   const savePersonaDraft = (): void => {
@@ -347,8 +357,11 @@ export function RoleplayResourceCenter({
             {section === 'world-info' && visibleWorldInfos.map((entry, index) => <div key={entry.id} style={{ ...rowStyle, borderTop: index === 0 ? 'none' : rowStyle.borderTop }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <strong style={{ display: 'block', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</strong>
-                <span style={{ display: 'block', fontSize: '10px', marginTop: '4px', opacity: .48 }}>{entry.entryCount} 条目{entry.degradations.length > 0 ? ` · ${entry.degradations.length} 项兼容提醒` : ''}</span>
+                <span style={{ display: 'block', fontSize: '10px', marginTop: '4px', opacity: .48 }}>{entry.entryCount} 条目{entry.defaultForNewSessions ? ' · 新会话默认加载' : ''}{entry.degradations.length > 0 ? ` · ${entry.degradations.length} 项兼容提醒` : ''}</span>
               </div>
+              <button type="button" disabled={busy !== undefined} onClick={() => { toggleWorldInfoDefault(entry) }} style={actionStyle(busy === undefined)}>
+                {busy === `world-info-default:${entry.id}` ? '保存中…' : entry.defaultForNewSessions ? '取消默认' : '设为默认'}
+              </button>
               {onConfigureWorldInfo !== undefined && <button type="button" disabled={busy !== undefined}
                 onClick={() => { onConfigureWorldInfo(entry) }} style={actionStyle(busy === undefined)}>
                 开始

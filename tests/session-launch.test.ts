@@ -135,6 +135,31 @@ test('composes ordered standalone World Info with a library character', context 
   ])
 })
 
+test('loads library defaults into new RP Sessions while preserving an explicit empty selection', context => {
+  const { characters, chats, presets, worldInfos } = libraries(context)
+  const character = characters.importFile({
+    data: new Uint8Array(readFileSync('tests/fixtures/manual-character-card.json')),
+    filename: 'character.json',
+    mediaType: 'application/json',
+  })
+  const city = worldInfos.importFile({
+    data: new Uint8Array(readFileSync('tests/fixtures/manual-world-info.json')),
+    filename: '海城.json',
+  })
+  worldInfos.setDefault(city.id, true)
+
+  const inherited = prepareAgentRpSession(characters, chats, presets, worldInfos, {
+    format: 0, sourceSessionId: 'source', kind: 'character', characterId: character.id, greetingIndex: 0,
+  })
+  const optedOut = prepareAgentRpSession(characters, chats, presets, worldInfos, {
+    format: 0, sourceSessionId: 'source', kind: 'character', characterId: character.id, greetingIndex: 0,
+    worldInfoIds: [],
+  })
+
+  assert.deepEqual(readActiveSessionWorldInfos(inherited.seed).map(value => value.result.name), ['海城'])
+  assert.deepEqual(readActiveSessionWorldInfos(optedOut.seed), [])
+})
+
 test('starts a replayable roleplay Session from standalone World Info without fabricating a character', context => {
   const { characters, chats, presets, worldInfos } = libraries(context)
   const worldInfo = worldInfos.importFile({

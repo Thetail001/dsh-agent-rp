@@ -2148,6 +2148,7 @@ type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
 > & {
   readonly listWorldInfos: () => Promise<readonly WorldInfoLibraryUpload[]>
   readonly importWorldInfoFile: (file: File) => Promise<WorldInfoLibraryUpload>
+  readonly setWorldInfoDefault: (id: string, enabled: boolean) => Promise<WorldInfoLibraryUpload>
   readonly startWorldInfoSession: (
     sessionId: SessionId,
     worldInfo: WorldInfoLibraryUpload,
@@ -2230,7 +2231,7 @@ function SidebarRoleplayDestination({
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, migrateChat, migrateRpDistributionChat,
   startCharacterSession,
   listPresets, importPresetFile, listPersonas, savePersona, deletePersona,
-  listWorldInfos, importWorldInfoFile, renamePreset,
+  listWorldInfos, importWorldInfoFile, setWorldInfoDefault, renamePreset,
   startWorldInfoSession,
   workspaceSettings, workspaceList,
 }: SidebarRoleplayDestinationProps) {
@@ -2500,6 +2501,7 @@ function SidebarRoleplayDestination({
       importCharacterFile={importCharacterFile}
       listWorldInfos={listWorldInfos}
       importWorldInfoFile={importWorldInfoFile}
+      setWorldInfoDefault={setWorldInfoDefault}
       listPresets={listPresets}
       importPresetFile={importPresetFile}
       renamePreset={renamePreset}
@@ -3750,6 +3752,10 @@ function worldInfoReason(entry: WorldInfoEntryProjection): { readonly title: str
     case 'disabled': return { title: '已关闭', detail: '打开条目后才会参与匹配' }
     case 'deleted': return { title: '已从本会话移除', detail: '原始卡片仍完整保留，可以随时恢复' }
     case 'empty-content': return { title: '没有内容', detail: '条目正文为空，不会进入提示' }
+    case 'compatibility-unsupported': return {
+      title: '等待兼容能力',
+      detail: `原文件希望启用，但当前还不能完整执行${entry.compatibilityBlockers.map(worldInfoCompatibilityLabel).join('、') || '这项扩展行为'}；不会用近似结果替代`,
+    }
     case 'decorator-unsupported': return { title: '暂不执行', detail: '正文含有酒馆装饰器；内容已保留，但当前运行层不会执行' }
     case 'template-unsupported': return { title: 'EJS 尚未就绪', detail: '正文含有 EJS，但当前运行实例没有载入隔离执行环境' }
     case 'template-error': return {
@@ -3768,6 +3774,17 @@ function worldInfoReason(entry: WorldInfoEntryProjection): { readonly title: str
     case 'secondary-unmatched': return { title: '次要条件未满足', detail: '主关键词已经出现，但次要关键词规则尚未满足' }
     case 'budget-excluded': return { title: '超出预算', detail: '条目已匹配，但本书的 token 预算优先保留了其他条目' }
     case 'session-budget-excluded': return { title: '超出总预算', detail: '条目已匹配，但这段会话的世界书总预算优先保留了其他条目' }
+  }
+}
+
+function worldInfoCompatibilityLabel(value: WorldInfoEntryProjection['compatibilityBlockers'][number]): string {
+  switch (value) {
+    case 'entry-advanced-matching': return '高级匹配'
+    case 'entry-probability': return '概率触发'
+    case 'entry-unsupported-position': return '扩展注入位置'
+    case 'lorebook-recursion': return '递归触发'
+    case 'timed-effects': return '定时、粘滞或冷却效果'
+    case 'vector-matching': return '向量匹配'
   }
 }
 
@@ -3798,9 +3815,11 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
   readonly onImport: (file: File) => Promise<void>
   readonly onSave: (request: WorldInfoConfigurationRequest) => Promise<void>
 }) {
+  const narrow = useNarrowCharacterLibrary()
   const importInputRef = useRef<HTMLInputElement>(null)
+  const allEntries = worldInfo.books.flatMap(book => book.entries)
   const first = worldInfo.books.flatMap(book => book.entries.map(entry => `${book.id}\u0000${entry.index}`))[0]
-  const [selectedKey, setSelectedKey] = useState(first)
+  const [selectedKey, setSelectedKey] = useState<string>()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<WorldInfoEditableEntry>()
   const [saving, setSaving] = useState(false)
@@ -3809,11 +3828,11 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
   const [budgetDraft, setBudgetDraft] = useState(String(worldInfo.tokenBudget))
   useEffect(() => { setBudgetDraft(String(worldInfo.tokenBudget)) }, [worldInfo.tokenBudget])
   useEffect(() => {
-    if (selectedKey === undefined && first !== undefined) setSelectedKey(first)
-  }, [first, selectedKey])
-  const pair = worldInfo.books.flatMap(book => book.entries.map(entry => ({ book, entry })))
+    if (!narrow && selectedKey === undefined && first !== undefined) setSelectedKey(first)
+  }, [first, narrow, selectedKey])
+  const pair = selectedKey === undefined ? undefined : worldInfo.books
+    .flatMap(book => book.entries.map(entry => ({ book, entry })))
     .find(({ book, entry }) => `${book.id}\u0000${entry.index}` === selectedKey)
-    ?? worldInfo.books.flatMap(book => book.entries.map(entry => ({ book, entry })))[0]
   useEffect(() => {
     if (pair === undefined || editing) return
     setDraft(editableFromProjection(pair.entry))
@@ -3822,6 +3841,9 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
   const entry = pair?.entry
   const reason = entry === undefined ? undefined : worldInfoReason(entry)
   const hasOverrides = worldInfo.books.some(item => item.entries.some(candidate => candidate.modified || candidate.deleted))
+  const enabledCount = allEntries.filter(candidate => candidate.enabled && !candidate.deleted).length
+  const blockedCount = allEntries.filter(candidate => !candidate.deleted
+    && (candidate.compatibilityBlockers.length > 0 || candidate.hasDecorators)).length
   const mutate = (request: WorldInfoConfigurationRequest, after?: () => void): void => {
     setSaving(true)
     setError(undefined)
@@ -3846,18 +3868,19 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
   return <div data-agent-rp-dialog data-agent-rp-surface="world-info-manager"
     role="dialog" aria-modal="true" aria-label="世界书" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.55)', display: 'flex', inset: 0,
-    justifyContent: 'center', padding: '20px', position: 'fixed', zIndex: 1002,
+    justifyContent: 'center', padding: narrow ? 0 : '20px', position: 'fixed', zIndex: 1002,
   }} onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
     <section style={{
       background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
-      borderRadius: '16px', boxShadow: '0 24px 90px rgba(0,0,0,.38)', display: 'flex', flexDirection: 'column',
-      maxHeight: 'calc(100vh - 40px)', maxWidth: '1080px', overflow: 'hidden', width: 'min(1080px, calc(100vw - 40px))',
+      borderRadius: narrow ? 0 : '16px', boxShadow: '0 24px 90px rgba(0,0,0,.38)', display: 'flex', flexDirection: 'column',
+      height: narrow ? '100dvh' : undefined, maxHeight: narrow ? '100dvh' : 'calc(100vh - 40px)', maxWidth: '1080px',
+      overflow: 'hidden', width: narrow ? '100vw' : 'min(1080px, calc(100vw - 40px))',
     }}>
       <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', flexWrap: 'wrap', gap: '12px', padding: '17px 20px' }}>
         <div>
           <h2 style={{ fontSize: '18px', margin: 0 }}>世界书</h2>
           <div style={{ fontSize: '12px', marginTop: '4px', opacity: .52 }}>
-            {worldInfo.books.length} 本 · {worldInfo.books.reduce((sum, item) => sum + item.entries.length, 0)} 条 · 当前激活 {worldInfo.activeCount} 条 · 约 {worldInfo.approximateTokens}/{worldInfo.tokenBudget} tokens
+            {worldInfo.books.length} 本 · {allEntries.length} 条 · {enabledCount} 条启用 · 本轮生效 {worldInfo.activeCount} 条{blockedCount === 0 ? '' : ` · ${blockedCount} 条等待兼容`} · 约 {worldInfo.approximateTokens}/{worldInfo.tokenBudget} tokens
             {worldInfo.budgetExcludedCount > 0 ? ` · ${worldInfo.budgetExcludedCount} 条超出总预算` : ''}
           </div>
         </div>
@@ -3891,7 +3914,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
         <button type="button" aria-label="关闭世界书" data-agent-rp-action="close-world-info-manager"
           onClick={onClose} style={{ background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', padding: '3px 6px' }}>×</button>
       </header>
-      {pair === undefined && <div style={{ alignItems: 'center', display: 'flex', flex: 1, flexDirection: 'column', justifyContent: 'center', minHeight: '300px', padding: '30px', textAlign: 'center' }}>
+      {allEntries.length === 0 && <div style={{ alignItems: 'center', display: 'flex', flex: 1, flexDirection: 'column', justifyContent: 'center', minHeight: '300px', padding: '30px', textAlign: 'center' }}>
         <div style={{ fontSize: '28px', opacity: .38 }}>◇</div>
         <h3 style={{ fontSize: '16px', margin: '14px 0 0' }}>还没有世界书</h3>
         <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '8px 0 0', maxWidth: '430px', opacity: .58 }}>
@@ -3902,16 +3925,35 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
         </button>
         {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.55, marginTop: '14px' }}>{error}</div>}
       </div>}
-      {pair !== undefined && book !== undefined && entry !== undefined && reason !== undefined && <>
-      <div style={{ display: 'flex', flex: 1, flexWrap: 'wrap', minHeight: 0, overflowY: 'auto' }}>
-        <nav aria-label="世界书条目" style={{
+      {allEntries.length > 0 && <>
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        {(!narrow || pair === undefined) && <nav aria-label="世界书条目" data-agent-rp-world-info-pane="list" style={{
           borderRight: '1px solid var(--dsw-alias-border-l2, #39393c)', boxSizing: 'border-box',
-          flex: '1 1 250px', maxWidth: '330px', minWidth: '230px', padding: '12px 10px 18px',
+          flex: narrow ? '1 1 auto' : '0 0 320px', maxWidth: narrow ? undefined : '330px', minWidth: 0,
+          overflowY: 'auto', padding: '12px 10px 18px', width: narrow ? '100%' : undefined,
         }}>
-          {worldInfo.books.map(item => <section key={item.id} style={{ marginBottom: '15px' }}>
-            <div style={{ alignItems: 'baseline', display: 'flex', fontSize: '11px', fontWeight: 650, gap: '6px', opacity: .5, padding: '4px 8px 7px' }}>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</span>
-              <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}>{item.source === 'character' ? '角色卡' : '外部'}</span>
+          {worldInfo.books.map(item => {
+            const itemEntries = item.entries.filter(candidate => !candidate.deleted)
+            const itemEnabled = itemEntries.filter(candidate => candidate.enabled).length
+            const itemBlocked = itemEntries.filter(candidate => candidate.compatibilityBlockers.length > 0 || candidate.hasDecorators).length
+            return <section key={item.id} data-agent-rp-world-info-book={item.id} style={{ marginBottom: '15px' }}>
+            <div style={{ fontSize: '11px', padding: '4px 8px 7px' }}>
+              <div style={{ alignItems: 'baseline', display: 'flex', fontWeight: 650, gap: '6px' }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</span>
+                <span style={{ marginLeft: 'auto', opacity: .5, whiteSpace: 'nowrap' }}>{item.source === 'character' ? '角色卡' : '外部'}</span>
+              </div>
+              <div style={{ marginTop: '4px', opacity: .48 }}>{itemEnabled}/{itemEntries.length} 条启用{itemBlocked === 0 ? '' : ` · ${itemBlocked} 条等待兼容`}</div>
+              <div data-agent-rp-world-info-book-actions style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginTop: '7px' }}>
+                <button type="button" disabled={saving || itemEntries.length === 0 || itemEnabled === itemEntries.length} onClick={() => {
+                  mutate({ operation: 'set-book-enabled', revision: worldInfo.revision, bookId: item.id, enabled: true })
+                }} style={{ ...generationButtonStyle, fontSize: '10px', padding: '4px 7px' }}>整本启用</button>
+                <button type="button" disabled={saving || itemEnabled === 0} onClick={() => {
+                  mutate({ operation: 'set-book-enabled', revision: worldInfo.revision, bookId: item.id, enabled: false })
+                }} style={{ ...generationButtonStyle, fontSize: '10px', padding: '4px 7px' }}>整本关闭</button>
+                {item.entries.some(candidate => candidate.modified || candidate.deleted) && <button type="button" disabled={saving} onClick={() => {
+                  mutate({ operation: 'reset-book', revision: worldInfo.revision, bookId: item.id })
+                }} style={{ ...generationButtonStyle, fontSize: '10px', padding: '4px 7px' }}>恢复原文件</button>}
+              </div>
             </div>
             <div style={{ display: 'grid', gap: '5px' }}>
               {item.entries.map(candidate => {
@@ -3935,9 +3977,15 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
                 </button>
               })}
             </div>
-          </section>)}
-        </nav>
-        <main style={{ boxSizing: 'border-box', flex: '2 1 480px', minWidth: 0, padding: '22px 24px 28px' }}>
+          </section>
+          })}
+        </nav>}
+        {pair !== undefined && book !== undefined && entry !== undefined && reason !== undefined && <main data-agent-rp-world-info-pane="detail" style={{
+          boxSizing: 'border-box', flex: '1 1 auto', minWidth: 0, overflowY: 'auto', padding: narrow ? '16px 16px 24px' : '22px 24px 28px',
+        }}>
+          {narrow && <button type="button" data-agent-rp-action="back-world-info-list" onClick={() => { setSelectedKey(undefined); setEditing(false); setError(undefined) }} style={{
+            ...generationButtonStyle, marginBottom: '16px', padding: '7px 10px',
+          }}>‹ 返回条目列表</button>}
           {!editing && <>
             <div style={{ alignItems: 'flex-start', display: 'flex', gap: '12px' }}>
               <div style={{ minWidth: 0 }}>
@@ -3964,11 +4012,12 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
               <DetailSection title="注入位置" text={entry.position === 'before_char' ? '角色设定之前' : '角色设定之后'} />
               <DetailSection title="估算占用" text={`约 ${entry.approximateTokens} tokens${book.tokenBudget === undefined ? '' : ` · 本书预算 ${book.tokenBudget}`}`} />
             </div>
-            {(entry.useRegex || entry.hasDecorators || book.recursiveScanning || book.degradations.length > 0) && <details style={{ fontSize: '12px', lineHeight: 1.65, marginTop: '17px', opacity: .68 }}>
+            {(entry.useRegex || entry.hasDecorators || entry.compatibilityBlockers.length > 0 || book.recursiveScanning || book.degradations.length > 0) && <details style={{ fontSize: '12px', lineHeight: 1.65, marginTop: '17px', opacity: .68 }}>
               <summary style={{ cursor: 'pointer' }}>兼容性信息</summary>
               <div style={{ marginTop: '7px' }}>{[
                 entry.useRegex ? '正则关键词在受限 QuickJS 环境中执行' : '',
                 entry.hasDecorators ? '装饰器已保留，当前不执行' : '',
+                ...entry.compatibilityBlockers.map(value => `${worldInfoCompatibilityLabel(value)}已保留，等待原生兼容`),
                 book.recursiveScanning ? '递归扫描已保留，当前不执行' : '',
                 ...book.degradations,
               ].filter(Boolean).join('\n')}</div>
@@ -3995,7 +4044,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
             }, () => { setEditing(false) })}
           />}
           {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.55, marginTop: '14px' }}>{error}</div>}
-        </main>
+        </main>}
       </div>
       </>}
     </section>
@@ -4131,7 +4180,7 @@ function AdditionalWorldInfoSelection({
   excludedIds = [],
 }: {
   readonly listWorldInfos: HeaderProps['listWorldInfos']
-  readonly selectedWorldInfoIds: readonly string[]
+  readonly selectedWorldInfoIds: readonly string[] | undefined
   readonly onChange: (ids: readonly string[]) => void
   readonly excludedIds?: readonly string[]
 }) {
@@ -4139,7 +4188,7 @@ function AdditionalWorldInfoSelection({
   const [worldInfoOpen, setWorldInfoOpen] = useState(false)
   const [worldInfoError, setWorldInfoError] = useState<string>()
   useEffect(() => {
-    if (!worldInfoOpen || worldInfos !== undefined || worldInfoError !== undefined) return
+    if (worldInfos !== undefined || worldInfoError !== undefined) return
     let current = true
     void listWorldInfos().then(value => {
       if (current) setWorldInfos(value)
@@ -4147,10 +4196,16 @@ function AdditionalWorldInfoSelection({
       if (current) setWorldInfoError(reason instanceof Error ? reason.message : String(reason))
     })
     return () => { current = false }
-  }, [listWorldInfos, worldInfoError, worldInfoOpen, worldInfos])
+  }, [listWorldInfos, worldInfoError, worldInfos])
   const availableWorldInfos = worldInfos?.filter(entry => !excludedIds.includes(entry.id))
+  const selection = selectedWorldInfoIds ?? []
+  useEffect(() => {
+    if (selectedWorldInfoIds !== undefined || availableWorldInfos === undefined) return
+    const defaults = availableWorldInfos.filter(entry => entry.defaultForNewSessions).slice(0, 16).map(entry => entry.id)
+    onChange(defaults)
+  }, [availableWorldInfos, onChange, selectedWorldInfoIds])
   return <div style={{ marginTop: '18px' }}>
-    <button type="button" aria-expanded={worldInfoOpen} data-agent-rp-world-info-selection={selectedWorldInfoIds.length}
+    <button type="button" aria-expanded={worldInfoOpen} data-agent-rp-world-info-selection={selection.length}
       onClick={() => { setWorldInfoOpen(value => !value) }} style={{
         alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #202024)',
         border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '10px', color: 'inherit',
@@ -4160,7 +4215,8 @@ function AdditionalWorldInfoSelection({
       <span style={{ flex: 1, minWidth: 0 }}>
         <strong style={{ display: 'block', fontSize: '12px' }}>附加世界书</strong>
         <span style={{ display: 'block', fontSize: '11px', marginTop: '3px', opacity: .5 }}>
-          {selectedWorldInfoIds.length === 0 ? '不额外加载' : `已选择 ${selectedWorldInfoIds.length} 本`}
+          {selectedWorldInfoIds === undefined ? '正在读取默认设置…'
+            : selection.length === 0 ? '不额外加载' : `已选择 ${selection.length} 本`}
         </span>
       </span>
       <DisclosureChevron expanded={worldInfoOpen} />
@@ -4184,9 +4240,9 @@ function AdditionalWorldInfoSelection({
                 {worldInfos?.length === 0 ? '世界书库暂无内容，可从资源中心导入' : '没有其他可附加的世界书'}
               </div>
             : availableWorldInfos.map(entry => {
-                const order = selectedWorldInfoIds.indexOf(entry.id)
+                const order = selection.indexOf(entry.id)
                 const checked = order >= 0
-                const disabled = !checked && selectedWorldInfoIds.length >= 16
+                const disabled = !checked && selection.length >= 16
                 return <label key={entry.id} data-agent-rp-world-info-option={entry.id} style={{
                   alignItems: 'center', background: checked ? `color-mix(in srgb, ${color} 10%, transparent)` : 'transparent',
                   borderRadius: '8px', cursor: disabled ? 'default' : 'pointer', display: 'flex', gap: '9px',
@@ -4194,13 +4250,13 @@ function AdditionalWorldInfoSelection({
                 }}>
                   <input type="checkbox" checked={checked} disabled={disabled} onChange={event => {
                     onChange(event.target.checked
-                      ? [...selectedWorldInfoIds, entry.id]
-                      : selectedWorldInfoIds.filter(id => id !== entry.id))
+                      ? [...selection, entry.id]
+                      : selection.filter(id => id !== entry.id))
                   }} style={{ accentColor: color, margin: 0 }} />
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <strong style={{ display: 'block', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</strong>
                     <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .48 }}>
-                      {entry.entryCount} 条目{entry.degradations.length === 0 ? '' : ` · ${entry.degradations.length} 项兼容提醒`}
+                      {entry.entryCount} 条目{entry.defaultForNewSessions ? ' · 新会话默认' : ''}{entry.degradations.length === 0 ? '' : ` · ${entry.degradations.length} 项兼容提醒`}
                     </span>
                   </span>
                   {checked && <span aria-label={`加载顺序 ${order + 1}`} style={{
@@ -4211,7 +4267,7 @@ function AdditionalWorldInfoSelection({
                 </label>
               })}
       <div style={{ fontSize: '10px', lineHeight: 1.5, opacity: .46, padding: '1px 3px' }}>
-        按选择顺序加载，最多 16 本；不会修改角色卡或世界书原文件
+        标记为新会话默认的世界书会自动选中，也可以在这里临时取消；最多 16 本
       </div>
     </div>}
   </div>
@@ -4235,7 +4291,7 @@ function WorldInfoLaunchDialog({ worldInfo, listWorldInfos, listPresets, listPer
   const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
   const [personaError, setPersonaError] = useState<string>()
   const [personaId, setPersonaId] = useState('')
-  const [selectedWorldInfoIds, setSelectedWorldInfoIds] = useState<readonly string[]>([])
+  const [selectedWorldInfoIds, setSelectedWorldInfoIds] = useState<readonly string[]>()
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string>()
   useEffect(() => {
@@ -4344,7 +4400,7 @@ function WorldInfoLaunchDialog({ worldInfo, listWorldInfos, listPresets, listPer
             worldInfo,
             persona,
             presetId === '' ? undefined : presetId,
-            selectedWorldInfoIds.length === 0 ? undefined : selectedWorldInfoIds,
+            selectedWorldInfoIds,
           ).catch(reason => {
             setStarting(false)
             setError(reason instanceof Error ? reason.message : String(reason))
@@ -4394,7 +4450,7 @@ function CharacterLibraryDialog({
     entries: presets, error: presetError, presetId, selectPreset, selectImportedPreset, renamePreset,
   } = usePresetPreference(listPresets)
   const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
-  const [selectedWorldInfoIds, setSelectedWorldInfoIds] = useState<readonly string[]>([])
+  const [selectedWorldInfoIds, setSelectedWorldInfoIds] = useState<readonly string[]>()
   const [personaId, setPersonaId] = useState('')
   const [editingPersona, setEditingPersona] = useState(false)
   const [personaEditorId, setPersonaEditorId] = useState<string>()
@@ -4795,7 +4851,7 @@ function CharacterLibraryDialog({
       await onStart(approval.character, greetingIndex, persona === undefined ? undefined : {
         id: persona.id, name: persona.name, description: persona.description,
       }, presetId === '' ? undefined : presetId,
-      selectedWorldInfoIds.length === 0 ? undefined : selectedWorldInfoIds,
+      selectedWorldInfoIds,
       copyActiveMemory ? 'copy-active' : undefined,
       approval.resourcePermissions)
     })().then(() => {
@@ -10541,6 +10597,16 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok || value.upload === undefined) throw new Error(value.error ?? `世界书上传失败（${response.status}）`)
     return value.upload
   }
+  const setWorldInfoDefault = async (id: string, enabled: boolean): Promise<WorldInfoLibraryUpload> => {
+    const response = await fetch(WORLD_INFO_LIBRARY_PATH, {
+      method: 'PATCH',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ format: 0, id, defaultForNewSessions: enabled }),
+    })
+    const value = await response.json() as Partial<WorldInfoLibraryUploadResponse> & { readonly error?: string }
+    if (!response.ok || value.upload === undefined) throw new Error(value.error ?? `世界书默认加载设置失败（${response.status}）`)
+    return value.upload
+  }
   const importWorldInfo = async (sessionId: SessionId, file: File): Promise<void> => {
     const upload = await importWorldInfoFile(file)
     const scope = ctx.sessions.scope(sessionId)
@@ -10726,7 +10792,7 @@ export function apply(ctx: ClientContext): void {
     migrateRpDistributionChat: migrateRpDistributionChatFromBlankSession,
     startCharacterSession: startCharacterFromBlankSession, listPresets, importPresetFile,
     renamePreset: renamePresetLibraryEntry, listPersonas, savePersona, deletePersona,
-    listWorldInfos, importWorldInfoFile, startWorldInfoSession: startWorldInfoFromBlankSession,
+    listWorldInfos, importWorldInfoFile, setWorldInfoDefault, startWorldInfoSession: startWorldInfoFromBlankSession,
   }
   ctx.slots.inject('sidebar.destinations', () => ctx.slots.register({
     name: 'sidebar.destinations', id: 'agent-rp-workbench', order: 20,

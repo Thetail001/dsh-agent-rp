@@ -96,3 +96,30 @@ test('persists a bounded Session-wide token budget without resetting entry overl
     operation: 'set-budget', revision: 2, tokenBudget: 100_001,
   })), /过大/u)
 })
+
+test('changes one whole book atomically and restores its imported state', () => {
+  const book = source()
+  const edited = configureWorldInfo({ format: 0, revision: 0, overrides: [] }, {
+    operation: 'edit', revision: 0, bookId: book.id, entryIndex: 0,
+    entry: { ...editableWorldInfoEntry(book.lorebook.entries[0]!), content: '保留这次会话的钟楼改写。' },
+  }, [book])
+  const removed = configureWorldInfo(edited, {
+    operation: 'delete', revision: 1, bookId: book.id, entryIndex: 1, deleted: true,
+  }, [book])
+  const disabled = configureWorldInfo(removed,
+    parseWorldInfoConfigurationRequest(JSON.stringify({
+      operation: 'set-book-enabled', revision: 2, bookId: book.id, enabled: false,
+    })), [book])
+
+  assert.equal(disabled.revision, 3)
+  assert.deepEqual(configuredLorebook(book, disabled).lorebook.entries.map(entry => entry.enabled), [false, false])
+  assert.equal(configuredLorebook(book, disabled).lorebook.entries[0]?.content, '保留这次会话的钟楼改写。')
+  assert.deepEqual([...configuredLorebook(book, disabled).deleted], [1])
+
+  const restored = configureWorldInfo(disabled, parseWorldInfoConfigurationRequest(JSON.stringify({
+    operation: 'reset-book', revision: 3, bookId: book.id,
+  })), [book])
+  assert.equal(restored.revision, 4)
+  assert.deepEqual(restored.overrides, [])
+  assert.deepEqual(configuredLorebook(book, restored).lorebook.entries.map(entry => entry.enabled), [true, true])
+})
