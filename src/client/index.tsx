@@ -2148,7 +2148,13 @@ type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
 > & {
   readonly listWorldInfos: () => Promise<readonly WorldInfoLibraryUpload[]>
   readonly importWorldInfoFile: (file: File) => Promise<WorldInfoLibraryUpload>
-  readonly startWorldInfoSession: (sessionId: SessionId, worldInfo: WorldInfoLibraryUpload) => Promise<void>
+  readonly startWorldInfoSession: (
+    sessionId: SessionId,
+    worldInfo: WorldInfoLibraryUpload,
+    persona?: SessionPersonaSnapshot,
+    presetId?: string,
+    worldInfoIds?: readonly string[],
+  ) => Promise<void>
   readonly renamePreset: (id: string, name: string) => Promise<PresetLibrarySummary>
   readonly workspaceSettings: WorkspaceSettingsSource
   readonly workspaceList: WorkspaceListSource
@@ -2233,6 +2239,7 @@ function SidebarRoleplayDestination({
   const [migrationOpen, setMigrationOpen] = useState(false)
   const [resourceCenterOpen, setResourceCenterOpen] = useState(false)
   const [resourceCenterSection, setResourceCenterSection] = useState<'characters' | 'world-info'>('characters')
+  const [worldInfoLaunch, setWorldInfoLaunch] = useState<WorldInfoLibraryUpload>()
   const [launchSessionId, setLaunchSessionId] = useState<SessionId | undefined>(undefined)
   const [accessSaving, setAccessSaving] = useState(false)
   const [accessError, setAccessError] = useState<string>()
@@ -2500,9 +2507,27 @@ function SidebarRoleplayDestination({
       savePersona={savePersona}
       deletePersona={deletePersona}
       {...(launchSessionId === undefined ? {} : {
-        onStartWorldInfo: (worldInfo: WorldInfoLibraryUpload) => startWorldInfoSession(launchSessionId, worldInfo),
+        onConfigureWorldInfo: (worldInfo: WorldInfoLibraryUpload) => {
+          setResourceCenterOpen(false)
+          setWorldInfoLaunch(worldInfo)
+        },
       })}
-      onClose={() => { setResourceCenterOpen(false) }}
+      onClose={() => { setWorldInfoLaunch(undefined); setResourceCenterOpen(false) }}
+    />, document.body)}
+    {worldInfoLaunch !== undefined && launchSessionId !== undefined && createPortal(<WorldInfoLaunchDialog
+      worldInfo={worldInfoLaunch}
+      listWorldInfos={listWorldInfos}
+      listPresets={listPresets}
+      listPersonas={listPersonas}
+      onBack={() => {
+        setWorldInfoLaunch(undefined)
+        setResourceCenterOpen(true)
+      }}
+      onStart={async (worldInfo, persona, presetId, worldInfoIds) => {
+        await startWorldInfoSession(launchSessionId, worldInfo, persona, presetId, worldInfoIds)
+        setWorldInfoLaunch(undefined)
+        setResourceCenterOpen(false)
+      }}
     />, document.body)}
   </>
 }
@@ -4099,6 +4124,239 @@ interface PreflightApprovalResult {
   readonly resourcePermissions?: AgentRpSessionResourcePermissions
 }
 
+function AdditionalWorldInfoSelection({
+  listWorldInfos,
+  selectedWorldInfoIds,
+  onChange,
+  excludedIds = [],
+}: {
+  readonly listWorldInfos: HeaderProps['listWorldInfos']
+  readonly selectedWorldInfoIds: readonly string[]
+  readonly onChange: (ids: readonly string[]) => void
+  readonly excludedIds?: readonly string[]
+}) {
+  const [worldInfos, setWorldInfos] = useState<readonly WorldInfoLibraryUpload[]>()
+  const [worldInfoOpen, setWorldInfoOpen] = useState(false)
+  const [worldInfoError, setWorldInfoError] = useState<string>()
+  useEffect(() => {
+    if (!worldInfoOpen || worldInfos !== undefined || worldInfoError !== undefined) return
+    let current = true
+    void listWorldInfos().then(value => {
+      if (current) setWorldInfos(value)
+    }, reason => {
+      if (current) setWorldInfoError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { current = false }
+  }, [listWorldInfos, worldInfoError, worldInfoOpen, worldInfos])
+  const availableWorldInfos = worldInfos?.filter(entry => !excludedIds.includes(entry.id))
+  return <div style={{ marginTop: '18px' }}>
+    <button type="button" aria-expanded={worldInfoOpen} data-agent-rp-world-info-selection={selectedWorldInfoIds.length}
+      onClick={() => { setWorldInfoOpen(value => !value) }} style={{
+        alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #202024)',
+        border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '10px', color: 'inherit',
+        cursor: 'pointer', display: 'flex', font: 'inherit', gap: '9px', padding: '10px 11px',
+        textAlign: 'left', width: '100%',
+      }}>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <strong style={{ display: 'block', fontSize: '12px' }}>附加世界书</strong>
+        <span style={{ display: 'block', fontSize: '11px', marginTop: '3px', opacity: .5 }}>
+          {selectedWorldInfoIds.length === 0 ? '不额外加载' : `已选择 ${selectedWorldInfoIds.length} 本`}
+        </span>
+      </span>
+      <DisclosureChevron expanded={worldInfoOpen} />
+    </button>
+    {worldInfoOpen && <div style={{
+      border: '1px solid var(--dsw-alias-border-l2, #39393c)', borderRadius: '10px',
+      display: 'grid', gap: '7px', marginTop: '7px', maxHeight: '260px', overflowY: 'auto', padding: '9px',
+    }}>
+      {worldInfoError !== undefined
+        ? <div role="alert" style={{ alignItems: 'center', color: '#e88989', display: 'flex', fontSize: '11px', gap: '8px', lineHeight: 1.5 }}>
+            <span style={{ flex: 1 }}>{worldInfoError}</span>
+            <button type="button" onClick={() => { setWorldInfoError(undefined) }} style={{
+              background: 'transparent', border: '1px solid currentColor', borderRadius: '7px', color: 'inherit',
+              cursor: 'pointer', font: 'inherit', padding: '4px 7px', whiteSpace: 'nowrap',
+            }}>重试</button>
+          </div>
+        : availableWorldInfos === undefined
+          ? <div style={{ fontSize: '11px', opacity: .5 }}>正在读取世界书库…</div>
+          : availableWorldInfos.length === 0
+            ? <div style={{ fontSize: '11px', opacity: .5 }}>
+                {worldInfos?.length === 0 ? '世界书库暂无内容，可从资源中心导入' : '没有其他可附加的世界书'}
+              </div>
+            : availableWorldInfos.map(entry => {
+                const order = selectedWorldInfoIds.indexOf(entry.id)
+                const checked = order >= 0
+                const disabled = !checked && selectedWorldInfoIds.length >= 16
+                return <label key={entry.id} data-agent-rp-world-info-option={entry.id} style={{
+                  alignItems: 'center', background: checked ? `color-mix(in srgb, ${color} 10%, transparent)` : 'transparent',
+                  borderRadius: '8px', cursor: disabled ? 'default' : 'pointer', display: 'flex', gap: '9px',
+                  opacity: disabled ? .42 : 1, padding: '8px 9px',
+                }}>
+                  <input type="checkbox" checked={checked} disabled={disabled} onChange={event => {
+                    onChange(event.target.checked
+                      ? [...selectedWorldInfoIds, entry.id]
+                      : selectedWorldInfoIds.filter(id => id !== entry.id))
+                  }} style={{ accentColor: color, margin: 0 }} />
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <strong style={{ display: 'block', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</strong>
+                    <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .48 }}>
+                      {entry.entryCount} 条目{entry.degradations.length === 0 ? '' : ` · ${entry.degradations.length} 项兼容提醒`}
+                    </span>
+                  </span>
+                  {checked && <span aria-label={`加载顺序 ${order + 1}`} style={{
+                    alignItems: 'center', background: `color-mix(in srgb, ${color} 18%, transparent)`,
+                    borderRadius: '999px', display: 'inline-flex', fontSize: '10px', height: '20px',
+                    justifyContent: 'center', minWidth: '20px', padding: '0 5px',
+                  }}>{order + 1}</span>}
+                </label>
+              })}
+      <div style={{ fontSize: '10px', lineHeight: 1.5, opacity: .46, padding: '1px 3px' }}>
+        按选择顺序加载，最多 16 本；不会修改角色卡或世界书原文件
+      </div>
+    </div>}
+  </div>
+}
+
+function WorldInfoLaunchDialog({ worldInfo, listWorldInfos, listPresets, listPersonas, onBack, onStart }: {
+  readonly worldInfo: WorldInfoLibraryUpload
+  readonly listWorldInfos: HeaderProps['listWorldInfos']
+  readonly listPresets: HeaderProps['listPresets']
+  readonly listPersonas: HeaderProps['listPersonas']
+  readonly onBack: () => void
+  readonly onStart: (
+    worldInfo: WorldInfoLibraryUpload,
+    persona?: SessionPersonaSnapshot,
+    presetId?: string,
+    worldInfoIds?: readonly string[],
+  ) => Promise<void>
+}) {
+  const narrow = useNarrowCharacterLibrary()
+  const { entries: presets, error: presetError, presetId, selectPreset } = usePresetPreference(listPresets)
+  const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
+  const [personaError, setPersonaError] = useState<string>()
+  const [personaId, setPersonaId] = useState('')
+  const [selectedWorldInfoIds, setSelectedWorldInfoIds] = useState<readonly string[]>([])
+  const [starting, setStarting] = useState(false)
+  const [error, setError] = useState<string>()
+  useEffect(() => {
+    let current = true
+    void listPersonas().then(value => {
+      if (current) setPersonas(value)
+    }, reason => {
+      if (current) {
+        setPersonas([])
+        setPersonaError(reason instanceof Error ? reason.message : String(reason))
+      }
+    })
+    return () => { current = false }
+  }, [listPersonas])
+  const selectedPersona = personas?.find(entry => entry.id === personaId)
+  return <div data-agent-rp-dialog data-agent-rp-surface="world-info-launch" role="dialog" aria-modal="true"
+    aria-label="配置世界书剧情" style={{
+      alignItems: 'center', background: 'rgba(0,0,0,.66)', display: 'flex', inset: 0, justifyContent: 'center',
+      padding: narrow ? 0 : '24px', position: 'fixed', zIndex: 1260,
+    }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #151518)', border: narrow ? 0 : '1px solid var(--dsw-alias-border-l2, #38383d)',
+      borderRadius: narrow ? 0 : '16px', boxShadow: narrow ? undefined : '0 24px 80px rgba(0,0,0,.5)',
+      display: 'flex', flexDirection: 'column', height: narrow ? '100dvh' : 'min(720px, calc(100vh - 48px))',
+      maxWidth: '560px', overflow: 'hidden', width: narrow ? '100vw' : 'min(560px, calc(100vw - 48px))',
+    }}>
+      <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '10px', padding: narrow ? 'max(12px, env(safe-area-inset-top)) 14px 12px' : '16px 18px' }}>
+        <button type="button" aria-label="返回世界书库" disabled={starting} onClick={onBack} style={{
+          alignItems: 'center', background: 'transparent', border: 0, borderRadius: '50%', color: 'inherit',
+          cursor: starting ? 'default' : 'pointer', display: 'inline-flex', flex: '0 0 auto', font: 'inherit',
+          fontSize: '25px', height: '36px', justifyContent: 'center', opacity: starting ? .45 : 1, padding: 0, width: '36px',
+        }}>‹</button>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h2 style={{ fontSize: '16px', margin: 0 }}>开始世界书剧情</h2>
+          <span style={{ display: 'block', fontSize: '11px', marginTop: '3px', opacity: .5 }}>组合本次新会话使用的资源</span>
+        </div>
+      </header>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: narrow ? '18px 16px 24px' : '20px 22px 26px' }}>
+        <div data-agent-rp-world-info-primary={worldInfo.id} style={{
+          background: `color-mix(in srgb, ${color} 10%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
+          borderRadius: '12px', padding: '12px 13px',
+        }}>
+          <span style={{ display: 'block', fontSize: '10px', opacity: .5 }}>主世界书 · 只读</span>
+          <strong style={{ display: 'block', fontSize: '14px', marginTop: '5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{worldInfo.name}</strong>
+          <span style={{ display: 'block', fontSize: '11px', marginTop: '4px', opacity: .52 }}>
+            {worldInfo.entryCount} 条目{worldInfo.degradations.length === 0 ? '' : ` · ${worldInfo.degradations.length} 项兼容提醒`}
+          </span>
+        </div>
+        <label htmlFor="agent-rp-world-info-launch-preset" style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '20px 0 7px', opacity: .65 }}>对话预设</label>
+        <div style={{ position: 'relative' }}>
+          <select id="agent-rp-world-info-launch-preset" value={presetId} onChange={event => { selectPreset(event.target.value) }} style={{
+            appearance: 'none', background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+            borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 36px 9px 10px', width: '100%',
+          }}>
+            <option value="">不使用预设</option>
+            {presets?.map(entry => <option key={entry.id} value={entry.id}>{presetLibraryOptionLabel(entry, presets)}</option>)}
+          </select>
+          <SelectChevron />
+        </div>
+        <div style={{ fontSize: '11px', lineHeight: 1.55, marginTop: '6px', opacity: .5 }}>
+          {presetError !== undefined ? presetError : presets === undefined ? '正在读取预设…'
+            : presets.length === 0 ? '预设库暂无内容，可返回资源中心导入'
+              : presetId === '' ? '新会话不会启用酒馆预设'
+                : (() => {
+                    const preset = presets.find(entry => entry.id === presetId)
+                    return preset === undefined ? '所选预设已不可用'
+                      : `${preset.enabledCount}/${preset.promptCount} 项启用${preset.regexScriptCount === 0 ? '' : ` · ${preset.regexScriptCount} 条正则`}`
+                  })()}
+        </div>
+        <AdditionalWorldInfoSelection
+          listWorldInfos={listWorldInfos}
+          selectedWorldInfoIds={selectedWorldInfoIds}
+          onChange={setSelectedWorldInfoIds}
+          excludedIds={[worldInfo.id]}
+        />
+        <label htmlFor="agent-rp-world-info-launch-persona" style={{ display: 'block', fontSize: '12px', fontWeight: 620, margin: '20px 0 7px', opacity: .65 }}>你的身份（Persona）</label>
+        <div style={{ position: 'relative' }}>
+          <select id="agent-rp-world-info-launch-persona" value={personaId} onChange={event => { setPersonaId(event.target.value) }} style={{
+            appearance: 'none', background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+            borderRadius: '9px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '9px 36px 9px 10px', width: '100%',
+          }}>
+            <option value="">暂不设置</option>
+            {personas?.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+          </select>
+          <SelectChevron />
+        </div>
+        <div style={{ fontSize: '11px', lineHeight: 1.55, marginTop: '6px', opacity: .5 }}>
+          {personaError !== undefined ? personaError : personas === undefined ? '正在读取身份…'
+            : selectedPersona === undefined ? '可以用已有 Persona 进入这段剧情'
+              : selectedPersona.description || '只有称呼，没有额外人物设定'}
+        </div>
+        {error !== undefined && <p role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.5, margin: '16px 0 0' }}>{error}</p>}
+        <p style={{ fontSize: '10px', lineHeight: 1.6, margin: '18px 1px 0', opacity: .42 }}>
+          这些资源只组合到新会话，不会修改资源中心里的原文件
+        </p>
+      </div>
+      <footer style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '9px', padding: narrow ? '12px 14px max(12px, env(safe-area-inset-bottom))' : '13px 18px' }}>
+        {!narrow && <button type="button" disabled={starting} onClick={onBack} style={{ ...secondaryButtonStyle, marginRight: 'auto' }}>返回</button>}
+        <button type="button" disabled={starting} onClick={() => {
+          setStarting(true)
+          setError(undefined)
+          const persona = selectedPersona === undefined ? undefined : {
+            id: selectedPersona.id, name: selectedPersona.name, description: selectedPersona.description,
+          }
+          void onStart(
+            worldInfo,
+            persona,
+            presetId === '' ? undefined : presetId,
+            selectedWorldInfoIds.length === 0 ? undefined : selectedWorldInfoIds,
+          ).catch(reason => {
+            setStarting(false)
+            setError(reason instanceof Error ? reason.message : String(reason))
+          })
+        }} style={{ ...primaryButtonStyle, minHeight: narrow ? '44px' : undefined, width: narrow ? '100%' : undefined }}>
+          {starting ? '正在开始…' : '开始剧情'}
+        </button>
+      </footer>
+    </section>
+  </div>
+}
+
 function CharacterLibraryDialog({
   currentCharacterName, currentCharacterId, listCharacters, readCharacter, setCharacterArchived, importCharacterFile,
   listPresets, importPresetFile, listWorldInfos, listPersonas, savePersona, deletePersona,
@@ -4136,9 +4394,6 @@ function CharacterLibraryDialog({
     entries: presets, error: presetError, presetId, selectPreset, selectImportedPreset, renamePreset,
   } = usePresetPreference(listPresets)
   const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
-  const [worldInfos, setWorldInfos] = useState<readonly WorldInfoLibraryUpload[]>()
-  const [worldInfoOpen, setWorldInfoOpen] = useState(false)
-  const [worldInfoError, setWorldInfoError] = useState<string>()
   const [selectedWorldInfoIds, setSelectedWorldInfoIds] = useState<readonly string[]>([])
   const [personaId, setPersonaId] = useState('')
   const [editingPersona, setEditingPersona] = useState(false)
@@ -4244,16 +4499,6 @@ function CharacterLibraryDialog({
     })
     return () => { current = false }
   }, [listPersonas])
-  useEffect(() => {
-    if (!worldInfoOpen || worldInfos !== undefined || worldInfoError !== undefined) return
-    let current = true
-    void listWorldInfos().then(value => {
-      if (current) setWorldInfos(value)
-    }, listError => {
-      if (current) setWorldInfoError(listError instanceof Error ? listError.message : String(listError))
-    })
-    return () => { current = false }
-  }, [listWorldInfos, worldInfoError, worldInfoOpen, worldInfos])
   useEffect(() => {
     if (selected?.id !== currentCharacterId) setCopyActiveMemory(false)
   }, [currentCharacterId, selected?.id])
@@ -4928,64 +5173,11 @@ function CharacterLibraryDialog({
                         : `${preset.enabledCount}/${preset.promptCount} 项启用${preset.regexScriptCount === 0 ? '' : ` · ${preset.regexScriptCount} 条正则`} · 开聊后可在「会话设置 → 预设」调整开关`
                     })()}
             </div>
-            <div style={{ marginTop: '18px' }}>
-              <button type="button" aria-expanded={worldInfoOpen} data-agent-rp-world-info-selection={selectedWorldInfoIds.length}
-                onClick={() => { setWorldInfoOpen(value => !value) }} style={{
-                  alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #202024)',
-                  border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '10px', color: 'inherit',
-                  cursor: 'pointer', display: 'flex', font: 'inherit', gap: '9px', padding: '10px 11px',
-                  textAlign: 'left', width: '100%',
-                }}>
-                <span style={{ flex: 1, minWidth: 0 }}>
-                  <strong style={{ display: 'block', fontSize: '12px' }}>附加世界书</strong>
-                  <span style={{ display: 'block', fontSize: '11px', marginTop: '3px', opacity: .5 }}>
-                    {selectedWorldInfoIds.length === 0 ? '不额外加载' : `已选择 ${selectedWorldInfoIds.length} 本`}
-                  </span>
-                </span>
-                <DisclosureChevron expanded={worldInfoOpen} />
-              </button>
-              {worldInfoOpen && <div style={{
-                border: '1px solid var(--dsw-alias-border-l2, #39393c)', borderRadius: '10px',
-                display: 'grid', gap: '7px', marginTop: '7px', maxHeight: '260px', overflowY: 'auto', padding: '9px',
-              }}>
-                {worldInfoError !== undefined
-                  ? <div role="alert" style={{ color: '#e88989', fontSize: '11px', lineHeight: 1.5 }}>{worldInfoError}</div>
-                  : worldInfos === undefined
-                    ? <div style={{ fontSize: '11px', opacity: .5 }}>正在读取世界书库…</div>
-                    : worldInfos.length === 0
-                      ? <div style={{ fontSize: '11px', opacity: .5 }}>世界书库暂无内容，可从资源中心导入</div>
-                      : worldInfos.map(entry => {
-                          const order = selectedWorldInfoIds.indexOf(entry.id)
-                          const checked = order >= 0
-                          const disabled = !checked && selectedWorldInfoIds.length >= 16
-                          return <label key={entry.id} data-agent-rp-world-info-option={entry.id} style={{
-                            alignItems: 'center', background: checked ? `color-mix(in srgb, ${color} 10%, transparent)` : 'transparent',
-                            borderRadius: '8px', cursor: disabled ? 'default' : 'pointer', display: 'flex', gap: '9px',
-                            opacity: disabled ? .42 : 1, padding: '8px 9px',
-                          }}>
-                            <input type="checkbox" checked={checked} disabled={disabled} onChange={event => {
-                              setSelectedWorldInfoIds(current => event.target.checked
-                                ? [...current, entry.id]
-                                : current.filter(id => id !== entry.id))
-                            }} style={{ accentColor: color, margin: 0 }} />
-                            <span style={{ flex: 1, minWidth: 0 }}>
-                              <strong style={{ display: 'block', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</strong>
-                              <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .48 }}>
-                                {entry.entryCount} 条目{entry.degradations.length === 0 ? '' : ` · ${entry.degradations.length} 项兼容提醒`}
-                              </span>
-                            </span>
-                            {checked && <span aria-label={`加载顺序 ${order + 1}`} style={{
-                              alignItems: 'center', background: `color-mix(in srgb, ${color} 18%, transparent)`,
-                              borderRadius: '999px', display: 'inline-flex', fontSize: '10px', height: '20px',
-                              justifyContent: 'center', minWidth: '20px', padding: '0 5px',
-                            }}>{order + 1}</span>}
-                          </label>
-                        })}
-                <div style={{ fontSize: '10px', lineHeight: 1.5, opacity: .46, padding: '1px 3px' }}>
-                  按选择顺序加载，最多 16 本；不会修改角色卡或世界书原文件
-                </div>
-              </div>}
-            </div>
+            <AdditionalWorldInfoSelection
+              listWorldInfos={listWorldInfos}
+              selectedWorldInfoIds={selectedWorldInfoIds}
+              onChange={setSelectedWorldInfoIds}
+            />
             <div style={{ alignItems: 'center', display: 'flex', margin: '20px 0 7px' }}>
               <label htmlFor="agent-rp-session-persona" style={{ fontSize: '12px', fontWeight: 620, opacity: .65 }}>你的身份（Persona）</label>
               <button type="button" onClick={() => {
@@ -10098,12 +10290,18 @@ export function apply(ctx: ClientContext): void {
   const startWorldInfoSession = async (
     sessionId: SessionId,
     worldInfo: WorldInfoLibraryUpload,
+    persona?: SessionPersonaSnapshot,
+    presetId?: string,
+    worldInfoIds?: readonly string[],
   ): Promise<void> => {
     await launchRoleplaySession({
       format: 0,
       sourceSessionId: sessionId,
       kind: 'world-info',
       importId: worldInfo.id,
+      ...(persona === undefined ? {} : { persona }),
+      ...(presetId === undefined ? {} : { presetId }),
+      ...(worldInfoIds === undefined ? {} : { worldInfoIds }),
     })
   }
   const archiveConsumedBlankSession = async (sessionId: SessionId): Promise<void> => {
@@ -10132,10 +10330,13 @@ export function apply(ctx: ClientContext): void {
   const startWorldInfoFromBlankSession = async (
     sessionId: SessionId,
     worldInfo: WorldInfoLibraryUpload,
+    persona?: SessionPersonaSnapshot,
+    presetId?: string,
+    worldInfoIds?: readonly string[],
   ): Promise<void> => {
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
     if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话选择世界书剧情')
-    await startWorldInfoSession(sessionId, worldInfo)
+    await startWorldInfoSession(sessionId, worldInfo, persona, presetId, worldInfoIds)
     await archiveConsumedBlankSession(sessionId)
   }
   const startCharacterFromCurrentSession = async (

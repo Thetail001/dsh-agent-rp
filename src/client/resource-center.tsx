@@ -29,7 +29,7 @@ interface ResourceCenterProps {
   readonly listPersonas: () => Promise<readonly PersonaLibraryEntry[]>
   readonly savePersona: (request: PersonaLibrarySaveRequest) => Promise<PersonaLibraryEntry>
   readonly deletePersona: (id: string) => Promise<PersonaLibraryEntry>
-  readonly onStartWorldInfo?: (entry: WorldInfoLibraryUpload) => Promise<void>
+  readonly onConfigureWorldInfo?: (entry: WorldInfoLibraryUpload) => void
   readonly onClose: () => void
 }
 
@@ -62,7 +62,7 @@ export function RoleplayResourceCenter({
   listWorldInfos, importWorldInfoFile,
   listPresets, importPresetFile, renamePreset,
   listPersonas, savePersona, deletePersona,
-  onStartWorldInfo,
+  onConfigureWorldInfo,
   onClose,
 }: ResourceCenterProps) {
   const [section, setSection] = useState<ResourceSection>(initialSection)
@@ -138,13 +138,6 @@ export function RoleplayResourceCenter({
       setPresets(value => [entry, ...(value ?? []).filter(item => item.id !== entry.id)])
       setNotice(`已加入预设「${entry.name}」`)
     }).catch(reason => { setError(message(reason)) }).finally(finishAction)
-  }
-  const startWorldInfo = (entry: WorldInfoLibraryUpload): void => {
-    if (onStartWorldInfo === undefined) return
-    startAction(`start-world-info:${entry.id}`)
-    void onStartWorldInfo(entry).then(onClose, reason => {
-      setError(message(reason))
-    }).finally(finishAction)
   }
   const importResource = (file: File, fallback: Exclude<ResourceSection, 'personas'>): void => {
     if (!/\.json$/iu.test(file.name)) {
@@ -356,9 +349,9 @@ export function RoleplayResourceCenter({
                 <strong style={{ display: 'block', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</strong>
                 <span style={{ display: 'block', fontSize: '10px', marginTop: '4px', opacity: .48 }}>{entry.entryCount} 条目{entry.degradations.length > 0 ? ` · ${entry.degradations.length} 项兼容提醒` : ''}</span>
               </div>
-              {onStartWorldInfo !== undefined && <button type="button" disabled={busy !== undefined}
-                onClick={() => { startWorldInfo(entry) }} style={actionStyle(busy === undefined)}>
-                {busy === `start-world-info:${entry.id}` ? '启动中…' : '开始'}
+              {onConfigureWorldInfo !== undefined && <button type="button" disabled={busy !== undefined}
+                onClick={() => { onConfigureWorldInfo(entry) }} style={actionStyle(busy === undefined)}>
+                开始
               </button>}
             </div>)}
             {section === 'presets' && visiblePresets.map((entry, index) => <div key={entry.id} style={{ ...rowStyle, borderTop: index === 0 ? 'none' : rowStyle.borderTop }}>

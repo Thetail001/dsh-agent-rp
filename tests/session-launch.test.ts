@@ -141,6 +141,16 @@ test('starts a replayable roleplay Session from standalone World Info without fa
     data: new Uint8Array(readFileSync('tests/fixtures/manual-world-info.json')),
     filename: '海城.json',
   })
+  const supportingWorldInfo = worldInfos.importFile({
+    data: new TextEncoder().encode(JSON.stringify({
+      name: '剧情规则',
+      entries: { 1: {
+        uid: 1, key: [], keysecondary: [], comment: '规则', content: '让城市保持连贯。',
+        constant: true, selective: false, order: 1, position: 1, disable: false,
+      } },
+    })),
+    filename: '剧情规则.json',
+  })
   const preset = presets.import(parseSillyTavernPresetJson(JSON.stringify({
     prompts: [{ identifier: 'main', name: '主提示', role: 'system', content: '推动世界剧情' }],
     prompt_order: [{ character_id: 100001, order: [{ identifier: 'main', enabled: true }] }],
@@ -152,6 +162,7 @@ test('starts a replayable roleplay Session from standalone World Info without fa
     importId: worldInfo.id,
     persona: { id: 'persona-01234567', name: '旅人', description: '刚刚抵达海城。' },
     presetId: preset.id,
+    worldInfoIds: [supportingWorldInfo.id],
   })
   const first = Session.create(SessionId('launched-world-info'), prepared.seed)
   const replay = Session.create(SessionId('replayed-world-info'), [...first.events])
@@ -167,7 +178,7 @@ test('starts a replayable roleplay Session from standalone World Info without fa
   assert.equal(first.events.some(event => event.type === 'user/message' || event.type === 'assistant/message'), false)
   assert.deepEqual(first.deriveMessages(), [])
   assert.equal(readActiveSessionCharacter(replay.events), undefined)
-  assert.equal(readActiveSessionWorldInfos(replay.events)[0]?.result.name, '海城')
+  assert.deepEqual(readActiveSessionWorldInfos(replay.events).map(value => value.result.name), ['海城', '剧情规则'])
   assert.equal(readSessionPersona(replay.events)?.name, '旅人')
   assert.equal(readActiveSessionPreset(replay.events)?.libraryId, preset.id)
 

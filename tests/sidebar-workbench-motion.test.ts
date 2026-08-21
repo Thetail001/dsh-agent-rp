@@ -47,6 +47,18 @@ test('character launch keeps additional World Info in one collapsed resource sel
   assert.match(source, /selectedWorldInfoIds\.length === 0 \? undefined : selectedWorldInfoIds/u)
 })
 
+test('World Info launch configures peer resources before creating a Session', () => {
+  assert.match(source, /function WorldInfoLaunchDialog/u)
+  assert.match(source, /data-agent-rp-surface="world-info-launch"/u)
+  assert.match(source, /data-agent-rp-world-info-primary=\{worldInfo\.id\}/u)
+  assert.match(source, /excludedIds=\{\[worldInfo\.id\]\}/u)
+  assert.match(source, /aria-label="返回世界书库"/u)
+  assert.match(source, /setResourceCenterOpen\(false\)\s+setWorldInfoLaunch\(worldInfo\)/u)
+  assert.match(source, /setWorldInfoLaunch\(undefined\)\s+setResourceCenterOpen\(true\)/u)
+  assert.match(source, /startWorldInfoSession\(launchSessionId, worldInfo, persona, presetId, worldInfoIds\)/u)
+  assert.match(resourceCenterSource, /onConfigureWorldInfo\(entry\)/u)
+})
+
 test('sidebar exposes one resource-center drilldown for peer resource types', () => {
   assert.match(source, /data-agent-rp-action="open-resource-center"/u)
   assert.match(source, /data-agent-rp-action="open-world-info-library"/u)
@@ -62,7 +74,7 @@ test('sidebar exposes one resource-center drilldown for peer resource types', ()
   assert.match(resourceCenterSource, /\['characters', 'world-info', 'presets', 'personas'\]/u)
   assert.match(resourceCenterSource, /角色卡与收藏状态/u)
   assert.match(resourceCenterSource, /独立世界书来源/u)
-  assert.match(resourceCenterSource, /start-world-info:/u)
+  assert.match(resourceCenterSource, /onConfigureWorldInfo/u)
   assert.match(resourceCenterSource, /可复用的对话预设/u)
   assert.match(resourceCenterSource, /玩家身份与人物设定/u)
 })
