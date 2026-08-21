@@ -733,6 +733,7 @@ export function installAgentRp(
       const injectedScanText = tavernInjectedScanText(tavern)
       const sources = readActiveSessionLorebookSources(agent)
       const worldInfoConfiguration = readWorldInfoConfiguration(agent.session.events)
+      const aggregateWorldInfoBudget = worldInfoTokenBudget(worldInfoConfiguration)
       const configuredSources = sources.map(source => ({
         source,
         configured: configuredLorebook(source, worldInfoConfiguration).lorebook,
@@ -770,7 +771,7 @@ export function installAgentRp(
           pendingMessages,
           scanText: injectedScanText,
           templateOptions,
-          tokenBudget: worldInfoTokenBudget(worldInfoConfiguration),
+          ...(aggregateWorldInfoBudget === undefined ? {} : { tokenBudget: aggregateWorldInfoBudget }),
         }))
         if (importedChat !== undefined) {
           return [
@@ -815,7 +816,7 @@ export function installAgentRp(
         scanText: injectedScanText,
         ...(mvu === undefined ? {} : { statData: mvu.statData }),
         templateOptions,
-        tokenBudget: worldInfoTokenBudget(worldInfoConfiguration),
+        ...(aggregateWorldInfoBudget === undefined ? {} : { tokenBudget: aggregateWorldInfoBudget }),
       }))
       const preset = readActiveSessionPreset(agent.session.events)?.preset
       if (preset !== undefined) {

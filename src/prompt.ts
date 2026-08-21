@@ -115,7 +115,7 @@ export function renderImportedWorldInfos(
   }, { beforeCharacter: [] as string[], afterCharacter: [] as string[] })
 }
 
-/** Activate every Session book under one aggregate budget while retaining source identity. */
+/** Activate every Session book while retaining source identity and honoring an optional player-selected cap. */
 export function renderSessionLorebooks(input: {
   readonly books: readonly { readonly id: string; readonly lorebook: ImportedLorebook }[]
   readonly session: Session
@@ -123,14 +123,14 @@ export function renderSessionLorebooks(input: {
   readonly scanText?: readonly string[]
   readonly statData?: import('@deepseek-ai/dsh-session').JsonValue
   readonly templateOptions?: LorebookActivationOptions
-  readonly tokenBudget: number
+  readonly tokenBudget?: number
 }) {
   const scanText = input.scanText ?? []
   const inspected = createNativeWorldEngine(input.templateOptions).evaluate({
     format: 0,
     books: input.books,
     messages: [...visibleDialogue(input.session, input.pendingMessages ?? []), ...scanText],
-    tokenBudget: input.tokenBudget,
+    ...(input.tokenBudget === undefined ? {} : { tokenBudget: input.tokenBudget }),
   })
   const render = (values: readonly string[]) => values.map(value => substituteMvuMacros(value, input.statData))
   return {

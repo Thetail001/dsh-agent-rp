@@ -340,7 +340,7 @@ function worldInfoProjection(
     format: 0,
     books: configuredSources.map(({ source, configured }) => ({ id: source.id, lorebook: configured.lorebook })),
     messages,
-    tokenBudget: aggregateBudget,
+    ...(aggregateBudget === undefined ? {} : { tokenBudget: aggregateBudget }),
   })
   const books = configuredSources.map(({ source, configured }, sourceIndex) => {
     const inspected = inspectedCollection.books[sourceIndex]!.inspected
@@ -382,7 +382,7 @@ function worldInfoProjection(
   return {
     revision: state.worldInfoConfiguration.revision,
     activeCount,
-    tokenBudget: aggregateBudget,
+    ...(aggregateBudget === undefined ? {} : { tokenBudget: aggregateBudget }),
     approximateTokens: inspectedCollection.approximateTokens,
     budgetExcludedCount: inspectedCollection.books.flatMap(book => book.inspected.entries)
       .filter(entry => entry.reason === 'session-budget-excluded').length,

@@ -33,7 +33,7 @@ export interface WorldInfoConfigurationState {
   readonly format: 0
   readonly revision: number
   readonly overrides: readonly WorldInfoEntryOverride[]
-  /** Aggregate cap across every active book; omitted records use the current default. */
+  /** Optional player-selected aggregate cap across every active book; omitted records do not add a plugin cap. */
   readonly tokenBudget?: number
 }
 

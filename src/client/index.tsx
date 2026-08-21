@@ -1130,7 +1130,6 @@ function roleplaySummary(
     worldInfo: {
       revision: 0,
       activeCount: 0,
-      tokenBudget: 4_096,
       approximateTokens: 0,
       budgetExcludedCount: 0,
       failureCounts: {
@@ -3779,8 +3778,8 @@ function worldInfoReason(entry: WorldInfoEntryProjection): { readonly title: str
     case 'regex-resource-limit': return { title: '超过安全上限', detail: '该条目的正则输入或累计评估量超过本轮上限' }
     case 'primary-unmatched': return { title: '等待关键词', detail: entry.keys.length === 0 ? '没有可用于激活的主关键词' : '当前已发送的对话没有命中主关键词' }
     case 'secondary-unmatched': return { title: '次要条件未满足', detail: '主关键词已经出现，但次要关键词规则尚未满足' }
-    case 'budget-excluded': return { title: '超出预算', detail: '条目已匹配，但本书的 token 预算优先保留了其他条目' }
-    case 'session-budget-excluded': return { title: '超出总预算', detail: '条目已匹配，但这段会话的世界书总预算优先保留了其他条目' }
+    case 'budget-excluded': return { title: '达到本书上限', detail: '条目已匹配，但作者为这本世界书设置的 token 上限优先保留了其他条目' }
+    case 'session-budget-excluded': return { title: '达到手动上限', detail: '条目已匹配，但玩家为这段会话设置的世界书上下文上限优先保留了其他条目' }
   }
 }
 
@@ -3832,8 +3831,8 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
   const [saving, setSaving] = useState(false)
   const [importing, setImporting] = useState(false)
   const [error, setError] = useState<string>()
-  const [budgetDraft, setBudgetDraft] = useState(String(worldInfo.tokenBudget))
-  useEffect(() => { setBudgetDraft(String(worldInfo.tokenBudget)) }, [worldInfo.tokenBudget])
+  const [budgetDraft, setBudgetDraft] = useState(worldInfo.tokenBudget === undefined ? '' : String(worldInfo.tokenBudget))
+  useEffect(() => { setBudgetDraft(worldInfo.tokenBudget === undefined ? '' : String(worldInfo.tokenBudget)) }, [worldInfo.tokenBudget])
   useEffect(() => {
     if (!narrow && selectedKey === undefined && first !== undefined) setSelectedKey(first)
   }, [first, narrow, selectedKey])
@@ -3887,8 +3886,8 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
         <div>
           <h2 style={{ fontSize: '18px', margin: 0 }}>世界书</h2>
           <div style={{ fontSize: '12px', marginTop: '4px', opacity: .52 }}>
-            {worldInfo.books.length} 本 · {allEntries.length} 条 · {enabledCount} 条启用 · 本轮生效 {worldInfo.activeCount} 条{blockedCount === 0 ? '' : ` · ${blockedCount} 条等待兼容`} · 约 {worldInfo.approximateTokens}/{worldInfo.tokenBudget} tokens
-            {worldInfo.budgetExcludedCount > 0 ? ` · ${worldInfo.budgetExcludedCount} 条超出总预算` : ''}
+            {worldInfo.books.length} 本 · {allEntries.length} 条 · {enabledCount} 条启用 · 本轮生效 {worldInfo.activeCount} 条{blockedCount === 0 ? '' : ` · ${blockedCount} 条等待兼容`} · 约 {worldInfo.approximateTokens}{worldInfo.tokenBudget === undefined ? '' : `/${worldInfo.tokenBudget}`} tokens
+            {worldInfo.budgetExcludedCount > 0 ? ` · ${worldInfo.budgetExcludedCount} 条达到手动上限` : ''}
           </div>
         </div>
         <input ref={importInputRef} type="file" accept="application/json,.json" hidden onChange={event => {
@@ -3896,23 +3895,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
           event.currentTarget.value = ''
           if (file !== undefined) importFile(file)
         }} />
-        <form onSubmit={event => {
-          event.preventDefault()
-          const tokenBudget = Number(budgetDraft)
-          if (!Number.isSafeInteger(tokenBudget) || tokenBudget < 0 || tokenBudget > 100_000) {
-            setError('世界书总预算需要是 0 到 100000 的整数')
-            return
-          }
-          mutate({ operation: 'set-budget', revision: worldInfo.revision, tokenBudget })
-        }} style={{ alignItems: 'center', display: 'flex', gap: '6px', marginLeft: 'auto' }}>
-          <label htmlFor="agent-rp-world-info-budget" style={{ fontSize: '11px', opacity: .58, whiteSpace: 'nowrap' }}>总预算</label>
-          <input id="agent-rp-world-info-budget" inputMode="numeric" min={0} max={100000} step={1} type="number" value={budgetDraft} onChange={event => { setBudgetDraft(event.currentTarget.value) }} style={{
-            background: 'var(--dsw-alias-bg-layer-1, #222226)', border: '1px solid var(--dsw-alias-border-l2, #414146)', borderRadius: '8px',
-            color: 'inherit', font: 'inherit', fontSize: '12px', padding: '6px 8px', width: '76px',
-          }} />
-          <button type="submit" disabled={saving || budgetDraft === String(worldInfo.tokenBudget)} style={generationButtonStyle}>应用</button>
-        </form>
-        <button type="button" disabled={importing} onClick={() => { importInputRef.current?.click() }} style={generationButtonStyle}>
+        <button type="button" disabled={importing} onClick={() => { importInputRef.current?.click() }} style={{ ...generationButtonStyle, marginLeft: 'auto' }}>
           {importing ? '导入中…' : '导入世界书'}
         </button>
         {hasOverrides && <button type="button" disabled={saving} onClick={() => {
@@ -3921,6 +3904,32 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
         <button type="button" aria-label="关闭世界书" data-agent-rp-action="close-world-info-manager"
           onClick={onClose} style={{ background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', padding: '3px 6px' }}>×</button>
       </header>
+      <details style={{ borderBottom: '1px solid var(--dsw-alias-border-l2, #39393c)', flex: '0 0 auto', padding: '0 20px' }}>
+        <summary style={{ cursor: 'pointer', fontSize: '12px', listStylePosition: 'inside', padding: '10px 0', opacity: .72 }}>
+          世界书上下文 · {worldInfo.tokenBudget === undefined ? '未设额外上限' : `手动上限 ${worldInfo.tokenBudget} tokens`}
+        </summary>
+        <div style={{ alignItems: narrow ? 'stretch' : 'center', display: 'flex', flexDirection: narrow ? 'column' : 'row', gap: '10px', padding: '0 0 13px' }}>
+          <div style={{ flex: '1 1 auto', fontSize: '11px', lineHeight: 1.55, opacity: .56 }}>
+            默认由当前模型和 DSH 管理最终容量，不会额外截断已激活条目。只有需要主动限制世界书占用时才设置；留空或填 0 可关闭。
+          </div>
+          <form onSubmit={event => {
+            event.preventDefault()
+            const tokenBudget = budgetDraft.trim() === '' ? 0 : Number(budgetDraft)
+            if (!Number.isSafeInteger(tokenBudget) || tokenBudget < 0 || tokenBudget > 100_000) {
+              setError('世界书上下文上限需要是 0 到 100000 的整数；留空或填 0 表示关闭')
+              return
+            }
+            mutate({ operation: 'set-budget', revision: worldInfo.revision, tokenBudget })
+          }} style={{ alignItems: 'center', display: 'flex', gap: '6px', width: narrow ? '100%' : undefined }}>
+            <label htmlFor="agent-rp-world-info-budget" style={{ fontSize: '11px', opacity: .58, whiteSpace: 'nowrap' }}>手动上限</label>
+            <input id="agent-rp-world-info-budget" inputMode="numeric" min={0} max={100000} placeholder="不限制" step={1} type="number" value={budgetDraft} onChange={event => { setBudgetDraft(event.currentTarget.value) }} style={{
+              background: 'var(--dsw-alias-bg-layer-1, #222226)', border: '1px solid var(--dsw-alias-border-l2, #414146)', borderRadius: '8px',
+              color: 'inherit', flex: narrow ? '1 1 auto' : undefined, font: 'inherit', fontSize: '12px', minWidth: 0, padding: '6px 8px', width: narrow ? 'auto' : '90px',
+            }} />
+            <button type="submit" disabled={saving || budgetDraft === (worldInfo.tokenBudget === undefined ? '' : String(worldInfo.tokenBudget))} style={generationButtonStyle}>应用</button>
+          </form>
+        </div>
+      </details>
       {allEntries.length === 0 && <div style={{ alignItems: 'center', display: 'flex', flex: 1, flexDirection: 'column', justifyContent: 'center', minHeight: '300px', padding: '30px', textAlign: 'center' }}>
         <div style={{ fontSize: '28px', opacity: .38 }}>◇</div>
         <h3 style={{ fontSize: '16px', margin: '14px 0 0' }}>还没有世界书</h3>

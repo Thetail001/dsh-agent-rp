@@ -101,14 +101,12 @@ export function activeTavernWorldbooks(
 const RESULT_PREFIX = 'agent-rp-world-info-v0:'
 const INITIAL_STATE: WorldInfoConfigurationState = { format: 0, revision: 0, overrides: [] }
 
-/** Default aggregate World Info cap for one model request. */
-export const DEFAULT_SESSION_WORLD_INFO_TOKEN_BUDGET = 4_096
 /** Largest player-selected aggregate World Info cap accepted by the Session manager. */
 export const MAX_SESSION_WORLD_INFO_TOKEN_BUDGET = 100_000
 
-/** Resolve an older overlay snapshot to the current aggregate World Info cap. */
-export function worldInfoTokenBudget(state: WorldInfoConfigurationState): number {
-  return state.tokenBudget ?? DEFAULT_SESSION_WORLD_INFO_TOKEN_BUDGET
+/** Resolve the optional player-selected aggregate cap; omission leaves final capacity to the model context. */
+export function worldInfoTokenBudget(state: WorldInfoConfigurationState): number | undefined {
+  return state.tokenBudget === undefined || state.tokenBudget === 0 ? undefined : state.tokenBudget
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -249,11 +247,12 @@ function parseState(value: unknown): WorldInfoConfigurationState {
   const keys = parsed.map(item => `${item.bookId}\u0000${item.entryIndex}`)
   if (new Set(keys).size !== keys.length) throw new Error('世界书配置包含重复条目')
   const overrides = parsed.filter(item => item.deleted || item.entry !== undefined)
-  const tokenBudget = record.tokenBudget === undefined
+  const parsedTokenBudget = record.tokenBudget === undefined
     ? undefined : nonNegativeInteger(record.tokenBudget, 'tokenBudget')
-  if (tokenBudget !== undefined && tokenBudget > MAX_SESSION_WORLD_INFO_TOKEN_BUDGET) {
+  if (parsedTokenBudget !== undefined && parsedTokenBudget > MAX_SESSION_WORLD_INFO_TOKEN_BUDGET) {
     throw new Error('世界书配置 tokenBudget 过大')
   }
+  const tokenBudget = parsedTokenBudget === 0 ? undefined : parsedTokenBudget
   return {
     format: 0,
     revision: nonNegativeInteger(record.revision, 'revision'),
@@ -364,6 +363,10 @@ export function configureWorldInfo(
   if (request.revision !== state.revision) throw new Error('世界书已在别处改变，请刷新后重试')
   if (request.operation === 'reset-all') return { ...state, revision: state.revision + 1, overrides: [] }
   if (request.operation === 'set-budget') {
+    if (request.tokenBudget === 0) {
+      const { tokenBudget: _removed, ...withoutTokenBudget } = state
+      return { ...withoutTokenBudget, revision: state.revision + 1 }
+    }
     return { ...state, revision: state.revision + 1, tokenBudget: request.tokenBudget }
   }
   if (request.operation === 'reset-book') {

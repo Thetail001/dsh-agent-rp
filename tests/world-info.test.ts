@@ -264,6 +264,23 @@ test('shares one final token budget across books using entry priority', () => {
   assert.equal(inspected.books[1]?.inspected.entries[0]?.reason, 'active-constant')
 })
 
+test('keeps every matched book entry when no player-selected aggregate cap exists', () => {
+  const system = parseWorldInfoJson(world({
+    mvuSchema: { key: [], content: '变量结构'.repeat(3_000), constant: true, order: 100, position: 0 },
+  }))
+  const story = parseWorldInfoJson(world({
+    opening: { key: [], content: '角色开始'.repeat(1_000), constant: true, order: 10, position: 1 },
+  }))
+  const inspected = inspectLorebooks([
+    { id: 'system', lorebook: system.lorebook },
+    { id: 'story', lorebook: story.lorebook },
+  ], [])
+
+  assert.equal(inspected.tokenBudget, undefined)
+  assert.deepEqual(inspected.books.flatMap(book => book.inspected.entries).map(entry => entry.active), [true, true])
+  assert.ok(inspected.approximateTokens > 4_096)
+})
+
 test('routes the native engine through a pure request and content-free diagnostic summary', () => {
   const source = parseWorldInfoJson(world({
     active: { key: [], content: 'Private active text.', constant: true, order: 2, position: 0 },

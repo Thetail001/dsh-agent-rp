@@ -40,7 +40,8 @@ export interface AgentRpProjection {
   readonly worldInfo: {
     readonly revision: number
     readonly activeCount: number
-    readonly tokenBudget: number
+    /** Optional player-selected aggregate cap; omission means Agent RP does not truncate the activated books. */
+    readonly tokenBudget?: number
     readonly approximateTokens: number
     readonly budgetExcludedCount: number
     readonly failureCounts: import('./world-engine-diagnostic.ts').WorldEngineFailureCounts

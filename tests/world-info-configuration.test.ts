@@ -97,6 +97,22 @@ test('persists a bounded Session-wide token budget without resetting entry overl
   })), /过大/u)
 })
 
+test('adds no aggregate World Info cap until the player explicitly selects one', () => {
+  const initial = { format: 0, revision: 0, overrides: [] } as const
+  assert.equal(worldInfoTokenBudget(initial), undefined)
+
+  const bounded = configureWorldInfo(initial, {
+    operation: 'set-budget', revision: 0, tokenBudget: 4_096,
+  }, [])
+  assert.equal(worldInfoTokenBudget(bounded), 4_096)
+
+  const unbounded = configureWorldInfo(bounded, {
+    operation: 'set-budget', revision: 1, tokenBudget: 0,
+  }, [])
+  assert.equal(worldInfoTokenBudget(unbounded), undefined)
+  assert.equal(Object.hasOwn(unbounded, 'tokenBudget'), false)
+})
+
 test('changes one whole book atomically and restores its imported state', () => {
   const book = source()
   const edited = configureWorldInfo({ format: 0, revision: 0, overrides: [] }, {
