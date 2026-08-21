@@ -118,14 +118,35 @@ function macroParts(source: string): string[] {
   return parts
 }
 
+function addVariable(current: string | undefined, addition: string): string {
+  const previous = current ?? '0'
+  try {
+    const parsed: unknown = JSON.parse(previous)
+    if (Array.isArray(parsed)) return JSON.stringify([...parsed, addition])
+  } catch {
+    // SillyTavern falls through to numeric addition or string concatenation.
+  }
+  const increment = Number(addition)
+  const numericPrevious = Number(previous)
+  return Number.isNaN(increment) || Number.isNaN(numericPrevious)
+    ? `${current ?? ''}${addition}`
+    : String(numericPrevious + increment)
+}
+
 function evaluateMacro(source: string, state: MacroState): string {
   const parts = macroParts(source)
   const name = parts.shift()?.trim().toLowerCase() ?? ''
-  if (name === '//' || name.startsWith('// ')) return ''
+  if (name.startsWith('//')) return ''
   if (name === 'setvar') {
     const variable = parts.shift()?.trim() ?? ''
     const value = expandMacros(parts.join('::'), state)
     if (variable !== '') state.variables.set(variable, value)
+    return ''
+  }
+  if (name === 'addvar') {
+    const variable = parts.shift()?.trim() ?? ''
+    const value = expandMacros(parts.join('::'), state)
+    if (variable !== '') state.variables.set(variable, addVariable(state.variables.get(variable), value))
     return ''
   }
   if (name === 'getvar') return state.variables.get(parts.join('::').trim()) ?? ''
@@ -137,7 +158,9 @@ function evaluateMacro(source: string, state: MacroState): string {
   if (name === 'user') return state.userName
   if (name === 'trim') return ''
   state.unsupported += 1
-  return ''
+  // SillyTavern deliberately preserves unknown macros so extensions can own a
+  // later generation phase. Resolve only nested built-ins before handing off.
+  return `{{${expandMacros(source, state)}}}`
 }
 
 function expandMacros(value: string, state: MacroState): string {

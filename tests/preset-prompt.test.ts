@@ -123,6 +123,34 @@ test('assembles a standalone World Info preset without inventing character-card 
   assert.deepEqual(assembled.afterHistory, [{ role: 'assistant', content: '继续剧情' }])
 })
 
+test('preserves extension-owned macros while resolving nested built-ins and additive variables', () => {
+  const prompts: ImportedSillyTavernPreset['prompts'] = [
+    {
+      identifier: 'variables', name: '变量', role: 'system', marker: false, systemPrompt: true, forbidOverrides: false,
+      content: '{{setvar::style::自然}}{{addvar::style::流畅}}{{setvar::count::2}}{{addvar::count::3}}{{//扩展注释}}',
+    },
+    {
+      identifier: 'extension-placeholder', name: '扩展占位', role: 'system', marker: false, systemPrompt: true, forbidOverrides: false,
+      content: '{{压缩相邻消息::{{getvar::style}}::{{getvar::count}}}}',
+    },
+  ]
+  const preset: ImportedSillyTavernPreset = {
+    format: 0, name: '扩展宏预设', prompts,
+    order: prompts.map(prompt => ({ identifier: prompt.identifier, enabled: true })),
+    generation: {}, formats: { worldInfo: '{0}', scenario: '{0}', personality: '{0}' },
+    regexScripts: [], extensionSummary: { regexScriptCount: 0, hasSPreset: false, hasTavernHelper: true },
+  }
+
+  const assembled = assembleSillyTavernPreset(preset, {
+    card, worldInfoBefore: [], worldInfoAfter: [], session: Session.create(SessionId('extension-macro-handoff')),
+  })
+
+  assert.deepEqual(assembled.beforeHistory, [
+    { role: 'system', content: '{{压缩相邻消息::自然流畅::5}}' },
+  ])
+  assert.equal(assembled.unsupportedMacroCount, 1)
+})
+
 test('renders EJS in imported preset modules and drops only a failing module', async () => {
   const engine = await EjsTemplateEngine.create()
   const prompts: ImportedSillyTavernPreset['prompts'] = [
