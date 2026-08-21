@@ -113,6 +113,28 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
   assert.equal(preset.prompts.at(-1)?.content, `内容 ${moduleCount - 1}`)
 })
 
+test('selects the SillyTavern global order while retaining every author-provided catalog module', () => {
+  const prompts = Array.from({ length: 141 }, (_, index) => ({
+    identifier: `module-${index}`,
+    name: `模块 ${index}`,
+    role: 'system',
+    content: `内容 ${index}`,
+  }))
+  const preset = parseSillyTavernPresetJson(JSON.stringify({
+    prompts,
+    prompt_order: [
+      { character_id: 100000, order: prompts.slice(0, 11).map(prompt => ({ identifier: prompt.identifier, enabled: true })) },
+      { character_id: 100001, order: prompts.slice(0, 63).map((prompt, index) => ({ identifier: prompt.identifier, enabled: index < 30 })) },
+    ],
+  }), 'module-library.json')
+
+  assert.equal(preset.prompts.length, 141)
+  assert.equal(preset.order.length, 63)
+  assert.equal(preset.order.filter(entry => entry.enabled).length, 30)
+  assert.equal(preset.prompts.filter(prompt => !preset.order.some(entry => entry.identifier === prompt.identifier)).length, 78)
+  assert.equal(preset.prompts.at(-1)?.name, '模块 140')
+})
+
 test('normalizes the model role used by community presets to assistant', () => {
   const preset = parseSillyTavernPresetJson(JSON.stringify({
     prompts: [

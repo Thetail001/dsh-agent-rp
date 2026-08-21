@@ -10,6 +10,7 @@ import {
 import { createPresetSessionSeed, readActiveSessionPreset } from '../src/import/session-preset.ts'
 import { parseSillyTavernPresetJson } from '../src/import/sillytavern-preset.ts'
 import { assembleSillyTavernPreset } from '../src/preset-prompt.ts'
+import { exportSillyTavernPresetJson } from '../src/preset-export.ts'
 import type { FileAttachmentRef } from '../src/import/session-character.ts'
 import { importTavernRegex } from '../src/tavern-regex.ts'
 
@@ -122,6 +123,56 @@ test('adds, runs, edits, and deletes one session-owned module', () => {
     }],
     order: active.preset.order, content: [], generation: {}, regex: [],
   })), /injectionDepth/u)
+})
+
+test('round-trips the author module catalog independently from the active order', () => {
+  const imported = parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [
+      { identifier: 'system', name: '系统', role: 'system', content: 'system', marker: true },
+      { identifier: 'style-default', name: '默认文风', role: 'system', content: 'default' },
+      { identifier: 'style-a', name: '备选文风 A', role: 'system', content: 'style a' },
+      { identifier: 'style-b', name: '备选文风 B', role: 'system', content: 'style b' },
+    ],
+    prompt_order: [{ character_id: 100001, order: [
+      { identifier: 'system', enabled: true },
+      { identifier: 'style-default', enabled: true },
+    ] }],
+  }), 'module-catalog.json')
+  const active = {
+    result: {
+      version: 0 as const, name: imported.name, sourceEventSeq: 0, sourceAttachmentId: 'catalog-source',
+      promptCount: imported.prompts.length, enabledCount: 2, regexScriptCount: 0,
+    },
+    importedPreset: imported,
+    preset: imported,
+    revision: 0,
+  }
+  const configured = configurePreset(active, {
+    operation: 'replace', revision: 0,
+    prompts: imported.prompts.map(prompt => ({
+      identifier: prompt.identifier, name: prompt.name, role: prompt.role, content: prompt.content,
+    })),
+    order: [
+      { identifier: 'system', enabled: true },
+      { identifier: 'style-a', enabled: true },
+    ],
+    content: [], generation: {}, regex: [],
+  })
+
+  assert.equal(configured.prompts.length, 4)
+  assert.deepEqual(configured.order.map(entry => entry.identifier), ['system', 'style-a'])
+  assert.equal(configured.prompts.find(prompt => prompt.identifier === 'style-default')?.content, 'default')
+  assert.equal(configured.prompts.find(prompt => prompt.identifier === 'style-b')?.content, 'style b')
+
+  const exported = JSON.parse(exportSillyTavernPresetJson(configured)) as {
+    prompts: Array<{ identifier: string }>
+    prompt_order: Array<{ order: Array<{ identifier: string; enabled: boolean }> }>
+  }
+  assert.deepEqual(exported.prompts.map(prompt => prompt.identifier), ['system', 'style-default', 'style-a', 'style-b'])
+  assert.deepEqual(exported.prompt_order[0]?.order, [
+    { identifier: 'system', enabled: true },
+    { identifier: 'style-a', enabled: true },
+  ])
 })
 
 test('keeps extension markers fixed and restores the exact imported defaults', () => {

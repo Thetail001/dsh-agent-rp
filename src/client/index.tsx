@@ -83,6 +83,9 @@ import {
 import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
 import type { WorldInfoConfigurationRequest, WorldInfoEditableEntry } from '../world-info-configuration-types.ts'
 import { exportSillyTavernPresetJson } from '../preset-export.ts'
+import {
+  attachPresetModule, detachPresetModule, movePresetModule,
+} from '../preset-module-assembly.ts'
 import { projectPresetPromptSections } from '../preset-sections.ts'
 import {
   PRESET_LIBRARY_PATH,
@@ -5567,6 +5570,7 @@ function PresetManagerDialog({
   const [reasoningEffort, setReasoningEffort] = useState(preset.generation.reasoningEffort ?? '')
   const [query, setQuery] = useState('')
   const [section, setSection] = useState<'prompts' | 'regex'>('prompts')
+  const [promptView, setPromptView] = useState<'current' | 'catalog'>('current')
   const [collapsedPromptSections, setCollapsedPromptSections] = useState<ReadonlySet<string>>(() => new Set(
     projectPresetPromptSections(preset.prompts).slice(1).map(group => group.key),
   ))
@@ -5594,7 +5598,9 @@ function PresetManagerDialog({
     return () => { cancelled = true }
   }, [loadModelCapabilities, sessionId])
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  const attachedPositionById = new Map(prompts.filter(prompt => prompt.attached).map((prompt, position) => [prompt.identifier, position]))
+  const attached = prompts.filter(prompt => prompt.attached)
+  const catalog = prompts.filter(prompt => !prompt.attached)
+  const attachedPositionById = new Map(attached.map((prompt, position) => [prompt.identifier, position]))
   const promptModified = (prompt: PresetPromptProjection): boolean => !prompt.imported
     || prompt.name !== prompt.importedName
     || prompt.role !== prompt.importedRole
@@ -5620,11 +5626,13 @@ function PresetManagerDialog({
       enabledCount: matchingPrompts.filter(prompt => prompt.enabled).length,
     }]
   })
+  const visibleCatalog = catalog.filter(prompt => normalizedQuery === ''
+    || prompt.name.toLocaleLowerCase().includes(normalizedQuery)
+    || prompt.identifier.toLocaleLowerCase().includes(normalizedQuery))
   const visibleRegex = regexScripts.filter(script => normalizedQuery === ''
     || script.scriptName.toLocaleLowerCase().includes(normalizedQuery))
   const promptRegexByIndex = new Map(promptRegex?.scripts
     .filter(script => script.source === 'preset').map(script => [script.index, script]))
-  const attached = prompts.filter(prompt => prompt.attached)
   const enabledCount = attached.filter(prompt => prompt.enabled).length
   const editingPrompt = prompts.find(prompt => prompt.identifier === editingPromptId)
   const reasoning = modelCapabilities.value?.reasoning
@@ -5742,19 +5750,14 @@ function PresetManagerDialog({
     anchor.remove()
     setTimeout(() => { URL.revokeObjectURL(url) }, 0)
   }
+  const attachModule = (identifier: string): void => {
+    setPrompts(current => attachPresetModule(current, identifier))
+  }
+  const detachModule = (identifier: string): void => {
+    setPrompts(current => detachPresetModule(current, identifier))
+  }
   const move = (identifier: string, direction: -1 | 1): void => {
-    setPrompts((current) => {
-      const attachedPrompts = current.filter(prompt => prompt.attached)
-      const detachedPrompts = current.filter(prompt => !prompt.attached)
-      const index = attachedPrompts.findIndex(prompt => prompt.identifier === identifier)
-      const destination = index + direction
-      if (index < 0 || destination < 0 || destination >= attachedPrompts.length) return current
-      const next = [...attachedPrompts]
-      const [entry] = next.splice(index, 1)
-      if (entry === undefined) return current
-      next.splice(destination, 0, entry)
-      return [...next, ...detachedPrompts]
-    })
+    setPrompts(current => movePresetModule(current, identifier, direction))
   }
   const save = async (close = true): Promise<boolean> => {
     const resolvedTemperature = temperature.trim() === '' ? null : Number(temperature)
@@ -5829,6 +5832,35 @@ function PresetManagerDialog({
       setSaving(false)
     }
   }
+  const promptModuleRow = (prompt: PresetPromptProjection): JSX.Element => {
+    const attachedIndex = attached.findIndex(item => item.identifier === prompt.identifier)
+    return <div className="agent-rp-preset-module" style={{
+      alignItems: 'center', background: prompt.enabled ? `color-mix(in srgb, ${color} 9%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
+      border: `1px solid ${prompt.enabled ? `color-mix(in srgb, ${color} 24%, transparent)` : 'var(--dsw-alias-border-l2, #34343a)'}`,
+      borderRadius: '10px', display: 'grid', gap: '8px', gridTemplateColumns: 'minmax(0, 1fr) auto', minHeight: '52px', padding: '8px 9px 8px 12px',
+    }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ alignItems: 'center', display: 'flex', gap: '7px', minWidth: 0 }}>
+          <span style={{ fontSize: '13px', fontWeight: 560, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prompt.name || prompt.identifier}</span>
+          <span style={{ flex: '0 0 auto', fontSize: '10px', opacity: 0.48 }}>{prompt.marker ? '结构位' : roleLabel(prompt.role)}</span>
+          {promptModified(prompt) && <span style={{ color, flex: '0 0 auto', fontSize: '10px', opacity: 0.82 }}>已修改</span>}
+        </div>
+        <div title={prompt.identifier} style={{ fontFamily: 'ui-monospace, monospace', fontSize: '10px', marginTop: '3px', opacity: 0.38, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prompt.identifier}</div>
+      </div>
+      <div className="agent-rp-preset-module-actions" style={{ alignItems: 'center', display: 'flex', gap: '5px' }}>
+        {prompt.editable && <button type="button" onClick={() => { setEditingPromptId(prompt.identifier) }} style={miniButtonStyle}>编辑</button>}
+        {prompt.imported && prompt.editable && prompt.content !== prompt.importedContent && <button type="button" onClick={() => { setPromptContent(prompt.identifier, prompt.importedContent) }} style={miniButtonStyle}>恢复正文</button>}
+        {prompt.attached ? <>
+          <button type="button" aria-label={`上移${prompt.name}`} title="上移" disabled={attachedIndex <= 0 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, -1) }} style={miniButtonStyle}>↑</button>
+          <button type="button" aria-label={`下移${prompt.name}`} title="下移" disabled={attachedIndex >= attached.length - 1 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, 1) }} style={miniButtonStyle}>↓</button>
+          {prompt.toggleable ? <PresetSwitch checked={prompt.enabled} label={`${prompt.enabled ? '停用' : '启用'}${prompt.name || prompt.identifier}`} onChange={() => {
+            setPrompt(prompt.identifier, value => ({ ...value, enabled: !value.enabled }))
+          }} /> : <span style={{ fontSize: '10px', opacity: 0.44, padding: '0 3px' }}>固定</span>}
+          <button type="button" title="保留模块定义，但从当前顺序移回可选模块库" onClick={() => { detachModule(prompt.identifier) }} style={miniButtonStyle}>移回模块库</button>
+        </> : <button type="button" title="加入当前顺序；加入后默认关闭" onClick={() => { attachModule(prompt.identifier) }} style={miniButtonStyle}>加入当前配置</button>}
+      </div>
+    </div>
+  }
   return <div className="agent-rp-preset-overlay" data-agent-rp-surface="preset-manager"
     role="dialog" aria-modal="true" aria-label={`${preset.name}预设管理`} style={{
     alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
@@ -5843,7 +5875,7 @@ function PresetManagerDialog({
       <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #343438)', display: 'flex', gap: '12px', padding: '18px 20px' }}>
         <div style={{ minWidth: 0 }}>
           <h2 style={{ fontSize: '17px', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{preset.name}</h2>
-          <div style={{ fontSize: '12px', marginTop: '4px', opacity: 0.56 }}>{enabledCount} 项提示启用 · {regexScripts.filter(script => !script.disabled).length}/{regexScripts.length} 条正则启用 · 会话独立</div>
+          <div style={{ fontSize: '12px', marginTop: '4px', opacity: 0.56 }}>{enabledCount}/{attached.length} 项提示启用 · {catalog.length} 个可选模块 · {regexScripts.filter(script => !script.disabled).length}/{regexScripts.length} 条正则启用</div>
         </div>
         <button type="button" aria-label="关闭预设管理" data-agent-rp-action="close-preset-manager"
           disabled={saving} onClick={onClose} style={{
@@ -5859,11 +5891,19 @@ function PresetManagerDialog({
               height: '30px', padding: '3px 10px',
             }}>{label}{value === 'regex' ? ` · ${regexScripts.length}` : ''}</button>)}
           </div>
-          <input aria-label={section === 'prompts' ? '搜索提示模块' : '搜索正则脚本'} placeholder={section === 'prompts' ? '搜索模块名称或标识…' : '搜索正则脚本名称…'} value={query} onChange={event => { setQuery(event.target.value) }} style={{
+          {section === 'prompts' && <div className="agent-rp-preset-module-tabs" style={{ display: 'grid', gap: '6px', gridTemplateColumns: '1fr 1fr', marginBottom: '9px' }}>
+            {([['current', `当前配置 · ${attached.length}`], ['catalog', `可选模块库 · ${catalog.length}`]] as const).map(([value, label]) => <button key={value} type="button" onClick={() => { setPromptView(value); setQuery(''); setPromptFilter('all') }} style={{
+              ...miniButtonStyle,
+              background: promptView === value ? `color-mix(in srgb, ${color} 14%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
+              borderColor: promptView === value ? `color-mix(in srgb, ${color} 38%, transparent)` : miniButtonStyle.border,
+              fontSize: '12px', minHeight: '34px', padding: '5px 10px',
+            }}>{label}</button>)}
+          </div>}
+          <input aria-label={section === 'prompts' ? `搜索${promptView === 'current' ? '当前配置' : '可选模块库'}` : '搜索正则脚本'} placeholder={section === 'prompts' ? `搜索${promptView === 'current' ? '当前模块' : '可选模块'}名称或标识…` : '搜索正则脚本名称…'} value={query} onChange={event => { setQuery(event.target.value) }} style={{
             background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
             borderRadius: '9px', color: 'inherit', font: 'inherit', fontSize: '13px', outline: 'none', padding: '9px 11px',
           }} />
-          {section === 'prompts' && <div style={{ display: 'flex', gap: '5px', marginTop: '8px' }}>
+          {section === 'prompts' && promptView === 'current' && <div style={{ display: 'flex', gap: '5px', marginTop: '8px' }}>
             {([['all', '全部'], ['enabled', '已启用'], ['modified', '已修改']] as const).map(([value, label]) => <button key={value} type="button" onClick={() => { setPromptFilter(value) }} style={{
               ...miniButtonStyle,
               background: promptFilter === value ? `color-mix(in srgb, ${color} 14%, transparent)` : 'transparent',
@@ -5872,10 +5912,10 @@ function PresetManagerDialog({
             <button type="button" onClick={addPrompt} style={{ ...miniButtonStyle, marginLeft: 'auto' }}>＋ 新建模块</button>
           </div>}
           <div style={{ display: 'flex', fontSize: '11px', justifyContent: 'space-between', margin: '10px 3px 7px', opacity: 0.48 }}>
-            <span>{section === 'prompts' ? '提示模块' : '预设正则'}</span><span>{section === 'prompts' ? '顺序与开关' : '开关'}</span>
+            <span>{section === 'prompts' ? (promptView === 'current' ? '当前提示顺序' : '作者提供的可选模块') : '预设正则'}</span><span>{section === 'prompts' ? (promptView === 'current' ? '顺序与开关' : `${visibleCatalog.length}/${catalog.length}`) : '开关'}</span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minHeight: '220px', overflowY: 'auto', paddingRight: '4px' }}>
-            {section === 'prompts' && visiblePromptSections.map((group) => {
+            {section === 'prompts' && promptView === 'current' && visiblePromptSections.map((group) => {
               const collapsed = normalizedQuery === '' && collapsedPromptSections.has(group.key)
               return <section key={group.key} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <button type="button" aria-expanded={!collapsed} onClick={() => { togglePromptSection(group.key) }} style={{
@@ -5888,38 +5928,15 @@ function PresetManagerDialog({
                   <span style={{ fontSize: '13px', fontWeight: 620, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.title}</span>
                   <span style={{ fontSize: '10px', opacity: 0.46 }}>{group.enabledCount}/{group.prompts.length} 启用</span>
                 </button>
-                {!collapsed && group.prompts.map((prompt) => {
-                  const attachedIndex = prompts.filter(item => item.attached).findIndex(item => item.identifier === prompt.identifier)
-                  return <div key={prompt.identifier} style={{
-                alignItems: 'center', background: prompt.enabled ? `color-mix(in srgb, ${color} 9%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
-                border: `1px solid ${prompt.enabled ? `color-mix(in srgb, ${color} 24%, transparent)` : 'var(--dsw-alias-border-l2, #34343a)'}`,
-                borderRadius: '10px', display: 'grid', gap: '8px', gridTemplateColumns: 'minmax(0, 1fr) auto', marginLeft: '8px', minHeight: '52px', padding: '8px 9px 8px 12px',
-                opacity: prompt.attached ? 1 : 0.62,
-              }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ alignItems: 'center', display: 'flex', gap: '7px', minWidth: 0 }}>
-                    <span style={{ fontSize: '13px', fontWeight: 560, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prompt.name || prompt.identifier}</span>
-                    <span style={{ fontSize: '10px', opacity: 0.48 }}>{prompt.marker ? '结构位' : roleLabel(prompt.role)}</span>
-                    {promptModified(prompt) && <span style={{ color, fontSize: '10px', opacity: 0.82 }}>已修改</span>}
-                  </div>
-                  <div title={prompt.identifier} style={{ fontFamily: 'ui-monospace, monospace', fontSize: '10px', marginTop: '3px', opacity: 0.38, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prompt.identifier}</div>
-                </div>
-                <div style={{ alignItems: 'center', display: 'flex', gap: '5px' }}>
-                  {prompt.editable && <button type="button" onClick={() => { setEditingPromptId(prompt.identifier) }} style={miniButtonStyle}>编辑</button>}
-                  {prompt.imported && prompt.editable && prompt.content !== prompt.importedContent && <button type="button" onClick={() => { setPromptContent(prompt.identifier, prompt.importedContent) }} style={miniButtonStyle}>恢复默认正文</button>}
-                  {prompt.attached && <>
-                    <button type="button" aria-label={`上移${prompt.name}`} disabled={attachedIndex <= 0 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, -1) }} style={miniButtonStyle}>↑</button>
-                    <button type="button" aria-label={`下移${prompt.name}`} disabled={attachedIndex >= attached.length - 1 || normalizedQuery !== ''} onClick={() => { move(prompt.identifier, 1) }} style={miniButtonStyle}>↓</button>
-                  </>}
-                  {prompt.toggleable ? <PresetSwitch checked={prompt.enabled} label={`${prompt.enabled ? '停用' : '启用'}${prompt.name || prompt.identifier}`} onChange={() => {
-                    setPrompt(prompt.identifier, value => ({ ...value, attached: true, enabled: !value.enabled }))
-                  }} /> : <span style={{ fontSize: '10px', opacity: 0.44, padding: '0 3px' }}>固定</span>}
-                  {!prompt.attached && <button type="button" onClick={() => { setPrompt(prompt.identifier, value => ({ ...value, attached: true })) }} style={miniButtonStyle}>加入</button>}
-                </div>
-                  </div>
-                })}
+                {!collapsed && group.prompts.map(prompt => <div key={prompt.identifier} style={{ marginLeft: '8px' }}>{promptModuleRow(prompt)}</div>)}
               </section>
             })}
+            {section === 'prompts' && promptView === 'catalog' && <div style={{
+              background: `color-mix(in srgb, ${color} 6%, var(--dsw-alias-bg-layer-1, #202024))`,
+              border: `1px solid color-mix(in srgb, ${color} 18%, var(--dsw-alias-border-l2, #34343a))`, borderRadius: '10px',
+              fontSize: '11px', lineHeight: 1.55, marginBottom: '2px', opacity: 0.78, padding: '9px 11px',
+            }}>这里保留预设作者提供、尚未装入当前顺序的模块。加入后默认关闭，可在“当前配置”中启用并调整位置。</div>}
+            {section === 'prompts' && promptView === 'catalog' && visibleCatalog.map(prompt => <div key={prompt.identifier}>{promptModuleRow(prompt)}</div>)}
             {section === 'regex' && promptRegex !== undefined && <div role="status" style={{
               background: `color-mix(in srgb, ${color} 7%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 20%, transparent)`,
               borderRadius: '10px', fontSize: '11px', lineHeight: 1.55, padding: '9px 11px',
@@ -5956,7 +5973,9 @@ function PresetManagerDialog({
                 setRegexScripts(current => current.map(item => item.index === script.index ? { ...item, disabled: !item.disabled } : item))
               }} />
             </div>})}
-            {((section === 'prompts' && visiblePromptSections.length === 0) || (section === 'regex' && visibleRegex.length === 0)) && <div style={{ fontSize: '13px', opacity: 0.52, padding: '32px 10px', textAlign: 'center' }}>没有匹配的{section === 'prompts' ? '模块' : '正则脚本'}</div>}
+            {((section === 'prompts' && promptView === 'current' && visiblePromptSections.length === 0)
+              || (section === 'prompts' && promptView === 'catalog' && visibleCatalog.length === 0)
+              || (section === 'regex' && visibleRegex.length === 0)) && <div style={{ fontSize: '13px', opacity: 0.52, padding: '32px 10px', textAlign: 'center' }}>没有匹配的{section === 'prompts' ? '模块' : '正则脚本'}</div>}
           </div>
         </div>
         <aside className="agent-rp-preset-generation" style={{ borderLeft: '1px solid var(--dsw-alias-border-l2, #343438)', paddingLeft: '16px' }}>
@@ -6427,7 +6446,7 @@ function PresetSwitch({ checked, disabled = false, label, onChange }: {
 const fieldLabelStyle = { display: 'block', fontSize: '11px', fontWeight: 560, marginBottom: '13px', opacity: 0.72 } as const
 const fieldInputStyle = {
   background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
-  borderRadius: '8px', color: 'inherit', display: 'block', font: 'inherit', fontSize: '12px', marginTop: '6px', padding: '8px 9px', width: '100%',
+  borderRadius: '8px', boxSizing: 'border-box', color: 'inherit', display: 'block', font: 'inherit', fontSize: '12px', marginTop: '6px', minWidth: 0, padding: '8px 9px', width: '100%',
 } as const
 const miniButtonStyle = {
   background: 'transparent', border: '1px solid var(--dsw-alias-border-l2, #424248)', borderRadius: '6px', color: 'inherit',
@@ -6465,6 +6484,13 @@ const presetManagerResponsiveStyle = `
   .agent-rp-preset-generation > p { grid-column: 1 / -1; }
   .agent-rp-preset-generation > p { margin-top: 2px !important; }
   .agent-rp-preset-list { flex: 1 1 auto; }
+  .agent-rp-preset-module {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .agent-rp-preset-module-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
   .agent-rp-preset-footer { padding: 10px 14px !important; }
   .agent-rp-runtime-inspector-body {
     display: flex !important;
@@ -6483,6 +6509,9 @@ const presetManagerResponsiveStyle = `
   .agent-rp-preset-generation > label:last-of-type { grid-column: 1 / -1; }
   .agent-rp-preset-footer { flex-wrap: wrap; }
   .agent-rp-preset-footer > button:first-of-type { margin-right: auto !important; }
+}
+@media (max-width: 340px) {
+  .agent-rp-preset-module-tabs { grid-template-columns: 1fr !important; }
 }
 `
 
