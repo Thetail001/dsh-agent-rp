@@ -130,6 +130,40 @@ interface AgentRpProjectionState {
   readonly auxiliaryGenerations: TavernAuxiliaryGenerationReplay
 }
 
+declare module '@deepseek-ai/dsh-session-projection/types' {
+  interface SessionProjectionStateMap {
+    /** Replayable Host state behind the client-visible Agent RP projection. */
+    agentRp: AgentRpProjectionState
+  }
+}
+
+const projectionStateSchema = {
+  parse(value: unknown): AgentRpProjectionState {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new Error('invalid agentRp projection state')
+    }
+    const record = value as Partial<Record<keyof AgentRpProjectionState, unknown>>
+    if (typeof record.character !== 'object' || record.character === null || Array.isArray(record.character)
+      || typeof record.cardWorldInfoCount !== 'number' || !Number.isSafeInteger(record.cardWorldInfoCount)
+      || record.cardWorldInfoCount < 0
+      || typeof record.standaloneWorldInfos !== 'object' || record.standaloneWorldInfos === null
+      || Array.isArray(record.standaloneWorldInfos)
+      || typeof record.worldInfoConfiguration !== 'object' || record.worldInfoConfiguration === null
+      || Array.isArray(record.worldInfoConfiguration)
+      || !Array.isArray(record.surface)
+      || typeof record.calls !== 'object' || record.calls === null || Array.isArray(record.calls)
+      || typeof record.personaCommands !== 'object' || record.personaCommands === null
+      || Array.isArray(record.personaCommands)
+      || !Array.isArray(record.presetLibrary)
+      || typeof record.generations !== 'object' || record.generations === null || Array.isArray(record.generations)
+      || typeof record.auxiliaryGenerations !== 'object' || record.auxiliaryGenerations === null
+      || Array.isArray(record.auxiliaryGenerations)) {
+      throw new Error('invalid agentRp projection state')
+    }
+    return value as AgentRpProjectionState
+  },
+} as ProjectionDefinition<'agentRp', AgentRpProjectionState>['stateSchema']
+
 const INITIAL_CHARACTER: AgentRpProjectionState['character'] = {
   characterName: '角色会话',
   description: '',
@@ -596,14 +630,15 @@ function withoutCall(
 /** Build one projection definition with an optional isolated EJS evaluator. */
 export function createAgentRpProjectionDefinition(
   ejsTemplateEngine?: EjsTemplateEngine,
-): ProjectionDefinition<'agentRp', AgentRpProjectionState> & { readonly preload: false } {
+): ProjectionDefinition<'agentRp', AgentRpProjectionState> & {
+  readonly wire: NonNullable<ProjectionDefinition<'agentRp', AgentRpProjectionState>['wire']>
+} {
   return {
   key: 'agentRp',
-  schema: projectionSchema as never,
+  stateSchema: projectionStateSchema,
   // The value contains full card, lorebook, preset, script, and transcript
   // state. Opening a session reads it from history; bulk session discovery
   // must never serialize it for every conversation.
-  preload: false,
   init: () => ({
     character: INITIAL_CHARACTER,
     cardWorldInfoCount: 0,
@@ -1041,6 +1076,8 @@ export function createAgentRpProjectionDefinition(
           },
         }
   },
+  wire: {
+  viewSchema: projectionSchema as NonNullable<ProjectionDefinition<'agentRp', AgentRpProjectionState>['wire']>['viewSchema'],
   view: state => {
     const worldInfo = worldInfoProjection(state, ejsTemplateEngine)
     const auxiliaryGenerations = summarizeTavernAuxiliaryGenerationReplay(state.auxiliaryGenerations)
@@ -1078,6 +1115,7 @@ export function createAgentRpProjectionDefinition(
         },
       }),
     }
+  },
   },
   stateVersion: 11,
   }

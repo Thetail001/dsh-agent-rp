@@ -47,7 +47,7 @@ function invoke(agent: Agent, library: PresetLibrary, request: object): void {
 function projected(agent: Agent) {
   let state = agentRpProjectionDefinition.init()
   for (const event of agent.session.events) state = agentRpProjectionDefinition.apply(state, event)
-  return agentRpProjectionDefinition.view(state)
+  return agentRpProjectionDefinition.wire.view(state)
 }
 
 test('stores reusable presets outside settings and returns detached session defaults', (context) => {

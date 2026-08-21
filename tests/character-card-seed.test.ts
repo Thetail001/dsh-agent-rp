@@ -64,3 +64,22 @@ test('retains a reusable library id for CHARX media projection', () => {
 
   assert.equal(readActiveSessionCharacter(seed)?.result.libraryId, libraryId)
 })
+
+test('keeps an older import readable after a formerly degraded capability becomes native', () => {
+  const card = parseCharacterCardJsonBytes(readFileSync('tests/fixtures/manual-character-card.json'))
+  const seed = createCharacterCardSessionSeed(card, attachment, 0, '')
+  const first = seed[0]
+  if (first?.type !== 'agent-rp/character-card-seed') assert.fail('missing character seed')
+  const legacySeed = [{
+    ...first,
+    data: {
+      ...first.data,
+      meta: {
+        ...first.data.meta,
+        result: { ...first.data.meta.result, degradations: ['lorebook-regex' as const] },
+      },
+    },
+  }, ...seed.slice(1)]
+
+  assert.deepEqual(readActiveSessionCharacter(legacySeed)?.result.degradations, ['lorebook-regex'])
+})

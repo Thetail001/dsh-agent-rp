@@ -105,7 +105,10 @@ test('claims character-card images for every Agent joined to the preset, includi
     section: () => () => {},
     context: () => () => {},
   } as never)
-  root.provide('tools' as never, { register: () => () => {} } as never)
+  root.provide('tools' as never, {
+    register: () => () => {},
+    restrict: () => () => {},
+  } as never)
   root.provide('commands' as never, { register: () => () => {} } as never)
   root.provide('attachments' as never, {} as never)
   const characterLibraryRoot = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-runtime-library-'))

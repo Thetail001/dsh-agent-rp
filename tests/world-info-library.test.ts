@@ -53,7 +53,7 @@ test('imports Host-owned World Info through a private command without a model tu
 
   let state = agentRpProjectionDefinition.init()
   for (const event of session.events) state = agentRpProjectionDefinition.apply(state, event)
-  const projected = agentRpProjectionDefinition.view(state)
+  const projected = agentRpProjectionDefinition.wire.view(state)
   assert.equal(projected.worldInfo.books[0]?.name, '海城')
   assert.equal(projected.worldInfoCount, 1)
 })

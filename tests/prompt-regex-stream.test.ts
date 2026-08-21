@@ -104,7 +104,7 @@ test('logs prompt-only replacements while the visible projection keeps append-or
   let state = agentRpProjectionDefinition.init()
   for (const event of reopened.events) state = agentRpProjectionDefinition.apply(state, event)
   assert.deepEqual(state.surface.map(message => message.text), ['secret one', 'old answer', 'secret two'])
-  const projection = agentRpProjectionDefinition.view(state)
+  const projection = agentRpProjectionDefinition.wire.view(state)
   assert.deepEqual(projection.promptRegex, second)
 
   const restored = applyPromptRegexSurface(session, card([]), '用户')

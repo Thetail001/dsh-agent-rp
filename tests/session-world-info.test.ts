@@ -84,6 +84,19 @@ test('keeps distinct books active and replaces a repeated source attachment', ()
   ])
 })
 
+test('keeps an older World Info import readable after compatibility improves', () => {
+  const session = Session.create(SessionId('world-info-legacy-degradation'))
+  appendImport(session, 'world-info-legacy')
+  const seed = structuredClone(session.events) as unknown as Array<(typeof session.events)[number]>
+  const result = seed.find(event => event.type === 'tool/result')!
+  if (result.type !== 'tool/result' || typeof result.data.meta !== 'object'
+    || result.data.meta === null || Array.isArray(result.data.meta)) assert.fail('fixture did not produce metadata')
+  const summary = (result.data.meta as Record<string, JsonValue>).result as Record<string, JsonValue>
+  summary.degradations = ['entry-probability']
+
+  assert.deepEqual(readActiveSessionWorldInfos(seed)[0]?.result.degradations, ['entry-probability'])
+})
+
 test('rejects World Info replay detached from its source file', () => {
   const session = Session.create(SessionId('world-info-tamper'))
   appendImport(session, 'world-info-1')

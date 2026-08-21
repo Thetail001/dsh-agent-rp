@@ -471,7 +471,7 @@ test('summarizes successful, failed, and pending auxiliary generations without c
   assert.doesNotMatch(JSON.stringify(summary), /private|prompt|result/u)
   let state = agentRpProjectionDefinition.init()
   for (const event of events) state = agentRpProjectionDefinition.apply(state, event)
-  assert.deepEqual(agentRpProjectionDefinition.view(state).auxiliaryGenerations, summary)
+  assert.deepEqual(agentRpProjectionDefinition.wire.view(state).auxiliaryGenerations, summary)
 })
 
 test('counts broken auxiliary generation links without settling valid requests', () => {
