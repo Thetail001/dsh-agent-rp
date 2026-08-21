@@ -7256,6 +7256,7 @@ interface TavernScriptFrame {
   readonly source?: string
   readonly src?: string
   readonly bootSource?: string
+  readonly bootVendors?: readonly string[]
   readonly bootstrapSnapshot?: TavernScriptSnapshot
   readonly error?: string
   readonly requestedOrigin?: string
@@ -7263,6 +7264,27 @@ interface TavernScriptFrame {
   readonly remoteImageOrigins?: readonly string[]
   readonly remoteStyleOrigins?: readonly string[]
   readonly remoteFrameOrigins?: readonly string[]
+}
+
+type TavernScriptStartupPhase = 'navigation' | 'bootstrap' | 'runtime' | 'script'
+
+type TavernScriptStartupTimes = Partial<Record<TavernScriptStartupPhase, number>>
+  & { readonly programDuration?: number; readonly executionDuration?: number }
+
+function tavernStartupRange(
+  timings: ReadonlyMap<string, TavernScriptStartupTimes>,
+  phase: TavernScriptStartupPhase,
+): { readonly first?: number; readonly last?: number } {
+  const values = [...timings.values()].flatMap(value => value[phase] === undefined ? [] : [value[phase]])
+  return values.length === 0 ? {} : { first: Math.min(...values), last: Math.max(...values) }
+}
+
+function tavernDurationRange(
+  timings: ReadonlyMap<string, TavernScriptStartupTimes>,
+  field: 'programDuration' | 'executionDuration',
+): { readonly minimum?: number; readonly maximum?: number } {
+  const values = [...timings.values()].flatMap(value => value[field] === undefined ? [] : [value[field]])
+  return values.length === 0 ? {} : { minimum: Math.min(...values), maximum: Math.max(...values) }
 }
 
 type TavernBlockedResource = Pick<TavernResourceBlockedReport, 'origin' | 'type'>
@@ -7364,6 +7386,7 @@ function TavernScriptRuntime({
   const [frames, setFrames] = useState<readonly TavernScriptFrame[]>([])
   const [readyScriptIds, setReadyScriptIds] = useState<ReadonlySet<string>>(() => new Set())
   const runtimeStartedAt = useRef(performance.now())
+  const scriptStartupTimings = useRef(new Map<string, TavernScriptStartupTimes>())
   const [startupTiming, setStartupTiming] = useState<{
     readonly planMs?: number
     readonly firstReadyMs?: number
@@ -7503,6 +7526,7 @@ function TavernScriptRuntime({
       externalWindowBrokers.current.clear()
       setRuntimeToasts([])
       frameSources.current.clear()
+      scriptStartupTimings.current.clear()
       for (const timer of scriptBootstrapTimers.current.values()) window.clearTimeout(timer)
       scriptBootstrapTimers.current.clear()
       failedScriptIds.current.clear()
@@ -7651,6 +7675,7 @@ function TavernScriptRuntime({
             remoteFrameOrigins: execution.remoteFrameOrigins ?? [],
             src: navigation.url,
             bootSource: navigation.program,
+            bootVendors: navigation.vendors,
             bootstrapSnapshot: snapshot,
           }
         } catch (reason: unknown) {
@@ -7937,16 +7962,46 @@ function TavernScriptRuntime({
         readonly index?: unknown
         readonly markers?: unknown
         readonly payload?: unknown
+        readonly startupMs?: unknown
       }
       if (message.source === 'dsh-agent-rp-tavern-loader' && message.action === 'bootstrap-request') {
+        const current = scriptStartupTimings.current.get(entry.key) ?? {}
+        if (current.navigation === undefined) scriptStartupTimings.current.set(entry.key, {
+          ...current, navigation: elapsedStartupMilliseconds(runtimeStartedAt.current),
+        })
         if (event.origin !== 'null' || entry.bootSource === undefined || entry.bootstrapSnapshot === undefined) return
         ;(event.source as Window).postMessage({
           source: 'dsh-agent-rp-host', action: 'runtime-bootstrap',
-          program: entry.bootSource, snapshot: entry.bootstrapSnapshot,
+          vendors: entry.bootVendors ?? [], program: entry.bootSource, snapshot: entry.bootstrapSnapshot,
         }, '*')
         return
       }
+      if (message.source === 'dsh-agent-rp-tavern-loader' && message.action === 'bootstrap-started') {
+        const current = scriptStartupTimings.current.get(entry.key) ?? {}
+        if (current.bootstrap === undefined) scriptStartupTimings.current.set(entry.key, {
+          ...current, bootstrap: elapsedStartupMilliseconds(runtimeStartedAt.current),
+        })
+        return
+      }
+      if (message.source === 'dsh-agent-rp-tavern-loader' && message.action === 'bootstrap-finished') {
+        if (typeof message.value === 'number' && Number.isFinite(message.value)
+          && message.value >= 0 && message.value <= 15_000) {
+          const current = scriptStartupTimings.current.get(entry.key) ?? {}
+          if (current.programDuration === undefined) scriptStartupTimings.current.set(entry.key, {
+            ...current, programDuration: Math.round(message.value),
+          })
+        }
+        return
+      }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
+      if (message.action === 'startup-phase' && (message.value === 'runtime' || message.value === 'script')) {
+        const phase = message.value
+        const current = scriptStartupTimings.current.get(entry.key) ?? {}
+        if (current[phase] === undefined) scriptStartupTimings.current.set(entry.key, {
+          ...current, [phase]: elapsedStartupMilliseconds(runtimeStartedAt.current),
+        })
+        return
+      }
       if (message.action === 'resource-blocked') {
         const report = parseTavernResourceBlockedReport(message)
         if (report === undefined || report.scriptId !== entry.script.id) return
@@ -7959,6 +8014,13 @@ function TavernScriptRuntime({
         return
       }
       if (message.action === 'ready') {
+        if (typeof message.startupMs === 'number' && Number.isFinite(message.startupMs)
+          && message.startupMs >= 0 && message.startupMs <= 15_000) {
+          const current = scriptStartupTimings.current.get(entry.key) ?? {}
+          if (current.executionDuration === undefined) scriptStartupTimings.current.set(entry.key, {
+            ...current, executionDuration: Math.round(message.startupMs),
+          })
+        }
         const bootstrapTimer = scriptBootstrapTimers.current.get(entry.key)
         if (bootstrapTimer !== undefined) window.clearTimeout(bootstrapTimer)
         scriptBootstrapTimers.current.delete(entry.key)
@@ -8873,6 +8935,12 @@ function TavernScriptRuntime({
     && [...scriptPhases.values()].every(phase => phase !== 'preparing'))
   const scriptRuntimeSettled = permissionSummary.startup === 0
     && readyScriptCount + failedScriptCount >= scripts.length
+  const navigationTiming = tavernStartupRange(scriptStartupTimings.current, 'navigation')
+  const bootstrapTiming = tavernStartupRange(scriptStartupTimings.current, 'bootstrap')
+  const runtimeTiming = tavernStartupRange(scriptStartupTimings.current, 'runtime')
+  const scriptTiming = tavernStartupRange(scriptStartupTimings.current, 'script')
+  const programDuration = tavernDurationRange(scriptStartupTimings.current, 'programDuration')
+  const executionDuration = tavernDurationRange(scriptStartupTimings.current, 'executionDuration')
   useEffect(() => {
     setStartupTiming(current => {
       const elapsed = elapsedStartupMilliseconds(runtimeStartedAt.current)
@@ -8999,6 +9067,30 @@ function TavernScriptRuntime({
         ? {} : { 'data-agent-rp-tavern-first-ready-ms': startupTiming.firstReadyMs })}
       {...(startupTiming.settledMs === undefined
         ? {} : { 'data-agent-rp-tavern-settled-ms': startupTiming.settledMs })}
+      {...(navigationTiming.first === undefined ? {} : {
+        'data-agent-rp-tavern-navigation-first-ms': navigationTiming.first,
+        'data-agent-rp-tavern-navigation-last-ms': navigationTiming.last,
+      })}
+      {...(bootstrapTiming.first === undefined ? {} : {
+        'data-agent-rp-tavern-bootstrap-first-ms': bootstrapTiming.first,
+        'data-agent-rp-tavern-bootstrap-last-ms': bootstrapTiming.last,
+      })}
+      {...(runtimeTiming.first === undefined ? {} : {
+        'data-agent-rp-tavern-runtime-first-ms': runtimeTiming.first,
+        'data-agent-rp-tavern-runtime-last-ms': runtimeTiming.last,
+      })}
+      {...(scriptTiming.first === undefined ? {} : {
+        'data-agent-rp-tavern-script-first-ms': scriptTiming.first,
+        'data-agent-rp-tavern-script-last-ms': scriptTiming.last,
+      })}
+      {...(programDuration.minimum === undefined ? {} : {
+        'data-agent-rp-tavern-program-min-ms': programDuration.minimum,
+        'data-agent-rp-tavern-program-max-ms': programDuration.maximum,
+      })}
+      {...(executionDuration.minimum === undefined ? {} : {
+        'data-agent-rp-tavern-execution-min-ms': executionDuration.minimum,
+        'data-agent-rp-tavern-execution-max-ms': executionDuration.maximum,
+      })}
       data-agent-rp-tavern-permission-script={permissionSummary.counts.script}
       data-agent-rp-tavern-permission-image={permissionSummary.counts.image}
       data-agent-rp-tavern-permission-style={permissionSummary.counts.style}

@@ -719,6 +719,7 @@ addEventListener('message',function(event){if(event.source!==parent||!event.data
 addEventListener('error',function(event){__dshPost('runtime-error',{value:__dshRuntimeError(event.error??event.message,event.lineno,event.colno)})});
 addEventListener('unhandledrejection',function(event){__dshPost('runtime-error',{value:__dshRuntimeError(event.reason)})});
 __dshReportScriptButtons();
+__dshPost('startup-phase',{value:'runtime'});
 `
 }
 
@@ -815,13 +816,14 @@ export function tavernScriptFrameSource(
     }
   })
   const frameSource = approvedFrameOrigins.length === 0 ? "'none'" : [...new Set(approvedFrameOrigins)].join(' ')
-  const bootstrap = `void (async function(){try{${preload}${compatibilitySetup}${dependencies}${dependencies === '' ? '' : ';'}${execute};__dshPost('ready',{markers:__dshCompatibilityMarkers()})}catch(error){console.error(error);__dshPost('runtime-error',{value:__dshRuntimeError(error)})}})();`
+  const bootstrap = `void (async function(){var __dshScriptStartedAt=Date.now();try{__dshPost('startup-phase',{value:'script'});${preload}${compatibilitySetup}${dependencies}${dependencies === '' ? '' : ';'}${execute};__dshPost('ready',{markers:__dshCompatibilityMarkers(),startupMs:Math.max(0,Date.now()-__dshScriptStartedAt)})}catch(error){console.error(error);__dshPost('runtime-error',{value:__dshRuntimeError(error)})}})();`
   return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: ${origins}; connect-src 'none'; img-src ${imageSource}; style-src ${styleSource}; font-src ${fontSource}; frame-src ${frameSource}">${libraries}<style>html,body{background:transparent;color-scheme:dark}${compatibilityStyle}</style></head><body><script>${runtimeSource(snapshot, plan.compatibilityMarkers, option.externalBootstrap === true)}\n${bootstrap}</script></body></html>`
 }
 
 /** Opaque navigation shell plus the runtime program delivered after the shell proves its origin. */
 export interface TavernScriptFrameNavigation {
   readonly url: string
+  readonly vendors: readonly string[]
   readonly program: string
 }
 
@@ -848,14 +850,16 @@ export function tavernScriptFrameNavigation(source: string): TavernScriptFrameNa
   }
   shell += source.slice(cursor)
   if (programs.length === 0) throw new Error('酒馆脚本文档缺少运行入口')
-  const program = programs.join('\n;\n')
-  const key = tavernProgramKey(program)
-  const loader = `(function(){var started=false,timer;function request(){parent.postMessage({source:'dsh-agent-rp-tavern-loader',action:'bootstrap-request'},'*')}addEventListener('message',function(event){var message=event.data;if(started||event.source!==parent||!message||message.source!=='dsh-agent-rp-host'||message.action!=='runtime-bootstrap'||typeof message.program!=='string'||!message.snapshot||typeof message.snapshot!=='object')return;started=true;clearInterval(timer);Object.defineProperty(globalThis,'__dshBootSnapshot',{configurable:true,value:message.snapshot});try{Function(message.program)()}catch(error){parent.postMessage({source:'dsh-agent-rp-tavern-script',action:'runtime-error',value:String(error&&error.message||error)},'*')}finally{delete globalThis.__dshBootSnapshot}},false);request();timer=setInterval(request,250)})();`
+  const sharedVendorCount = programs.length >= 3 ? 2 : 0
+  const vendors = programs.slice(0, sharedVendorCount)
+  const program = programs.slice(sharedVendorCount).join('\n;\n')
+  const key = tavernProgramKey(programs.join('\n;\n'))
+  const loader = `(function(){var started=false,timer;function request(){parent.postMessage({source:'dsh-agent-rp-tavern-loader',action:'bootstrap-request'},'*')}addEventListener('message',function(event){var message=event.data;if(started||event.source!==parent||!message||message.source!=='dsh-agent-rp-host'||message.action!=='runtime-bootstrap'||!Array.isArray(message.vendors)||message.vendors.length>2||message.vendors.some(function(value){return typeof value!=='string'})||typeof message.program!=='string'||!message.snapshot||typeof message.snapshot!=='object')return;started=true;clearInterval(timer);parent.postMessage({source:'dsh-agent-rp-tavern-loader',action:'bootstrap-started'},'*');var programStartedAt=Date.now();try{for(var vendor of message.vendors)Function(vendor)();Object.defineProperty(globalThis,'__dshBootSnapshot',{configurable:true,value:message.snapshot});Function(message.program)()}catch(error){parent.postMessage({source:'dsh-agent-rp-tavern-script',action:'runtime-error',value:String(error&&error.message||error)},'*')}finally{delete globalThis.__dshBootSnapshot;parent.postMessage({source:'dsh-agent-rp-tavern-loader',action:'bootstrap-finished',value:Math.max(0,Date.now()-programStartedAt)},'*')}},false);request();timer=setInterval(request,250)})();`
   const bodyClose = shell.lastIndexOf('</body>')
   if (bodyClose < 0) throw new Error('酒馆脚本文档缺少 body')
   const navigationShell = `${shell.slice(0, bodyClose)}<script>${loader}</script>${shell.slice(bodyClose)}`
     .replace('<body>', `<body data-dsh-program="${key}">`)
-  return { url: tavernScriptFrameUrl(navigationShell), program }
+  return { url: tavernScriptFrameUrl(navigationShell), vendors, program }
 }
 
 /** Encode one script document as an opaque-origin navigation URL for a sandboxed runtime frame. */
