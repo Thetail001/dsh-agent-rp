@@ -6,6 +6,7 @@ import {
   createUserMessage,
   type AssistantMessage,
   type ContentBlock,
+  type MessageSource,
 } from '@deepseek-ai/dsh-llm'
 import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
 import { appendMvuState, applyMvuReply, readCurrentMvuState, readCurrentSessionMvuState } from './mvu.ts'
@@ -331,9 +332,10 @@ async function generate(agent: Agent, operation: 'regenerate' | 'continue', sign
       source: {
         kind: 'plugin',
         plugin: 'dsh-agent-rp-generation',
+        operation,
         form: 'notice',
         summary: operation === 'regenerate' ? '正在重写角色回复' : '正在续写角色回复',
-      },
+      } as MessageSource,
     }))
     await agent.whenIdle()
     signal.throwIfAborted()

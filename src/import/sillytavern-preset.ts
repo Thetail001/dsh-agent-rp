@@ -43,6 +43,13 @@ export interface SillyTavernPresetGeneration {
   readonly repetitionPenalty?: number
 }
 
+/** Preset-owned behavior for continuing the latest assistant reply. */
+export interface SillyTavernPresetContinuation {
+  readonly prefill: boolean
+  readonly postfix: '' | ' ' | '\n' | '\n\n'
+  readonly nudgePrompt: string
+}
+
 /** Non-executable extension settings used to explain native coverage accurately. */
 export interface SillyTavernPresetExtensionCompatibility {
   readonly macroNestEnabled?: boolean
@@ -63,6 +70,8 @@ export interface ImportedSillyTavernPreset {
   readonly prompts: readonly SillyTavernPresetPrompt[]
   readonly order: readonly SillyTavernPresetOrderEntry[]
   readonly generation: SillyTavernPresetGeneration
+  /** Optional for replay compatibility with Agent RP snapshots created before rc.173. */
+  readonly continuation?: SillyTavernPresetContinuation
   readonly formats: {
     readonly worldInfo: string
     readonly scenario: string
@@ -111,6 +120,10 @@ function optionalObject(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined
+}
+
+function continuationPostfix(value: unknown): SillyTavernPresetContinuation['postfix'] {
+  return value === '' || value === ' ' || value === '\n' || value === '\n\n' ? value : ' '
 }
 
 function extensionCompatibility(
@@ -243,6 +256,11 @@ export function parseSillyTavernPresetJson(source: string, fileName = 'SillyTave
       ...optionalFinite(record.frequency_penalty, 'frequency_penalty') === undefined ? {} : { frequencyPenalty: record.frequency_penalty as number },
       ...optionalFinite(record.presence_penalty, 'presence_penalty') === undefined ? {} : { presencePenalty: record.presence_penalty as number },
       ...optionalFinite(record.repetition_penalty, 'repetition_penalty') === undefined ? {} : { repetitionPenalty: record.repetition_penalty as number },
+    },
+    continuation: {
+      prefill: record.continue_prefill === true,
+      postfix: continuationPostfix(record.continue_postfix),
+      nudgePrompt: text(record.continue_nudge_prompt, '[Continue your last message without repeating its original content.]'),
     },
     formats: {
       worldInfo: text(record.wi_format, '{0}'),

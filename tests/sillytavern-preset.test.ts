@@ -27,6 +27,9 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
     reasoning_effort: 'low',
     top_p: 0.88,
     top_k: 40,
+    continue_prefill: true,
+    continue_postfix: '\n',
+    continue_nudge_prompt: '继续 {{lastChatMessage}}',
     extensions: {
       regex_scripts: Array.from({ length: 40 }, (_, index) => ({
         scriptName: `正则 ${index}`,
@@ -85,6 +88,11 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
     reasoningEffort: 'low',
     topP: 0.88,
     topK: 40,
+  })
+  assert.deepEqual(preset.continuation, {
+    prefill: true,
+    postfix: '\n',
+    nudgePrompt: '继续 {{lastChatMessage}}',
   })
   assert.deepEqual(preset.extensionSummary, {
     regexScriptCount: 40,

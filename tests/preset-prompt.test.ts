@@ -5,9 +5,11 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ImportedSillyTavernPreset } from '../src/import/sillytavern-preset.ts'
 import type { ImportedCharacterCard } from '../src/import/types.ts'
 import {
+  applySillyTavernContinuation,
   assembleSillyTavernPreset,
   injectSillyTavernInChatPrompts,
   injectSillyTavernPromptPlan,
+  prepareSillyTavernProviderMessages,
 } from '../src/preset-prompt.ts'
 import { EjsTemplateEngine } from '../src/ejs-template.ts'
 
@@ -190,6 +192,71 @@ function message(role: Message['role'], text: string): Message {
     content: [{ type: 'text', text }],
   })
 }
+
+function continueInstruction(): Message {
+  return createUserMessage({
+    source: {
+      kind: 'plugin', plugin: 'dsh-agent-rp-generation', operation: 'continue', form: 'notice', summary: '正在续写',
+    } as never,
+    content: [{ type: 'text', text: '通用续写指令' }],
+  })
+}
+
+test('moves the prior assistant reply to the request tail when continue prefill is enabled', () => {
+  const continued = applySillyTavernContinuation([
+    message('system', '系统规则'),
+    message('user', '请开始'),
+    message('assistant', '上一段回复'),
+    continueInstruction(),
+    message('system', '历史后模块'),
+  ], {
+    prefill: true, postfix: ' ', nudgePrompt: '不应发送',
+  })
+
+  assert.deepEqual(continued.map(item => [item.role, item.content[0]?.type === 'text' ? item.content[0].text : '']), [
+    ['system', '系统规则'],
+    ['user', '请开始'],
+    ['system', '历史后模块'],
+    ['assistant', '上一段回复 '],
+  ])
+})
+
+test('uses the preset continuation nudge when assistant prefill is disabled', () => {
+  const continued = applySillyTavernContinuation([
+    message('user', '请开始'),
+    message('assistant', '上一段回复'),
+    continueInstruction(),
+  ], {
+    prefill: false, postfix: ' ', nudgePrompt: '从“{{lastChatMessage}}”后继续，不要重复。',
+  })
+
+  assert.deepEqual(continued.map(item => [item.role, item.content[0]?.type === 'text' ? item.content[0].text : '']), [
+    ['user', '请开始'],
+    ['assistant', '上一段回复'],
+    ['system', '从“上一段回复”后继续，不要重复。'],
+  ])
+})
+
+test('applies continuation after placing the complete prompt plan for the provider', () => {
+  const prepared = prepareSillyTavernProviderMessages([
+    message('user', '请开始'),
+    message('assistant', '上一段回复'),
+    continueInstruction(),
+  ], {
+    beforeHistory: [{ role: 'system', content: '历史前模块' }],
+    afterHistory: [{ role: 'system', content: '历史后模块' }],
+    inChat: [],
+    includeHistory: true,
+    continuation: { prefill: true, postfix: '\n', nudgePrompt: '不应发送' },
+  })
+
+  assert.deepEqual(prepared.map(item => [item.role, item.content[0]?.type === 'text' ? item.content[0].text : '']), [
+    ['system', '历史前模块'],
+    ['user', '请开始'],
+    ['system', '历史后模块'],
+    ['assistant', '上一段回复\n'],
+  ])
+})
 
 test('inserts in-chat modules by depth, descending priority, and role', () => {
   const injected = injectSillyTavernInChatPrompts([

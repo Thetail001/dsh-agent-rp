@@ -885,6 +885,7 @@ export function installAgentRp(
         beforeHistory: plan?.beforeHistory ?? [],
         afterHistory: plan?.afterHistory ?? [],
         includeHistory: plan?.includeHistory ?? true,
+        ...(plan?.continuation === undefined ? {} : { continuation: plan.continuation }),
         inChat: [
           ...(plan?.inChat ?? []),
           ...tavernInjectedInChatPrompts(readTavernHelperState(agent.session.events)),

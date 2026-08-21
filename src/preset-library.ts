@@ -135,6 +135,7 @@ function importedId(preset: ImportedSillyTavernPreset): string {
     prompts: preset.prompts,
     order: preset.order,
     generation: preset.generation,
+    continuation: preset.continuation,
     formats: preset.formats,
     regexScripts: preset.regexScripts,
     tavernHelperScripts: preset.tavernHelperScripts,

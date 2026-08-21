@@ -5,6 +5,7 @@ import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
 import type { ImportedCharacterCard } from './import/types.ts'
 import type {
   ImportedSillyTavernPreset,
+  SillyTavernPresetContinuation,
   SillyTavernPresetPrompt,
   SillyTavernPresetRole,
 } from './import/sillytavern-preset.ts'
@@ -39,6 +40,7 @@ export interface AssembledSillyTavernPreset {
   readonly afterHistory: readonly SillyTavernOrderedPrompt[]
   readonly inChat: readonly SillyTavernInChatPrompt[]
   readonly includeHistory: boolean
+  readonly continuation?: SillyTavernContinuationPlan
   readonly enabledPromptCount: number
   readonly unsupportedMacroCount: number
   readonly templateFailureCount: number
@@ -47,8 +49,11 @@ export interface AssembledSillyTavernPreset {
 /** Prompt fields required by the final LLM message assembly seam. */
 export type SillyTavernPromptPlan = Pick<
   AssembledSillyTavernPreset,
-  'beforeHistory' | 'afterHistory' | 'inChat' | 'includeHistory'
+  'beforeHistory' | 'afterHistory' | 'inChat' | 'includeHistory' | 'continuation'
 >
+
+/** Expanded continuation behavior retained until the final provider message seam. */
+export interface SillyTavernContinuationPlan extends SillyTavernPresetContinuation {}
 
 /** One expanded Prompt Manager module placed relative to recent chat messages. */
 export interface SillyTavernInChatPrompt {
@@ -65,6 +70,8 @@ interface MacroState {
   unsupported: number
   templateFailures: number
 }
+
+const LAST_CHAT_MESSAGE_MACRO = '{{lastChatMessage}}'
 
 function lastUserMessage(session: Session, pending: readonly UserMessage[]): string {
   const messages = [...session.deriveMessages(), ...pending]
@@ -155,6 +162,7 @@ function evaluateMacro(source: string, state: MacroState): string {
     return choices.length === 0 ? '' : choices[Math.floor(Math.random() * choices.length)] ?? ''
   }
   if (name === 'lastusermessage') return state.lastUserMessage
+  if (name === 'lastchatmessage') return LAST_CHAT_MESSAGE_MACRO
   if (name === 'user') return state.userName
   if (name === 'trim') return ''
   state.unsupported += 1
@@ -233,10 +241,7 @@ function promptText(
   if (prompt.identifier === 'jailbreak' && card !== undefined && card.postHistoryInstructions.trim() !== '' && !prompt.forbidOverrides) {
     value = substituteCardMacros(card.postHistoryInstructions, card, inputs.userName).replaceAll('{{original}}', marker)
   }
-  const identity = {
-    characterName: card?.nickname?.trim() || card?.name || inputs.characterName?.trim() || '角色',
-    ...(inputs.userName === undefined ? {} : { userName: inputs.userName }),
-  }
+  const identity = promptIdentity(inputs)
   const expanded = expandMacros(card === undefined
     ? substituteSillyTavernIdentityMacros(value, identity)
     : substituteCardMacros(value, card, inputs.userName), state)
@@ -251,6 +256,27 @@ function promptText(
     return undefined
   }
   return rendered.text
+}
+
+function promptIdentity(inputs: PresetPromptInputs): { readonly characterName: string; readonly userName?: string } {
+  const card = inputs.card
+  return {
+    characterName: card?.nickname?.trim() || card?.name || inputs.characterName?.trim() || '角色',
+    ...(inputs.userName === undefined ? {} : { userName: inputs.userName }),
+  }
+}
+
+function continuationPlan(
+  continuation: SillyTavernPresetContinuation | undefined,
+  inputs: PresetPromptInputs,
+  state: MacroState,
+): SillyTavernContinuationPlan | undefined {
+  if (continuation === undefined) return undefined
+  const card = inputs.card
+  const source = card === undefined
+    ? substituteSillyTavernIdentityMacros(continuation.nudgePrompt, promptIdentity(inputs))
+    : substituteCardMacros(continuation.nudgePrompt, card, inputs.userName)
+  return { ...continuation, nudgePrompt: expandMacros(source, state) }
 }
 
 /** Insert expanded in-chat modules using SillyTavern's depth, priority, and role ordering. */
@@ -310,6 +336,56 @@ export function injectSillyTavernPromptPlan(
   ]
 }
 
+function isContinueInstruction(message: Message): boolean {
+  const source = message.source as Message['source'] & { readonly operation?: unknown }
+  return source.kind === 'plugin' && source.plugin === 'dsh-agent-rp-generation'
+    && source.operation === 'continue'
+}
+
+function messageText(message: Message): string {
+  return message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+}
+
+function withContinuationPostfix(message: Message, postfix: SillyTavernPresetContinuation['postfix']): Message {
+  if (postfix === '') return message
+  const content = [...message.content]
+  const textIndex = content.findLastIndex(block => block.type === 'text')
+  const block = content[textIndex]
+  if (block?.type !== 'text' || block.text.endsWith(' ')) return message
+  content[textIndex] = { ...block, text: `${block.text}${postfix}` }
+  return { ...message, content }
+}
+
+/** Apply SillyTavern continue-prefill or continue-nudge semantics after all prompt modules are placed. */
+export function applySillyTavernContinuation(
+  messages: readonly Message[],
+  continuation: SillyTavernContinuationPlan | undefined,
+): Message[] {
+  if (continuation === undefined) return [...messages]
+  const instructionIndex = messages.findLastIndex(isContinueInstruction)
+  if (instructionIndex < 0) return [...messages]
+  const assistantIndex = messages.findLastIndex((message, index) => index < instructionIndex && message.role === 'assistant')
+  if (assistantIndex < 0) return [...messages]
+  const assistant = messages[assistantIndex]!
+  if (continuation.prefill) {
+    const retained = messages.filter((_message, index) => index !== assistantIndex && index !== instructionIndex)
+    return [...retained, withContinuationPostfix(assistant, continuation.postfix)]
+  }
+  const nudge = continuation.nudgePrompt.replace(/\{\{lastchatmessage\}\}/giu, messageText(assistant).trim()).trim()
+  if (nudge === '') return [...messages]
+  return messages.map((message, index) => index === instructionIndex
+    ? { ...message, role: 'system', content: [{ type: 'text', text: nudge }] }
+    : message)
+}
+
+/** Produce the exact provider-facing order after prompt placement and continuation handling. */
+export function prepareSillyTavernProviderMessages(
+  messages: readonly Message[],
+  plan: SillyTavernPromptPlan,
+): Message[] {
+  return applySillyTavernContinuation(injectSillyTavernPromptPlan(messages, plan), plan.continuation)
+}
+
 /** Assemble every ordered module, splitting post-history instructions into a runtime context. */
 export function assembleSillyTavernPreset(
   preset: ImportedSillyTavernPreset,
@@ -360,11 +436,13 @@ export function assembleSillyTavernPreset(
       content: '每次回复都必须在正文末尾完整输出一个 <UpdateVariable><Analysis>…</Analysis><JSONPatch>[…]</JSONPatch></UpdateVariable>；没有变量变化时 JSONPatch 也输出空数组。',
     })
   }
+  const continuation = continuationPlan(preset.continuation, inputs, state)
   return {
     beforeHistory: before,
     afterHistory: after,
     inChat,
     includeHistory,
+    ...(continuation === undefined ? {} : { continuation }),
     enabledPromptCount,
     unsupportedMacroCount: state.unsupported,
     templateFailureCount: state.templateFailures,

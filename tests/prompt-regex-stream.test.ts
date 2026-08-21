@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { createAssistantMessage, createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ImportedCharacterCard, ImportedRegexScript } from '../src/import/types.ts'
 import { roleplayVisibleDialogue, roleplayVisibleTranscript } from '../src/prompt.ts'
-import { applyPromptRegexSurface } from '../src/prompt-regex-stream.ts'
+import { applyPromptRegexSurface, installPromptRegexStream } from '../src/prompt-regex-stream.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
 
 const script = (placement: number, findRegex: string, replaceString: string): ImportedRegexScript => ({
@@ -110,4 +112,60 @@ test('logs prompt-only replacements while the visible projection keeps append-or
   const restored = applyPromptRegexSurface(session, card([]), '用户')
   assert.equal(restored?.replacementCount, 3)
   assert.deepEqual(textHistory(session), ['secret one', 'old answer', 'secret two'])
+})
+
+test('routes a continuation-only plan through the final provider message seam', () => {
+  type StreamHandler = (options: GenerateOptions, next: () => unknown) => unknown
+  let handler: StreamHandler | undefined
+  let captured: GenerateOptions | undefined
+  let calledNext = false
+  const ctx = {
+    on(event: string, callback: StreamHandler) {
+      assert.equal(event, 'llm/stream')
+      handler = callback
+    },
+    llm: {
+      stream(options: GenerateOptions) {
+        captured = options
+        return undefined
+      },
+    },
+  } as unknown as Context
+  const session = Session.create(SessionId('continuation-provider-seam'))
+  const agent = { session } as Agent
+  installPromptRegexStream(ctx, () => agent, () => ({
+    beforeHistory: [], afterHistory: [], inChat: [], includeHistory: true,
+    continuation: { prefill: true, postfix: ' ', nudgePrompt: '不应发送' },
+  }))
+  const options = Object.freeze({
+    provider: 'mock',
+    model: 'mock',
+    sessionId: session.id,
+    messages: [
+      createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '请开始' }] }),
+      createAssistantMessage({
+        source: { provider: 'mock', model: 'mock' }, content: [{ type: 'text', text: '上一段回复' }],
+      }),
+      createUserMessage({
+        source: {
+          kind: 'plugin', plugin: 'dsh-agent-rp-generation', operation: 'continue',
+          form: 'notice', summary: '正在续写',
+        } as never,
+        content: [{ type: 'text', text: '通用续写指令' }],
+      }),
+    ],
+  }) as GenerateOptions
+
+  assert.ok(handler)
+  handler(options, () => {
+    calledNext = true
+    return undefined
+  })
+  assert.equal(calledNext, false)
+  assert.deepEqual(captured?.messages.map(item => [
+    item.role, item.content[0]?.type === 'text' ? item.content[0].text : '',
+  ]), [
+    ['user', '请开始'],
+    ['assistant', '上一段回复 '],
+  ])
 })
