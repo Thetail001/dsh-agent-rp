@@ -186,12 +186,16 @@ export function renderImportedCharacterPrompt(
     ? original
     : substituteCardMacros(card.systemPrompt, card, userName).replaceAll('{{original}}', original)
   const system = renderCardTemplate(systemSource, templateOptions)
+  const labeledField = (label: string, value: string): readonly string[] => {
+    const rendered = renderCardTemplate(substituteCardMacros(value, card, userName), templateOptions)
+    return rendered.trim().length === 0 ? [] : [`${label}：${rendered}`]
+  }
   const parts = [
     system,
     ...loreBefore.map(value => substituteCardMacros(value, card, userName)),
-    `角色描述：${renderCardTemplate(substituteCardMacros(card.description, card, userName), templateOptions)}`,
-    `性格：${renderCardTemplate(substituteCardMacros(card.personality, card, userName), templateOptions)}`,
-    `当前场景：${renderCardTemplate(substituteCardMacros(card.scenario, card, userName), templateOptions)}`,
+    ...labeledField('角色描述', card.description),
+    ...labeledField('性格', card.personality),
+    ...labeledField('当前场景', card.scenario),
     ...(userPersona?.trim() ? [`与角色对话的人：${userPersona.trim()}`] : []),
     ...(card.messageExample.trim().length === 0 ? [] : [`对话示例：\n${renderCardTemplate(substituteCardMacros(card.messageExample, card, userName), templateOptions)}`]),
     ...loreAfter.map(value => substituteCardMacros(value, card, userName)),

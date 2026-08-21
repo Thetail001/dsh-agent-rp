@@ -99,6 +99,69 @@ test('resolves stable SillyTavern identity macros across imported card prose', (
   assert.doesNotMatch(prompt, /\{\{(?:char|user)\}\}|<(?:char|bot|user)>/iu)
 })
 
+test('lets a text-only V3 card keep its identity entirely in embedded World Info', () => {
+  const card = parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v3',
+    spec_version: '3.0',
+    data: {
+      name: '守钟人',
+      description: '',
+      personality: '  ',
+      scenario: '',
+      first_mes: '旅人终于抵达钟楼。',
+      mes_example: '',
+      creator_notes: '',
+      system_prompt: '',
+      post_history_instructions: '',
+      alternate_greetings: [],
+      tags: [],
+      creator: 'fixture',
+      character_version: '1',
+      extensions: {},
+      character_book: {
+        name: '钟楼剧情',
+        recursive_scanning: false,
+        extensions: {},
+        entries: [
+          {
+            keys: [], secondary_keys: [], content: '海城终年多雾。', enabled: true,
+            insertion_order: 1, constant: true, selective: true, position: 'after_char',
+            name: '世界观', use_regex: true, extensions: {},
+          },
+          {
+            keys: [], secondary_keys: [], content: '{{char}}负责守护钟楼。', enabled: true,
+            insertion_order: 100, constant: true, selective: true, position: 'before_char',
+            name: '角色设定', use_regex: true, extensions: {},
+          },
+          {
+            keys: [], secondary_keys: [], content: '{{user}}是刚刚抵达的旅人。', enabled: true,
+            insertion_order: 101, constant: true, selective: true, position: 'before_char',
+            name: 'User设定', use_regex: true, extensions: {},
+          },
+          {
+            keys: [], secondary_keys: [], content: '不要把设定条目复述给用户。', enabled: true,
+            insertion_order: 2, constant: true, selective: true, position: 'after_char',
+            name: '二次解释', use_regex: true, extensions: {},
+          },
+        ],
+      },
+    },
+  }))
+  const lore = renderImportedLorebook(card, Session.create(SessionId('text-only-card')))
+  const prompt = renderImportedCharacterPrompt(card, lore.beforeCharacter, lore.afterCharacter, '旅人')
+
+  assert.deepEqual(lore, {
+    beforeCharacter: ['{{char}}负责守护钟楼。', '{{user}}是刚刚抵达的旅人。'],
+    afterCharacter: ['海城终年多雾。', '不要把设定条目复述给用户。'],
+  })
+  assert.match(prompt, /你是守钟人/u)
+  assert.match(prompt, /守钟人负责守护钟楼/u)
+  assert.match(prompt, /旅人是刚刚抵达的旅人/u)
+  assert.match(prompt, /海城终年多雾/u)
+  assert.match(prompt, /不要把设定条目复述给用户/u)
+  assert.doesNotMatch(prompt, /角色描述：|性格：|当前场景：/u)
+})
+
 test('resolves MVU state and removes unsupported Tavern macros before DSH interpolation', () => {
   const card = parseCharacterCardJson(JSON.stringify({
     spec: 'chara_card_v2',
