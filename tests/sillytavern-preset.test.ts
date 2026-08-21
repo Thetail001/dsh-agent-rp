@@ -151,6 +151,16 @@ test('normalizes the model role used by community presets to assistant', () => {
   assert.equal(preset.order[1]?.enabled, false)
 })
 
+test('uses the identifier when a community preset leaves a module name blank', () => {
+  const preset = parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [{ identifier: 'unnamed-module', name: '   ', role: 'system', content: '保留模块正文' }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: 'unnamed-module', enabled: false }] }],
+  }), 'blank-module-name.json')
+
+  assert.equal(preset.prompts[0]?.name, 'unnamed-module')
+  assert.equal(preset.prompts[0]?.content, '保留模块正文')
+})
+
 test('imports Tavern Helper preset extensions serialized as key-value entries', () => {
   const preset = parseSillyTavernPresetJson(JSON.stringify({
     prompts: [{ identifier: 'main', name: '主提示', role: 'system', content: 'main' }],

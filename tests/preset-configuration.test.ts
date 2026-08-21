@@ -251,6 +251,15 @@ test('decodes the private manager command at its Host boundary', () => {
   assert.deepEqual(parsePresetConfigurationRequest(JSON.stringify({
     operation: 'generation', revision: 0, reasoningEffort: 'provider-owned-level',
   })), { operation: 'generation', revision: 0, reasoningEffort: 'provider-owned-level' })
+  const blankName = parsePresetConfigurationRequest(JSON.stringify({
+    operation: 'replace', revision: 0,
+    prompts: [{ identifier: 'unnamed-module', name: '', role: 'system', content: '保留模块正文' }],
+    order: [{ identifier: 'unnamed-module', enabled: false }],
+    content: [], generation: {}, regex: [],
+  }))
+  assert.equal(blankName.operation, 'replace')
+  if (blankName.operation !== 'replace') assert.fail('expected replace operation')
+  assert.equal(blankName.prompts?.[0]?.name, 'unnamed-module')
 })
 
 test('edits preset regex switches and depths independently from prompt modules', () => {

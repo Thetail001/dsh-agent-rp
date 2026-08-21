@@ -129,9 +129,7 @@ function promptDefinitions(value: unknown): readonly PromptDefinition[] | undefi
     const id = identifier(record.identifier, `prompts[${itemIndex}].identifier`)
     if (seen.has(id)) throw new Error(`prompts repeats module ${JSON.stringify(id)}`)
     seen.add(id)
-    if (typeof record.name !== 'string' || record.name.trim() === '') {
-      throw new Error(`prompts[${itemIndex}].name must be a non-empty string`)
-    }
+    const name = typeof record.name === 'string' && record.name.trim() !== '' ? record.name.trim() : id
     if (record.role !== 'system' && record.role !== 'user' && record.role !== 'assistant') {
       throw new Error(`prompts[${itemIndex}].role is unsupported`)
     }
@@ -141,7 +139,7 @@ function promptDefinitions(value: unknown): readonly PromptDefinition[] | undefi
     const injectionOrder = optionalPromptInteger(record.injectionOrder, `prompts[${itemIndex}].injectionOrder`, 9999)
     return {
       identifier: id,
-      name: record.name.trim(),
+      name,
       role: record.role,
       content: record.content,
       ...(injectionPosition === undefined ? {} : { injectionPosition }),
