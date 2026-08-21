@@ -100,8 +100,9 @@ function parseRequest(value: unknown): TavernPreflightRequest {
   const request = value as Record<string, unknown>
   if (request.format !== 0 || !Array.isArray(request.scriptApprovals)
     || request.scriptApprovals.length > MAX_PREFLIGHT_APPROVALS) invalidRequest('权限预检请求无效')
-  const characterId = safeLibraryId(request.characterId, '角色卡 id')
+  const characterId = request.characterId === undefined ? undefined : safeLibraryId(request.characterId, '角色卡 id')
   const presetId = request.presetId === undefined ? undefined : safeLibraryId(request.presetId, '预设 id')
+  if (characterId === undefined && presetId === undefined) invalidRequest('权限预检没有可检查的资源')
   const scriptApprovals: TavernPreflightScriptApproval[] = request.scriptApprovals.map((candidate, index) => {
     if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
       invalidRequest(`脚本授权 ${index + 1} 无效`)
@@ -110,13 +111,22 @@ function parseRequest(value: unknown): TavernPreflightRequest {
     if (!Array.isArray(approval.origins) || approval.origins.length > MAX_ORIGINS_PER_SCRIPT) {
       invalidRequest(`脚本授权 ${index + 1} 无效`)
     }
+    const scope = safeScope(approval.scope)
+    if ((scope === 'character' && characterId === undefined) || (scope === 'preset' && presetId === undefined)) {
+      invalidRequest(`脚本授权 ${index + 1} 不属于所选资源`)
+    }
     return {
-      scope: safeScope(approval.scope),
+      scope,
       scriptId: safeScriptId(approval.scriptId, `脚本授权 ${index + 1} id`),
       origins: [...new Set(approval.origins.map(safeOrigin))].sort(),
     }
   })
-  return { format: 0, characterId, ...(presetId === undefined ? {} : { presetId }), scriptApprovals }
+  return {
+    format: 0,
+    ...(characterId === undefined ? {} : { characterId }),
+    ...(presetId === undefined ? {} : { presetId }),
+    scriptApprovals,
+  }
 }
 
 function parseExecutionRequest(value: unknown): TavernExecutionRequest {
@@ -125,12 +135,13 @@ function parseExecutionRequest(value: unknown): TavernExecutionRequest {
   if (request.format !== 0 || !Array.isArray(request.approvedOrigins)
     || request.approvedOrigins.length > MAX_ORIGINS_PER_SCRIPT) invalidRequest('脚本执行计划请求无效')
   const scope = safeScope(request.scope)
-  const characterId = safeLibraryId(request.characterId, '角色卡 id')
+  const characterId = request.characterId === undefined ? undefined : safeLibraryId(request.characterId, '角色卡 id')
   const presetId = request.presetId === undefined ? undefined : safeLibraryId(request.presetId, '预设 id')
+  if (scope === 'character' && characterId === undefined) invalidRequest('角色卡 id 无效')
   if (scope === 'preset' && presetId === undefined) invalidRequest('预设 id 无效')
   return {
     format: 0,
-    characterId,
+    ...(characterId === undefined ? {} : { characterId }),
     ...(presetId === undefined ? {} : { presetId }),
     scope,
     scriptId: safeScriptId(request.scriptId, '脚本 id'),
@@ -138,7 +149,7 @@ function parseExecutionRequest(value: unknown): TavernExecutionRequest {
   }
 }
 
-/** Register a model-free resource preflight for the selected character and optional preset. */
+/** Register a model-free resource preflight for any selected character/preset combination. */
 export function installTavernPreflightHttp(
   ctx: Context,
   characters: CharacterLibrary,
@@ -160,11 +171,13 @@ export function installTavernPreflightHttp(
       }
       try {
         const input = parseRequest(await readJson(request))
-        let character: ReturnType<CharacterLibrary['resolve']>
-        try {
-          character = characters.resolve(input.characterId)
-        } catch (error: unknown) {
-          invalidRequest('角色卡不可用', { cause: error })
+        let character: ReturnType<CharacterLibrary['resolve']> | undefined
+        if (input.characterId !== undefined) {
+          try {
+            character = characters.resolve(input.characterId)
+          } catch (error: unknown) {
+            invalidRequest('角色卡不可用', { cause: error })
+          }
         }
         let preset: ReturnType<PresetLibrary['get']> | undefined
         if (input.presetId !== undefined) {
@@ -175,7 +188,7 @@ export function installTavernPreflightHttp(
           }
         }
         const result = await inspectTavernPreflight([
-          { scope: 'character', scripts: character.card.frontend.tavernHelperScripts },
+          { scope: 'character', scripts: character?.card.frontend.tavernHelperScripts ?? [] },
           { scope: 'preset', scripts: preset?.preset.tavernHelperScripts ?? [] },
         ], input.scriptApprovals, AbortSignal.timeout(30_000))
         json(response, 200, result)
@@ -221,11 +234,11 @@ export function installTavernExecutionHttp(
         let ownerId: string
         if (input.scope === 'character') {
           try {
-            scripts = characters.resolve(input.characterId).card.frontend.tavernHelperScripts
+            scripts = characters.resolve(input.characterId!).card.frontend.tavernHelperScripts
           } catch (error: unknown) {
             invalidRequest('角色卡不可用', { cause: error })
           }
-          ownerId = input.characterId
+          ownerId = input.characterId!
         } else {
           try {
             scripts = presets.get(input.presetId!).preset.tavernHelperScripts ?? []

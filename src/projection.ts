@@ -13,7 +13,7 @@ import {
   presetTavernHelperScripts,
   type ImportedSillyTavernPreset,
 } from './import/sillytavern-preset.ts'
-import type { AgentRpProjection } from './projection-types.ts'
+import { DEFAULT_AGENT_RP_CHARACTER_NAME, type AgentRpProjection } from './projection-types.ts'
 import { applyMvuReply, readCurrentMvuState } from './mvu.ts'
 import { canEditPresetPrompt, canTogglePresetPrompt } from './preset-configuration.ts'
 import { configurePreset, parsePresetConfigurationRequest } from './preset-configuration-core.ts'
@@ -165,7 +165,7 @@ const projectionStateSchema = {
 } as ProjectionDefinition<'agentRp', AgentRpProjectionState>['stateSchema']
 
 const INITIAL_CHARACTER: AgentRpProjectionState['character'] = {
-  characterName: '角色会话',
+  characterName: DEFAULT_AGENT_RP_CHARACTER_NAME,
   description: '',
   personality: '',
   scenario: '',

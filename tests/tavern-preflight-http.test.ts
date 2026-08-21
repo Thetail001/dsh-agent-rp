@@ -229,6 +229,58 @@ test('returns and caches a Host-resolved execution graph without browser-side mo
   }
 })
 
+test('preflights and executes a preset without requiring a character card', async () => {
+  const preflight = await invoke(registeredRoute(), {
+    body: request({ characterId: undefined, presetId: 'preset-ok' }),
+  })
+  assert.equal(preflight.status, 200)
+  assert.deepEqual(preflight.json, {
+    format: 0,
+    scripts: 1,
+    ready: 1,
+    permissionRequired: 0,
+    failed: 0,
+    entries: [{
+      scope: 'preset', scriptId: 'preset-script', scriptName: 'script-preset-script',
+      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+    }],
+  })
+
+  const execution = await invoke(registeredExecutionRoute(), {
+    body: executionRequest({
+      characterId: undefined,
+      presetId: 'preset-ok',
+      scope: 'preset',
+      scriptId: 'preset-script',
+    }),
+  })
+  assert.equal(execution.status, 200)
+  assert.equal((execution.json as { readonly format: number }).format, 0)
+})
+
+test('rejects empty preflight selections and approvals outside the selected resources', async () => {
+  const route = registeredRoute()
+  const empty = await invoke(route, { body: request({ characterId: undefined }) })
+  assert.equal(empty.status, 400)
+  assert.deepEqual(empty.json, { error: '权限预检没有可检查的资源' })
+
+  const foreignApproval = await invoke(route, {
+    body: request({
+      characterId: undefined,
+      presetId: 'preset-ok',
+      scriptApprovals: [{ scope: 'character', scriptId: 'character-script', origins: [] }],
+    }),
+  })
+  assert.equal(foreignApproval.status, 400)
+  assert.deepEqual(foreignApproval.json, { error: '脚本授权 1 不属于所选资源' })
+
+  const characterExecution = await invoke(registeredExecutionRoute(), {
+    body: executionRequest({ characterId: undefined }),
+  })
+  assert.equal(characterExecution.status, 400)
+  assert.deepEqual(characterExecution.json, { error: '角色卡 id 无效' })
+})
+
 test('bounds declared and streamed Tavern preflight request bodies', async () => {
   const route = registeredRoute()
   const declared = await invoke(route, {

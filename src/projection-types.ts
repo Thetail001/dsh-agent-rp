@@ -7,6 +7,9 @@ import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
 import type { TavernHelperState } from './tavern-helper.ts'
 import type { PromptRegexTraceRecord } from './frontend-regex.ts'
 
+/** Stable fallback identity used by resource-only roleplay Sessions. */
+export const DEFAULT_AGENT_RP_CHARACTER_NAME = '角色会话'
+
 /** Current character identity and migration summary for one Roleplay Session. */
 export interface AgentRpProjection {
   /** Character name used by the prompt and card macros. */
