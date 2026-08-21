@@ -25,6 +25,7 @@ import {
 import {
   AGENT_RP_MEMORY_KINDS,
   prepareAgentRpMemory,
+  requestsPersistentMemory,
 } from './memory.ts'
 import { executeAgentRpMemoryCommand } from './memory-command.ts'
 import { installAgentRpMemoryHttp } from './memory-http.ts'
@@ -490,11 +491,27 @@ export function installAgentRp(
 ): void {
   const agentsByScope = new WeakMap<ScopeKey, Agent>()
   const agentsBySession = new Map<string, Agent>()
+  const rememberIntentByAgent = new WeakMap<Agent, boolean>()
+  const rememberRestrictions = new Map<Agent, () => void>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
   const presetAfterHistoryByAgent = new WeakMap<Agent, string>()
   const presetInChatByAgent = new WeakMap<Agent, readonly SillyTavernInChatPrompt[]>()
   const gateway = ctx.get('apiProxy') as PromptAttachmentGateway | undefined
   const commands = (ctx as Context & { commands: HumanCommandGateway }).commands
+  const setRememberAvailable = (agent: Agent, available: boolean): void => {
+    rememberIntentByAgent.set(agent, available)
+    const restricted = rememberRestrictions.get(agent)
+    if (available) {
+      restricted?.()
+      rememberRestrictions.delete(agent)
+    } else if (restricted === undefined) {
+      rememberRestrictions.set(agent, agent.ctx.tools.restrict({ deny: ['remember'] }))
+    }
+  }
+  ctx.effect(() => () => {
+    for (const dispose of rememberRestrictions.values()) dispose()
+    rememberRestrictions.clear()
+  }, 'agent-rp: remember intent gates')
   const presetLibrary = new PresetLibrary()
   const characterLibrary = new CharacterLibrary(options.characterLibraryRoot === undefined
     ? {}
@@ -824,10 +841,13 @@ export function installAgentRp(
   ctx.on('agent/created', ({ agent }) => {
     agentsByScope.set(agent, agent)
     agentsBySession.set(String(agent.session.id), agent)
+    setRememberAvailable(agent, false)
   })
   ctx.on('agent/disposed', ({ agent }) => {
     agentsByScope.delete(agent)
     agentsBySession.delete(String(agent.session.id))
+    rememberRestrictions.get(agent)?.()
+    rememberRestrictions.delete(agent)
     pendingMessagesByAgent.delete(agent)
     presetAfterHistoryByAgent.delete(agent)
     presetInChatByAgent.delete(agent)
@@ -843,6 +863,7 @@ export function installAgentRp(
   installMvuStreamCompletion(ctx, sessionId => agentsBySession.get(sessionId))
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {
     if (agentsByScope.get(agent) !== agent) return
+    setRememberAvailable(agent, requestsPersistentMemory(message))
     const pending = pendingMessagesByAgent.get(agent)
     if (pending === undefined) pendingMessagesByAgent.set(agent, [message])
     else pending.push(message)
@@ -853,7 +874,10 @@ export function installAgentRp(
     text: ({ scope }) => {
       if (scope === undefined) return ''
       const agent = agentsByScope.get(scope)
-      return agent === undefined ? '' : renderMemoryContext(agent.session.events)
+      return agent === undefined ? '' : renderMemoryContext(
+        agent.session.events,
+        rememberIntentByAgent.get(agent) === true,
+      )
     },
   })
   ctx.systemPrompt.context({

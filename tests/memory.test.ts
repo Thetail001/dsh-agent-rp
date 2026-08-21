@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { CommandId } from '@deepseek-ai/dsh-commands'
-import { CallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { CallId, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { validateJsonSchemaValue, valueSchemaSpecToJsonSchema } from '@deepseek-ai/dsh-tools'
 import { MEMORY_VALUE_SCHEMA } from '../src/index.ts'
@@ -10,11 +10,25 @@ import {
   appendAgentRpMemorySeed,
   parseAgentRpMemoryCommandRequest,
   prepareAgentRpMemory,
+  requestsPersistentMemory,
   type AgentRpMemoryRecord,
   readAgentRpMemoryHistory,
 } from '../src/memory.ts'
 import { executeAgentRpMemoryCommand } from '../src/memory-command.ts'
 import { renderMemoryContext } from '../src/prompt.ts'
+
+test('opens model memory only for explicit persistent user intent', () => {
+  const message = (text: string) => createUserMessage({
+    source: { kind: 'user' }, content: [{ type: 'text', text }],
+  })
+  assert.equal(requestsPersistentMemory(message('请记住我喝咖啡不加糖。')), true)
+  assert.equal(requestsPersistentMemory(message('下次请叫我小满。')), true)
+  assert.equal(requestsPersistentMemory(message('我点点头，陪她去保健室。')), false)
+  assert.equal(requestsPersistentMemory(createUserMessage({
+    source: { kind: 'plugin', plugin: 'test', form: 'notice', summary: '内部通知' },
+    content: [{ type: 'text', text: '请记住这条内部通知。' }],
+  })), false)
+})
 
 function appendRememberCall(session: Session, callId: string, args: object): number {
   return session.append('tool/call', {
@@ -81,6 +95,10 @@ test('persists one normalized memory and exposes it to the next prompt snapshot'
   assert.deepEqual(readAgentRpMemoryHistory(session.events).active, [record])
   assert.match(renderMemoryContext(session.events), /用户喝咖啡时不加糖/u)
   assert.match(renderMemoryContext(session.events), new RegExp(`\\[memory-${sourceEventSeq} \\| preference \\|`, 'u'))
+  assert.match(renderMemoryContext(session.events), /持久记忆只读/u)
+  assert.doesNotMatch(renderMemoryContext(session.events), /remember|supersedes/u)
+  assert.match(renderMemoryContext(session.events, true), /调用 remember/u)
+  assert.match(renderMemoryContext([], true), /跨轮保留意图/u)
   assert.doesNotMatch(renderMemoryContext(session.events), /来源事件/u)
 })
 

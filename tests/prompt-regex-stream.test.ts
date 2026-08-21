@@ -3,6 +3,7 @@ import test from 'node:test'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ImportedCharacterCard, ImportedRegexScript } from '../src/import/types.ts'
+import { roleplayVisibleDialogue, roleplayVisibleTranscript } from '../src/prompt.ts'
 import { applyPromptRegexSurface } from '../src/prompt-regex-stream.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
 
@@ -81,6 +82,12 @@ test('logs prompt-only replacements while the visible projection keeps append-or
   const first = applyPromptRegexSurface(session, active, '用户')
   assert.equal(first?.replacementCount, 3)
   assert.deepEqual(textHistory(session), ['masked one', 'prior answer', 'masked two'])
+  assert.deepEqual(roleplayVisibleDialogue(session), ['secret one', 'old answer', 'secret two'])
+  assert.deepEqual(roleplayVisibleTranscript(session), [
+    { role: 'user', content: 'secret one' },
+    { role: 'assistant', content: 'old answer' },
+    { role: 'user', content: 'secret two' },
+  ])
   assert.deepEqual(first?.scripts.map(item => [item.outcome, item.affectedMessages]), [
     ['applied', 2],
     ['applied', 1],

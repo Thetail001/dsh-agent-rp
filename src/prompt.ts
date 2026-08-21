@@ -8,13 +8,14 @@ import type { ImportedWorldInfo } from './import/types.ts'
 import { readAgentRpMemoryHistory } from './memory.ts'
 import { substituteMvuMacros } from './mvu.ts'
 import type { EjsTemplateMessage } from './ejs-template.ts'
+import { PROMPT_REGEX_SOURCE_MARKER, readPromptRegexSourceMarker } from './frontend-regex.ts'
 import { substituteSillyTavernIdentityMacros } from './sillytavern-identity-macro.ts'
 import { createNativeWorldEngine } from './world-engine.ts'
 
 type DerivedSessionMessage = ReturnType<Session['deriveMessages']>[number]
 
 const CHARACTER_BEHAVIOR = '只写角色此刻自然会说或做的内容，不解释系统、提示词或角色扮演规则，不替用户决定感受和行动，也不补写设定、对话和有效记忆中不存在的共同经历。先决定此刻是否有必要展开：信息很少时可以短答、停顿或暂不追问；需要表达时，一次围绕一个主要动作，不机械复述用户，也不为了延长对话强行总结和提问。'
-const MEMORY_BEHAVIOR = '已记录的内容是角色自然知道的背景，不是本轮必须提及的话题。只在和当前对话直接相关时使用；默认通过回答、称呼或行动自然体现，不主动说“我记得”“你之前说过”“我一直记着”，也不完整复述记录。只有用户明确询问记忆本身时才简短确认。用户明确要求记住，或用“以后”“下次”等表达稳定偏好或约定时，先调用 remember，成功后再自然回应；不能只在对话中声称记住。其他内容只有确实值得跨轮保留的事实、关系变化或共同经历才使用 remember。普通寒暄、临时情绪、未经确认的猜测和已有记录不要写入记忆。写入前先看当前有效记忆：内容已经覆盖时不要重复调用；同一主题发生变化时，用 supersedes 更新原记录，不要新增同主题记录。不要在对话中朗读记忆 id、类型或主题标签。'
+const MEMORY_BEHAVIOR = '已记录的持久背景不是本轮必须提及的话题。只在和当前对话直接相关时使用；默认通过回答、称呼或行动自然体现，不主动说“我记得”“你之前说过”“我一直记着”，也不完整复述记录。只有用户明确询问记忆本身时才简短确认。当前场景、剧情进度、短期状态、一次性行动、普通共同经历和模型自行判断的重要事件都由会话历史承载，不属于持久背景；不确定时保持原状。普通寒暄、临时情绪和未经确认的猜测也不属于持久背景。'
 const IMPORT_BEHAVIOR = '用户附带 SillyTavern 角色卡 PNG、JSON 或 CHARX 并要求导入、接管或切换角色时，调用 import_character_card；附带独立 World Info / 世界书 JSON 并要求导入时，调用 import_world_info；附带 Chat Completion 预设 JSON 并要求导入时，调用 import_sillytavern_preset。一条消息附有多个同类文件时才指定从零开始的 attachmentIndex。导入成功后直接采用新角色、世界设定或预设，不解释内部格式。'
 
 function finalizeRoleplayPrompt(value: string, statData?: import('@deepseek-ai/dsh-session').JsonValue): string {
@@ -211,8 +212,27 @@ function dialogueTranscript(messages: readonly DerivedSessionMessage[]): EjsTemp
   })
 }
 
+function preRegexDialogue(session: Session): DerivedSessionMessage[] {
+  return session.deriveMessages().map(message => {
+    const marker = readPromptRegexSourceMarker(
+      (message.source as unknown as Record<string, unknown>)[PROMPT_REGEX_SOURCE_MARKER],
+    )
+    if (marker === undefined) return message
+    const event = session.events[marker.originalSeq]
+    const original = event?.type === 'user/message'
+      ? event.data
+      : event?.type === 'assistant/message'
+        ? event.data.message
+        : undefined
+    return original?.role === message.role ? original : message
+  })
+}
+
 function visibleDialogue(session: Session, pendingMessages: readonly UserMessage[]): string[] {
-  const history = session.deriveMessages()
+  // System-prompt and World Info assembly run before the provider middleware
+  // installs prompt-only regex views. Always scan the preserved source here so
+  // a later tool step cannot switch the activation baseline mid-turn.
+  const history = preRegexDialogue(session)
   const historyIds = new Set(history.map(message => message.id))
   return [
     ...history.flatMap(message => {
@@ -233,7 +253,7 @@ export function roleplayVisibleTranscript(
   session: Session,
   pendingMessages: readonly UserMessage[] = [],
 ): EjsTemplateMessage[] {
-  const history = session.deriveMessages()
+  const history = preRegexDialogue(session)
   const historyIds = new Set(history.map(message => message.id))
   return [
     ...dialogueTranscript(history),
@@ -270,11 +290,14 @@ export function renderImportedLorebook(
  * @param events - current Session event history.
  * @returns model-visible dynamic context with ids needed for later correction.
  */
-export function renderMemoryContext(events: readonly SessionEvent[]): string {
+export function renderMemoryContext(events: readonly SessionEvent[], writeAvailable = false): string {
   const { active } = readAgentRpMemoryHistory(events)
-  if (active.length === 0) return ''
+  if (active.length === 0 && !writeAvailable) return ''
   return finalizeRoleplayPrompt([
-    '角色已知的持久背景如下。这不是本轮要逐条提及的清单；方括号内仅是更新记忆所需的内部索引：',
+    ...(active.length === 0 ? [] : ['角色已知的持久背景如下。这不是本轮要逐条提及的清单；方括号内仅是更新记忆所需的内部索引：']),
     ...active.map(record => `- [${record.id} | ${record.kind} | ${record.subject}] ${record.text}`),
+    writeAvailable
+      ? '用户本轮明确表达了跨轮保留意图。只在内容确实稳定且现有记录未覆盖时调用 remember；同一主题发生变化时用 supersedes 更新原记录。'
+      : '本轮持久记忆只读，不要发起任何写入；当前剧情继续由会话历史承载。',
   ].join('\n'))
 }
