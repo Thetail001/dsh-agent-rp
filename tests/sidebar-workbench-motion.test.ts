@@ -39,6 +39,14 @@ test('roleplay launch keeps collection management secondary to choosing a charac
   assert.doesNotMatch(source, /aria-label="角色库分区"/u)
 })
 
+test('character launch keeps additional World Info in one collapsed resource selection', () => {
+  assert.match(source, /const \[worldInfoOpen, setWorldInfoOpen\] = useState\(false\)/u)
+  assert.match(source, /data-agent-rp-world-info-selection=\{selectedWorldInfoIds\.length\}/u)
+  assert.match(source, /data-agent-rp-world-info-option=\{entry\.id\}/u)
+  assert.match(source, /按选择顺序加载，最多 16 本；不会修改角色卡或世界书原文件/u)
+  assert.match(source, /selectedWorldInfoIds\.length === 0 \? undefined : selectedWorldInfoIds/u)
+})
+
 test('sidebar exposes one resource-center drilldown for peer resource types', () => {
   assert.match(source, /data-agent-rp-action="open-resource-center"/u)
   assert.match(source, /data-agent-rp-action="open-world-info-library"/u)

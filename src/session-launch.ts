@@ -7,7 +7,7 @@ import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
 import { createPresetSessionSeed } from './import/session-preset.ts'
 import { createSillyTavernChatSeed, resolveSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import { createSillyTavernMigrationSeed } from './import/sillytavern-migration-seed.ts'
-import { createWorldInfoLibrarySessionSeed } from './import/world-info-seed.ts'
+import { appendWorldInfoLibrarySessionSeed, createWorldInfoLibrarySessionSeed } from './import/world-info-seed.ts'
 import { readActiveSessionCharacter, type FileAttachmentRef } from './import/session-character.ts'
 import type { PresetLibrary, PresetLibraryEntry } from './preset-library.ts'
 import { substituteCardMacros } from './prompt.ts'
@@ -27,6 +27,21 @@ function object(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
+const worldInfoLibraryIdPattern = /^world-info-[a-f0-9]{32}$/u
+
+function parseAdditionalWorldInfoIds(value: unknown, primaryId?: string): readonly string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > 16
+    || value.some(id => typeof id !== 'string' || !worldInfoLibraryIdPattern.test(id))) {
+    throw new Error('附加世界书字段无效')
+  }
+  const ids = value as string[]
+  if (new Set(ids).size !== ids.length || (primaryId !== undefined && ids.includes(primaryId))) {
+    throw new Error('附加世界书不能重复')
+  }
+  return ids.length === 0 ? undefined : [...ids]
+}
+
 /** Validate one same-origin browser request without accepting filesystem paths. */
 export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSessionLaunchRequest {
   const record = object(value, '角色会话启动请求')
@@ -40,10 +55,11 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       || (record.presetId !== undefined
         && (typeof record.presetId !== 'string' || !/^[a-z0-9-]{8,80}$/u.test(record.presetId)))
       || (record.memory !== undefined && record.memory !== 'copy-active')
-      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'characterId', 'greetingIndex', 'persona', 'presetId', 'memory'].includes(key))) {
+      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'characterId', 'greetingIndex', 'persona', 'presetId', 'worldInfoIds', 'memory'].includes(key))) {
       throw new Error('角色会话启动请求字段无效')
     }
     const persona = record.persona === undefined ? undefined : parseSessionPersona(record.persona)
+    const worldInfoIds = parseAdditionalWorldInfoIds(record.worldInfoIds)
     return {
       format: 0,
       sourceSessionId: record.sourceSessionId as string,
@@ -52,17 +68,19 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       greetingIndex: record.greetingIndex,
       ...(persona === undefined ? {} : { persona }),
       ...(typeof record.presetId === 'string' ? { presetId: record.presetId } : {}),
+      ...(worldInfoIds === undefined ? {} : { worldInfoIds }),
       ...(record.memory === 'copy-active' ? { memory: 'copy-active' as const } : {}),
     }
   }
   if (record.kind === 'world-info') {
-    if (typeof record.importId !== 'string' || !/^world-info-[a-f0-9]{32}$/u.test(record.importId)
+    if (typeof record.importId !== 'string' || !worldInfoLibraryIdPattern.test(record.importId)
       || (record.presetId !== undefined
         && (typeof record.presetId !== 'string' || !/^[a-z0-9-]{8,80}$/u.test(record.presetId)))
-      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'importId', 'persona', 'presetId'].includes(key))) {
+      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'importId', 'persona', 'presetId', 'worldInfoIds'].includes(key))) {
       throw new Error('世界书会话启动请求字段无效')
     }
     const persona = record.persona === undefined ? undefined : parseSessionPersona(record.persona)
+    const worldInfoIds = parseAdditionalWorldInfoIds(record.worldInfoIds, record.importId)
     return {
       format: 0,
       sourceSessionId: record.sourceSessionId as string,
@@ -70,6 +88,7 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       importId: record.importId,
       ...(persona === undefined ? {} : { persona }),
       ...(typeof record.presetId === 'string' ? { presetId: record.presetId } : {}),
+      ...(worldInfoIds === undefined ? {} : { worldInfoIds }),
     }
   }
   if (record.kind === 'chat') {
@@ -127,6 +146,17 @@ function seedWithPreset(
   return createPresetSessionSeed(seed, entry.preset, presetAttachment(entry), entry.id)
 }
 
+function seedWithWorldInfos(
+  seed: readonly SessionEvent[],
+  worldInfos: WorldInfoLibrary,
+  worldInfoIds: readonly string[] | undefined,
+): readonly SessionEvent[] {
+  return (worldInfoIds ?? []).reduce(
+    (events, id) => appendWorldInfoLibrarySessionSeed(events, worldInfos.asset(id)),
+    seed,
+  )
+}
+
 function libraryAttachment(
   characterId: string,
   transport: 'png' | 'json' | 'charx',
@@ -179,7 +209,11 @@ export function prepareAgentRpSession(
         request.characterId,
       )
     return {
-      seed: seedWithPreset(characterSeed, presets, request.presetId),
+      seed: seedWithPreset(
+        seedWithWorldInfos(characterSeed, worldInfos, request.worldInfoIds),
+        presets,
+        request.presetId,
+      ),
       title: resolved.detail.displayName,
     }
   }
@@ -187,7 +221,15 @@ export function prepareAgentRpSession(
   if (request.kind === 'world-info') {
     const asset = worldInfos.asset(request.importId)
     return {
-      seed: seedWithPreset(createWorldInfoLibrarySessionSeed(asset, request.persona), presets, request.presetId),
+      seed: seedWithPreset(
+        seedWithWorldInfos(
+          createWorldInfoLibrarySessionSeed(asset, request.persona),
+          worldInfos,
+          request.worldInfoIds,
+        ),
+        presets,
+        request.presetId,
+      ),
       title: asset.upload.name,
     }
   }

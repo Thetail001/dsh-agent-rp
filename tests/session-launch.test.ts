@@ -93,6 +93,48 @@ test('seeds a selected library preset into a new character Session', (context) =
   assert.equal(active?.libraryId, preset.id)
 })
 
+test('composes ordered standalone World Info with a library character', context => {
+  const { characters, chats, presets, worldInfos } = libraries(context)
+  const character = characters.importFile({
+    data: new Uint8Array(readFileSync('tests/fixtures/manual-character-card.json')),
+    filename: 'character.json',
+    mediaType: 'application/json',
+  })
+  const city = worldInfos.importFile({
+    data: new Uint8Array(readFileSync('tests/fixtures/manual-world-info.json')),
+    filename: '海城.json',
+  })
+  const style = worldInfos.importFile({
+    data: new TextEncoder().encode(JSON.stringify({
+      name: '叙事风格',
+      entries: { 1: {
+        uid: 1, key: [], keysecondary: [], comment: '语气', content: '保持克制的叙事语气。',
+        constant: true, selective: false, order: 1, position: 1, disable: false,
+      } },
+    })),
+    filename: '叙事风格.json',
+  })
+  const prepared = prepareAgentRpSession(characters, chats, presets, worldInfos, {
+    format: 0,
+    sourceSessionId: 'source',
+    kind: 'character',
+    characterId: character.id,
+    greetingIndex: 0,
+    worldInfoIds: [city.id, style.id],
+  })
+  const first = Session.create(SessionId('composed-character'), prepared.seed)
+  const replay = Session.create(SessionId('replayed-composed-character'), [...first.events])
+
+  assert.equal(readActiveSessionCharacter(replay.events)?.result.libraryId, character.id)
+  assert.deepEqual(readActiveSessionWorldInfos(replay.events).map(value => ({
+    id: value.result.sourceAttachmentId,
+    name: value.result.name,
+  })), [
+    { id: `library:${city.id}`, name: '海城' },
+    { id: `library:${style.id}`, name: '叙事风格' },
+  ])
+})
+
 test('starts a replayable roleplay Session from standalone World Info without fabricating a character', context => {
   const { characters, chats, presets, worldInfos } = libraries(context)
   const worldInfo = worldInfos.importFile({
@@ -334,6 +376,45 @@ test('rejects paths and extra browser-owned launch fields', () => {
     importId: 'world-info-0123456789abcdef0123456789abcdef',
     persona: { id: 'persona-01234567', name: '旅人', description: '来自海边。' },
   })
+  assert.deepEqual(parseAgentRpSessionLaunchRequest({
+    format: 0,
+    sourceSessionId: 'source',
+    kind: 'character',
+    characterId: 'card-0123456789abcdef0123456789abcdef',
+    greetingIndex: 0,
+    worldInfoIds: [
+      'world-info-11111111111111111111111111111111',
+      'world-info-22222222222222222222222222222222',
+    ],
+  }), {
+    format: 0,
+    sourceSessionId: 'source',
+    kind: 'character',
+    characterId: 'card-0123456789abcdef0123456789abcdef',
+    greetingIndex: 0,
+    worldInfoIds: [
+      'world-info-11111111111111111111111111111111',
+      'world-info-22222222222222222222222222222222',
+    ],
+  })
+  assert.throws(() => parseAgentRpSessionLaunchRequest({
+    format: 0,
+    sourceSessionId: 'source',
+    kind: 'world-info',
+    importId: 'world-info-11111111111111111111111111111111',
+    worldInfoIds: ['world-info-11111111111111111111111111111111'],
+  }), /不能重复/u)
+  assert.throws(() => parseAgentRpSessionLaunchRequest({
+    format: 0,
+    sourceSessionId: 'source',
+    kind: 'character',
+    characterId: 'card-0123456789abcdef0123456789abcdef',
+    greetingIndex: 0,
+    worldInfoIds: [
+      'world-info-11111111111111111111111111111111',
+      'world-info-11111111111111111111111111111111',
+    ],
+  }), /不能重复/u)
   assert.throws(() => parseAgentRpSessionLaunchRequest({
     format: 0,
     sourceSessionId: 'source',
