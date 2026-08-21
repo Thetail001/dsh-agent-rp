@@ -65,6 +65,17 @@ test('World Info launch configures peer resources before creating a Session', ()
   assert.match(resourceCenterSource, /onConfigureWorldInfo\(entry\)/u)
 })
 
+test('every chat migration entry uses one pre-launch resource plan before Session creation', () => {
+  assert.match(source, /function SillyTavernImportDialog/u)
+  assert.match(source, /data-agent-rp-chat-migration-preflight=\{launchPhase\}/u)
+  assert.match(source, /permissionOwnerId: prepared\.permissionOwnerId/u)
+  assert.match(source, /characterId: preparedCharacter\.id/u)
+  assert.match(source, /launchPhase === 'approval-required' \? await approveResources\(\) : undefined/u)
+  assert.match(source, /launchRoleplaySession\(\{[\s\S]*?kind: 'chat'[\s\S]*?\}, resourcePermissions\)/u)
+  assert.match(source, /createPortal\(<SillyTavernImportDialog[\s\S]*?initialChatFile=\{chatAttachment\.file\}/u)
+  assert.doesNotMatch(source, /migrateSillyTavernDraft/u)
+})
+
 test('sidebar exposes one resource-center drilldown for peer resource types', () => {
   assert.match(source, /data-agent-rp-action="open-resource-center"/u)
   assert.match(source, /data-agent-rp-action="open-world-info-library"/u)
