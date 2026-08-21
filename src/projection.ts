@@ -626,13 +626,21 @@ function withoutCall(
   return Object.fromEntries(Object.entries(calls).filter(([id]) => id !== callId))
 }
 
+type AgentRpProjectionDefinition = ProjectionDefinition<'agentRp', AgentRpProjectionState> & {
+  readonly wire: NonNullable<ProjectionDefinition<'agentRp', AgentRpProjectionState>['wire']>
+  /** DSH rc.8 projection contract; retained beside `stateSchema`/`wire` for newer Hosts. */
+  readonly schema: typeof projectionSchema
+  readonly preload: false
+  readonly view: (state: AgentRpProjectionState) => AgentRpProjection
+}
+
 /** Build one projection definition with an optional isolated EJS evaluator. */
 export function createAgentRpProjectionDefinition(
   ejsTemplateEngine?: EjsTemplateEngine,
-): ProjectionDefinition<'agentRp', AgentRpProjectionState> & {
-  readonly wire: NonNullable<ProjectionDefinition<'agentRp', AgentRpProjectionState>['wire']>
-} {
-  return {
+): AgentRpProjectionDefinition {
+  const definition: ProjectionDefinition<'agentRp', AgentRpProjectionState> & {
+    readonly wire: NonNullable<ProjectionDefinition<'agentRp', AgentRpProjectionState>['wire']>
+  } = {
   key: 'agentRp',
   stateSchema: projectionStateSchema,
   // The value contains full card, lorebook, preset, script, and transcript
@@ -1117,6 +1125,14 @@ export function createAgentRpProjectionDefinition(
   },
   },
   stateVersion: 11,
+  }
+  return {
+    ...definition,
+    // DSH rc.8 reads the client-visible schema and view from the top level.
+    // Newer Hosts read the state schema and the same view through `wire`.
+    schema: projectionSchema,
+    preload: false,
+    view: definition.wire.view,
   }
 }
 
