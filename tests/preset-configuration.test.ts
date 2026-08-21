@@ -95,14 +95,15 @@ test('adds, runs, edits, and deletes one session-owned module', () => {
   assert.equal(added.prompts.at(-1)?.systemPrompt, false)
   assert.equal(added.prompts.at(-1)?.marker, false)
   assert.equal(added.prompts.at(-1)?.injectionPosition, 0)
-  assert.match(assembleSillyTavernPreset(added, {
+  const assembled = assembleSillyTavernPreset(added, {
     card: {
       format: 0, version: 2, specVersion: '2.0', name: '角色', description: '', personality: '', scenario: '',
       firstMessage: '', messageExample: '', alternateGreetings: [], systemPrompt: '', postHistoryInstructions: '',
       frontend: { regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {} }, degradations: [], raw: {},
     },
     worldInfoBefore: [], worldInfoAfter: [], session: Session.create(SessionId('custom-preset-prompt')), pendingMessages: [],
-  }).system, /SillyTavern user prompt · 自定义.*只在本会话使用/su)
+  })
+  assert.deepEqual(assembled.beforeHistory.at(-1), { role: 'user', content: '只在本会话使用' })
 
   const deleted = configurePreset({ ...active, preset: added, revision: 1 }, {
     operation: 'replace', revision: 1, prompts,
@@ -226,8 +227,9 @@ test('replays the latest session configuration and rejects stale editor revision
     },
     worldInfoBefore: [], worldInfoAfter: [], session: Session.create(SessionId('configured-preset-prompt')), pendingMessages: [],
   })
-  assert.match(assembled.system, /edited style/u)
-  assert.doesNotMatch(assembled.system, /^style$/mu)
+  const assembledText = assembled.beforeHistory.map(prompt => prompt.content).join('\n')
+  assert.match(assembledText, /edited style/u)
+  assert.doesNotMatch(assembledText, /^style$/mu)
   assert.equal(replayed?.importedPreset.order[1]?.enabled, false)
   assert.throws(() => configurePreset(replayed!, {
     operation: 'toggle', revision: 0, identifier: 'style', enabled: false,

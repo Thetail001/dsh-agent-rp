@@ -87,7 +87,7 @@ import { createAgentRpProjectionDefinition } from './projection.ts'
 import { readCurrentSessionMvuState } from './mvu.ts'
 import { installMvuStreamCompletion } from './mvu-stream.ts'
 import { installPromptRegexStream } from './prompt-regex-stream.ts'
-import { assembleSillyTavernPreset, type SillyTavernInChatPrompt } from './preset-prompt.ts'
+import { assembleSillyTavernPreset, type AssembledSillyTavernPreset } from './preset-prompt.ts'
 import { configurePresetFromCommand } from './preset-configuration.ts'
 import { PresetLibrary } from './preset-library.ts'
 import { installPresetLibraryHttp } from './preset-library-http.ts'
@@ -496,8 +496,7 @@ export function installAgentRp(
   const rememberIntentByAgent = new WeakMap<Agent, boolean>()
   const rememberRestrictions = new Map<Agent, () => void>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
-  const presetAfterHistoryByAgent = new WeakMap<Agent, string>()
-  const presetInChatByAgent = new WeakMap<Agent, readonly SillyTavernInChatPrompt[]>()
+  const presetPromptPlanByAgent = new WeakMap<Agent, AssembledSillyTavernPreset>()
   const gateway = ctx.get('apiProxy') as PromptAttachmentGateway | undefined
   const commands = (ctx as Context & { commands: HumanCommandGateway }).commands
   const setRememberAvailable = (agent: Agent, available: boolean): void => {
@@ -757,8 +756,9 @@ export function installAgentRp(
         const importedChat = readSillyTavernChatIdentity(agent.session.events)
         const worldInfoSeed = readWorldInfoLibrarySessionSeed(agent.session.events)
         const identity = resolveSessionPersonaIdentity(agent.session.events, undefined, importedChat?.userName)
+        const characterName = importedChat?.characterName ?? worldInfoSeed?.meta.result.name ?? config.characterName
         const templateOptions = ejsLorebookOptions(options.ejsTemplateEngine, {
-          characterName: importedChat?.characterName ?? worldInfoSeed?.meta.result.name ?? config.characterName,
+          characterName,
           userName: identity.userName ?? '用户',
           messages: [...roleplayVisibleDialogue(agent.session, pendingMessages), ...injectedScanText],
           transcript: roleplayVisibleTranscript(agent.session, pendingMessages),
@@ -773,6 +773,22 @@ export function installAgentRp(
           templateOptions,
           ...(aggregateWorldInfoBudget === undefined ? {} : { tokenBudget: aggregateWorldInfoBudget }),
         }))
+        const preset = readActiveSessionPreset(agent.session.events)?.preset
+        if (preset !== undefined) {
+          const assembled = assembleSillyTavernPreset(preset, {
+            characterName,
+            ...(identity.userName === undefined ? {} : { userName: identity.userName }),
+            ...(identity.persona === undefined ? {} : { userPersona: identity.persona.description }),
+            worldInfoBefore: standaloneLore.beforeCharacter,
+            worldInfoAfter: standaloneLore.afterCharacter,
+            session: agent.session,
+            pendingMessages,
+            ...(templateOptions.renderTemplate === undefined ? {} : { renderTemplate: templateOptions.renderTemplate }),
+          })
+          presetPromptPlanByAgent.set(agent, assembled)
+          return ''
+        }
+        presetPromptPlanByAgent.delete(agent)
         if (importedChat !== undefined) {
           return [
             ...standaloneLore.beforeCharacter,
@@ -831,12 +847,10 @@ export function installAgentRp(
           mvuEnabled: mvu !== undefined,
           ...(templateOptions.renderTemplate === undefined ? {} : { renderTemplate: templateOptions.renderTemplate }),
         })
-        presetAfterHistoryByAgent.set(agent, assembled.afterHistory)
-        presetInChatByAgent.set(agent, assembled.inChat)
-        return assembled.system
+        presetPromptPlanByAgent.set(agent, assembled)
+        return ''
       }
-      presetAfterHistoryByAgent.delete(agent)
-      presetInChatByAgent.delete(agent)
+      presetPromptPlanByAgent.delete(agent)
       return renderImportedCharacterPrompt(
         card,
         [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
@@ -860,16 +874,23 @@ export function installAgentRp(
     rememberRestrictions.get(agent)?.()
     rememberRestrictions.delete(agent)
     pendingMessagesByAgent.delete(agent)
-    presetAfterHistoryByAgent.delete(agent)
-    presetInChatByAgent.delete(agent)
+    presetPromptPlanByAgent.delete(agent)
   })
   installPromptRegexStream(
     ctx,
     sessionId => agentsBySession.get(sessionId),
-    agent => [
-      ...(presetInChatByAgent.get(agent) ?? []),
-      ...tavernInjectedInChatPrompts(readTavernHelperState(agent.session.events)),
-    ],
+    (agent) => {
+      const plan = presetPromptPlanByAgent.get(agent)
+      return {
+        beforeHistory: plan?.beforeHistory ?? [],
+        afterHistory: plan?.afterHistory ?? [],
+        includeHistory: plan?.includeHistory ?? true,
+        inChat: [
+          ...(plan?.inChat ?? []),
+          ...tavernInjectedInChatPrompts(readTavernHelperState(agent.session.events)),
+        ],
+      }
+    },
   )
   installMvuStreamCompletion(ctx, sessionId => agentsBySession.get(sessionId))
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {
@@ -889,18 +910,6 @@ export function installAgentRp(
         agent.session.events,
         rememberIntentByAgent.get(agent) === true,
       )
-    },
-  })
-  ctx.systemPrompt.context({
-    name: 'agent-rp:preset-after-history',
-    order: 60,
-    text: ({ scope }) => {
-      if (scope === undefined) return ''
-      const agent = agentsByScope.get(scope)
-      if (agent === undefined) return ''
-      const value = presetAfterHistoryByAgent.get(agent) ?? ''
-      presetAfterHistoryByAgent.delete(agent)
-      return value
     },
   })
   ctx.on('agent/request', async ({ agent }, next) => {

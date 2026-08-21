@@ -599,8 +599,7 @@ function presetProjection(
       ...(generation.repetitionPenalty === undefined ? {} : { repetitionPenalty: generation.repetitionPenalty }),
     },
     formats: { ...preset.formats },
-    degradedRoleCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier)
-      && prompt.role !== 'system' && prompt.injectionPosition !== 1).length,
+    degradedRoleCount: 0,
     preservedInChatCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier) && prompt.injectionPosition === 1).length,
     regexScriptCount: preset.extensionSummary.regexScriptCount,
     enabledRegexScriptCount: regexScripts.filter(script => !script.disabled).length,

@@ -9,11 +9,14 @@ import type {
   SillyTavernPresetRole,
 } from './import/sillytavern-preset.ts'
 import { substituteCardMacros } from './prompt.ts'
+import { substituteSillyTavernIdentityMacros } from './sillytavern-identity-macro.ts'
 import type { EjsTemplateResult } from './ejs-template.ts'
 
 /** Runtime values substituted into marker prompts and macros. */
 export interface PresetPromptInputs {
-  readonly card: ImportedCharacterCard
+  readonly card?: ImportedCharacterCard
+  /** Identity used by preset macros when a Session starts from World Info or chat history without a card. */
+  readonly characterName?: string
   readonly userName?: string
   readonly userPersona?: string
   readonly worldInfoBefore: readonly string[]
@@ -24,16 +27,28 @@ export interface PresetPromptInputs {
   readonly renderTemplate?: (template: string) => EjsTemplateResult
 }
 
+/** One ordered Prompt Manager module after marker and macro expansion. */
+export interface SillyTavernOrderedPrompt {
+  readonly role: SillyTavernPresetRole
+  readonly content: string
+}
+
 /** Host-compatible prompt split around SillyTavern's chatHistory marker. */
 export interface AssembledSillyTavernPreset {
-  readonly system: string
-  readonly afterHistory: string
+  readonly beforeHistory: readonly SillyTavernOrderedPrompt[]
+  readonly afterHistory: readonly SillyTavernOrderedPrompt[]
   readonly inChat: readonly SillyTavernInChatPrompt[]
+  readonly includeHistory: boolean
   readonly enabledPromptCount: number
-  readonly degradedRoleCount: number
   readonly unsupportedMacroCount: number
   readonly templateFailureCount: number
 }
+
+/** Prompt fields required by the final LLM message assembly seam. */
+export type SillyTavernPromptPlan = Pick<
+  AssembledSillyTavernPreset,
+  'beforeHistory' | 'afterHistory' | 'inChat' | 'includeHistory'
+>
 
 /** One expanded Prompt Manager module placed relative to recent chat messages. */
 export interface SillyTavernInChatPrompt {
@@ -163,13 +178,17 @@ function markerText(
       return inputs.worldInfoBefore.map(value => applyFormat(preset.formats.worldInfo, 'worldInfo', value, state)).filter(Boolean).join('\n\n')
     case 'worldInfoAfter':
       return inputs.worldInfoAfter.map(value => applyFormat(preset.formats.worldInfo, 'worldInfo', value, state)).filter(Boolean).join('\n\n')
-    case 'charDescription': return substituteCardMacros(card.description, card, inputs.userName)
+    case 'charDescription': return card === undefined ? '' : substituteCardMacros(card.description, card, inputs.userName)
     case 'charPersonality':
-      return applyFormat(preset.formats.personality, 'personality', substituteCardMacros(card.personality, card, inputs.userName), state)
+      return card === undefined ? '' : applyFormat(
+        preset.formats.personality, 'personality', substituteCardMacros(card.personality, card, inputs.userName), state,
+      )
     case 'scenario':
-      return applyFormat(preset.formats.scenario, 'scenario', substituteCardMacros(card.scenario, card, inputs.userName), state)
+      return card === undefined ? '' : applyFormat(
+        preset.formats.scenario, 'scenario', substituteCardMacros(card.scenario, card, inputs.userName), state,
+      )
     case 'personaDescription': return inputs.userPersona ?? ''
-    case 'dialogueExamples': return substituteCardMacros(card.messageExample, card, inputs.userName)
+    case 'dialogueExamples': return card === undefined ? '' : substituteCardMacros(card.messageExample, card, inputs.userName)
     case 'chatHistory': return undefined
     default: return prompt.content
   }
@@ -185,13 +204,19 @@ function promptText(
   if (marker === undefined) return undefined
   const card = inputs.card
   let value = marker
-  if (prompt.identifier === 'main' && card.systemPrompt.trim() !== '' && !prompt.forbidOverrides) {
+  if (prompt.identifier === 'main' && card !== undefined && card.systemPrompt.trim() !== '' && !prompt.forbidOverrides) {
     value = substituteCardMacros(card.systemPrompt, card, inputs.userName).replaceAll('{{original}}', marker)
   }
-  if (prompt.identifier === 'jailbreak' && card.postHistoryInstructions.trim() !== '' && !prompt.forbidOverrides) {
+  if (prompt.identifier === 'jailbreak' && card !== undefined && card.postHistoryInstructions.trim() !== '' && !prompt.forbidOverrides) {
     value = substituteCardMacros(card.postHistoryInstructions, card, inputs.userName).replaceAll('{{original}}', marker)
   }
-  const expanded = expandMacros(substituteCardMacros(value, card, inputs.userName), state)
+  const identity = {
+    characterName: card?.nickname?.trim() || card?.name || inputs.characterName?.trim() || '角色',
+    ...(inputs.userName === undefined ? {} : { userName: inputs.userName }),
+  }
+  const expanded = expandMacros(card === undefined
+    ? substituteSillyTavernIdentityMacros(value, identity)
+    : substituteCardMacros(value, card, inputs.userName), state)
   if (!/<%[=_-]?[\s\S]*?%>/imu.test(expanded)) return expanded
   if (inputs.renderTemplate === undefined) {
     state.templateFailures += 1
@@ -203,11 +228,6 @@ function promptText(
     return undefined
   }
   return rendered.text
-}
-
-function roleBoundary(role: SillyTavernPresetRole, name: string, text: string): string {
-  if (role === 'system') return text
-  return `[SillyTavern ${role} prompt · ${name}]\n${text}`
 }
 
 /** Insert expanded in-chat modules using SillyTavern's depth, priority, and role ordering. */
@@ -243,6 +263,30 @@ export function injectSillyTavernInChatPrompts(
   return result
 }
 
+function orderedMessage(prompt: SillyTavernOrderedPrompt): Message {
+  return createMessage({
+    role: prompt.role,
+    source: { kind: 'plugin', plugin: 'dsh-agent-rp-preset' },
+    content: [{ type: 'text', text: prompt.content }],
+  })
+}
+
+/**
+ * Place ordinary Prompt Manager modules on their original side of chatHistory,
+ * retaining user/assistant roles instead of flattening them into the system slot.
+ */
+export function injectSillyTavernPromptPlan(
+  messages: readonly Message[],
+  plan: SillyTavernPromptPlan,
+): Message[] {
+  const history = plan.includeHistory ? injectSillyTavernInChatPrompts(messages, plan.inChat) : []
+  return [
+    ...plan.beforeHistory.map(orderedMessage),
+    ...history,
+    ...plan.afterHistory.map(orderedMessage),
+  ]
+}
+
 /** Assemble every ordered module, splitting post-history instructions into a runtime context. */
 export function assembleSillyTavernPreset(
   preset: ImportedSillyTavernPreset,
@@ -256,18 +300,19 @@ export function assembleSillyTavernPreset(
     unsupported: 0,
     templateFailures: 0,
   }
-  const before: string[] = []
-  const after: string[] = []
+  const before: SillyTavernOrderedPrompt[] = []
+  const after: SillyTavernOrderedPrompt[] = []
   const inChat: SillyTavernInChatPrompt[] = []
   let pastHistory = false
+  let includeHistory = false
   let enabledPromptCount = 0
-  let degradedRoleCount = 0
   for (const entry of preset.order) {
     if (!entry.enabled) continue
     const prompt = byId.get(entry.identifier)
     if (prompt === undefined) continue
     enabledPromptCount += 1
-    if (prompt.identifier === 'chatHistory' && prompt.marker) {
+    if (prompt.identifier === 'chatHistory') {
+      includeHistory = true
       pastHistory = true
       continue
     }
@@ -284,18 +329,20 @@ export function assembleSillyTavernPreset(
       })
       continue
     }
-    if (prompt.role !== 'system') degradedRoleCount += 1
-    ;(pastHistory ? after : before).push(roleBoundary(prompt.role, prompt.name, value))
+    ;(pastHistory ? after : before).push({ role: prompt.role, content: value })
   }
   if (inputs.mvuEnabled === true) {
-    after.push('每次回复都必须在正文末尾完整输出一个 <UpdateVariable><Analysis>…</Analysis><JSONPatch>[…]</JSONPatch></UpdateVariable>；没有变量变化时 JSONPatch 也输出空数组。')
+    after.push({
+      role: 'system',
+      content: '每次回复都必须在正文末尾完整输出一个 <UpdateVariable><Analysis>…</Analysis><JSONPatch>[…]</JSONPatch></UpdateVariable>；没有变量变化时 JSONPatch 也输出空数组。',
+    })
   }
   return {
-    system: before.join('\n\n'),
-    afterHistory: after.join('\n\n'),
+    beforeHistory: before,
+    afterHistory: after,
     inChat,
+    includeHistory,
     enabledPromptCount,
-    degradedRoleCount,
     unsupportedMacroCount: state.unsupported,
     templateFailureCount: state.templateFailures,
   }

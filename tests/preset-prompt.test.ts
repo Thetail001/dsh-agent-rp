@@ -4,7 +4,11 @@ import { createMessage, createUserMessage, type Message } from '@deepseek-ai/dsh
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ImportedSillyTavernPreset } from '../src/import/sillytavern-preset.ts'
 import type { ImportedCharacterCard } from '../src/import/types.ts'
-import { assembleSillyTavernPreset, injectSillyTavernInChatPrompts } from '../src/preset-prompt.ts'
+import {
+  assembleSillyTavernPreset,
+  injectSillyTavernInChatPrompts,
+  injectSillyTavernPromptPlan,
+} from '../src/preset-prompt.ts'
 import { EjsTemplateEngine } from '../src/ejs-template.ts'
 
 const card: ImportedCharacterCard = {
@@ -69,26 +73,54 @@ test('assembles markers and nested variables on the correct side of chat history
     session: Session.create(SessionId('preset-prompt')),
     pendingMessages: [pending],
   })
+  const beforeText = assembled.beforeHistory.map(prompt => prompt.content).join('\n')
+  const afterText = assembled.afterHistory.map(prompt => prompt.content).join('\n')
 
-  assert.match(assembled.system, /<world>海城终年多雾。<\/world>/u)
-  assert.match(assembled.system, /白露在修表/u)
-  assert.match(assembled.system, /<personality>安静但敏锐。<\/personality>/u)
-  assert.match(assembled.system, /<scenario>宝宝刚刚推门进来。<\/scenario>/u)
-  assert.match(assembled.system, /怕冷/u)
-  assert.match(assembled.system, /白露: 坐吧，宝宝/u)
-  assert.match(`${assembled.system}\n${assembled.afterHistory}`, /宝宝\/宝宝\/白露\/白露\/白露/u)
-  assert.doesNotMatch(assembled.system, /历史后|OUTPUT|暂不应进入请求|绝不能出现/u)
-  assert.match(assembled.afterHistory, /轻声回答：表为什么停了/u)
-  assert.match(assembled.afterHistory, /SillyTavern assistant prompt · 回复前缀/u)
-  assert.match(assembled.afterHistory, /OUTPUT/u)
-  assert.doesNotMatch(`${assembled.system}\n${assembled.afterHistory}`, /\{\{|不进入提示词|暂不应进入请求|绝不能出现/u)
+  assert.match(beforeText, /<world>海城终年多雾。<\/world>/u)
+  assert.match(beforeText, /白露在修表/u)
+  assert.match(beforeText, /<personality>安静但敏锐。<\/personality>/u)
+  assert.match(beforeText, /<scenario>宝宝刚刚推门进来。<\/scenario>/u)
+  assert.match(beforeText, /怕冷/u)
+  assert.match(beforeText, /白露: 坐吧，宝宝/u)
+  assert.match(`${beforeText}\n${afterText}`, /宝宝\/宝宝\/白露\/白露\/白露/u)
+  assert.doesNotMatch(beforeText, /历史后|OUTPUT|暂不应进入请求|绝不能出现/u)
+  assert.match(afterText, /轻声回答：表为什么停了/u)
+  assert.match(afterText, /OUTPUT/u)
+  assert.deepEqual(assembled.afterHistory.map(prompt => prompt.role), ['system', 'system', 'assistant'])
+  assert.doesNotMatch(`${beforeText}\n${afterText}`, /\{\{|不进入提示词|暂不应进入请求|绝不能出现/u)
   assert.deepEqual(assembled.inChat, [{
     role: 'system', content: '暂不应进入请求', depth: 2, order: 100,
   }])
   assert.equal(assembled.enabledPromptCount, 13)
-  assert.equal(assembled.degradedRoleCount, 1)
   assert.equal(assembled.unsupportedMacroCount, 0)
   assert.equal(assembled.templateFailureCount, 0)
+})
+
+test('assembles a standalone World Info preset without inventing character-card marker text', () => {
+  const prompts: ImportedSillyTavernPreset['prompts'] = [
+    { identifier: 'main', name: '主提示', role: 'user', content: '{{char}}回应{{user}}', marker: false, systemPrompt: true, forbidOverrides: false },
+    { identifier: 'worldInfoBefore', name: '世界书', role: 'system', content: '', marker: true, systemPrompt: true, forbidOverrides: false },
+    { identifier: 'charDescription', name: '角色描述', role: 'system', content: '', marker: true, systemPrompt: true, forbidOverrides: false },
+    { identifier: 'chatHistory', name: '历史', role: 'system', content: '', marker: true, systemPrompt: true, forbidOverrides: false },
+    { identifier: 'prefill', name: '续写', role: 'assistant', content: '继续剧情', marker: false, systemPrompt: false, forbidOverrides: false },
+  ]
+  const preset: ImportedSillyTavernPreset = {
+    format: 0, name: '世界书预设', prompts,
+    order: prompts.map(prompt => ({ identifier: prompt.identifier, enabled: true })),
+    generation: {}, formats: { worldInfo: '<world>{0}</world>', scenario: '{0}', personality: '{0}' },
+    regexScripts: [], extensionSummary: { regexScriptCount: 0, hasSPreset: false, hasTavernHelper: false },
+  }
+
+  const assembled = assembleSillyTavernPreset(preset, {
+    characterName: '天琴座', userName: '旅人', worldInfoBefore: ['星港仍在运转。'], worldInfoAfter: [],
+    session: Session.create(SessionId('world-info-preset')),
+  })
+
+  assert.deepEqual(assembled.beforeHistory, [
+    { role: 'user', content: '天琴座回应旅人' },
+    { role: 'system', content: '<world>星港仍在运转。</world>' },
+  ])
+  assert.deepEqual(assembled.afterHistory, [{ role: 'assistant', content: '继续剧情' }])
 })
 
 test('renders EJS in imported preset modules and drops only a failing module', async () => {
@@ -119,7 +151,7 @@ test('renders EJS in imported preset modules and drops only a failing module', a
     renderTemplate: template => engine.render(template, context),
   })
 
-  assert.equal(assembled.system, '&lt;白露&gt;回应<宝宝>')
+  assert.deepEqual(assembled.beforeHistory, [{ role: 'system', content: '&lt;白露&gt;回应<宝宝>' }])
   assert.equal(assembled.templateFailureCount, 1)
 })
 
@@ -157,4 +189,78 @@ test('inserts in-chat modules by depth, descending priority, and role', () => {
     { role: 'user', text: '最新问题' },
     { role: 'system', text: '末尾提醒' },
   ])
+})
+
+test('keeps ordinary preset roles on their original side of chat history', () => {
+  const injected = injectSillyTavernPromptPlan([
+    message('user', '历史问题'),
+    message('assistant', '历史回答'),
+    message('user', '当前问题'),
+  ], {
+    beforeHistory: [
+      { role: 'system', content: '系统规则' },
+      { role: 'user', content: '作者用户提示' },
+    ],
+    afterHistory: [{ role: 'assistant', content: '回复前缀' }],
+    inChat: [{ role: 'system', content: '最近提醒', depth: 1, order: 100 }],
+    includeHistory: true,
+  })
+
+  assert.deepEqual(injected.map(item => ({
+    role: item.role,
+    text: item.content.flatMap(block => block.type === 'text' ? [block.text] : []).join(''),
+  })), [
+    { role: 'system', text: '系统规则' },
+    { role: 'user', text: '作者用户提示' },
+    { role: 'user', text: '历史问题' },
+    { role: 'assistant', text: '历史回答' },
+    { role: 'system', text: '最近提醒' },
+    { role: 'user', text: '当前问题' },
+    { role: 'assistant', text: '回复前缀' },
+  ])
+})
+
+test('omits dialogue and in-chat injections when the chatHistory marker is disabled', () => {
+  const injected = injectSillyTavernPromptPlan([
+    message('user', '不应发送的历史'),
+  ], {
+    beforeHistory: [{ role: 'system', content: '无历史模式' }],
+    afterHistory: [],
+    inChat: [{ role: 'system', content: '依赖历史的注入', depth: 0, order: 100 }],
+    includeHistory: false,
+  })
+
+  assert.deepEqual(injected.map(item => ({
+    role: item.role,
+    text: item.content.flatMap(block => block.type === 'text' ? [block.text] : []).join(''),
+  })), [{ role: 'system', text: '无历史模式' }])
+})
+
+test('keeps modules after a disabled chatHistory entry on the prompt side', () => {
+  const preset: ImportedSillyTavernPreset = {
+    format: 0, name: '无历史预设',
+    prompts: [
+      { identifier: 'main', name: '主提示', role: 'system', content: '主提示', marker: false, systemPrompt: true, forbidOverrides: false },
+      { identifier: 'chatHistory', name: '历史', role: 'system', content: '', marker: true, systemPrompt: true, forbidOverrides: false },
+      { identifier: 'tail', name: '尾部', role: 'user', content: '仍是预设提示', marker: false, systemPrompt: false, forbidOverrides: false },
+    ],
+    order: [
+      { identifier: 'main', enabled: true },
+      { identifier: 'chatHistory', enabled: false },
+      { identifier: 'tail', enabled: true },
+    ],
+    generation: {}, formats: { worldInfo: '{0}', scenario: '{0}', personality: '{0}' },
+    regexScripts: [], extensionSummary: { regexScriptCount: 0, hasSPreset: false, hasTavernHelper: false },
+  }
+
+  const assembled = assembleSillyTavernPreset(preset, {
+    card, worldInfoBefore: [], worldInfoAfter: [], session: Session.create(SessionId('disabled-history')),
+  })
+
+  assert.equal(assembled.includeHistory, false)
+  assert.deepEqual(assembled.beforeHistory, [
+    { role: 'system', content: '主提示' },
+    { role: 'user', content: '仍是预设提示' },
+  ])
+  assert.deepEqual(assembled.afterHistory, [])
 })
