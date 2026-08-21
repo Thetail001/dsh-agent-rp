@@ -25,7 +25,11 @@ export class WorkspaceSettingsStore {
 
   /** Read current settings, using the all-workspace default before the first write. */
   get(): AgentRpSettings {
-    if (!existsSync(this.path)) return { ...DEFAULT_AGENT_RP_SETTINGS, workspaceIds: [] }
+    if (!existsSync(this.path)) return {
+      ...DEFAULT_AGENT_RP_SETTINGS,
+      workspaceIds: [],
+      workspaceExcludedIds: [],
+    }
     try {
       return normalizeAgentRpSettings(JSON.parse(readFileSync(this.path, 'utf8')))
     } catch (error: unknown) {

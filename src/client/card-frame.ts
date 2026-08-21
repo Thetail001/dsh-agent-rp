@@ -4,6 +4,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import {
+  cardDisplayCustomElementTags,
   normalizeLegacyCardHtml,
   type CardDisplayDiagnostic,
   type CompiledCharacterDisplay,
@@ -11,7 +12,15 @@ import {
 import {
   characterLibraryImageUrl,
   type CharacterLibraryDetail,
+  type CharacterRemoteResourceApproval,
+  type CharacterRemoteResourceType,
 } from '../character-library-protocol.ts'
+import {
+  cardRemoteResourceApprovalKey,
+  cardRemoteResourceRequirements,
+} from '../card-remote-resource.ts'
+import type { CardVariableScope } from './card-capability.ts'
+import { embeddedNativeIdentityRelayRuntime } from './embedded-identity.ts'
 
 /** One browser-ready display piece consumed directly by the React view. */
 export type CompiledCardFrameSegment =
@@ -24,6 +33,8 @@ export type CompiledCardFrameSegment =
       readonly interactive: boolean
       /** HTTPS origins referenced by this display segment. */
       readonly remoteOrigins: readonly string[]
+      /** Statically identifiable resource classes referenced by this display segment. */
+      readonly remoteResources: readonly CharacterRemoteResourceApproval[]
     }
 
 /** Browser-ready segments plus content-free compatibility diagnostics. */
@@ -38,12 +49,42 @@ export interface CardFrameCompileOptions {
   readonly textColor?: string
   readonly statData?: JsonValue
   readonly character?: CharacterLibraryDetail
+  /** Successful script-runtime markers that a card may use for compatibility checks. */
+  readonly compatibilityMarkers?: readonly string[]
+  /** Current greeting plus card-owned alternatives exposed without sharing the rest of the transcript. */
+  readonly greetingChoices?: CardFrameGreetingChoices
+  /** Session variable namespaces exposed through the bounded Tavern Helper-compatible facade. */
+  readonly variableScopes?: Readonly<Record<CardVariableScope, Readonly<Record<string, JsonValue>>>>
+  /** Opaque Host registration used to authenticate capability and resize messages from this frame. */
+  readonly capabilityToken?: string
+}
+
+/** Bounded Character Card greetings available to an isolated light frontend. */
+export interface CardFrameGreetingChoices {
+  readonly selected: string
+  readonly alternatives: readonly string[]
+}
+
+/** Select card resource classes that still need local approval. */
+export function blockedCardFrameResources(
+  resources: readonly CharacterRemoteResourceApproval[],
+  character: {
+    readonly approvedRemoteResourceOrigins?: readonly string[]
+    readonly approvedRemoteResources?: readonly CharacterRemoteResourceApproval[]
+    readonly remoteResourcePolicy?: CharacterLibraryDetail['remoteResourcePolicy']
+  },
+): readonly CharacterRemoteResourceApproval[] {
+  if (character.remoteResourcePolicy === 'isolated-https') return []
+  const approved = new Set((character.approvedRemoteResources ?? []).map(cardRemoteResourceApprovalKey))
+  const legacy = new Set(character.approvedRemoteResourceOrigins ?? [])
+  return resources.filter(resource => !approved.has(cardRemoteResourceApprovalKey(resource)) && !legacy.has(resource.origin))
 }
 
 const cardFrameCompatibility = `<style>
 html{background:transparent!important;color-scheme:dark;scrollbar-color:rgba(145,158,181,.58) transparent;scrollbar-width:thin}
 *,*::before,*::after{box-sizing:border-box}
 [data-agent-rp-center]{display:block;text-align:center}
+[data-agent-rp-legacy-symbol-bar]{display:block!important;width:100%!important;height:.28em!important;min-height:2px;max-height:6px;border-radius:999px;background:currentColor!important;overflow:hidden;font-size:0!important;line-height:0!important;letter-spacing:0!important}
 ::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:999px;background:rgba(145,158,181,.58);background-clip:padding-box}
@@ -63,10 +104,68 @@ function remoteOrigins(source: string): readonly string[] {
   return [...origins].sort()
 }
 
-function mvuFrameRuntime(statData: JsonValue | undefined): string {
+const compatibilityMarkerPattern = /^__[\p{L}\p{N}_-]{1,112}_loaded__$/u
+
+function boundedCompatibilityMarkers(value: readonly string[] | undefined): readonly string[] {
+  if (value === undefined) return []
+  return [...new Set(value.filter(marker => marker.length <= 128 && compatibilityMarkerPattern.test(marker)))]
+    .sort().slice(0, 32)
+}
+
+function isolatedCardStorageRuntime(): string {
+  return `
+(function(){
+  var stores=window.__dshCardStorageStores;
+  if(!stores){
+    stores={local:new Map(),session:new Map()};
+    Object.defineProperty(window,'__dshCardStorageStores',{value:stores});
+  }
+  function quotaError(){var error=new Error('隔离页面存储空间已满');error.name='QuotaExceededError';return error}
+  function storage(data){
+    var api={};
+    Object.defineProperty(api,'length',{enumerable:true,get:function(){return data.size}});
+    api.key=function(index){var keys=Array.from(data.keys());return Number.isInteger(Number(index))?keys[Number(index)]??null:null};
+    api.getItem=function(key){key=String(key);return data.has(key)?data.get(key):null};
+    api.setItem=function(key,value){
+      key=String(key);value=String(value);
+      if(key.length>1024||value.length>2097152)throw quotaError();
+      var units=key.length+value.length;
+      for(var entry of data)if(entry[0]!==key)units+=entry[0].length+entry[1].length;
+      if((!data.has(key)&&data.size>=256)||units>5242880)throw quotaError();
+      data.set(key,value);
+    };
+    api.removeItem=function(key){data.delete(String(key))};
+    api.clear=function(){data.clear()};
+    return Object.freeze(api);
+  }
+  Object.defineProperty(window,'localStorage',{configurable:true,enumerable:true,value:storage(stores.local)});
+  Object.defineProperty(window,'sessionStorage',{configurable:true,enumerable:true,value:storage(stores.session)});
+})();
+`
+}
+
+function mvuFrameRuntime(
+  statData: JsonValue | undefined,
+  compatibilityMarkers: readonly string[] | undefined,
+  greetingChoices: CardFrameGreetingChoices | undefined,
+  variableScopes: CardFrameCompileOptions['variableScopes'],
+  capabilityToken: string | undefined,
+): string {
   const json = JSON.stringify(statData ?? {}).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
+  const markers = JSON.stringify(boundedCompatibilityMarkers(compatibilityMarkers))
+  const greetingJson = JSON.stringify(greetingChoices ?? null)
+    .replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
+  const capabilityTokenJson = JSON.stringify(capabilityToken ?? null)
+  const scopesJson = JSON.stringify(variableScopes ?? {
+    global: {}, preset: {}, character: {}, chat: {}, message: {},
+  }).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
   return `
 var __dshStatData=${json};
+var __dshCompatibilityMarkers=${markers};
+var __dshCardGreetingChoices=${greetingJson};
+var __dshCardScopes=${scopesJson};
+var __dshCardCapabilityToken=${capabilityTokenJson};
+for(var __dshMarker of __dshCompatibilityMarkers)window[__dshMarker]=true;
 var __dshCardListeners=new Map();
 function __dshCardOn(type,listener){var list=__dshCardListeners.get(String(type))??[];list.push(listener);__dshCardListeners.set(String(type),list);var stop=function(){var current=__dshCardListeners.get(String(type))??[];__dshCardListeners.set(String(type),current.filter(function(value){return value!==listener}))};stop.stop=stop;return stop}
 function __dshCardEmit(type){var args=Array.prototype.slice.call(arguments,1);for(var listener of [...(__dshCardListeners.get(String(type))??[])]){try{listener.apply(window,args)}catch(error){console.error(error)}}}
@@ -78,10 +177,43 @@ window.eventOnce=function(type,listener){var control;control=__dshCardOn(type,fu
 window.eventEmit=__dshCardEmit;
 window.errorCatched=function(fn){return function(){try{var value=fn.apply(this,arguments);if(value&&typeof value.catch==='function')value.catch(console.error)}catch(error){console.error(error)}}};
 window.toastr={info:function(){},success:function(){},warning:function(){},error:function(){}};
-var __dshCardChat=[{message_id:0,message:'',mes:'',name:'角色',is_user:false,role:'assistant',extra:{}}];
-window.getChatMessages=function(){return Promise.resolve(__dshCardChat.map(function(message){return Object.assign({},message,{extra:Object.assign({},message.extra)})}))};
-window.setChatMessage=function(value,id){var index=Number(id);if(!Number.isSafeInteger(index)||index<0||index>=__dshCardChat.length)index=__dshCardChat.length-1;var text=typeof value==='string'?value:value?.message??value?.mes;if(typeof text==='string'){__dshCardChat[index].message=text;__dshCardChat[index].mes=text;__dshCardEmit('mag_before_message_update',index);__dshCardEmit('mvu-variable-update-ended',{stat_data:__dshStatData})}return Promise.resolve()};
-window.SillyTavern={chat:__dshCardChat,name1:'用户',name2:'角色',characters:[],this_chid:0,characterId:0,groups:[],groupId:null,chatMetadata:{},chat_metadata:{},extensionSettings:{},eventSource:{on:window.eventOn,once:window.eventOnce,emit:window.eventEmit},getChatMessages:window.getChatMessages,setChatMessage:window.setChatMessage,getContext:function(){return this}};
+var __dshCardChat=[{message_id:0,message:__dshCardGreetingChoices?.selected??'',mes:__dshCardGreetingChoices?.selected??'',name:'角色',is_user:false,role:'assistant',extra:{},swipe_id:Math.max(0,__dshCardGreetingChoices?.alternatives?.indexOf(__dshCardGreetingChoices.selected)??0),swipes:__dshCardGreetingChoices?.alternatives??[]}];
+var __dshCardPending=new Map(),__dshCardRequestSequence=0;
+var __dshCardExternalWindows=new Map();
+var __dshCardDeliveredExternalWindowRequests=new Set();
+function __dshCardOpenExternalWindow(url,target,features){var parsed;try{parsed=new URL(String(url))}catch{return null}if(!__dshCardCapabilityToken||parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.href.length>4096)return null;target=String(target??'');features=String(features??'');if(target.length>200||features.length>2000)return null;var requestId='card-external-window-'+(++__dshCardRequestSequence);var handle={closed:false,close:function(){if(handle.closed)return;handle.closed=true;__dshCardExternalWindows.delete(requestId);parent.postMessage({source:'dsh-agent-rp-card',action:'external-window-close',token:__dshCardCapabilityToken,requestId:requestId},'*')},focus:function(){parent.postMessage({source:'dsh-agent-rp-card',action:'external-window-focus',token:__dshCardCapabilityToken,requestId:requestId},'*')}};__dshCardExternalWindows.set(requestId,handle);parent.postMessage({source:'dsh-agent-rp-card',action:'capability-request',capability:'ui.external-window.open',token:__dshCardCapabilityToken,requestId:requestId,payload:{url:parsed.href,target:target,features:features}},'*');return handle}
+window.open=__dshCardOpenExternalWindow;
+function __dshCardNativeIdentityRequest(option){option=option??{};var audience,nonce=String(option.nonce??''),includeDisplayName=option.includeDisplayName===true;try{var parsed=new URL(String(option.audience??''));if(parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.origin!==String(option.audience))throw new Error('身份服务必须是完整 HTTPS 来源');audience=parsed.origin}catch(error){return Promise.reject(error)}if(!/^[A-Za-z0-9_-]{16,256}$/.test(nonce))return Promise.reject(new Error('身份服务 nonce 无效'));if(!__dshCardCapabilityToken)return Promise.reject(new Error('本机身份能力不可用'));var requestId='card-native-identity-'+(++__dshCardRequestSequence);return new Promise(function(resolve,reject){var timer=setTimeout(function(){if(!__dshCardPending.delete(requestId))return;reject(new Error('本机身份请求超时，请重试'))},300000);__dshCardPending.set(requestId,{kind:'identity',resolve:resolve,reject:reject,timer:timer});parent.postMessage({source:'dsh-agent-rp-card',action:'capability-request',capability:'identity.native.attest',token:__dshCardCapabilityToken,requestId:requestId,payload:{audience:audience,nonce:nonce,includeDisplayName:includeDisplayName}},'*')})}
+window.dshIdentity=Object.freeze({request:__dshCardNativeIdentityRequest});
+window.DshIdentity=window.dshIdentity;
+${embeddedNativeIdentityRelayRuntime('__dshCardNativeIdentityRequest')}
+function __dshCloneCardValue(value){return value===undefined?undefined:JSON.parse(JSON.stringify(value))}
+function __dshCardVariableScope(option){var scope=typeof option==='string'?option:option?.type??'message';if(!['global','preset','character','chat','message'].includes(scope))throw new Error('不支持的变量作用域: '+String(scope));return scope}
+function __dshMergeCardVariables(target,source){var result=__dshCloneCardValue(target??{});for(var key of Object.keys(source??{})){var value=source[key];if(value&&typeof value==='object'&&!Array.isArray(value)&&result[key]&&typeof result[key]==='object'&&!Array.isArray(result[key]))result[key]=__dshMergeCardVariables(result[key],value);else result[key]=__dshCloneCardValue(value)}return result}
+window.getVariables=function(option){return __dshCloneCardValue(__dshCardScopes[__dshCardVariableScope(option)]??{})};
+window.replaceVariables=function(variables,option){
+  var scope=__dshCardVariableScope(option),next=__dshCloneCardValue(variables??{}),previous=JSON.stringify(__dshCardScopes[scope]??{});
+  if(!next||typeof next!=='object'||Array.isArray(next))return Promise.reject(new Error('变量必须是对象'));
+  __dshCardScopes[scope]=next;
+  if(previous===JSON.stringify(next)||!__dshCardCapabilityToken)return Promise.resolve(__dshCloneCardValue(next));
+  return new Promise(function(resolve,reject){
+    var requestId='card-variables-'+(++__dshCardRequestSequence);
+    var timer=setTimeout(function(){if(!__dshCardPending.delete(requestId))return;reject(new Error('变量保存超时，请重试'))},15000);
+    __dshCardPending.set(requestId,{kind:'variables',resolve:resolve,reject:reject,timer:timer});
+    parent.postMessage({source:'dsh-agent-rp-card',action:'variables-replace',token:__dshCardCapabilityToken,requestId:requestId,scope:scope,variables:next},'*');
+  });
+};
+window.updateVariablesWith=function(updater,option){var current=window.getVariables(option);return Promise.resolve(updater(current)).then(function(next){return window.replaceVariables(next,option).then(function(){return next})})};
+window.insertOrAssignVariables=function(variables,option){return window.updateVariablesWith(function(current){return __dshMergeCardVariables(current,variables)},option)};
+function __dshSetCardCapabilityState(value){document.documentElement.dataset.agentRpCapabilityState=String(value)}
+function __dshCloneCardMessage(message){return Object.assign({},message,{extra:Object.assign({},message.extra),swipes:Array.isArray(message.swipes)?message.swipes.slice():[]})}
+function __dshApplyCardMessage(text,index){__dshCardChat[index].message=text;__dshCardChat[index].mes=text;var swipe=__dshCardChat[index].swipes.indexOf(text);if(swipe>=0)__dshCardChat[index].swipe_id=swipe;__dshCardEmit('mag_before_message_update',index);__dshCardEmit('mvu-variable-update-ended',{stat_data:__dshStatData})}
+addEventListener('message',function(event){var message=event.data;if(event.source!==parent||!message||message.source!=='dsh-agent-rp-host')return;if(message.action==='external-window-message'){if(typeof message.requestId!=='string'||typeof message.origin!=='string')return;if(!__dshCardDeliveredExternalWindowRequests.has(message.requestId)){if(__dshCardDeliveredExternalWindowRequests.size>=64)__dshCardDeliveredExternalWindowRequests.delete(__dshCardDeliveredExternalWindowRequests.values().next().value);__dshCardDeliveredExternalWindowRequests.add(message.requestId);dispatchEvent(new MessageEvent('message',{data:message.value,origin:message.origin}))}parent.postMessage({source:'dsh-agent-rp-card',action:'external-window-delivered',token:__dshCardCapabilityToken,requestId:message.requestId},'*');return}if(message.action==='external-window-closed'){var external=__dshCardExternalWindows.get(message.requestId);if(!external)return;external.closed=true;__dshCardExternalWindows.delete(message.requestId);return}if(message.action==='capability-result'&&message.capability==='ui.external-window.open'){var external=__dshCardExternalWindows.get(message.requestId);if(!external)return;if(message.ok!==true){external.closed=true;__dshCardExternalWindows.delete(message.requestId);__dshSetCardCapabilityState('external-window-error')}else __dshSetCardCapabilityState('external-window-open');return}if(message.action!=='capability-result'&&message.action!=='variables-result')return;var pending=__dshCardPending.get(message.requestId);if(!pending)return;__dshCardPending.delete(message.requestId);clearTimeout(pending.timer);if(pending.kind==='variables'){message.ok===true?pending.resolve():pending.reject(new Error(String(message.error??'变量保存失败')));return}if(pending.kind==='identity'){message.ok===true?pending.resolve(message.value):pending.reject(new Error(String(message.error??'本机身份请求失败')));return}__dshSetCardCapabilityState(message.ok===true?'greeting-select-result-ok':'greeting-select-result-error');if(message.ok===true){__dshApplyCardMessage(pending.text,pending.index);pending.resolve()}else pending.reject(new Error(String(message.error??'开场切换失败')))});
+window.getChatMessages=function(){__dshSetCardCapabilityState('chat-read');return Promise.resolve(__dshCardChat.map(__dshCloneCardMessage))};
+window.getLastMessageId=function(){return Math.max(-1,__dshCardChat.length-1)};
+window.getCurrentMessageId=window.getLastMessageId;
+window.setChatMessage=function(value,id){var index=Number(id);if(!Number.isSafeInteger(index)||index<0||index>=__dshCardChat.length)index=__dshCardChat.length-1;var text=typeof value==='string'?value:value?.message??value?.mes;if(typeof text!=='string')return Promise.resolve();var greetingIndex=__dshCardGreetingChoices?.alternatives?.indexOf(text)??-1;if(index===0&&greetingIndex>=0&&__dshCardCapabilityToken){if(navigator.userActivation&&navigator.userActivation.isActive!==true){__dshSetCardCapabilityState('greeting-select-user-activation-required');return Promise.reject(new Error('需要点击后才能切换开场'))}return new Promise(function(resolve,reject){var requestId='card-capability-'+(++__dshCardRequestSequence);var timer=setTimeout(function(){if(!__dshCardPending.delete(requestId))return;__dshSetCardCapabilityState('greeting-select-timeout');reject(new Error('开场切换超时，请重试'))},15000);__dshCardPending.set(requestId,{index:index,text:text,resolve:resolve,reject:reject,timer:timer});__dshSetCardCapabilityState('greeting-select-pending');parent.postMessage({source:'dsh-agent-rp-card',action:'capability-request',capability:'greeting.select',token:__dshCardCapabilityToken,requestId:requestId,greetingIndex:greetingIndex},'*')})}__dshSetCardCapabilityState('local-message-update');__dshApplyCardMessage(text,index);return Promise.resolve()};
+window.SillyTavern={chat:__dshCardChat,name1:'用户',name2:'角色',characters:[],this_chid:0,characterId:0,groups:[],groupId:null,chatMetadata:{},chat_metadata:{},extensionSettings:{EjsTemplate:{enabled:true}},eventSource:{on:window.eventOn,once:window.eventOnce,emit:window.eventEmit},getChatMessages:window.getChatMessages,setChatMessage:window.setChatMessage,getContext:function(){return this}};
 window.getContext=function(){return window.SillyTavern.getContext()};
 window.TavernHelper=window;
 window._={
@@ -106,19 +238,88 @@ window._={
 `
 }
 
+function resourceViolationRuntime(): string {
+  return `
+var __dshBlockedCardResources=new Set();
+window.__dshCardRuntimeMonitor=function(value){
+  if(__dshCardCapabilityToken)parent.postMessage({source:'dsh-agent-rp-card',action:'runtime-monitor',token:__dshCardCapabilityToken,value:value},'*');
+};
+window.__dshCardReportContent=function(){
+  var body=document.body;
+  var present=!!body&&((body.innerText||'').trim()!==''||body.querySelector('img,svg,canvas,video,iframe')!==null);
+  window.__dshCardRuntimeMonitor(present?'content-present':'content-empty');
+};
+window.__dshInstallCardRuntimeMonitor=function(){
+  addEventListener('error',function(event){if(event&&('error' in event||typeof event.message==='string'))window.__dshCardRuntimeMonitor('runtime-error')});
+  addEventListener('unhandledrejection',function(){window.__dshCardRuntimeMonitor('runtime-rejection')});
+  addEventListener('DOMContentLoaded',function(){window.__dshCardRuntimeMonitor('dom-ready');setTimeout(window.__dshCardReportContent,250);setTimeout(window.__dshCardReportContent,2000)},{once:true});
+  addEventListener('load',function(){window.__dshCardRuntimeMonitor('load-complete')},{once:true});
+};
+window.__dshInstallCardRuntimeMonitor();
+window.__dshCardRuntimeMonitor('bootstrap-installed');
+window.__dshCardResourceMonitor=function(value){
+  if(__dshCardCapabilityToken)parent.postMessage({source:'dsh-agent-rp-card',action:'resource-monitor',token:__dshCardCapabilityToken,value:value},'*');
+};
+window.__dshCardResourceViolation=function(event){
+    if(!__dshCardCapabilityToken||__dshBlockedCardResources.size>=32)return;
+    var directive=String(event.effectiveDirective||event.violatedDirective||'');
+    var type=directive.startsWith('script-src')?'script':directive.startsWith('style-src')?'style':directive==='font-src'?'font':directive==='frame-src'?'frame':directive==='img-src'?'image':directive==='media-src'?'media':directive==='connect-src'?'connect':undefined;
+    if(type===undefined)return;
+    try{
+      var url=new URL(String(event.blockedURI));
+      if(url.protocol!=='https:'||url.username!==''||url.password!=='')return;
+      var key=type+'\\u0000'+url.origin;
+      if(__dshBlockedCardResources.has(key))return;
+      __dshBlockedCardResources.add(key);
+      document.documentElement.dataset.agentRpBlockedResources=String(__dshBlockedCardResources.size);
+      parent.postMessage({source:'dsh-agent-rp-card',action:'resource-blocked',token:__dshCardCapabilityToken,origin:url.origin,type:type},'*');
+    }catch{}
+};
+window.__dshInstallCardResourceListener=function(){
+  addEventListener('securitypolicyviolation',window.__dshCardResourceViolation);
+  document.addEventListener('securitypolicyviolation',window.__dshCardResourceViolation);
+};
+window.__dshInstallCardResourceListener();
+window.__dshCardResourceMonitor('listener-installed');
+(function(){
+  var nativeOpen=Document.prototype.open;
+  var nativeWrite=Document.prototype.write;
+  var needsBootstrap=false;
+  var bootstrap='<script>window.__dshInstallCardResourceListener&&window.__dshInstallCardResourceListener();window.__dshInstallCardRuntimeMonitor&&window.__dshInstallCardRuntimeMonitor();window.__dshCardResourceMonitor&&window.__dshCardResourceMonitor("listener-restored");window.__dshCardRuntimeMonitor&&window.__dshCardRuntimeMonitor("document-restored")<\\/script>';
+  Document.prototype.open=function(){var result=nativeOpen.apply(this,arguments);needsBootstrap=true;window.__dshCardResourceMonitor('document-open');window.__dshCardRuntimeMonitor('document-open');return result};
+  Document.prototype.write=function(){
+    var values=Array.prototype.map.call(arguments,String);
+    if(needsBootstrap){
+      needsBootstrap=false;
+      var html=values.join('');
+      html=/<head(?:\\s[^>]*)?>/i.test(html)?html.replace(/<head(?:\\s[^>]*)?>/i,function(value){return value+bootstrap}):bootstrap+html;
+      window.__dshCardResourceMonitor('bootstrap-injected');
+      return nativeWrite.call(this,html);
+    }
+    return nativeWrite.apply(this,values);
+  };
+})();
+`
+}
+
 const sandboxFacadeNames = [
   'SillyTavern', 'Mvu', 'getAllVariables', 'waitGlobalInitialized', 'eventOn', 'eventOnce', 'eventEmit',
-  'errorCatched', 'toastr', 'getChatMessages', 'setChatMessage', 'getContext', 'TavernHelper', '_', '$',
+  'errorCatched', 'toastr', 'getChatMessages', 'getLastMessageId', 'getCurrentMessageId', 'setChatMessage',
+  'getContext', 'TavernHelper', '_', '$',
 ] as const
 
 function redirectKnownHostFacades(source: string): string {
+  const localHostAliases = source.replace(
+    /(?:window\s*\.\s*)?(?:parent|top)\s*(?:\|\||\?\?)\s*window\b/gu,
+    'window',
+  )
   return sandboxFacadeNames.reduce((value, name) => {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
     return value.replace(new RegExp(
       `(?:window\\s*\\.\\s*)?(?:parent|top)\\s*(?:\\?\\.)?\\.?\\s*${escaped}(?![\\w$])`,
       'gu',
     ), `window.${name}`)
-  }, source)
+  }, localHostAliases)
 }
 
 function cardFrameSource(source: string, options: CardFrameCompileOptions): string {
@@ -126,31 +327,46 @@ function cardFrameSource(source: string, options: CardFrameCompileOptions): stri
     ...asset,
     url: new URL(characterLibraryImageUrl(options.character!.id, asset.index), options.origin).href,
   }))
+  const legacy = normalizeLegacyCardHtml(source)
   const adapted = redirectKnownHostFacades(
-    assets.reduce((html, asset) => asset.sourceUri === '' ? html : html.replaceAll(asset.sourceUri, asset.url), source)
+    assets.reduce((html, asset) => asset.sourceUri === '' ? html : html.replaceAll(asset.sourceUri, asset.url), legacy.source)
       .replaceAll('window.parent?.document ?? window.document', 'window.document'),
   )
   const assetJson = JSON.stringify(assets).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
+  const approvedResources = options.character?.approvedRemoteResources
+  const approvedOrigin = (type: CharacterRemoteResourceType): readonly string[] =>
+    options.character?.remoteResourcePolicy === 'isolated-https'
+      ? ['https:']
+      : approvedResources === undefined
+        ? options.character?.approvedRemoteResourceOrigins ?? []
+        : approvedResources.filter(resource => resource.type === type).map(resource => resource.origin)
   const allowedImageOrigins = [...new Set([
     options.origin,
-    ...(options.character?.approvedRemoteResourceOrigins ?? []),
-    ...(options.character?.displayExtensions.filter(extension => extension.enabled)
+    ...approvedOrigin('image'),
+    ...(options.character?.displayExtensions?.filter(extension => extension.enabled)
       .flatMap(extension => extension.remoteImageOrigins) ?? []),
   ])].map(origin => origin.replace(/["'<>\s]/gu, '')).filter(Boolean).join(' ')
   const textColor = (options.textColor ?? 'rgb(242, 238, 232)').replace(/[<>&"']/gu, '')
-  const interactiveOrigins = (options.character?.approvedRemoteResourceOrigins ?? [])
-    .map(origin => origin.replace(/["'<>\s]/gu, '')).filter(Boolean).join(' ')
-  const remotePolicy = interactiveOrigins === '' ? "'none'" : interactiveOrigins
-  // Height contract for `__dshReportSize`, which the Host applies verbatim as the iframe
-  // height: `contentBottom` (the real bottom of laid-out body children) is authoritative,
-  // and `scrollHeight` is only a fallback. It must NOT be taken unconditionally --
+  // Height contract for `__dshReportSize` (now dispatched through the rAF-throttled
+  // `__dshScheduleSize` below): the Host applies the reported value verbatim as the iframe
+  // height. `contentBottom` (the real bottom of laid-out body children) is authoritative
+  // and `scrollHeight` is only a fallback -- it must NOT be taken unconditionally, because
   // `documentElement.scrollHeight` is never smaller than the current viewport, so a plain
   // `max(contentBottom, scrollHeight)` reports at least the height the Host just applied
   // and the frame can then only ever grow, never shrink back (the false-whitespace bug).
   // `scrollHeight` therefore wins in exactly two cases: genuine overflow past the
   // viewport, or a layout where `contentBottom` measures 0 (every body child fixed,
   // absolute or unrendered) and would otherwise collapse the frame.
-  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigins}; style-src 'unsafe-inline' ${interactiveOrigins}; script-src 'unsafe-inline' ${interactiveOrigins}; connect-src ${remotePolicy}; font-src ${remotePolicy}; frame-src 'none';"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<style>body{color:${textColor}}</style><script>${mvuFrameRuntime(options.statData)}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',value:String(value)},'*')};function __dshReportSize(){var root=document.documentElement;var body=document.body;var viewport=Math.max(0,window.innerHeight||0);var overflow=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);var contentBottom=0;if(body){for(var child of body.children){if(child.hidden||child.tagName==='SCRIPT'||child.tagName==='STYLE'||getComputedStyle(child).position==='fixed')continue;var rect=child.getBoundingClientRect();contentBottom=Math.max(contentBottom,rect.bottom+window.scrollY)}var marginBottom=parseFloat(getComputedStyle(body).marginBottom);if(Number.isFinite(marginBottom))contentBottom+=marginBottom}var value=contentBottom>0?Math.max(contentBottom,overflow>viewport+1?overflow:0):overflow;parent.postMessage({source:'dsh-agent-rp-card',action:'resize',value:value},'*')}function __dshReportSoon(){requestAnimationFrame(__dshReportSize);setTimeout(__dshReportSize,120)}addEventListener('message',function(event){var message=event.data;if(message&&message.source==='dsh-agent-rp-host'&&message.action==='request-resize')__dshReportSoon()});addEventListener('load',__dshReportSoon);addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',value:input.value},'*')});__dshReportSoon();setTimeout(__dshReportSoon,400);if(window.ResizeObserver)new ResizeObserver(__dshReportSize).observe(document.documentElement)});</script>`
+
+  const policy = (type: CharacterRemoteResourceType): string => {
+    const origins = approvedOrigin(type).map(origin => origin.replace(/["'<>\s]/gu, '')).filter(Boolean).join(' ')
+    return origins === '' ? "'none'" : origins
+  }
+  const styleOrigins = policy('style') === "'none'" ? '' : ` ${policy('style')}`
+  const scriptOrigins = policy('script') === "'none'" ? '' : ` ${policy('script')}`
+  const unsafeEval = options.character?.remoteResourcePolicy === 'isolated-https' ? " 'unsafe-eval'" : ''
+  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigins}; media-src ${policy('media')}; style-src 'unsafe-inline'${styleOrigins}; script-src 'unsafe-inline'${unsafeEval}${scriptOrigins}; connect-src ${policy('connect')}; font-src ${policy('font')}; frame-src ${policy('frame')};"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<style>body{color:${textColor}}</style><script>${isolatedCardStorageRuntime()}${mvuFrameRuntime(options.statData, options.compatibilityMarkers, options.greetingChoices, options.variableScopes, options.capabilityToken)}${resourceViolationRuntime()}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',token:__dshCardCapabilityToken,value:String(value)},'*')};var __dshLastSize=-1,__dshSizeFrame=0;function __dshReportSize(force){__dshSizeFrame=0;var root=document.documentElement;var body=document.body;var viewport=Math.max(0,window.innerHeight||0);var overflow=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);var contentBottom=0;if(body){for(var child of body.children){if(child.hidden||child.tagName==='SCRIPT'||child.tagName==='STYLE'||getComputedStyle(child).position==='fixed')continue;var rect=child.getBoundingClientRect();contentBottom=Math.max(contentBottom,rect.bottom+window.scrollY)}var marginBottom=parseFloat(getComputedStyle(body).marginBottom);if(Number.isFinite(marginBottom))contentBottom+=marginBottom}var value=contentBottom>0?Math.max(contentBottom,overflow>viewport+1?overflow:0):overflow;if(!force&&value===__dshLastSize)return;__dshLastSize=value;parent.postMessage({source:'dsh-agent-rp-card',action:'resize',token:__dshCardCapabilityToken,value:value},'*')}function __dshScheduleSize(force){if(__dshSizeFrame)return;__dshSizeFrame=requestAnimationFrame(function(){__dshReportSize(force===true)})}addEventListener('message',function(event){var message=event.data;if(message&&message.source==='dsh-agent-rp-host'&&message.action==='request-resize')__dshScheduleSize(true)});addEventListener('load',function(){__dshScheduleSize(true)});addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',token:__dshCardCapabilityToken,value:input.value},'*')});__dshScheduleSize(true);if(window.ResizeObserver){var resizeObserver=new ResizeObserver(function(){__dshScheduleSize(false)});resizeObserver.observe(document.documentElement);resizeObserver.observe(document.body)}if(window.MutationObserver)new MutationObserver(function(){__dshScheduleSize(false)}).observe(document.body,{attributes:true,childList:true,subtree:true});setTimeout(function(){__dshScheduleSize(true)},250);setTimeout(function(){__dshScheduleSize(true)},2000)});</script>`
+
   if (/<head(?:\s|>)/iu.test(adapted)) return adapted.replace(/<head([^>]*)>/iu, `<head$1>${head}`)
   if (/<html(?:\s|>)/iu.test(adapted)) return adapted.replace(/<html([^>]*)>/iu, `<html$1><head>${head}</head>`)
   return `<!doctype html><html><head>${head}</head><body>${adapted}</body></html>`
@@ -164,9 +380,19 @@ export function compileCardFrameDocument(source: string, options: CardFrameCompi
 function inlineCardFrameSource(source: string, options: CardFrameCompileOptions): {
   readonly srcDoc: string
   readonly diagnostics: readonly CardDisplayDiagnostic[]
+  readonly remoteResources: readonly CharacterRemoteResourceApproval[]
 } {
   const legacy = normalizeLegacyCardHtml(source)
-  let markup = legacy.source
+
+  const sanitized = sanitizeInlineCardHtml(legacy.source)
+  return {
+    srcDoc: cardFrameSource(sanitized, options), diagnostics: legacy.diagnostics,
+    remoteResources: cardRemoteResourceRequirements(sanitized),
+  }
+}
+
+function sanitizeInlineCardHtml(source: string): string {
+  let markup = source
   if (!/^\s*</u.test(markup)) {
     try {
       markup = marked.parse(markup, { async: false, breaks: true, gfm: true }) as string
@@ -174,14 +400,36 @@ function inlineCardFrameSource(source: string, options: CardFrameCompileOptions)
       // Sanitization and iframe isolation still run on the original source.
     }
   }
-  const sanitized = DOMPurify.sanitize(markup, {
-    ADD_TAGS: ['style'],
+  const customElementTags = cardDisplayCustomElementTags(source)
+  return DOMPurify.sanitize(markup, {
+    ADD_TAGS: ['style', ...customElementTags],
+
     FORBID_ATTR: ['srcdoc'],
     FORBID_TAGS: ['base', 'embed', 'form', 'iframe', 'link', 'meta', 'object', 'script'],
     USE_PROFILES: { html: true },
     WHOLE_DOCUMENT: true,
   })
-  return { srcDoc: cardFrameSource(sanitized, options), diagnostics: legacy.diagnostics }
+}
+
+let inlineCardSanitizerProbe: 'ready' | 'failed' | undefined
+
+/** Verify the browser sanitizer preserves inert custom wrappers without preserving active content. */
+export function inlineCardSanitizerProbeState(): 'ready' | 'failed' {
+  if (inlineCardSanitizerProbe !== undefined) return inlineCardSanitizerProbe
+  const tag = 'agent-rp-sanitizer-probe'
+  const visible = 'agent-rp-visible-probe'
+  const active = 'agent-rp-active-probe'
+  const sanitized = sanitizeInlineCardHtml(
+    `<style>${tag}{display:block}</style><${tag} onclick="${active}">${visible}</${tag}>`
+      + `<script>${active}</script><iframe srcdoc="${active}"></iframe>`,
+  )
+  inlineCardSanitizerProbe = new RegExp(`<${tag}(?:\\s|>)`, 'u').test(sanitized)
+    && sanitized.includes(visible)
+    && !sanitized.includes(active)
+    && !/<(?:script|iframe)\b/iu.test(sanitized)
+      ? 'ready'
+      : 'failed'
+  return inlineCardSanitizerProbe
 }
 
 /** Compile deterministic display segments into browser-ready Markdown and iframe documents. */
@@ -190,18 +438,21 @@ export function compileCardFrames(
   options: CardFrameCompileOptions,
 ): CompiledCardFrames {
   const diagnostics = [...compilation.diagnostics]
-  const segments = compilation.segments.map(segment => {
+  const segments = compilation.segments.map((segment, index) => {
     if (segment.kind === 'markdown') return segment
+    const frameOptions = options.capabilityToken === undefined
+      ? options : { ...options, capabilityToken: `${options.capabilityToken}:${index}` }
     if (segment.kind === 'html') {
       return {
         kind: 'frame' as const,
         sourceKind: segment.kind,
-        srcDoc: cardFrameSource(segment.source, options),
+        srcDoc: cardFrameSource(segment.source, frameOptions),
         interactive: /<script\b|\bfetch\s*\(|\bon[a-z]+\s*=/iu.test(segment.source),
         remoteOrigins: remoteOrigins(segment.source),
+        remoteResources: cardRemoteResourceRequirements(segment.source),
       }
     }
-    const compiled = inlineCardFrameSource(segment.source, options)
+    const compiled = inlineCardFrameSource(segment.source, frameOptions)
     diagnostics.push(...compiled.diagnostics)
     return {
       kind: 'frame' as const,
@@ -209,6 +460,7 @@ export function compileCardFrames(
       srcDoc: compiled.srcDoc,
       interactive: false,
       remoteOrigins: remoteOrigins(segment.source),
+      remoteResources: compiled.remoteResources,
     }
   })
   return { segments, diagnostics }

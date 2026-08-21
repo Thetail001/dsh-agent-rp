@@ -14,19 +14,15 @@ import {
   readTavernHelperState,
 } from './tavern-helper.ts'
 
-/** Validate and persist one script-authored variable replacement. */
-export function executeTavernHelperMutation(invocation: {
-  readonly agent: Agent
-  readonly rawInput: string
-}): { readonly kind: 'success'; readonly text: string } {
-  const events = invocation.agent.session.events
+/** Rebuild the active card and preset script namespaces around an optional prior snapshot. */
+export function prepareTavernHelperState(agent: Agent, previous = readTavernHelperState(agent.session.events)) {
+  const events = agent.session.events
   const active = readActiveSessionCharacter(events)
   if (active === undefined) throw new Error('this roleplay Session has no imported Character Card')
   const card = cardFromImportMeta(active.meta)
-  const previous = readTavernHelperState(events)
   const characterState = initializeTavernHelperState(card.frontend, active.result.sourceAttachmentId, previous)
   const preset = readActiveSessionPreset(events)
-  const initialized = preset === undefined
+  return preset === undefined
     ? characterState
     : initializeTavernHelperPresetState(
         characterState,
@@ -34,6 +30,14 @@ export function executeTavernHelperMutation(invocation: {
         preset.preset.tavernHelperVariables ?? {},
         preset.result.sourceAttachmentId,
       )
+}
+
+/** Validate and persist one script-authored variable replacement. */
+export function executeTavernHelperMutation(invocation: {
+  readonly agent: Agent
+  readonly rawInput: string
+}): { readonly kind: 'success'; readonly text: string } {
+  const initialized = prepareTavernHelperState(invocation.agent)
   const request = parseTavernHelperMutationRequest(invocation.rawInput)
   const chat = 'operation' in request && (request.operation === 'set-chat-messages'
     || request.operation === 'create-chat-messages' || request.operation === 'delete-chat-messages'

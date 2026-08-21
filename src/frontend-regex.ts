@@ -1,6 +1,7 @@
 /** SillyTavern-compatible character regex execution for prompt and display views. */
 
 import type { ImportedCharacterFrontend, ImportedRegexScript } from './import/types.ts'
+import { substituteSillyTavernIdentityMacros } from './sillytavern-identity-macro.ts'
 export {
   compileCharacterDisplay,
   hasCharacterDisplayFrontend,
@@ -136,16 +137,14 @@ export function readPromptRegexSourceMarker(value: unknown): PromptRegexSourceMa
   return { format: 0, originalSeq: record.originalSeq, ...(trace === undefined ? {} : { trace }) }
 }
 
-function substituteCardMacros(
+function substituteRegexMacros(
   value: string,
   card: RegexCharacter,
   userName = '用户',
   transform: (replacement: string) => string = replacement => replacement,
 ): string {
   const name = card.nickname?.trim() || card.name
-  return value
-    .replace(/\{\{char\}\}|<char>|<bot>/giu, transform(name))
-    .replace(/\{\{user\}\}|<user>/giu, transform(userName))
+  return substituteSillyTavernIdentityMacros(value, { characterName: name, userName }, transform)
 }
 
 /** SillyTavern regex placement for a human-authored message. */
@@ -207,8 +206,8 @@ function escapeRegexMacro(value: string): string {
 
 function substitutedFindRegex(script: ImportedRegexScript, card: RegexCharacter, userName?: string): string {
   switch (Number(script.substituteRegex)) {
-    case 1: return substituteCardMacros(script.findRegex, card, userName)
-    case 2: return substituteCardMacros(script.findRegex, card, userName, escapeRegexMacro)
+    case 1: return substituteRegexMacros(script.findRegex, card, userName)
+    case 2: return substituteRegexMacros(script.findRegex, card, userName, escapeRegexMacro)
     default: return script.findRegex
   }
 }
@@ -220,7 +219,7 @@ function inDepth(script: ImportedRegexScript, depth: number | undefined): boolea
 }
 
 function filterMatch(value: string, trimStrings: readonly string[], card: RegexCharacter, userName?: string): string {
-  return trimStrings.reduce((text, trim) => text.replaceAll(substituteCardMacros(trim, card, userName), ''), value)
+  return trimStrings.reduce((text, trim) => text.replaceAll(substituteRegexMacros(trim, card, userName), ''), value)
 }
 
 function applyScript(
@@ -254,7 +253,7 @@ function applyScriptWithOutcome(
         return typeof match === 'string' ? filterMatch(match, script.trimStrings, card, userName) : ''
       },
     )
-    return substituteCardMacros(replacement, card, userName)
+    return substituteRegexMacros(replacement, card, userName)
   })
   return { text, outcome: matched ? 'applied' : 'no-match' }
 }

@@ -1,6 +1,6 @@
 /** Same-origin auxiliary generation for user-approved Tavern Helper scripts. */
 
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingMessage } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import {
@@ -13,10 +13,23 @@ import {
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { renderContextSnapshot, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { parse as parseYaml } from 'yaml'
-import type { AgentRpHttpServer } from './host-http.ts'
+import {
+  jsonResponse as json,
+  readJsonRequest,
+  trustedBrowserRequest,
+  type AgentRpHttpServer,
+} from './host-http.ts'
+import { AGENT_RP_CAPABILITIES } from './extension-capability.ts'
 import { readActiveSessionPreset } from './import/session-preset.ts'
 import { injectSillyTavernInChatPrompts } from './preset-prompt.ts'
 import { readTavernHelperState, tavernInjectedInChatPrompts } from './tavern-helper.ts'
+import {
+  appendTavernAuxiliaryGenerationRequest,
+  appendTavernAuxiliaryGenerationResult,
+  tavernAuxiliaryGenerationFailure,
+  type TavernExternalGenerationDispatch,
+  type TavernHostGenerationDispatch,
+} from './tavern-generation-log.ts'
 import {
   TAVERN_GENERATION_PATH,
   TAVERN_PROMPT_PREVIEW_PATH,
@@ -26,8 +39,10 @@ import {
   type TavernPromptPreviewResponse,
 } from './tavern-generation-protocol.ts'
 
-const MAX_REQUEST_BYTES = 512 * 1024
-const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+const GENERATION_POLICY = AGENT_RP_CAPABILITIES['model.generate.auxiliary']
+  .runtimePolicies['tavern-script-frame-v0']
+const PROMPT_PREVIEW_POLICY = AGENT_RP_CAPABILITIES['prompt.snapshot.read']
+  .runtimePolicies['tavern-script-frame-v0']
 const MAX_TEXT_CHARS = 256 * 1024
 const MAX_ORDERED_PROMPTS = 256
 const MAX_CUSTOM_FIELD_CHARS = 64 * 1024
@@ -63,46 +78,29 @@ interface ParsedGenerationConfig {
   readonly overrideHistory?: readonly TavernPrompt[]
 }
 
-function trustedBrowserRequest(request: IncomingMessage): boolean {
-  const host = request.headers.host
-  if (host === undefined || host.trim() === '' || request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    const parsed = new URL(origin)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
-  } catch {
-    return false
-  }
+interface PreparedCustomGeneration {
+  readonly dispatch: TavernExternalGenerationDispatch
+  readonly endpoint: URL
+  readonly headers: Headers
+  readonly body: string
 }
 
-function json(response: ServerResponse, status: number, value: unknown): void {
-  const body = Buffer.from(JSON.stringify(value), 'utf8')
-  response.writeHead(status, {
-    'cache-control': 'no-store',
-    'content-length': String(body.byteLength),
-    'content-type': 'application/json; charset=utf-8',
+async function readJson(request: IncomingMessage, limit: number): Promise<unknown> {
+  return readJsonRequest(request, {
+    limit,
+    emptyMessage: '酒馆脚本生成请求为空',
+    tooLargeMessage: '酒馆脚本生成请求过大',
+    invalidMessage: '酒馆脚本生成请求不是有效 JSON',
   })
-  response.end(body)
 }
 
-async function readJson(request: IncomingMessage): Promise<unknown> {
-  const declared = Number(request.headers['content-length'])
-  if (Number.isFinite(declared) && declared > MAX_REQUEST_BYTES) throw new Error('酒馆脚本生成请求过大')
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk as Uint8Array)
-    bytes += data.byteLength
-    if (bytes > MAX_REQUEST_BYTES) throw new Error('酒馆脚本生成请求过大')
-    chunks.push(data)
-  }
-  if (bytes === 0) throw new Error('酒馆脚本生成请求为空')
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
-  } catch (error: unknown) {
-    throw new Error('酒馆脚本生成请求不是有效 JSON', { cause: error })
-  }
+function boundedGenerationText(text: string): string {
+  if (text.length > MAX_TEXT_CHARS) throw new Error('模型返回文本过长')
+  return text
+}
+
+function assertSerializedResultSize(value: unknown, limit: number): void {
+  if (Buffer.byteLength(JSON.stringify(value), 'utf8') > limit) throw new Error('提示词预览结果过大')
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -390,12 +388,11 @@ function mergeCustomBody(target: Record<string, unknown>, source: Readonly<Recor
   }
 }
 
-async function customGeneration(
+function prepareCustomGeneration(
   input: { readonly system?: string; readonly messages: readonly Message[] },
   custom: ParsedCustomApiConfig,
   fallbackModel: string | undefined,
-  signal: AbortSignal,
-): Promise<string> {
+): PreparedCustomGeneration {
   const model = custom.model ?? fallbackModel
   if (model === undefined || model.trim() === '') throw new Error('custom_api.model 不能为空')
   const endpoint = tavernChatCompletionsEndpoint(custom.apiurl)
@@ -420,24 +417,37 @@ async function customGeneration(
     ...(custom.key === undefined ? {} : { authorization: `Bearer ${custom.key}` }),
   })
   for (const [name, value] of Object.entries(custom.includeHeaders ?? {})) headers.set(name, value)
+  return {
+    dispatch: {
+      kind: 'external-openai',
+      endpoint: { origin: endpoint.origin, pathname: endpoint.pathname },
+      body: requestBody as TavernExternalGenerationDispatch['body'],
+    },
+    endpoint,
+    headers,
+    body,
+  }
+}
+
+async function customGeneration(prepared: PreparedCustomGeneration, signal: AbortSignal): Promise<string> {
   let response: Response
   try {
-    response = await fetch(endpoint, {
+    response = await fetch(prepared.endpoint, {
       method: 'POST',
-      headers,
-      body,
+      headers: prepared.headers,
+      body: prepared.body,
       signal,
     })
   } catch (error: unknown) {
     throw new Error(signal.aborted ? '自定义模型生成已取消或超时' : '无法连接自定义模型服务', { cause: error })
   }
   const declared = Number(response.headers.get('content-length'))
-  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+  if (Number.isFinite(declared) && declared > GENERATION_POLICY.resultBytes) {
     await response.body?.cancel()
     throw new Error('自定义模型返回内容过大')
   }
   const responseBody = await response.text()
-  if (Buffer.byteLength(responseBody, 'utf8') > MAX_RESPONSE_BYTES) throw new Error('自定义模型返回内容过大')
+  if (Buffer.byteLength(responseBody, 'utf8') > GENERATION_POLICY.resultBytes) throw new Error('自定义模型返回内容过大')
   let value: unknown
   try {
     value = JSON.parse(responseBody) as unknown
@@ -449,7 +459,7 @@ async function customGeneration(
     const detail = responseError(value)
     throw new Error(`自定义模型请求失败（${response.status}）${detail === undefined ? '' : `：${detail}`}`)
   }
-  return responseText(value)
+  return boundedGenerationText(responseText(value))
 }
 
 function parseRequest(value: unknown): { readonly sessionId: SessionId; readonly mode: 'preset' | 'raw'; readonly config: ParsedGenerationConfig } {
@@ -553,29 +563,74 @@ async function generationInput(
 
 async function generate(ctx: Context, agent: Agent, mode: 'preset' | 'raw', config: ParsedGenerationConfig, signal: AbortSignal): Promise<string> {
   const input = await generationInput(ctx, agent, mode, config, signal)
-  if (config.customApi !== undefined) return customGeneration(input, config.customApi, agent.options.model, signal)
-  const provider = agent.options.provider
-  const model = agent.options.model
-  if (provider === undefined || model === undefined) throw new Error('当前角色会话还没有可用模型')
-  const presetGeneration = readActiveSessionPreset(agent.session.events)?.preset.generation
-  const temperature = config.temperature ?? presetGeneration?.temperature
-  const maxTokens = config.maxTokens ?? presetGeneration?.maxTokens ?? agent.options.maxTokens
-  const options: GenerateOptions = {
-    provider,
-    model,
-    messages: [...input.messages],
-    ...(input.system === undefined ? {} : { system: input.system }),
-    ...(temperature === undefined ? {} : { temperature }),
-    ...(maxTokens === undefined ? {} : { maxTokens }),
-    signal,
+  const requestId = crypto.randomUUID()
+  let dispatch: TavernExternalGenerationDispatch | TavernHostGenerationDispatch
+  let run: () => Promise<string>
+  if (config.customApi !== undefined) {
+    const prepared = prepareCustomGeneration(input, config.customApi, agent.options.model)
+    dispatch = prepared.dispatch
+    run = () => customGeneration(prepared, signal)
+  } else {
+    const provider = agent.options.provider
+    const model = agent.options.model
+    if (provider === undefined || model === undefined) throw new Error('当前角色会话还没有可用模型')
+    const presetGeneration = readActiveSessionPreset(agent.session.events)?.preset.generation
+    const temperature = config.temperature ?? presetGeneration?.temperature
+    const maxTokens = config.maxTokens ?? presetGeneration?.maxTokens ?? agent.options.maxTokens
+    dispatch = {
+      kind: 'host-model',
+      provider,
+      model,
+      messages: input.messages,
+      ...(input.system === undefined ? {} : { system: input.system }),
+      ...(temperature === undefined ? {} : { temperature }),
+      ...(maxTokens === undefined ? {} : { maxTokens }),
+    }
+    const options: GenerateOptions = {
+      provider,
+      model,
+      messages: [...input.messages],
+      ...(input.system === undefined ? {} : { system: input.system }),
+      ...(temperature === undefined ? {} : { temperature }),
+      ...(maxTokens === undefined ? {} : { maxTokens }),
+      sessionId: agent.session.id,
+      signal,
+    }
+    run = async () => {
+      const assembler = new BlockAssembler()
+      for await (const chunk of ctx.llm.stream(options)) assembler.push(chunk)
+      if (assembler.finish.kind === 'error') throw new Error(assembler.finish.failure.message)
+      if (assembler.finish.kind === 'aborted') throw new Error('酒馆脚本生成已取消')
+      const text = assembler.blocks().flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+      if (text === '') throw new Error('模型没有返回文本')
+      return boundedGenerationText(text)
+    }
   }
-  const assembler = new BlockAssembler()
-  for await (const chunk of ctx.llm.stream(options)) assembler.push(chunk)
-  if (assembler.finish.kind === 'error') throw new Error(assembler.finish.failure.message)
-  if (assembler.finish.kind === 'aborted') throw new Error('酒馆脚本生成已取消')
-  const text = assembler.blocks().flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
-  if (text === '') throw new Error('模型没有返回文本')
-  return text
+  const requestEvent = appendTavernAuxiliaryGenerationRequest(agent.session, {
+    format: 0,
+    requestId,
+    mode,
+    dispatch,
+  })
+  await ctx.sessions.flush(agent.session)
+  try {
+    const text = await run()
+    appendTavernAuxiliaryGenerationResult(agent.session, {
+      format: 0,
+      requestId,
+      requestSeq: requestEvent.seq,
+      result: { kind: 'success', text },
+    })
+    return text
+  } catch (reason: unknown) {
+    appendTavernAuxiliaryGenerationResult(agent.session, {
+      format: 0,
+      requestId,
+      requestSeq: requestEvent.seq,
+      result: { kind: 'failure', failure: tavernAuxiliaryGenerationFailure(reason) },
+    })
+    throw reason
+  }
 }
 
 /** Run one script generation without mutating the visible roleplay transcript. */
@@ -619,69 +674,65 @@ export async function runTavernPromptPreview(
     ])
     return openAiPrompts(await generationInput(ctx, agent, request.mode, request.config, signal))
   })
-  return { format: 0, prompts }
+  const result = { format: 0 as const, prompts }
+  assertSerializedResultSize(result, PROMPT_PREVIEW_POLICY.resultBytes)
+  return result
+}
+
+function installTavernPostRoute(
+  ctx: Context,
+  server: AgentRpHttpServer,
+  route: {
+    readonly path: string
+    readonly requestBytes: number
+    readonly effectName: string
+    readonly run: (input: unknown, signal: AbortSignal) => Promise<unknown>
+  },
+): void {
+  ctx.effect(() => server.register({
+    kind: 'exact',
+    path: route.path,
+    async handler(request, response) {
+      if (!trustedBrowserRequest(request)) {
+        json(response, 403, { error: 'forbidden' })
+        return
+      }
+      if (request.method !== 'POST') {
+        response.setHeader('allow', 'POST')
+        json(response, 405, { error: 'method not allowed' })
+        return
+      }
+      const controller = new AbortController()
+      const abortRequest = (): void => { controller.abort() }
+      const abortResponse = (): void => { if (!response.writableEnded) controller.abort() }
+      request.once('aborted', abortRequest)
+      response.once('close', abortResponse)
+      try {
+        json(response, 200, await route.run(await readJson(request, route.requestBytes), controller.signal))
+      } catch (error: unknown) {
+        if (response.destroyed) return
+        const message = error instanceof Error ? error.message : String(error)
+        json(response, /正在|idle|maintenance/iu.test(message) ? 409 : /过大|过长/iu.test(message) ? 413 : 400, { error: message })
+      } finally {
+        request.removeListener('aborted', abortRequest)
+        response.removeListener('close', abortResponse)
+      }
+    },
+  }), route.effectName)
 }
 
 /** Register the current-public-DSH bridge for Tavern Helper generation. */
 export function installTavernGenerationHttp(ctx: Context, server: AgentRpHttpServer): void {
-  ctx.effect(() => server.register({
-    kind: 'exact',
+  installTavernPostRoute(ctx, server, {
     path: TAVERN_GENERATION_PATH,
-    async handler(request, response) {
-      if (!trustedBrowserRequest(request)) {
-        json(response, 403, { error: 'forbidden' })
-        return
-      }
-      if (request.method !== 'POST') {
-        response.setHeader('allow', 'POST')
-        json(response, 405, { error: 'method not allowed' })
-        return
-      }
-      const controller = new AbortController()
-      const abortRequest = (): void => { controller.abort() }
-      const abortResponse = (): void => { if (!response.writableEnded) controller.abort() }
-      request.once('aborted', abortRequest)
-      response.once('close', abortResponse)
-      try {
-        json(response, 200, await runTavernGeneration(ctx, await readJson(request), controller.signal))
-      } catch (error: unknown) {
-        if (response.destroyed) return
-        const message = error instanceof Error ? error.message : String(error)
-        json(response, /正在|idle|maintenance/iu.test(message) ? 409 : /过大|过长/iu.test(message) ? 413 : 400, { error: message })
-      } finally {
-        request.removeListener('aborted', abortRequest)
-        response.removeListener('close', abortResponse)
-      }
-    },
-  }), 'agent-rp: Tavern Helper generation HTTP')
-  ctx.effect(() => server.register({
-    kind: 'exact',
+    requestBytes: GENERATION_POLICY.requestBytes,
+    effectName: 'agent-rp: Tavern Helper generation HTTP',
+    run: (input, signal) => runTavernGeneration(ctx, input, signal),
+  })
+  installTavernPostRoute(ctx, server, {
     path: TAVERN_PROMPT_PREVIEW_PATH,
-    async handler(request, response) {
-      if (!trustedBrowserRequest(request)) {
-        json(response, 403, { error: 'forbidden' })
-        return
-      }
-      if (request.method !== 'POST') {
-        response.setHeader('allow', 'POST')
-        json(response, 405, { error: 'method not allowed' })
-        return
-      }
-      const controller = new AbortController()
-      const abortRequest = (): void => { controller.abort() }
-      const abortResponse = (): void => { if (!response.writableEnded) controller.abort() }
-      request.once('aborted', abortRequest)
-      response.once('close', abortResponse)
-      try {
-        json(response, 200, await runTavernPromptPreview(ctx, await readJson(request), controller.signal))
-      } catch (error: unknown) {
-        if (response.destroyed) return
-        const message = error instanceof Error ? error.message : String(error)
-        json(response, /正在|idle|maintenance/iu.test(message) ? 409 : /过大|过长/iu.test(message) ? 413 : 400, { error: message })
-      } finally {
-        request.removeListener('aborted', abortRequest)
-        response.removeListener('close', abortResponse)
-      }
-    },
-  }), 'agent-rp: Tavern Helper prompt preview HTTP')
+    requestBytes: PROMPT_PREVIEW_POLICY.requestBytes,
+    effectName: 'agent-rp: Tavern Helper prompt preview HTTP',
+    run: (input, signal) => runTavernPromptPreview(ctx, input, signal),
+  })
 }

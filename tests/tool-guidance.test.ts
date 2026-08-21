@@ -11,7 +11,9 @@ test('renders framework, publisher, custom, and auto policy in one fixed block',
   const guidance = renderToolGuidance(config)
 
   assert.match(guidance, /Agent RP 工具指导/u)
-  assert.match(guidance, /remember/u)
+  assert.match(guidance, /当前场景、剧情进度、短期状态/u)
+  assert.match(guidance, /不确定时保持原状/u)
+  assert.doesNotMatch(guidance, /remember|supersedes/u)
   assert.match(guidance, /import_character_card/u)
   assert.match(guidance, /publish_roleplay_image/u)
   assert.match(guidance, /run_saved_workflow/u)

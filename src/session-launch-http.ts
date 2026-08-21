@@ -1,13 +1,18 @@
 /** Same-origin creation of complete seeded Agent RP Sessions on public DSH. */
 
 import { randomUUID } from 'node:crypto'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingMessage } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from './character-library.ts'
-import type { AgentRpHttpServer } from './host-http.ts'
+import {
+  jsonResponse as json,
+  readJsonRequest,
+  trustedBrowserRequest,
+  type AgentRpHttpServer,
+} from './host-http.ts'
 import {
   prepareAgentRpRewriteSession,
   prepareAgentRpSession,
@@ -16,6 +21,7 @@ import {
 import { AGENT_RP_SESSION_PATH } from './session-launch-protocol.ts'
 import type { PresetLibrary } from './preset-library.ts'
 import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
+import { WorldInfoLibrary } from './world-info-library.ts'
 import { appendAgentRpMemorySeed, readAgentRpMemoryHistory } from './memory.ts'
 import { readActiveSessionCharacter } from './import/session-character.ts'
 
@@ -26,7 +32,7 @@ interface AgentPresetGateway {
   mount(agentCtx: Context, id?: string): Promise<unknown>
 }
 
-interface WorkspaceRegistryGateway {
+interface WorkspaceGateway {
   list(): readonly {
     readonly id: string
     readonly sessionIds: readonly SessionId[]
@@ -64,46 +70,13 @@ interface SessionModelsGateway {
   }
 }
 
-function trustedBrowserRequest(request: IncomingMessage): boolean {
-  const host = request.headers.host
-  if (host === undefined || host.trim() === '' || request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    const parsed = new URL(origin)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
-  } catch {
-    return false
-  }
-}
-
-function json(response: ServerResponse, status: number, value: unknown): void {
-  const body = Buffer.from(JSON.stringify(value), 'utf8')
-  response.writeHead(status, {
-    'cache-control': 'no-store',
-    'content-length': String(body.byteLength),
-    'content-type': 'application/json; charset=utf-8',
-  })
-  response.end(body)
-}
-
 async function readJson(request: IncomingMessage): Promise<unknown> {
-  const declared = Number(request.headers['content-length'])
-  if (Number.isFinite(declared) && declared > MAX_REQUEST_BYTES) throw new Error('角色会话启动请求过大')
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk as Uint8Array)
-    bytes += data.byteLength
-    if (bytes > MAX_REQUEST_BYTES) throw new Error('角色会话启动请求过大')
-    chunks.push(data)
-  }
-  if (bytes === 0) throw new Error('角色会话启动请求为空')
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
-  } catch (error: unknown) {
-    throw new Error('角色会话启动请求不是有效 JSON', { cause: error })
-  }
+  return readJsonRequest(request, {
+    limit: MAX_REQUEST_BYTES,
+    emptyMessage: '角色会话启动请求为空',
+    tooLargeMessage: '角色会话启动请求过大',
+    invalidMessage: '角色会话启动请求不是有效 JSON',
+  })
 }
 
 /** Create an Agent whose constructor sees the complete imported history. */
@@ -112,6 +85,7 @@ export async function launchAgentRpSession(
   characters: CharacterLibrary,
   chats: SillyTavernChatLibrary,
   presetLibrary: PresetLibrary,
+  worldInfos: WorldInfoLibrary,
   input: unknown,
 ): Promise<{ readonly sessionId: SessionId; readonly title: string; readonly seed: readonly SessionEvent[] }> {
   const request = parseAgentRpSessionLaunchRequest(input)
@@ -138,7 +112,7 @@ export async function launchAgentRpSession(
   }
   let prepared = request.kind === 'rewrite'
     ? prepareAgentRpRewriteSession(source.session, request.turn, titles?.get(source.session)?.title)
-    : prepareAgentRpSession(characters, chats, presetLibrary, request)
+    : prepareAgentRpSession(characters, chats, presetLibrary, worldInfos, request)
   if (request.kind === 'character' && request.memory === 'copy-active') {
     if (source.session.header.agentPreset !== 'agent-rp') throw new Error('只能从角色会话继承记忆')
     if (source.status !== 'idle' || source.inbox.hasPending) throw new Error('请等待当前回复完成后再继承记忆')
@@ -189,7 +163,7 @@ export async function launchAgentRpSession(
       ctx.logger.warn(`agent-rp: Session ${JSON.stringify(sessionId)} title was not applied: ${String(error)}`)
     }
   }
-  const workspaces = ctx.get('workspaceRegistry') as WorkspaceRegistryGateway | undefined
+  const workspaces = ctx.get('workspace') as WorkspaceGateway | undefined
   const workspace = workspaces?.list().find(item => item.sessionIds.includes(sourceId))
   if (workspace !== undefined) {
     try {
@@ -214,6 +188,7 @@ export function installSessionLaunchHttp(
   characters: CharacterLibrary,
   chats: SillyTavernChatLibrary,
   presets: PresetLibrary,
+  worldInfos: WorldInfoLibrary,
   server: AgentRpHttpServer,
 ): void {
   routeCtx.effect(() => server.register({
@@ -230,7 +205,7 @@ export function installSessionLaunchHttp(
         return
       }
       try {
-        const result = await launchAgentRpSession(hostCtx, characters, chats, presets, await readJson(request))
+        const result = await launchAgentRpSession(hostCtx, characters, chats, presets, worldInfos, await readJson(request))
         json(response, 200, { format: 0, sessionId: result.sessionId, title: result.title })
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)

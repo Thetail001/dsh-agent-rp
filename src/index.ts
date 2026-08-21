@@ -25,6 +25,7 @@ import {
 import {
   AGENT_RP_MEMORY_KINDS,
   prepareAgentRpMemory,
+  requestsPersistentMemory,
 } from './memory.ts'
 import { executeAgentRpMemoryCommand } from './memory-command.ts'
 import { installAgentRpMemoryHttp } from './memory-http.ts'
@@ -59,6 +60,7 @@ import {
 import {
   isJsonWorldInfoAttachment,
   prepareWorldInfoImportResult,
+  readWorldInfoLibrarySessionSeed,
   type WorldInfoImportMeta,
 } from './import/session-world-info.ts'
 import {
@@ -71,6 +73,7 @@ import {
   renderCharacterPrompt,
   renderImportedChatPrompt,
   renderImportedCharacterPrompt,
+  renderWorldInfoScenarioPrompt,
   renderMemoryContext,
   roleplayVisibleDialogue,
   roleplayVisibleTranscript,
@@ -89,7 +92,7 @@ import { createEjsWorldInfoBooks, EjsTemplateEngine, type EjsTemplateContext } f
 import { installBundledAgentRpPreset } from './preset.ts'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { createAgentRpProjectionDefinition } from './projection.ts'
-import { readCurrentMvuState } from './mvu.ts'
+import { readCurrentSessionMvuState } from './mvu.ts'
 import { installMvuStreamCompletion } from './mvu-stream.ts'
 import { installPromptRegexStream } from './prompt-regex-stream.ts'
 import { assembleSillyTavernPreset, type SillyTavernInChatPrompt } from './preset-prompt.ts'
@@ -97,6 +100,7 @@ import { configurePresetFromCommand } from './preset-configuration.ts'
 import { PresetLibrary } from './preset-library.ts'
 import { installPresetLibraryHttp } from './preset-library-http.ts'
 import { executePresetLibraryCommand } from './preset-library-command.ts'
+import { installTavernExecutionHttp, installTavernPreflightHttp } from './tavern-preflight-http.ts'
 import { CharacterLibrary } from './character-library.ts'
 import { executeCharacterLibraryCommand } from './character-library-command.ts'
 import { installCharacterLibraryHttp } from './character-library-http.ts'
@@ -141,11 +145,18 @@ import { executeTavernTrigger } from './tavern-trigger.ts'
 import { installTavernGenerationHttp } from './tavern-generation-http.ts'
 import { installTavernModelListHttp } from './tavern-model-list-http.ts'
 import { installRpDistributionBridgeHttp } from './rp-distribution-bridge-http.ts'
+import { NativeIdentityStore } from './native-identity.ts'
+import { installNativeIdentityHttp } from './native-identity-http.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
 export { Config }
-export const inject = ['attachments', 'commands', 'credentials', 'llm', 'systemPrompt', 'tools']
+export { AGENT_RP_EMBEDDED_IDENTITY_CHANNEL } from './embedded-identity-protocol.ts'
+export type {
+  EmbeddedNativeIdentityFailure,
+  EmbeddedNativeIdentityRequest,
+} from './embedded-identity-protocol.ts'
+export const inject = ['attachments', 'commands', 'credentials', 'llm', 'sessions', 'systemPrompt', 'tools']
 
 /**
  * Failed `publish_roleplay_image` calls tolerated within one turn before the tool is
@@ -498,11 +509,27 @@ export function installAgentRp(
 ): void {
   const agentsByScope = new WeakMap<ScopeKey, Agent>()
   const agentsBySession = new Map<string, Agent>()
+  const rememberIntentByAgent = new WeakMap<Agent, boolean>()
+  const rememberRestrictions = new Map<Agent, () => void>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
   const presetAfterHistoryByAgent = new WeakMap<Agent, string>()
   const presetInChatByAgent = new WeakMap<Agent, readonly SillyTavernInChatPrompt[]>()
   const gateway = ctx.get('apiProxy') as PromptAttachmentGateway | undefined
   const commands = (ctx as Context & { commands: HumanCommandGateway }).commands
+  const setRememberAvailable = (agent: Agent, available: boolean): void => {
+    rememberIntentByAgent.set(agent, available)
+    const restricted = rememberRestrictions.get(agent)
+    if (available) {
+      restricted?.()
+      rememberRestrictions.delete(agent)
+    } else if (restricted === undefined) {
+      rememberRestrictions.set(agent, agent.ctx.tools.restrict({ deny: ['remember'] }))
+    }
+  }
+  ctx.effect(() => () => {
+    for (const dispose of rememberRestrictions.values()) dispose()
+    rememberRestrictions.clear()
+  }, 'agent-rp: remember intent gates')
   const presetLibrary = new PresetLibrary()
   const characterLibrary = new CharacterLibrary(options.characterLibraryRoot === undefined
     ? {}
@@ -788,9 +815,10 @@ export function installAgentRp(
       }
       if (active === undefined) {
         const importedChat = readSillyTavernChatIdentity(agent.session.events)
+        const worldInfoSeed = readWorldInfoLibrarySessionSeed(agent.session.events)
         const identity = resolveSessionPersonaIdentity(agent.session.events, undefined, importedChat?.userName)
         const templateOptions = ejsLorebookOptions(options.ejsTemplateEngine, {
-          characterName: importedChat?.characterName ?? config.characterName,
+          characterName: importedChat?.characterName ?? worldInfoSeed?.meta.result.name ?? config.characterName,
           userName: identity.userName ?? '用户',
           messages: [...roleplayVisibleDialogue(agent.session, pendingMessages), ...injectedScanText],
           transcript: roleplayVisibleTranscript(agent.session, pendingMessages),
@@ -812,6 +840,13 @@ export function installAgentRp(
             ...standaloneLore.afterCharacter,
           ].join('\n\n'))
         }
+        if (worldInfoSeed !== undefined) {
+          return guidedPersona(renderWorldInfoScenarioPrompt(
+            standaloneLore.beforeCharacter,
+            standaloneLore.afterCharacter,
+            identity.persona?.description,
+          ))
+        }
         return guidedPersona(renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter))
       }
       const importedCard = cardFromImportMeta(active.meta)
@@ -824,7 +859,7 @@ export function installAgentRp(
         readSillyTavernChatIdentity(agent.session.events)?.userName,
       )
       const { persona, userName } = identity
-      const mvu = readCurrentMvuState(card, agent.session.events)
+      const mvu = readCurrentSessionMvuState(card, agent.session)
       const templateOptions = ejsLorebookOptions(options.ejsTemplateEngine, {
         characterName: card.nickname?.trim() || card.name,
         userName: userName ?? '用户',
@@ -877,6 +912,7 @@ export function installAgentRp(
   ctx.on('agent/created', ({ agent }) => {
     agentsByScope.set(agent, agent)
     agentsBySession.set(String(agent.session.id), agent)
+    setRememberAvailable(agent, false)
   })
   ctx.on('agent/pre-step', async ({ agent, turn }, next) => {
     publishTurnByAgent.set(agent, turn)
@@ -886,6 +922,8 @@ export function installAgentRp(
   ctx.on('agent/disposed', ({ agent }) => {
     agentsByScope.delete(agent)
     agentsBySession.delete(String(agent.session.id))
+    rememberRestrictions.get(agent)?.()
+    rememberRestrictions.delete(agent)
     pendingMessagesByAgent.delete(agent)
     presetAfterHistoryByAgent.delete(agent)
     presetInChatByAgent.delete(agent)
@@ -910,6 +948,7 @@ export function installAgentRp(
   installMvuStreamCompletion(ctx, sessionId => agentsBySession.get(sessionId))
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {
     if (agentsByScope.get(agent) !== agent) return
+    setRememberAvailable(agent, requestsPersistentMemory(message))
     const pending = pendingMessagesByAgent.get(agent)
     if (pending === undefined) pendingMessagesByAgent.set(agent, [message])
     else pending.push(message)
@@ -920,7 +959,10 @@ export function installAgentRp(
     text: ({ scope }) => {
       if (scope === undefined) return ''
       const agent = agentsByScope.get(scope)
-      return agent === undefined ? '' : renderMemoryContext(agent.session.events)
+      return agent === undefined ? '' : renderMemoryContext(
+        agent.session.events,
+        rememberIntentByAgent.get(agent) === true,
+      )
     },
   })
   ctx.systemPrompt.context({
@@ -1294,12 +1336,15 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         installCharacterLibraryHttp(webCtx, characterLibrary, server)
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
         installPresetLibraryHttp(webCtx, presetLibrary, server)
+        installTavernPreflightHttp(webCtx, characterLibrary, presetLibrary, server)
+        installTavernExecutionHttp(webCtx, characterLibrary, presetLibrary, server)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)
         installSillyTavernChatExportHttp(webCtx, ctx, server)
         installAgentRpMemoryHttp(webCtx, ctx, server)
-        installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, server)
+        installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, worldInfoLibrary, server)
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
+        installNativeIdentityHttp(webCtx, new NativeIdentityStore(webCtx.credentials), server)
         installImageGenerationHttp(webCtx, generatedImageLibrary, webCtx.credentials, server)
         installTavernGenerationHttp(webCtx, server)
         installTavernModelListHttp(webCtx, server)

@@ -1,57 +1,32 @@
 /** User-approved OpenAI-compatible model discovery for isolated Tavern Helper scripts. */
 
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingMessage } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
-import type { AgentRpHttpServer } from './host-http.ts'
+import {
+  jsonResponse as json,
+  readJsonRequest,
+  trustedBrowserRequest,
+  type AgentRpHttpServer,
+} from './host-http.ts'
+import { AGENT_RP_CAPABILITIES } from './extension-capability.ts'
 import {
   TAVERN_MODEL_LIST_PATH,
   type TavernModelListRequest,
   type TavernModelListResponse,
 } from './tavern-generation-protocol.ts'
 
-const MAX_REQUEST_BYTES = 16 * 1024
-const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+const MODEL_LIST_POLICY = AGENT_RP_CAPABILITIES['model.catalog.external.read']
+  .runtimePolicies['tavern-script-frame-v0']
+const MAX_REQUEST_BYTES = MODEL_LIST_POLICY.requestBytes
+const MAX_RESPONSE_BYTES = MODEL_LIST_POLICY.resultBytes
 
-function trustedBrowserRequest(request: IncomingMessage): boolean {
-  const host = request.headers.host
-  if (host === undefined || host.trim() === '' || request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    const parsed = new URL(origin)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
-  } catch {
-    return false
-  }
-}
-
-function json(response: ServerResponse, status: number, value: unknown): void {
-  const body = Buffer.from(JSON.stringify(value), 'utf8')
-  response.writeHead(status, {
-    'cache-control': 'no-store',
-    'content-length': String(body.byteLength),
-    'content-type': 'application/json; charset=utf-8',
+function readJson(request: IncomingMessage): Promise<unknown> {
+  return readJsonRequest(request, {
+    limit: MAX_REQUEST_BYTES,
+    emptyMessage: '模型列表请求为空',
+    tooLargeMessage: '模型列表请求过大',
+    invalidMessage: '模型列表请求不是有效 JSON',
   })
-  response.end(body)
-}
-
-async function readJson(request: IncomingMessage): Promise<unknown> {
-  const declared = Number(request.headers['content-length'])
-  if (Number.isFinite(declared) && declared > MAX_REQUEST_BYTES) throw new Error('模型列表请求过大')
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk as Uint8Array)
-    bytes += data.byteLength
-    if (bytes > MAX_REQUEST_BYTES) throw new Error('模型列表请求过大')
-    chunks.push(data)
-  }
-  if (bytes === 0) throw new Error('模型列表请求为空')
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
-  } catch (error: unknown) {
-    throw new Error('模型列表请求不是有效 JSON', { cause: error })
-  }
 }
 
 function request(value: unknown): TavernModelListRequest {

@@ -1,7 +1,16 @@
 /** Durable Agent RP memory reconstructed from native tool events. */
 
 import type { Branded } from '@deepseek-ai/dsh-brand'
-import { Session, SessionId, type JsonValue, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, type JsonValue, type SessionEvent, type UserMessage } from '@deepseek-ai/dsh-session'
+
+const PERSISTENT_MEMORY_INTENT = /(?:记住|记得|别忘|不要忘|以后|今后|下次|从现在起|remember|do(?:n['’]?t| not) forget|from now on|next time)/iu
+
+/** Whether one direct user message explicitly asks for cross-turn retention. */
+export function requestsPersistentMemory(message: UserMessage): boolean {
+  if (message.source.kind !== 'user') return false
+  const text = message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+  return PERSISTENT_MEMORY_INTENT.test(text)
+}
 
 /** Stable identity of one memory record inside a Session. */
 export type AgentRpMemoryId = Branded<'AgentRpMemoryId'>

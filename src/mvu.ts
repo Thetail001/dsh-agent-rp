@@ -1,6 +1,6 @@
 /** Minimal persistent MVU state for imported Character Cards. */
 
-import { snapshotJsonValue, type JsonValue, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { snapshotJsonValue, type JsonValue, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { ImportedCharacterCard } from './import/types.ts'
 import { decodeTavernHelperState } from './tavern-helper.ts'
@@ -11,6 +11,20 @@ interface JsonPatchOperation {
   readonly from?: string
   readonly to?: string
   readonly value?: JsonValue
+}
+
+/** Complete MVU state selected for one visible reply version. */
+export interface MvuStateSnapshot {
+  readonly statData: JsonValue
+  readonly updateCount: number
+  readonly lastError?: string
+}
+
+declare module '@deepseek-ai/dsh-session' {
+  interface SessionEventMap {
+    /** @mode event Complete MVU state selected for the active reply version. */
+    'agent-rp/mvu-state': MvuStateSnapshot
+  }
 }
 
 function jsonRecord(value: JsonValue): Record<string, JsonValue> | undefined {
@@ -68,8 +82,16 @@ export function readCurrentMvuState(
   let updateCount = 0
   let lastError: string | undefined
   for (const event of events) {
-    if (event.type === 'command/done' && event.data.kind === 'success') {
-      const scriptState = decodeTavernHelperState(event.data.text)
+    if (event.type === 'agent-rp/mvu-state') {
+      statData = event.data.statData
+      updateCount = event.data.updateCount
+      lastError = event.data.lastError
+      continue
+    }
+    if (event.type === 'agent-rp/tavern-state' || (event.type === 'command/done' && event.data.kind === 'success')) {
+      const scriptState = event.type === 'agent-rp/tavern-state'
+        ? event.data
+        : decodeTavernHelperState(event.data.text)
       const scope = scriptState?.lastMutation?.scope
       if (scriptState !== undefined && (scope === 'message' || scope === 'chat')) {
         const variables = scriptState.scopes[scope]
@@ -100,6 +122,21 @@ export function readCurrentMvuState(
   }
   if (statData === undefined) return undefined
   return { statData, updateCount, ...(lastError === undefined ? {} : { lastError }) }
+}
+
+/** Append an exact MVU state selection after a reply-version surface change. */
+export function appendMvuState(session: Session, state: MvuStateSnapshot): void {
+  session.append('agent-rp/mvu-state', state)
+}
+
+/** Fold MVU updates from the current model-visible Session surface plus durable script mutations. */
+export function readCurrentSessionMvuState(
+  card: ImportedCharacterCard,
+  session: Session,
+): ReturnType<typeof readCurrentMvuState> {
+  const surface = new Set(session.surface.nodes)
+  return readCurrentMvuState(card, session.events.filter(event =>
+    event.type !== 'assistant/message' || surface.has(event.seq)))
 }
 
 function pointerSegments(pointer: string): string[] {

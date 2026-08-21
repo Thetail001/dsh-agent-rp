@@ -33,8 +33,10 @@ pkg install -y nodejs git curl cmake clang make python binutils pkg-config liban
 
 node_version="$(node -p 'process.versions.node')"
 node_major="${node_version%%.*}"
-if (( node_major < 22 )); then
-  die "DSH 需要 Node 22.19 或更高版本，Termux 当前提供的是 $node_version。"
+node_minor="${node_version#*.}"
+node_minor="${node_minor%%.*}"
+if ! (( (node_major == 22 && node_minor >= 19) || node_major >= 24 )); then
+  die "DSH 需要 Node 22.19.x 或 24 及以上版本，Termux 当前提供的是 $node_version。"
 fi
 
 say '2/6 准备安卓原生模块的 Node 构建头文件'

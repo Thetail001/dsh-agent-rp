@@ -10,6 +10,7 @@ import {
   renderImportedChatPrompt,
   renderImportedLorebook,
   renderImportedWorldInfos,
+  renderWorldInfoScenarioPrompt,
   renderMemoryContext,
   renderImportedCharacterPrompt,
   substituteCardMacros,
@@ -26,8 +27,9 @@ test('makes the top-level Agent the character and permits concise silence', () =
   assert.match(prompt, /不是旁白/u)
   assert.match(prompt, /短答、停顿或暂不追问/u)
   assert.match(prompt, /普通寒暄/u)
-  assert.match(prompt, /先调用 remember/u)
-  assert.match(prompt, /同一主题发生变化/u)
+  assert.match(prompt, /当前场景、剧情进度、短期状态/u)
+  assert.match(prompt, /不确定时保持原状/u)
+  assert.doesNotMatch(prompt, /remember|supersedes/u)
   assert.match(prompt, /不存在的共同经历/u)
   assert.match(prompt, /不主动说“我记得”/u)
   assert.match(prompt, /默认通过回答、称呼或行动自然体现/u)
@@ -53,6 +55,21 @@ test('adds a selected Persona to an imported chat without a Character Card', () 
 
   assert.match(prompt, /名为小满/u)
   assert.match(prompt, /怕冷，喜欢旧书/u)
+})
+
+test('lets standalone World Info own the roleplay identity without the deployment example character', () => {
+  const prompt = renderWorldInfoScenarioPrompt(
+    ['海城终年多雾。'],
+    ['守钟人负责回应来访者。'],
+    '旅人刚刚抵达海城。',
+  )
+
+  assert.match(prompt, /独立世界书启动/u)
+  assert.match(prompt, /海城终年多雾/u)
+  assert.match(prompt, /守钟人负责回应/u)
+  assert.match(prompt, /旅人刚刚抵达海城/u)
+  assert.match(prompt, /定义多角色、场景或叙事规则/u)
+  assert.doesNotMatch(prompt, /岚|旧书修复铺/u)
 })
 
 test('resolves stable SillyTavern identity macros across imported card prose', () => {

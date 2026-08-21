@@ -1,68 +1,36 @@
 /** Same-origin HTTP import surface for the local SillyTavern preset library. */
 
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingMessage } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type { AgentRpHttpServer } from './host-http.ts'
+import {
+  jsonResponse as json,
+  readBoundedRequestBody,
+  readJsonRequest,
+  trustedBrowserRequest,
+  type AgentRpHttpServer,
+} from './host-http.ts'
 import { parseSillyTavernPresetBytes } from './import/sillytavern-preset.ts'
 import { PresetLibrary } from './preset-library.ts'
 import { PRESET_LIBRARY_PATH } from './preset-library-http-protocol.ts'
 
 const MAX_PRESET_BYTES = 64 * 1024 * 1024
 
-function trustedBrowserRequest(request: IncomingMessage): boolean {
-  const host = request.headers.host
-  if (host === undefined || host.trim() === '' || request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    const parsed = new URL(origin)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
-  } catch {
-    return false
-  }
-}
-
-function json(response: ServerResponse, status: number, value: unknown): void {
-  const body = Buffer.from(JSON.stringify(value), 'utf8')
-  response.writeHead(status, {
-    'cache-control': 'no-store',
-    'content-length': String(body.byteLength),
-    'content-type': 'application/json; charset=utf-8',
-  })
-  response.end(body)
-}
-
 async function readUpload(request: IncomingMessage): Promise<Uint8Array> {
-  const declared = Number(request.headers['content-length'])
-  if (Number.isFinite(declared) && declared > MAX_PRESET_BYTES) throw new Error('预设文件过大')
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk as Uint8Array)
-    bytes += data.byteLength
-    if (bytes > MAX_PRESET_BYTES) throw new Error('预设文件过大')
-    chunks.push(data)
-  }
-  if (bytes === 0) throw new Error('预设文件为空')
-  return new Uint8Array(Buffer.concat(chunks))
+  return new Uint8Array(await readBoundedRequestBody(request, {
+    limit: MAX_PRESET_BYTES,
+    emptyMessage: '预设文件为空',
+    tooLargeMessage: '预设文件过大',
+  }))
 }
 
 async function readRename(request: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk as Uint8Array)
-    bytes += data.byteLength
-    if (bytes > 8 * 1024) throw new Error('预设名称请求过大')
-    chunks.push(data)
-  }
-  let value: unknown
-  try {
-    value = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-  } catch (error: unknown) {
-    throw new Error('预设名称请求不是有效 JSON', { cause: error })
-  }
+  const value = await readJsonRequest(request, {
+    limit: 8 * 1024,
+    emptyMessage: '预设名称请求为空',
+    tooLargeMessage: '预设名称请求过大',
+    invalidMessage: '预设名称请求不是有效 JSON',
+  })
   if (typeof value !== 'object' || value === null || Array.isArray(value)
     || typeof (value as Record<string, unknown>).name !== 'string') {
     throw new Error('预设名称请求缺少 name')

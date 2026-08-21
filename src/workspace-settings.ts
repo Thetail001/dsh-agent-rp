@@ -16,6 +16,9 @@ export const AGENT_RP_WORKSPACE_MODE_FIELD = 'workspaceMode'
 /** Field containing workspace ids enabled in selected-workspace mode. */
 export const AGENT_RP_WORKSPACE_IDS_FIELD = 'workspaceIds'
 
+/** Field containing workspace ids disabled in all-workspace mode. */
+export const AGENT_RP_WORKSPACE_EXCLUDED_IDS_FIELD = 'workspaceExcludedIds'
+
 /** Supported workspace visibility modes. */
 export const AGENT_RP_WORKSPACE_MODES = ['all', 'selected'] as const
 
@@ -80,6 +83,8 @@ export interface AgentRpSettings {
   readonly workspaceMode: AgentRpWorkspaceMode
   /** Stable DSH workspace ids enabled by selected-workspace mode. */
   readonly workspaceIds: string[]
+  /** Stable DSH workspace ids disabled by all-workspace mode. */
+  readonly workspaceExcludedIds: string[]
   /** Provider and generation defaults for explicit roleplay image requests. */
   readonly imageGeneration: ImageGenerationSettings
   /** Selected reusable image provider configuration. */
@@ -136,6 +141,7 @@ const DEFAULT_IMAGE_GENERATION_SETTINGS: ImageGenerationSettings = {
 export const DEFAULT_AGENT_RP_SETTINGS: AgentRpSettings = {
   workspaceMode: 'all',
   workspaceIds: [],
+  workspaceExcludedIds: [],
   imageGeneration: DEFAULT_IMAGE_GENERATION_SETTINGS,
   activeImageProfileId: DEFAULT_IMAGE_PROFILE_ID,
   imageProfiles: [{
@@ -270,8 +276,12 @@ export function normalizeAgentRpSettings(value: unknown): AgentRpSettings {
   const record = value as Record<string, unknown>
   const workspaceMode = record.workspaceMode
   const workspaceIds = record.workspaceIds
+  const workspaceExcludedIds = record.workspaceExcludedIds ?? []
   if ((workspaceMode !== 'all' && workspaceMode !== 'selected') || !Array.isArray(workspaceIds)
     || workspaceIds.length > 1_000 || workspaceIds.some(id => typeof id !== 'string'
+      || id.trim() !== id || id === '' || id.length > 256)
+    || !Array.isArray(workspaceExcludedIds) || workspaceExcludedIds.length > 1_000
+    || workspaceExcludedIds.some(id => typeof id !== 'string'
       || id.trim() !== id || id === '' || id.length > 256)) {
     throw new Error('Agent RP 工作区设置字段无效')
   }
@@ -313,6 +323,7 @@ export function normalizeAgentRpSettings(value: unknown): AgentRpSettings {
   return {
     workspaceMode,
     workspaceIds: [...new Set(workspaceIds as string[])],
+    workspaceExcludedIds: [...new Set(workspaceExcludedIds as string[])],
     imageGeneration: activeImageGeneration,
     activeImageProfileId,
     imageProfiles,
@@ -327,10 +338,43 @@ export function normalizeAgentRpSettings(value: unknown): AgentRpSettings {
  * @returns whether the entry point should be visible.
  */
 export function allowsAgentRpEntry(
-  settings: Pick<AgentRpSettings, 'workspaceMode' | 'workspaceIds'> | undefined,
+  settings: Pick<AgentRpSettings, 'workspaceMode' | 'workspaceIds' | 'workspaceExcludedIds'> | undefined,
   workspaceId: string | undefined,
 ): boolean {
   const resolved = settings ?? DEFAULT_AGENT_RP_SETTINGS
   return resolved.workspaceMode === 'all'
-    || (workspaceId !== undefined && resolved.workspaceIds.includes(workspaceId))
+    ? workspaceId === undefined || !resolved.workspaceExcludedIds.includes(workspaceId)
+    : workspaceId !== undefined && resolved.workspaceIds.includes(workspaceId)
+}
+
+/**
+ * Enable or disable one workspace without changing the policy for other workspaces.
+ * @param settings - current complete Agent RP settings.
+ * @param workspaceId - stable workspace id to update.
+ * @param enabled - whether the workspace should expose Agent RP entry points.
+ * @returns updated settings using the active mode's allowlist or exclusion list.
+ */
+export function setAgentRpWorkspaceEntry(
+  settings: AgentRpSettings,
+  workspaceId: string,
+  enabled: boolean,
+): AgentRpSettings {
+  if (settings.workspaceMode === 'all') {
+    const excluded = settings.workspaceExcludedIds.includes(workspaceId)
+    if (excluded === !enabled) return settings
+    return {
+      ...settings,
+      workspaceExcludedIds: enabled
+        ? settings.workspaceExcludedIds.filter(id => id !== workspaceId)
+        : [...settings.workspaceExcludedIds, workspaceId],
+    }
+  }
+  const selected = settings.workspaceIds.includes(workspaceId)
+  if (selected === enabled) return settings
+  return {
+    ...settings,
+    workspaceIds: enabled
+      ? [...settings.workspaceIds, workspaceId]
+      : settings.workspaceIds.filter(id => id !== workspaceId),
+  }
 }

@@ -5,7 +5,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-session'
 /** Character Card generation selected at the import boundary. */
 export type CharacterCardVersion = 1 | 2 | 3
 
-/** One feature preserved from a card but deliberately not executed. */
+/** One current or legacy feature preserved from a card but deliberately not executed. */
 export const CHARACTER_IMPORT_DEGRADATIONS = [
   'character-assets',
   'future-card-version',
@@ -112,9 +112,9 @@ export interface ImportedLorebookEntry {
   readonly priority?: number
   /** Card extension flag allowing this entry to bypass the ordinary lorebook token budget. */
   readonly ignoreBudget: boolean
-  /** V3 key-matching mode retained from the card transport. */
+  /** Imported key-matching mode used by the bounded matcher. */
   readonly useRegex: boolean
-  /** Executable template or decorator syntax remains exportable but never activates. */
+  /** Decorator syntax remains exportable but never activates. */
   readonly hasDecorators: boolean
 }
 
@@ -127,7 +127,7 @@ export interface ImportedLorebook {
   readonly entries: readonly ImportedLorebookEntry[]
 }
 
-/** One SillyTavern World Info feature retained in raw JSON but not executed. */
+/** One current or legacy SillyTavern World Info feature retained in raw JSON but not executed. */
 export const WORLD_INFO_IMPORT_DEGRADATIONS = [
   'entry-advanced-matching',
   'entry-decorators',

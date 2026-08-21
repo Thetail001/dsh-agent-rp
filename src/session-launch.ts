@@ -7,12 +7,14 @@ import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
 import { createPresetSessionSeed } from './import/session-preset.ts'
 import { createSillyTavernChatSeed, resolveSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import { createSillyTavernMigrationSeed } from './import/sillytavern-migration-seed.ts'
+import { createWorldInfoLibrarySessionSeed } from './import/world-info-seed.ts'
 import { readActiveSessionCharacter, type FileAttachmentRef } from './import/session-character.ts'
 import type { PresetLibrary, PresetLibraryEntry } from './preset-library.ts'
 import { substituteCardMacros } from './prompt.ts'
 import { parseSessionPersona } from './session-persona.ts'
 import type { AgentRpSessionLaunchRequest, LibrarySessionLaunchRequest } from './session-launch-protocol.ts'
 import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
+import { WorldInfoLibrary } from './world-info-library.ts'
 
 /** Complete seed and display metadata used to create one Agent. */
 export interface PreparedAgentRpSession {
@@ -51,6 +53,23 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       ...(persona === undefined ? {} : { persona }),
       ...(typeof record.presetId === 'string' ? { presetId: record.presetId } : {}),
       ...(record.memory === 'copy-active' ? { memory: 'copy-active' as const } : {}),
+    }
+  }
+  if (record.kind === 'world-info') {
+    if (typeof record.importId !== 'string' || !/^world-info-[a-f0-9]{32}$/u.test(record.importId)
+      || (record.presetId !== undefined
+        && (typeof record.presetId !== 'string' || !/^[a-z0-9-]{8,80}$/u.test(record.presetId)))
+      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'importId', 'persona', 'presetId'].includes(key))) {
+      throw new Error('世界书会话启动请求字段无效')
+    }
+    const persona = record.persona === undefined ? undefined : parseSessionPersona(record.persona)
+    return {
+      format: 0,
+      sourceSessionId: record.sourceSessionId as string,
+      kind: 'world-info',
+      importId: record.importId,
+      ...(persona === undefined ? {} : { persona }),
+      ...(typeof record.presetId === 'string' ? { presetId: record.presetId } : {}),
     }
   }
   if (record.kind === 'chat') {
@@ -133,6 +152,7 @@ export function prepareAgentRpSession(
   characters: CharacterLibrary,
   chats: SillyTavernChatLibrary,
   presets: PresetLibrary,
+  worldInfos: WorldInfoLibrary,
   request: LibrarySessionLaunchRequest,
 ): PreparedAgentRpSession {
   if (request.kind === 'character') {
@@ -161,6 +181,14 @@ export function prepareAgentRpSession(
     return {
       seed: seedWithPreset(characterSeed, presets, request.presetId),
       title: resolved.detail.displayName,
+    }
+  }
+
+  if (request.kind === 'world-info') {
+    const asset = worldInfos.asset(request.importId)
+    return {
+      seed: seedWithPreset(createWorldInfoLibrarySessionSeed(asset, request.persona), presets, request.presetId),
+      title: asset.upload.name,
     }
   }
 

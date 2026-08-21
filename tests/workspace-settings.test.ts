@@ -3,7 +3,12 @@ import test from 'node:test'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { DEFAULT_AGENT_RP_SETTINGS, allowsAgentRpEntry, normalizeAgentRpSettings } from '../src/workspace-settings.ts'
+import {
+  DEFAULT_AGENT_RP_SETTINGS,
+  allowsAgentRpEntry,
+  normalizeAgentRpSettings,
+  setAgentRpWorkspaceEntry,
+} from '../src/workspace-settings.ts'
 import { WorkspaceSettingsStore } from '../src/workspace-settings-store.ts'
 
 test('workspace entry defaults to every workspace while settings load', () => {
@@ -12,19 +17,29 @@ test('workspace entry defaults to every workspace while settings load', () => {
 })
 
 test('all-workspace mode allows registered and ungrouped sessions', () => {
-  const settings = { workspaceMode: 'all' as const, workspaceIds: [] }
+  const settings = { workspaceMode: 'all' as const, workspaceIds: [], workspaceExcludedIds: [] }
   assert.equal(allowsAgentRpEntry(settings, 'workspace-a'), true)
   assert.equal(allowsAgentRpEntry(settings, undefined), true)
 })
 
+test('all-workspace mode can exclude one workspace without changing the default', () => {
+  const settings = {
+    ...DEFAULT_AGENT_RP_SETTINGS,
+    workspaceExcludedIds: ['workspace-a'],
+  }
+  assert.equal(allowsAgentRpEntry(settings, 'workspace-a'), false)
+  assert.equal(allowsAgentRpEntry(settings, 'workspace-b'), true)
+  assert.equal(allowsAgentRpEntry(settings, undefined), true)
+})
+
 test('selected-workspace mode allows only listed workspace ids', () => {
-  const settings = { workspaceMode: 'selected' as const, workspaceIds: ['workspace-a'] }
+  const settings = { workspaceMode: 'selected' as const, workspaceIds: ['workspace-a'], workspaceExcludedIds: [] }
   assert.equal(allowsAgentRpEntry(settings, 'workspace-a'), true)
   assert.equal(allowsAgentRpEntry(settings, 'workspace-b'), false)
 })
 
 test('selected-workspace mode hides entry points from ungrouped sessions', () => {
-  const settings = { workspaceMode: 'selected' as const, workspaceIds: ['workspace-a'] }
+  const settings = { workspaceMode: 'selected' as const, workspaceIds: ['workspace-a'], workspaceExcludedIds: [] }
   assert.equal(allowsAgentRpEntry(settings, undefined), false)
 })
 
@@ -33,6 +48,21 @@ test('normalizes duplicate workspace ids and rejects malformed settings', () => 
     workspaceMode: 'selected', workspaceIds: ['workspace-a', 'workspace-a'],
   }), { ...DEFAULT_AGENT_RP_SETTINGS, workspaceMode: 'selected', workspaceIds: ['workspace-a'] })
   assert.throws(() => normalizeAgentRpSettings({ workspaceMode: 'selected', workspaceIds: [1] }))
+  assert.throws(() => normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [], workspaceExcludedIds: [1],
+  }))
+})
+
+test('updates one workspace through the active policy list', () => {
+  const excluded = setAgentRpWorkspaceEntry(DEFAULT_AGENT_RP_SETTINGS, 'workspace-a', false)
+  assert.deepEqual(excluded.workspaceExcludedIds, ['workspace-a'])
+  assert.equal(allowsAgentRpEntry(excluded, 'workspace-b'), true)
+  assert.deepEqual(setAgentRpWorkspaceEntry(excluded, 'workspace-a', true).workspaceExcludedIds, [])
+
+  const selected = { ...DEFAULT_AGENT_RP_SETTINGS, workspaceMode: 'selected' as const }
+  const enabled = setAgentRpWorkspaceEntry(selected, 'workspace-a', true)
+  assert.deepEqual(enabled.workspaceIds, ['workspace-a'])
+  assert.deepEqual(setAgentRpWorkspaceEntry(enabled, 'workspace-a', false).workspaceIds, [])
 })
 
 test('adds default Comfy Cloud tool guidance to older settings documents', () => {

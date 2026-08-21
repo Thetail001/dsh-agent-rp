@@ -57,14 +57,20 @@ const client: UserConfig = {
   sourcemap: true,
   clean: false,
   deps: {
-    neverBundle: ['react', 'react/jsx-runtime', 'react-dom/client', '@deepseek-ai/dsh-client-ui-primitives'],
+    neverBundle: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/dsh-client-ui-primitives'],
     alwaysBundle: id => [
-      'react', 'react/jsx-runtime', 'react-dom/client', '@deepseek-ai/dsh-client-ui-primitives',
+      'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/dsh-client-ui-primitives',
     ].includes(id) ? undefined : true,
   },
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'production'),
   },
+  plugins: [{
+    name: 'bundle-browser-safe-fflate',
+    resolveId(id) {
+      return id === 'fflate' ? resolve('node_modules/fflate/esm/browser.js') : null
+    },
+  }],
   outputOptions: {
     entryFileNames: 'client.js',
     banner: 'window.__ModuleLoader__.load({ id: "@dsh-external/dsh-agent-rp", factory: (require) => {',

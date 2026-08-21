@@ -8,6 +8,7 @@ const declared = new Set([
 ])
 const builtins = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`)])
 const missing = new Map()
+const clientBuiltins = new Set()
 
 function packageName(specifier) {
   if (specifier.startsWith('@')) return specifier.split('/').slice(0, 2).join('/')
@@ -22,13 +23,21 @@ for (const file of ['../lib/index.js', '../lib/client.js']) {
   ].map(match => match[1])
 
   for (const specifier of specifiers) {
-    if (specifier.startsWith('.') || specifier.startsWith('/') || builtins.has(specifier)) continue
+    if (builtins.has(specifier)) {
+      if (file === '../lib/client.js') clientBuiltins.add(specifier)
+      continue
+    }
+    if (specifier.startsWith('.') || specifier.startsWith('/')) continue
     const dependency = packageName(specifier)
     if (declared.has(dependency)) continue
     const locations = missing.get(dependency) ?? []
     locations.push(file.slice(3))
     missing.set(dependency, locations)
   }
+}
+
+if (clientBuiltins.size > 0) {
+  throw new Error(`Published client bundle imports Node builtins:\n${[...clientBuiltins].sort().join('\n')}`)
 }
 
 if (missing.size > 0) {

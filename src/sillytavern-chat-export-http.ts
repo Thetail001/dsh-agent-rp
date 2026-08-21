@@ -1,12 +1,15 @@
 /** Same-origin download route for the active Roleplay transcript. */
 
-import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
-import type { AgentRpHttpServer } from './host-http.ts'
+import {
+  jsonResponse as json,
+  trustedBrowserRequest,
+  type AgentRpHttpServer,
+} from './host-http.ts'
 import { resolveSessionPersonaIdentity } from './session-persona.ts'
 import { exportSillyTavernSessionChat } from './sillytavern-chat-export.ts'
 import { SILLYTAVERN_CHAT_EXPORT_PATH } from './sillytavern-chat-export-protocol.ts'
@@ -17,29 +20,6 @@ interface AgentRegistryGateway {
 
 interface SessionTitleGateway {
   get(session: Agent['session']): { readonly title: string } | undefined
-}
-
-function trustedBrowserRequest(request: IncomingMessage): boolean {
-  const host = request.headers.host
-  if (host === undefined || host.trim() === '' || request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    const parsed = new URL(origin)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
-  } catch {
-    return false
-  }
-}
-
-function json(response: ServerResponse, status: number, value: unknown): void {
-  const body = Buffer.from(JSON.stringify(value), 'utf8')
-  response.writeHead(status, {
-    'cache-control': 'no-store',
-    'content-length': String(body.byteLength),
-    'content-type': 'application/json; charset=utf-8',
-  })
-  response.end(body)
 }
 
 /** Register a Host-owned SillyTavern JSONL export for active Agent RP Sessions. */

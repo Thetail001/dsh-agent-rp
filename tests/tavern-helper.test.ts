@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { CommandId } from '@deepseek-ai/dsh-commands'
+import { AGENT_RP_CAPABILITIES } from '../src/extension-capability.ts'
 import {
   applyTavernHelperMutation,
   decodeTavernHelperState,
@@ -20,7 +21,49 @@ import {
   tavernChatCompletionsEndpoint,
 } from '../src/tavern-generation-http.ts'
 import { tavernModelListEndpoint } from '../src/tavern-model-list-http.ts'
-import { advanceTavernTranscript, type TavernScriptSnapshot } from '../src/client/tavern-runtime.ts'
+import {
+  advanceTavernTranscript,
+  tavernMessageDepth,
+  tavernReasoningExtra,
+  type TavernScriptSnapshot,
+} from '../src/client/tavern-runtime.ts'
+import { tavernMutationMatchesCapability } from '../src/client/tavern-capability.ts'
+import { summarizeTavernAuxiliaryGenerations } from '../src/tavern-generation-log.ts'
+import { agentRpProjectionDefinition } from '../src/projection.ts'
+import { tavernScriptIdentity } from '../src/tavern-script-identity.ts'
+
+interface CapturedIgnorableEvent {
+  readonly type: string
+  readonly seq: number
+  readonly data: Readonly<Record<string, unknown>>
+  readonly ignorable: true
+}
+
+function captureIgnorableEvents(session: Session): CapturedIgnorableEvent[] {
+  const events: CapturedIgnorableEvent[] = []
+  Object.defineProperty(session, 'appendIgnorable', {
+    configurable: true,
+    value(type: string, data: Readonly<Record<string, unknown>>) {
+      const event = Object.freeze({ type, seq: session.seq + events.length, time: 1, data, ignorable: true as const })
+      events.push(event)
+      return event
+    },
+  })
+  return events
+}
+
+function auxiliaryEvent(type: string, seq: number, data: unknown): SessionEvent {
+  return { type, seq, time: seq + 1, data, ignorable: true } as unknown as SessionEvent
+}
+
+function auxiliaryRequestData(requestId: string): Readonly<Record<string, unknown>> {
+  return {
+    format: 0,
+    requestId,
+    mode: 'raw',
+    dispatch: { kind: 'host-model', provider: 'fixture', model: 'fixture', messages: [] },
+  }
+}
 
 function runtimeMessage(
   messageId: number,
@@ -30,6 +73,35 @@ function runtimeMessage(
 ): TavernScriptSnapshot['messages'][number] {
   return { messageId, seq, role, text, isHidden: false, data: {}, extra: {} }
 }
+
+test('projects model reasoning without exposing it as visible transcript text', () => {
+  const session = Session.create(SessionId('reasoning-projection'))
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' },
+      content: [
+        { type: 'reasoning', text: '<dream_plot>隐藏推理</dream_plot>' },
+        { type: 'text', text: '可见正文' },
+      ],
+    }),
+  }, { surfaceOp: 'append' })
+  let state = agentRpProjectionDefinition.init()
+  for (const event of session.events) state = agentRpProjectionDefinition.apply(state, event)
+
+  assert.deepEqual(state.surface, [{
+    seq: 0,
+    text: '可见正文',
+    reasoning: '<dream_plot>隐藏推理</dream_plot>',
+    role: 'assistant',
+  }])
+  assert.deepEqual(tavernReasoningExtra(state.surface[0]?.reasoning), {
+    reasoning: '<dream_plot>隐藏推理</dream_plot>',
+    reasoning_content: '<dream_plot>隐藏推理</dream_plot>',
+  })
+  assert.deepEqual(tavernReasoningExtra(undefined), {})
+})
 
 test('emits only transcript messages appended after the established runtime baseline', () => {
   const history = [
@@ -62,6 +134,15 @@ test('rebases transcript delivery after a rewrite instead of replaying visible h
   assert.deepEqual(advanceTavernTranscript(rewritten.cursor, [history[0]!, replacement, next]).appended, [next])
 })
 
+test('computes regex depth from Tavern messages rather than Host flow nodes', () => {
+  const messages = [{ messageId: 2 }, { messageId: 7 }, { messageId: 11 }]
+
+  assert.equal(tavernMessageDepth(messages, 11), 0)
+  assert.equal(tavernMessageDepth(messages, 7), 1)
+  assert.equal(tavernMessageDepth(messages, 2), 2)
+  assert.equal(tavernMessageDepth(messages, 99), undefined)
+})
+
 test('resolves OpenAI-compatible custom generation endpoints without retaining query credentials', () => {
   assert.equal(tavernChatCompletionsEndpoint('https://example.com/v1').href,
     'https://example.com/v1/chat/completions')
@@ -75,6 +156,7 @@ test('resolves OpenAI-compatible custom generation endpoints without retaining q
 
 test('forwards one approved custom generation without retaining chat history at depth zero', async () => {
   const session = Session.create(SessionId('custom-generation'))
+  const auditEvents = captureIgnorableEvents(session)
   session.append('user/message', createUserMessage({
     source: { kind: 'user' }, content: [{ type: 'text', text: '不应发送的历史' }],
   }), { surfaceOp: 'append' })
@@ -112,6 +194,7 @@ test('forwards one approved custom generation without retaining chat history at 
         }),
       },
       llm: { stream: () => { throw new Error('preview contacted the DSH model') } },
+      sessions: { flush: async () => true },
     } as never
     const request = {
       format: 0,
@@ -147,6 +230,14 @@ test('forwards one approved custom generation without retaining chat history at 
     })
     const result = await runTavernGeneration(ctx, request)
     assert.equal(result.text, '辅助结果')
+    assert.equal(auditEvents.length, 2)
+    assert.equal(auditEvents[0]?.type, 'agent-rp/tavern-generation-request')
+    assert.equal(auditEvents[1]?.type, 'agent-rp/tavern-generation-result')
+    const auditText = JSON.stringify(auditEvents)
+    assert.doesNotMatch(auditText, /test-key|hook-key/u)
+    assert.match(auditText, /"origin":"https:\/\/example\.com"/u)
+    assert.match(auditText, /"pathname":"\/v1\/chat\/completions"/u)
+    assert.match(auditText, /"text":"辅助结果"/u)
     assert.deepEqual(requested, {
       url: 'https://example.com/v1/chat/completions',
       authorization: 'Bearer hook-key',
@@ -169,6 +260,62 @@ test('forwards one approved custom generation without retaining chat history at 
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('logs the exact Host model request before auxiliary dispatch', async () => {
+  const session = Session.create(SessionId('host-generation'))
+  const auditEvents = captureIgnorableEvents(session)
+  const agent = {
+    session,
+    options: { provider: 'fixture-provider', model: 'fixture-model', maxTokens: 456 },
+    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T> {
+      return task(new AbortController().signal)
+    },
+  }
+  let dispatched: Readonly<Record<string, unknown>> | undefined
+  const result = await runTavernGeneration({
+    get: (name: string) => name === 'agents' ? { get: () => agent } : undefined,
+    systemPrompt: {
+      assemble: async () => ({
+        sections: [{ name: 'base', text: '角色设定' }], contexts: [], tools: [], variables: {},
+      }),
+    },
+    sessions: { flush: async () => true },
+    llm: {
+      stream(options: Readonly<Record<string, unknown>>) {
+        dispatched = options
+        return (async function* () {
+          yield { type: 'block-start' as const, index: 0, blockType: 'text' as const }
+          yield { type: 'text-delta' as const, index: 0, text: 'Host 辅助结果' }
+          yield { type: 'block-end' as const, index: 0, block: { type: 'text' as const, text: 'Host 辅助结果' } }
+          yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+        })()
+      },
+    },
+  } as never, {
+    format: 0,
+    sessionId: 'host-generation',
+    mode: 'preset',
+    config: { user_input: '只处理这一项', max_tokens: 123, temperature: 0.25 },
+  })
+
+  assert.equal(result.text, 'Host 辅助结果')
+  assert.equal(dispatched?.provider, 'fixture-provider')
+  assert.equal(dispatched?.model, 'fixture-model')
+  assert.equal(dispatched?.sessionId, 'host-generation')
+  assert.equal(dispatched?.maxTokens, 123)
+  assert.equal(dispatched?.temperature, 0.25)
+  assert.equal(auditEvents.length, 2)
+  assert.deepEqual(auditEvents[0]?.data.dispatch, {
+    kind: 'host-model',
+    provider: 'fixture-provider',
+    model: 'fixture-model',
+    messages: dispatched?.messages,
+    system: dispatched?.system,
+    temperature: 0.25,
+    maxTokens: 123,
+  })
+  assert.deepEqual(auditEvents[1]?.data.result, { kind: 'success', text: 'Host 辅助结果' })
 })
 
 test('rejects unsafe custom generation headers before contacting the model', async () => {
@@ -199,8 +346,65 @@ test('rejects unsafe custom generation headers before contacting the model', asy
   }), /不允许设置 "Host"/u)
 })
 
+test('rejects auxiliary model text beyond the capability character limit', async () => {
+  const session = Session.create(SessionId('oversized-generation-text'))
+  const auditEvents = captureIgnorableEvents(session)
+  const agent = {
+    session,
+    options: { model: 'fallback-model' },
+    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T> {
+      return task(new AbortController().signal)
+    },
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    choices: [{ message: { content: 'x'.repeat(256 * 1024 + 1) } }],
+  }), { headers: { 'content-type': 'application/json' }, status: 200 })
+  try {
+    await assert.rejects(runTavernGeneration({
+      get: (name: string) => name === 'agents' ? { get: () => agent } : undefined,
+      systemPrompt: { assemble: async () => ({ sections: [], contexts: [], tools: [], variables: {} }) },
+      sessions: { flush: async () => true },
+    } as never, {
+      format: 0,
+      sessionId: 'oversized-generation-text',
+      mode: 'raw',
+      config: { user_input: '生成', custom_api: { apiurl: 'https://example.com/v1', model: 'custom-model' } },
+    }), /模型返回文本过长/u)
+    assert.deepEqual(auditEvents[1]?.data.result, { kind: 'failure', failure: 'invalid-response' })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('rejects a complete prompt preview beyond its capability result limit', async () => {
+  const session = Session.create(SessionId('oversized-prompt-preview'))
+  const agent = {
+    session,
+    options: { model: 'test-model' },
+    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T> {
+      return task(new AbortController().signal)
+    },
+  }
+  await assert.rejects(runTavernPromptPreview({
+    get: (name: string) => name === 'agents' ? { get: () => agent } : undefined,
+    systemPrompt: {
+      assemble: async () => ({
+        sections: [{ name: 'large', text: '猫'.repeat(3 * 1024 * 1024) }],
+        contexts: [], tools: [], variables: {},
+      }),
+    },
+  } as never, {
+    format: 0,
+    sessionId: 'oversized-prompt-preview',
+    mode: 'raw',
+    config: { user_input: '预览' },
+  }), /提示词预览结果过大/u)
+})
+
 test('cancels an active custom generation when its browser request closes', async () => {
   const session = Session.create(SessionId('cancel-custom-generation'))
+  const auditEvents = captureIgnorableEvents(session)
   const agent = {
     session,
     options: { model: 'fallback-model' },
@@ -225,6 +429,7 @@ test('cancels an active custom generation when its browser request closes', asyn
       systemPrompt: {
         assemble: async () => ({ sections: [], contexts: [], tools: [], variables: {} }),
       },
+      sessions: { flush: async () => true },
     } as never, {
       format: 0,
       sessionId: 'cancel-custom-generation',
@@ -237,9 +442,59 @@ test('cancels an active custom generation when its browser request closes', asyn
     await contacted
     controller.abort()
     await assert.rejects(running, /已取消或超时/u)
+    assert.equal(auditEvents.length, 2)
+    assert.deepEqual(auditEvents[1]?.data.result, { kind: 'failure', failure: 'aborted' })
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('summarizes successful, failed, and pending auxiliary generations without content', () => {
+  const events = [
+    auxiliaryEvent('agent-rp/tavern-generation-request', 0, {
+      ...auxiliaryRequestData('success'),
+      dispatch: {
+        kind: 'host-model', provider: 'fixture', model: 'fixture', messages: [], system: 'private prompt',
+      },
+    }),
+    auxiliaryEvent('agent-rp/tavern-generation-result', 1, {
+      format: 0, requestId: 'success', requestSeq: 0, result: { kind: 'success', text: 'private result' },
+    }),
+    auxiliaryEvent('agent-rp/tavern-generation-request', 2, auxiliaryRequestData('failure')),
+    auxiliaryEvent('agent-rp/tavern-generation-result', 3, {
+      format: 0, requestId: 'failure', requestSeq: 2, result: { kind: 'failure', failure: 'provider' },
+    }),
+    auxiliaryEvent('agent-rp/tavern-generation-request', 4, auxiliaryRequestData('pending')),
+  ]
+  const summary = summarizeTavernAuxiliaryGenerations(events)
+  assert.deepEqual(summary, { requests: 3, succeeded: 1, failed: 1, pending: 1, malformed: 0 })
+  assert.doesNotMatch(JSON.stringify(summary), /private|prompt|result/u)
+  let state = agentRpProjectionDefinition.init()
+  for (const event of events) state = agentRpProjectionDefinition.apply(state, event)
+  assert.deepEqual(agentRpProjectionDefinition.view(state).auxiliaryGenerations, summary)
+})
+
+test('counts broken auxiliary generation links without settling valid requests', () => {
+  const events = [
+    auxiliaryEvent('agent-rp/tavern-generation-request', 0, auxiliaryRequestData('settled')),
+    auxiliaryEvent('agent-rp/tavern-generation-result', 1, {
+      format: 0, requestId: 'settled', requestSeq: 0, result: { kind: 'success', text: 'ok' },
+    }),
+    auxiliaryEvent('agent-rp/tavern-generation-result', 2, {
+      format: 0, requestId: 'settled', requestSeq: 0, result: { kind: 'failure', failure: 'provider' },
+    }),
+    auxiliaryEvent('agent-rp/tavern-generation-result', 3, {
+      format: 0, requestId: 'missing', requestSeq: 99, result: { kind: 'failure', failure: 'unknown' },
+    }),
+    auxiliaryEvent('agent-rp/tavern-generation-request', 4, auxiliaryRequestData('settled')),
+    auxiliaryEvent('agent-rp/tavern-generation-request', 5, auxiliaryRequestData('pending')),
+    auxiliaryEvent('agent-rp/tavern-generation-result', 6, {
+      format: 0, requestId: 'pending', requestSeq: 4, result: { kind: 'success', text: 'wrong link' },
+    }),
+  ]
+  assert.deepEqual(summarizeTavernAuxiliaryGenerations(events), {
+    requests: 2, succeeded: 1, failed: 0, pending: 1, malformed: 4,
+  })
 })
 
 test('resolves OpenAI-compatible model list endpoints without retaining query credentials', () => {
@@ -277,6 +532,30 @@ test('parses Tavern Helper chat mutation operations', () => {
   })), /valid non-negative range/u)
 })
 
+test('keeps chat and World Info mutations on distinct Host capability actions', () => {
+  for (const operation of [
+    'set-chat-messages', 'create-chat-messages', 'delete-chat-messages', 'rotate-chat-messages', 'set-chat-hidden',
+  ]) {
+    assert.equal(tavernMutationMatchesCapability('chat-mutate', { operation }), true)
+    assert.equal(tavernMutationMatchesCapability('worldbook-mutate', { operation }), false)
+  }
+  for (const operation of [
+    'replace-worldbook', 'delete-worldbook', 'bind-global-worldbooks', 'bind-character-worldbooks', 'bind-chat-worldbook',
+  ]) {
+    assert.equal(tavernMutationMatchesCapability('worldbook-mutate', { operation }), true)
+    assert.equal(tavernMutationMatchesCapability('chat-mutate', { operation }), false)
+  }
+  for (const request of [
+    { scope: 'chat', variables: {} },
+    { operation: 'replace-script-injections' },
+    { operation: 'replace-script-trees' },
+    null,
+  ]) {
+    assert.equal(tavernMutationMatchesCapability('worldbook-mutate', request), false)
+    assert.equal(tavernMutationMatchesCapability('chat-mutate', request), false)
+  }
+})
+
 test('round-trips the hidden Tavern prefix in durable script state', () => {
   const state = initializeTavernHelperState({
     regexScripts: [], tavernHelperScriptNames: [], tavernHelperVariables: {}, tavernHelperScripts: [],
@@ -312,9 +591,46 @@ test('persists isolated Tavern Helper variable namespaces', () => {
 
   assert.deepEqual(decoded?.scopes.character, { theme: 'night' })
   assert.deepEqual(decoded?.scopes.message, { stat_data: { trust: 3 } })
-  assert.deepEqual(decoded?.scripts.sync, { runs: 1 })
+  assert.deepEqual(decoded?.scripts[tavernScriptIdentity('character', 'sync')], { runs: 1 })
   assert.equal(decoded?.revision, 1)
   assert.deepEqual(decoded?.lastMutation, { scope: 'message' })
+})
+
+test('keeps shared and script variable scopes distinct at the Tavern capability limit', () => {
+  let state = initializeTavernHelperState({
+    regexScripts: [],
+    tavernHelperScriptNames: ['state'],
+    tavernHelperVariables: {},
+    tavernHelperScripts: [{
+      id: 'state', name: 'state', content: '', info: '', enabled: true,
+      buttonEnabled: false, buttons: [], data: {},
+    }],
+  }, 'card-variable-scopes')
+  for (const scope of ['global', 'preset', 'character', 'chat', 'message'] as const) {
+    state = applyTavernHelperMutation(state, parseTavernHelperMutationRequest(JSON.stringify({
+      format: 0, scope, variables: { scope },
+    })))
+    assert.deepEqual(state.scopes[scope], { scope })
+  }
+  state = applyTavernHelperMutation(state, parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0, scope: 'script', scriptScope: 'character', scriptId: 'state', variables: { isolated: true },
+  })))
+  assert.deepEqual(state.scripts[tavernScriptIdentity('character', 'state')], { isolated: true })
+  assert.equal(state.revision, 6)
+  assert.deepEqual(state.lastMutation, { scope: 'script', scriptScope: 'character', scriptId: 'state' })
+  assert.throws(() => applyTavernHelperMutation(state, parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0, scope: 'script', scriptScope: 'character', scriptId: 'forged', variables: {},
+  }))), /unknown scriptId/u)
+
+  const limit = AGENT_RP_CAPABILITIES['session.variables.replace']
+    .runtimePolicies['tavern-script-frame-v0'].requestBytes
+  const empty = JSON.stringify({ format: 0, scope: 'chat', variables: { payload: '' } })
+  const atLimit = JSON.stringify({
+    format: 0, scope: 'chat', variables: { payload: 'a'.repeat(limit - Buffer.byteLength(empty)) },
+  })
+  assert.equal(Buffer.byteLength(atLimit), limit)
+  assert.doesNotThrow(() => parseTavernHelperMutationRequest(atLimit))
+  assert.throws(() => parseTavernHelperMutationRequest(`${atLimit} `), /too large/u)
 })
 
 test('keeps preset and character script state independent across reloads', () => {
@@ -330,7 +646,7 @@ test('keeps preset and character script state independent across reloads', () =>
     buttonEnabled: true, buttons: [], data: { presetRuns: 2 },
   }], { theme: 'fox' }, 'preset-1')
   const changed = applyTavernHelperMutation(preset, {
-    format: 0, scope: 'script', scriptId: 'preset', variables: { presetRuns: 3 },
+    format: 0, scope: 'script', scriptScope: 'preset', scriptId: 'preset', variables: { presetRuns: 3 },
   })
   const reloaded = initializeTavernHelperPresetState(
     initializeTavernHelperState({
@@ -350,8 +666,75 @@ test('keeps preset and character script state independent across reloads', () =>
 
   assert.deepEqual(reloaded.scopes.character, { card: true })
   assert.deepEqual(reloaded.scopes.preset, { theme: 'fox' })
-  assert.deepEqual(reloaded.scripts.character, { characterRuns: 1 })
-  assert.deepEqual(reloaded.scripts.preset, { presetRuns: 3 })
+  assert.deepEqual(reloaded.scripts[tavernScriptIdentity('character', 'character')], { characterRuns: 1 })
+  assert.deepEqual(reloaded.scripts[tavernScriptIdentity('preset', 'preset')], { presetRuns: 3 })
+})
+
+test('keeps duplicate script ids independent across scopes and prompt owners', () => {
+  const character = initializeTavernHelperState({
+    regexScripts: [], tavernHelperScriptNames: ['角色同名脚本'], tavernHelperVariables: {},
+    tavernHelperScripts: [{
+      id: 'shared', name: '角色同名脚本', content: '', info: '', enabled: true,
+      buttonEnabled: false, buttons: [], data: { owner: 'character' },
+    }],
+  }, 'card-shared')
+  let state = initializeTavernHelperPresetState(character, [{
+    id: 'shared', name: '预设同名脚本', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: { owner: 'preset' },
+  }], {}, 'preset-shared')
+  state = applyTavernHelperMutation(state, {
+    format: 0, scope: 'script', scriptScope: 'preset', scriptId: 'shared', variables: { owner: 'preset-updated' },
+  })
+  state = applyTavernHelperMutation(state, {
+    format: 0, operation: 'replace-script-injections', scriptScope: 'preset', scriptId: 'shared',
+    prompts: [{
+      id: 'same-prompt', position: 'in_chat', depth: 1, role: 'system', content: '预设提示',
+      shouldScan: false, once: false,
+    }],
+  })
+  state = applyTavernHelperMutation(state, {
+    format: 0, operation: 'replace-script-injections', scriptScope: 'character', scriptId: 'shared',
+    prompts: [{
+      id: 'same-prompt', position: 'in_chat', depth: 1, role: 'system', content: '角色提示',
+      shouldScan: false, once: false,
+    }],
+  })
+  const decoded = decodeTavernHelperState(encodeTavernHelperState(state))
+
+  assert.deepEqual(decoded?.scripts[tavernScriptIdentity('character', 'shared')], { owner: 'character' })
+  assert.deepEqual(decoded?.scripts[tavernScriptIdentity('preset', 'shared')], { owner: 'preset-updated' })
+  assert.deepEqual(decoded?.injectedPrompts?.map(prompt => [prompt.scriptScope, prompt.content]), [
+    ['preset', '预设提示'],
+    ['character', '角色提示'],
+  ])
+})
+
+test('conservatively copies legacy unscoped variables into each matching active scope', () => {
+  const card = {
+    regexScripts: [], tavernHelperScriptNames: ['角色同名脚本'], tavernHelperVariables: {},
+    tavernHelperScripts: [{
+      id: 'shared', name: '角色同名脚本', content: '', info: '', enabled: true,
+      buttonEnabled: false, buttons: [], data: { owner: 'character-default' },
+    }],
+  }
+  const presetScripts = [{
+    id: 'shared', name: '预设同名脚本', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: { owner: 'preset-default' },
+  }]
+  const current = initializeTavernHelperPresetState(
+    initializeTavernHelperState(card, 'card-legacy'), presetScripts, {}, 'preset-legacy',
+  )
+  const legacy = decodeTavernHelperState(encodeTavernHelperState({
+    ...current,
+    scripts: { shared: { owner: 'legacy' } },
+  }))
+  const migrated = initializeTavernHelperPresetState(
+    initializeTavernHelperState(card, 'card-legacy', legacy), presetScripts, {}, 'preset-legacy',
+  )
+
+  assert.deepEqual(migrated.scripts[tavernScriptIdentity('character', 'shared')], { owner: 'legacy' })
+  assert.deepEqual(migrated.scripts[tavernScriptIdentity('preset', 'shared')], { owner: 'legacy' })
+  assert.equal(Object.hasOwn(migrated.scripts, 'shared'), false)
 })
 
 test('persists Session-local script tree replacements and their new script variables', () => {
@@ -386,14 +769,19 @@ test('persists Session-local script tree replacements and their new script varia
 
   assert.equal(decoded?.lastMutation?.scope, 'script-tree')
   assert.equal(decoded?.scriptTrees?.character?.[0]?.type, 'folder')
-  assert.deepEqual(decoded?.scripts, { 'global-script': { global: true }, 'new-script': { runs: 2 } })
+  assert.deepEqual(decoded?.scripts, {
+    [tavernScriptIdentity('global', 'global-script')]: { global: true },
+    [tavernScriptIdentity('character', 'new-script')]: { runs: 2 },
+  })
 
   const reloaded = initializeTavernHelperState({
     regexScripts: [], tavernHelperScriptNames: [], tavernHelperVariables: {}, tavernHelperScripts: [],
   }, 'different-card', decoded)
   assert.equal(reloaded.scriptTrees?.character, undefined)
   assert.equal(reloaded.scriptTrees?.global?.[0]?.id, 'global-script')
-  assert.deepEqual(reloaded.scripts, { 'global-script': { global: true } })
+  assert.deepEqual(reloaded.scripts, {
+    [tavernScriptIdentity('global', 'global-script')]: { global: true },
+  })
 })
 
 test('persists script-created worldbooks and activates them only after binding', () => {
@@ -429,6 +817,7 @@ test('persists script-owned prompt injections and projects only model-visible en
   const request = parseTavernHelperMutationRequest(JSON.stringify({
     format: 0,
     operation: 'replace-script-injections',
+    scriptScope: 'character',
     scriptId: 'status',
     prompts: [
       { id: 'visible', position: 'in_chat', depth: 1, role: 'assistant', content: '保持安静', shouldScan: true, once: true },
@@ -438,11 +827,11 @@ test('persists script-owned prompt injections and projects only model-visible en
   const decoded = decodeTavernHelperState(encodeTavernHelperState(applyTavernHelperMutation(initial, request)))
   assert.deepEqual(decoded?.injectedPrompts, [
     {
-      id: 'visible', scriptId: 'status', position: 'in_chat', depth: 1,
+      id: 'visible', scriptScope: 'character', scriptId: 'status', position: 'in_chat', depth: 1,
       role: 'assistant', content: '保持安静', shouldScan: true, once: true,
     },
     {
-      id: 'scan-only', scriptId: 'status', position: 'none', depth: 0,
+      id: 'scan-only', scriptScope: 'character', scriptId: 'status', position: 'none', depth: 0,
       role: 'system', content: '只用于扫描', shouldScan: true, once: false,
     },
   ])
@@ -450,7 +839,7 @@ test('persists script-owned prompt injections and projects only model-visible en
     { role: 'assistant', content: '保持安静', depth: 1, order: 100 },
   ])
   assert.deepEqual(tavernInjectedScanText(decoded), ['保持安静', '只用于扫描'])
-  assert.deepEqual(decoded?.lastMutation, { scope: 'injection', scriptId: 'status' })
+  assert.deepEqual(decoded?.lastMutation, { scope: 'injection', scriptScope: 'character', scriptId: 'status' })
 })
 
 test('includes durable Tavern Helper injections in auxiliary prompt previews', async () => {
@@ -465,6 +854,7 @@ test('includes durable Tavern Helper injections in auxiliary prompt previews', a
   const state = applyTavernHelperMutation(initial, {
     format: 0,
     operation: 'replace-script-injections',
+    scriptScope: 'character',
     scriptId: 'injector',
     prompts: [{
       id: 'tone', position: 'in_chat', depth: 1, role: 'assistant', content: '当前语气：轻声',

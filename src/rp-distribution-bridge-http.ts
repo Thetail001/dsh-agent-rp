@@ -1,11 +1,16 @@
 /** Same-origin Host route for copying local Agent RP assets into dsh-rp-distribution. */
 
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingMessage } from 'node:http'
 import { basename } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { CharacterLibrary } from './character-library.ts'
-import type { AgentRpHttpServer } from './host-http.ts'
+import {
+  jsonResponse as json,
+  readJsonRequest,
+  trustedBrowserRequest,
+  type AgentRpHttpServer,
+} from './host-http.ts'
 import { exportSillyTavernPresetJson } from './preset-export.ts'
 import { parseSillyTavernPresetBytes } from './import/sillytavern-preset.ts'
 import { PersonaLibrary } from './persona-library.ts'
@@ -31,19 +36,6 @@ import {
 
 const MAX_REQUEST_BYTES = 16 * 1024
 
-function trustedBrowserRequest(request: IncomingMessage): boolean {
-  const host = request.headers.host
-  if (host === undefined || host.trim() === '' || request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    const parsed = new URL(origin)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
-  } catch {
-    return false
-  }
-}
-
 function chatImportRequest(value: unknown): RpDistributionChatImportRequest | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const request = value as Record<string, unknown>
@@ -67,29 +59,13 @@ function assetImportRequest(value: unknown): RpDistributionAssetImportRequest | 
   return request as unknown as RpDistributionAssetImportRequest
 }
 
-function json(response: ServerResponse, status: number, value: unknown): void {
-  const body = Buffer.from(JSON.stringify(value), 'utf8')
-  response.writeHead(status, {
-    'cache-control': 'no-store',
-    'content-length': String(body.byteLength),
-    'content-type': 'application/json; charset=utf-8',
-  })
-  response.end(body)
-}
-
 async function readJson(request: IncomingMessage): Promise<unknown> {
-  const declared = Number(request.headers['content-length'])
-  if (Number.isFinite(declared) && declared > MAX_REQUEST_BYTES) throw new Error('RP 互通请求过大')
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk as Uint8Array)
-    bytes += data.byteLength
-    if (bytes > MAX_REQUEST_BYTES) throw new Error('RP 互通请求过大')
-    chunks.push(data)
-  }
-  if (bytes === 0) throw new Error('RP 互通请求为空')
-  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+  return readJsonRequest(request, {
+    limit: MAX_REQUEST_BYTES,
+    emptyMessage: 'RP 互通请求为空',
+    tooLargeMessage: 'RP 互通请求过大',
+    invalidMessage: 'RP 互通请求不是有效 JSON',
+  })
 }
 
 function transferRequest(value: unknown): RpDistributionTransferRequest {

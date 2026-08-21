@@ -23,16 +23,24 @@ import { parseRegexScript } from './import/regex-script.ts'
 import { readCharacterCardPng } from './import/png.ts'
 import { charxAvatar, charxImageAssets, parseCharx, readCharxImageAsset } from './import/charx.ts'
 import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay, summarizeCharacterRegexScript } from './frontend-regex.ts'
-import type {
-  CharacterLibraryDetail, CharacterLibraryDisplayExtension, CharacterLibraryImage, CharacterLibraryImportResult,
-  CharacterLibrarySummary, CharacterLibraryWorldInfo, CharacterLibraryWorldInfoEntry, CharacterLibraryWorldInfoPage,
+import {
+  CHARACTER_REMOTE_RESOURCE_TYPES,
+  type CharacterLibraryDetail, type CharacterLibraryDisplayExtension, type CharacterLibraryImage,
+  type CharacterLibraryImportResult, type CharacterLibrarySummary, type CharacterLibraryWorldInfo,
+  type CharacterLibraryWorldInfoEntry, type CharacterLibraryWorldInfoPage, type CharacterRemoteResourceApproval,
+  type CharacterRemoteResourcePolicy, type CharacterRemoteResourceType,
 } from './character-library-protocol.ts'
+import {
+  cardRemoteResourceApprovalKey, cardRemoteResourceRequirements,
+  characterRemoteResourceOrigin, isCharacterRemoteResourceType,
+} from './card-remote-resource.ts'
 
 const META_SUFFIX = '.meta.json'
 const OVERLAY_SUFFIX = '.overlay.json'
 const ID_PATTERN = /^card-[a-f0-9]{32}$/u
 const DISPLAY_EXTENSION_ID_PATTERN = /^display-[a-f0-9]{32}$/u
 const MAX_DISPLAY_EXTENSION_BYTES = 256 * 1024
+const MAX_REMOTE_RESOURCE_APPROVALS = 128
 
 interface StoredCharacterMetadata {
   readonly format: 0
@@ -81,7 +89,8 @@ interface StoredCharacterOverlay {
   readonly format: 0
   readonly textReplacements: readonly StoredTextReplacement[]
   readonly displayExtensions: readonly StoredDisplayExtension[]
-  readonly approvedRemoteResourceOrigins: readonly string[]
+  readonly approvedRemoteResources: readonly CharacterRemoteResourceApproval[]
+  readonly remoteResourcePolicy: CharacterRemoteResourcePolicy
 }
 
 /** Browser-selected standalone SillyTavern display regex. */
@@ -274,18 +283,48 @@ function parseOverlay(value: unknown): StoredCharacterOverlay {
       script,
     }
   })
-  if (record.approvedRemoteResourceOrigins !== undefined && !Array.isArray(record.approvedRemoteResourceOrigins)) {
-    throw new Error('character library overlay has invalid resource origins')
+  if (record.approvedRemoteResources !== undefined && !Array.isArray(record.approvedRemoteResources)) {
+    throw new Error('character library overlay has invalid resource approvals')
   }
-  const approvedRemoteResourceOrigins = (record.approvedRemoteResourceOrigins ?? []).map((origin, index) => {
-    if (typeof origin !== 'string') throw new Error('character library overlay has an invalid resource origin')
-    return safeHttpsOrigin(origin, `approved card resource origin ${index + 1}`)
-  })
-  return { format: 0, textReplacements, displayExtensions, approvedRemoteResourceOrigins }
+  if (record.approvedRemoteResourceOrigins !== undefined && !Array.isArray(record.approvedRemoteResourceOrigins)) {
+    throw new Error('character library overlay has invalid legacy resource origins')
+  }
+  const approvedRemoteResources = new Map<string, CharacterRemoteResourceApproval>()
+  for (const [index, item] of (record.approvedRemoteResources ?? []).entries()) {
+    const approval = object(item, `approved card resource ${index + 1}`)
+    if (typeof approval.origin !== 'string' || !isCharacterRemoteResourceType(approval.type)) {
+      throw new Error('character library overlay has an invalid resource approval')
+    }
+    const normalized = { origin: characterRemoteResourceOrigin(approval.origin), type: approval.type }
+    approvedRemoteResources.set(cardRemoteResourceApprovalKey(normalized), normalized)
+  }
+  for (const [index, origin] of (record.approvedRemoteResourceOrigins ?? []).entries()) {
+    if (typeof origin !== 'string') throw new Error('character library overlay has an invalid legacy resource origin')
+    const normalizedOrigin = safeHttpsOrigin(origin, `approved card resource origin ${index + 1}`)
+    for (const type of CHARACTER_REMOTE_RESOURCE_TYPES) {
+      const approval = { origin: normalizedOrigin, type }
+      approvedRemoteResources.set(cardRemoteResourceApprovalKey(approval), approval)
+    }
+  }
+  if (approvedRemoteResources.size > MAX_REMOTE_RESOURCE_APPROVALS) {
+    throw new Error('character library overlay has too many resource approvals')
+  }
+  const remoteResourcePolicy = record.remoteResourcePolicy ?? 'prompt'
+  if (remoteResourcePolicy !== 'prompt' && remoteResourcePolicy !== 'isolated-https') {
+    throw new Error('character library overlay has an invalid resource policy')
+  }
+  return {
+    format: 0, textReplacements, displayExtensions,
+    approvedRemoteResources: [...approvedRemoteResources.values()].sort((left, right) =>
+      left.origin.localeCompare(right.origin) || left.type.localeCompare(right.type)),
+    remoteResourcePolicy,
+  }
 }
 
 function emptyOverlay(): StoredCharacterOverlay {
-  return { format: 0, textReplacements: [], displayExtensions: [], approvedRemoteResourceOrigins: [] }
+  return {
+    format: 0, textReplacements: [], displayExtensions: [], approvedRemoteResources: [], remoteResourcePolicy: 'prompt',
+  }
 }
 
 function remoteResourceOrigins(source: string): readonly string[] {
@@ -319,13 +358,24 @@ function imageOrigins(script: ImportedRegexScript): readonly string[] {
   return remoteResourceOrigins(script.replaceString)
 }
 
-function cardRemoteResourceOrigins(card: ImportedCharacterCard): readonly string[] {
+function cardRemoteResourcePlan(card: ImportedCharacterCard): {
+  readonly origins: readonly string[]
+  readonly resources: readonly CharacterRemoteResourceApproval[]
+} {
   const greetings = [card.firstMessage, ...card.alternateGreetings]
     .map(greeting => renderCharacterDisplay(greeting, card, AI_OUTPUT_PLACEMENT, 0))
-  return [...new Set([
-    ...card.frontend.regexScripts.flatMap(script => remoteResourceOrigins(script.replaceString)),
-    ...greetings.flatMap(remoteResourceOrigins),
-  ])].sort()
+  const sources = [...card.frontend.regexScripts.map(script => script.replaceString), ...greetings]
+  const origins = new Set(sources.flatMap(remoteResourceOrigins))
+  const resources = new Map<string, CharacterRemoteResourceApproval>()
+  for (const source of sources) for (const resource of cardRemoteResourceRequirements(source)) {
+    origins.add(resource.origin)
+    resources.set(cardRemoteResourceApprovalKey(resource), resource)
+  }
+  return {
+    origins: [...origins].sort(),
+    resources: [...resources.values()].sort((left, right) =>
+      left.origin.localeCompare(right.origin) || left.type.localeCompare(right.type)),
+  }
 }
 
 function sameMalformedPattern(left: ImportedRegexScript, right: ImportedRegexScript): boolean {
@@ -529,15 +579,25 @@ function characterDetail(
   includeWorldInfo: boolean,
 ): CharacterLibraryDetail {
   const worldInfo = includeWorldInfo ? worldInfoDetail(parsed.card) : undefined
-  const declaredRemoteOrigins = cardRemoteResourceOrigins(parsed.card)
+  const declaredRemoteResources = cardRemoteResourcePlan(parsed.card)
+  const approvedRemoteOrigins = [...new Set(parsed.overlay.approvedRemoteResources.map(approval => approval.origin))]
+  const approvedTypesByOrigin = new Map<string, Set<CharacterRemoteResourceType>>()
+  for (const approval of parsed.overlay.approvedRemoteResources) {
+    const types = approvedTypesByOrigin.get(approval.origin) ?? new Set<CharacterRemoteResourceType>()
+    types.add(approval.type)
+    approvedTypesByOrigin.set(approval.origin, types)
+  }
   return {
     ...summary(meta, parsed.card, parsed.avatarAvailable, parsed.images.length),
     mediaType: meta.mediaType,
     ...greetingDetail(parsed.card),
     imageAssets: parsed.images,
-    remoteResourceOrigins: declaredRemoteOrigins,
-    approvedRemoteResourceOrigins: parsed.overlay.approvedRemoteResourceOrigins
-      .filter(origin => declaredRemoteOrigins.includes(origin)),
+    remoteResourceOrigins: [...new Set([...declaredRemoteResources.origins, ...approvedRemoteOrigins])].sort(),
+    remoteResources: declaredRemoteResources.resources,
+    approvedRemoteResourceOrigins: approvedRemoteOrigins.filter(origin =>
+      approvedTypesByOrigin.get(origin)?.size === CHARACTER_REMOTE_RESOURCE_TYPES.length),
+    approvedRemoteResources: parsed.overlay.approvedRemoteResources,
+    remoteResourcePolicy: parsed.overlay.remoteResourcePolicy,
     ...(worldInfo === undefined ? {} : { worldInfo }),
     degradations: parsed.card.degradations,
     regexScripts: regexScriptDetail(parsed.card),
@@ -832,21 +892,60 @@ export class CharacterLibrary {
     return this.get(id)
   }
 
-  /** Allow or revoke one card-declared public HTTPS resource origin. */
+  /** Allow or revoke one resource class at a public HTTPS origin. */
+  setRemoteResourceApproved(
+    id: string,
+    origin: string,
+    type: CharacterRemoteResourceType,
+    approved: boolean,
+  ): CharacterLibraryDetail {
+    const normalized = characterRemoteResourceOrigin(origin)
+    if (!isCharacterRemoteResourceType(type)) throw new Error('角色卡外部资源类型无效')
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    const approval = { origin: normalized, type }
+    const resources = new Map(parsed.overlay.approvedRemoteResources.map(value =>
+      [cardRemoteResourceApprovalKey(value), value] as const))
+    const key = cardRemoteResourceApprovalKey(approval)
+    if (approved) resources.set(key, approval)
+    else resources.delete(key)
+    if (resources.size > MAX_REMOTE_RESOURCE_APPROVALS) {
+      throw new Error('这张角色卡已达到外部资源授权上限')
+    }
+    this.writeOverlay(id, {
+      ...parsed.overlay,
+      approvedRemoteResources: [...resources.values()].sort((left, right) =>
+        left.origin.localeCompare(right.origin) || left.type.localeCompare(right.type)),
+    })
+    return this.get(id)
+  }
+
+  /** Select prompted approvals or broad HTTPS access inside this card's isolated frame. */
+  setRemoteResourcePolicy(id: string, policy: CharacterRemoteResourcePolicy): CharacterLibraryDetail {
+    if (policy !== 'prompt' && policy !== 'isolated-https') throw new Error('角色卡外部资源策略无效')
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    this.writeOverlay(id, { ...parsed.overlay, remoteResourcePolicy: policy })
+    return this.get(id)
+  }
+
+  /** Allow or revoke every resource class for one statically declared legacy origin. */
   setRemoteResourceOriginApproved(id: string, origin: string, approved: boolean): CharacterLibraryDetail {
     const normalized = safeHttpsOrigin(origin, 'card resource origin')
     const entry = this.readId(id)
     const parsed = this.parseStored(entry.meta, entry.data)
-    if (!cardRemoteResourceOrigins(parsed.card).includes(normalized)) {
+    if (!cardRemoteResourcePlan(parsed.card).origins.includes(normalized)) {
       throw new Error('角色卡没有引用这个外部资源来源')
     }
-    const origins = new Set(parsed.overlay.approvedRemoteResourceOrigins)
-    if (approved) origins.add(normalized)
-    else origins.delete(normalized)
-    this.writeOverlay(id, {
-      ...parsed.overlay,
-      approvedRemoteResourceOrigins: [...origins].sort(),
-    })
+    const resources = new Map(parsed.overlay.approvedRemoteResources.map(value =>
+      [cardRemoteResourceApprovalKey(value), value] as const))
+    for (const type of CHARACTER_REMOTE_RESOURCE_TYPES) {
+      const approval = { origin: normalized, type }
+      const key = cardRemoteResourceApprovalKey(approval)
+      if (approved) resources.set(key, approval)
+      else resources.delete(key)
+    }
+    this.writeOverlay(id, { ...parsed.overlay, approvedRemoteResources: [...resources.values()] })
     return this.get(id)
   }
 

@@ -19,7 +19,7 @@ export type LorebookActivationReason =
   | 'decorator-unsupported'
   | 'template-unsupported'
   | 'template-error'
-  | 'regex-unsupported'
+  | 'regex-runtime-unavailable'
   | 'regex-invalid'
   | 'regex-execution-limit'
   | 'regex-resource-limit'
@@ -150,7 +150,7 @@ function literalRegexMatches(
 type RegexMatchDecision =
   | { readonly ok: true; readonly matchedKeys: readonly string[] }
   | { readonly ok: false; readonly reason: Extract<LorebookActivationReason,
-    'regex-unsupported' | 'regex-invalid' | 'regex-execution-limit' | 'regex-resource-limit'> }
+    'regex-runtime-unavailable' | 'regex-invalid' | 'regex-execution-limit' | 'regex-resource-limit'> }
 
 function regexMatches(
   keys: readonly string[],
@@ -161,7 +161,7 @@ function regexMatches(
   if (matcher === undefined) {
     const matchedKeys = literalRegexMatches(keys, text, entry)
     return matchedKeys === undefined
-      ? { ok: false, reason: 'regex-unsupported' }
+      ? { ok: false, reason: 'regex-runtime-unavailable' }
       : { ok: true, matchedKeys }
   }
   const result = matcher.match(keys, text, entry.caseSensitive)
@@ -434,7 +434,7 @@ export function inspectLorebooks(
 }
 
 /**
- * Activate non-regex, undecorated lorebook entries against recent dialogue.
+ * Activate compatible lorebook entries against recent dialogue.
  * @param book - imported character lorebook.
  * @param messages - model-visible conversation text in chronological order.
  * @returns position-separated content in insertion order and within budget.

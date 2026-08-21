@@ -25,6 +25,14 @@ export interface AgentRpProjection {
   readonly avatarAttachmentId?: string
   readonly avatarLibraryId?: string
   readonly importedMessageCount: number
+  /** Content-free counts for audited auxiliary Tavern model requests. */
+  readonly auxiliaryGenerations?: {
+    readonly requests: number
+    readonly succeeded: number
+    readonly failed: number
+    readonly pending: number
+    readonly malformed: number
+  }
   readonly worldInfoCount: number
   /** Imported lorebooks, current session overlays, and next-request activation evidence. */
   readonly worldInfo: {
@@ -33,6 +41,7 @@ export interface AgentRpProjection {
     readonly tokenBudget: number
     readonly approximateTokens: number
     readonly budgetExcludedCount: number
+    readonly failureCounts: import('./world-engine-diagnostic.ts').WorldEngineFailureCounts
     readonly books: readonly {
       readonly id: string
       readonly name: string
@@ -88,6 +97,8 @@ export interface AgentRpProjection {
       readonly seq: number
       readonly role: 'user' | 'assistant'
       readonly text: string
+      /** Model reasoning retained for read-only Tavern Helper compatibility. */
+      readonly reasoning?: string
       readonly isHidden: boolean
     }[]
   }

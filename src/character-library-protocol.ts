@@ -7,6 +7,23 @@ import type { CharacterRegexScriptSummary } from './frontend-regex.ts'
 /** Same-origin endpoint served by the Agent RP Host plugin. */
 export const CHARACTER_LIBRARY_PATH = '/api/agent-rp/characters'
 
+/** Browser resource classes that an isolated Character Card may request. */
+export const CHARACTER_REMOTE_RESOURCE_TYPES = [
+  'connect', 'font', 'frame', 'image', 'media', 'script', 'style',
+] as const
+
+/** One CSP resource class approved independently from every other class. */
+export type CharacterRemoteResourceType = typeof CHARACTER_REMOTE_RESOURCE_TYPES[number]
+
+/** One HTTPS origin and resource class explicitly approved by the local player. */
+export interface CharacterRemoteResourceApproval {
+  readonly origin: string
+  readonly type: CharacterRemoteResourceType
+}
+
+/** Network policy for one local Character Card's isolated light frontend. */
+export type CharacterRemoteResourcePolicy = 'prompt' | 'isolated-https'
+
 /** Visible collection selected in the local character library. */
 export type CharacterLibraryCollection = 'active' | 'archived'
 
@@ -89,8 +106,14 @@ export interface CharacterLibraryDetail extends CharacterLibrarySummary {
   readonly imageAssets: readonly CharacterLibraryImage[]
   /** Public HTTPS origins referenced by card-owned images or application resources. */
   readonly remoteResourceOrigins: readonly string[]
-  /** Card-owned resource origins explicitly approved by the local player. */
+  /** Statically classified resource origins that can be approved before Session launch. */
+  readonly remoteResources: readonly CharacterRemoteResourceApproval[]
+  /** Legacy origins that retain approval for every resource class. */
   readonly approvedRemoteResourceOrigins: readonly string[]
+  /** Card-owned resource classes explicitly approved by the local player. */
+  readonly approvedRemoteResources: readonly CharacterRemoteResourceApproval[]
+  /** Per-card remote loading policy; broad HTTPS access remains confined to the sandbox frame. */
+  readonly remoteResourcePolicy: CharacterRemoteResourcePolicy
   /** Original embedded entries; edits belong to a launched Session overlay. */
   readonly worldInfo?: CharacterLibraryWorldInfo
   readonly degradations: readonly CharacterImportDegradation[]

@@ -231,15 +231,29 @@ test('keeps local wording fixes and standalone display regexes beside the origin
   const library = new CharacterLibrary({ root })
   const imported = library.importFile({ data, filename: 'overlay.json', mediaType: 'application/json' })
   assert.deepEqual(imported.remoteResourceOrigins, ['https://cdn.example.com'])
+  assert.deepEqual(imported.remoteResources, [{ origin: 'https://cdn.example.com', type: 'image' }])
   assert.deepEqual(imported.approvedRemoteResourceOrigins, [])
+  assert.deepEqual(imported.approvedRemoteResources, [])
+  assert.equal(imported.remoteResourcePolicy, 'prompt')
+  assert.equal(library.setRemoteResourcePolicy(imported.id, 'isolated-https').remoteResourcePolicy, 'isolated-https')
+  assert.equal(library.get(imported.id).remoteResourcePolicy, 'isolated-https')
+  assert.equal(library.setRemoteResourcePolicy(imported.id, 'prompt').remoteResourcePolicy, 'prompt')
 
   const approved = library.setRemoteResourceOriginApproved(imported.id, 'https://cdn.example.com', true)
   assert.deepEqual(approved.approvedRemoteResourceOrigins, ['https://cdn.example.com'])
+  assert.equal(approved.approvedRemoteResources.length, 7)
   assert.deepEqual(library.get(imported.id).approvedRemoteResourceOrigins, ['https://cdn.example.com'])
   assert.deepEqual(library.setRemoteResourceOriginApproved(imported.id, 'https://cdn.example.com', false)
     .approvedRemoteResourceOrigins, [])
   assert.throws(() => library.setRemoteResourceOriginApproved(imported.id, 'https://other.example.com', true),
     /没有引用/u)
+  const dynamic = library.setRemoteResourceApproved(imported.id, 'https://runtime.example.com/app.js', 'script', true)
+  assert.deepEqual(dynamic.approvedRemoteResources, [{ origin: 'https://runtime.example.com', type: 'script' }])
+  assert.deepEqual(dynamic.approvedRemoteResourceOrigins, [])
+  assert.deepEqual(dynamic.remoteResourceOrigins, ['https://cdn.example.com', 'https://runtime.example.com'])
+  assert.deepEqual(library.setRemoteResourceApproved(
+    imported.id, 'https://runtime.example.com', 'script', false,
+  ).approvedRemoteResources, [])
 
   const corrected = library.replaceText(imported.id, '门还没锁', '门已经打开')
   assert.equal(corrected.localCorrectionCount, 1)
