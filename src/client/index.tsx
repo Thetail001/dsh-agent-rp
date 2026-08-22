@@ -148,6 +148,7 @@ import {
   type AgentRpRuntimeDiagnosticContribution,
   type AgentRpRuntimeDiagnosticSource,
 } from './runtime-diagnostic.ts'
+import { installAgentRpNativeBack } from './native-back.ts'
 import {
   classifySillyTavernJsonFile,
   selectSillyTavernDraft,
@@ -3631,7 +3632,7 @@ function RoleplayHeader({
         }}>会话设置</summary>
       </details>
       {settingsOpen && createPortal(<div ref={settingsMenuRef} className="agent-rp-session-menu"
-        role="menu" aria-label="角色会话设置" style={{
+        role="menu" aria-label="角色会话设置" data-agent-rp-native-back-layer style={{
           background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
           borderRadius: '10px', boxShadow: '0 14px 38px rgba(0,0,0,.36)', display: 'grid', gap: '3px',
           maxHeight: `min(70vh, ${Math.max(180, window.innerHeight - (settingsAnchor?.bottom ?? 0) - 16)}px)`,
@@ -8131,7 +8132,8 @@ function TavernScriptPopup({ request, onResolve }: {
     window.addEventListener('keydown', close)
     return () => { window.removeEventListener('keydown', close) }
   }, [canDismiss, onResolve])
-  return <div role="dialog" aria-modal aria-label={`${request.scriptName} 的酒馆脚本弹窗`} style={{
+  return <div role="dialog" aria-modal aria-label={`${request.scriptName} 的酒馆脚本弹窗`}
+    data-agent-rp-native-back-layer style={{
     alignItems: 'center', background: 'rgba(0,0,0,.72)', display: 'flex', inset: 0, justifyContent: 'center',
     padding: '18px', position: 'fixed', zIndex: 1250,
   }} onMouseDown={event => { if (canDismiss && event.target === event.currentTarget) onResolve(null) }}>
@@ -11445,6 +11447,7 @@ export function apply(ctx: ClientContext): void {
   const runtimeDiagnostics = new AgentRpRuntimeDiagnosticRegistry()
   ctx.effect(() => installAgentRpRuntimeDiagnostic(window, runtimeDiagnostics))
   ctx.effect(() => installAgentRpBrowserCompatibilityDiagnostic(window, document, runtimeDiagnostics))
+  ctx.effect(() => installAgentRpNativeBack(window, document))
   ctx.effect(() => {
     const style = document.createElement('style')
     style.dataset.agentRpResponsive = ''
