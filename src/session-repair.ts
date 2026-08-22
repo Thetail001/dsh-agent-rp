@@ -1,8 +1,8 @@
 /** Explicit, backup-first repair for legacy Agent RP events in one DSH JSONL artifact. */
 
 import { randomUUID } from 'node:crypto'
-import { lstat, open, readFile, rename, unlink } from 'node:fs/promises'
-import { basename, dirname, resolve } from 'node:path'
+import { lstat, open, readFile, readdir, rename, unlink } from 'node:fs/promises'
+import { basename, dirname, join, resolve } from 'node:path'
 import { constants, zstdCompressSync, zstdDecompressSync, type ZstdOptions } from 'node:zlib'
 import { AGENT_RP_SESSION_EVENT_TYPES } from './session-event-compat.ts'
 
@@ -32,6 +32,7 @@ interface PlaintextPatch {
 /** Result of inspecting or repairing one exact session artifact. */
 export interface AgentRpSessionRepairResult {
   readonly path: string
+  readonly sessionId: string
   readonly encoding: 'jsonl' | 'jsonl.zstd'
   readonly repairedEvents: number
   readonly alreadySafeEvents: number
@@ -44,6 +45,77 @@ export interface AgentRpSessionRepairResult {
 export interface AgentRpSessionRepairOptions {
   /** Actually replace the artifact. Omit for a read-only inspection. */
   readonly apply?: boolean
+  /** Refuse a misplaced or corrupt artifact before applying any repair. */
+  readonly expectedSessionId?: string
+}
+
+function encodePathSegment(raw: string): string {
+  if (raw.length === 0) throw new Error('会话 ID 不能为空')
+  if (raw === '.') return '~002E'
+  if (raw === '..') return '~002E~002E'
+  let output = ''
+  for (let index = 0; index < raw.length; index += 1) {
+    const code = raw.charCodeAt(index)
+    const character = String.fromCharCode(code)
+    output += character !== '~' && /^[A-Za-z0-9._-]$/u.test(character)
+      ? character
+      : `~${code.toString(16).toUpperCase().padStart(4, '0')}`
+  }
+  return output
+}
+
+function isMissing(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT'
+}
+
+/** Locate one unique default-JSONL artifact by exact Session id without reading unrelated logs. */
+export async function locateAgentRpSessionFile(
+  sessionsRoot: string,
+  sessionId: string,
+): Promise<string> {
+  const root = resolve(sessionsRoot)
+  const rootInfo = await lstat(root)
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new Error('sessions 根目录必须是普通目录，不能是符号链接')
+  }
+  const encoded = encodePathSegment(sessionId)
+  const projects = await readdir(root, { withFileTypes: true })
+  const matches: string[] = []
+  for (const project of projects) {
+    if (!project.isDirectory() || project.isSymbolicLink()) continue
+    const sessionDirectory = join(root, project.name, encoded)
+    let directoryInfo
+    try {
+      directoryInfo = await lstat(sessionDirectory)
+    } catch (error: unknown) {
+      if (isMissing(error)) continue
+      throw error
+    }
+    if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) {
+      throw new Error(`会话 ${JSON.stringify(sessionId)} 的候选目录不是普通目录`)
+    }
+    for (const filename of ['session.jsonl.zstd', 'session.jsonl'] as const) {
+      const candidate = join(sessionDirectory, filename)
+      let info
+      try {
+        info = await lstat(candidate)
+      } catch (error: unknown) {
+        if (isMissing(error)) continue
+        throw error
+      }
+      if (!info.isFile() || info.isSymbolicLink()) {
+        throw new Error(`会话 ${JSON.stringify(sessionId)} 的候选文件不是普通文件`)
+      }
+      matches.push(candidate)
+    }
+  }
+  if (matches.length === 0) {
+    throw new Error(`没有在 ${root} 找到会话 ${JSON.stringify(sessionId)}`)
+  }
+  if (matches.length > 1) {
+    throw new Error(`会话 ${JSON.stringify(sessionId)} 在 sessions 根目录中存在多个候选文件，已拒绝选择`)
+  }
+  return matches[0]!
 }
 
 function completeZstdFrameEnd(source: Buffer, start: number): number {
@@ -182,6 +254,27 @@ function artifactEncoding(path: string): AgentRpSessionRepairResult['encoding'] 
   throw new Error('只能修复明确指定的 session.jsonl 或 session.jsonl.zstd 文件')
 }
 
+function headerSessionId(plaintext: Buffer): string {
+  const newline = plaintext.indexOf(0x0A)
+  if (newline < 0) throw new Error('会话文件缺少完整的 header 行')
+  const record = jsonRecord(plaintext.subarray(0, newline), 1)
+  if (record.type !== 'session' || typeof record.id !== 'string' || record.id.length === 0) {
+    throw new Error('会话文件 header 没有有效的 Session ID')
+  }
+  return record.id
+}
+
+function artifactSessionId(input: Buffer, encoding: AgentRpSessionRepairResult['encoding']): string {
+  if (encoding === 'jsonl') return headerSessionId(input)
+  const first = scanZstdFrames(input)[0]
+  if (first === undefined) throw new Error('会话文件不包含 header 帧')
+  const plaintext = zstdDecompressSync(input.subarray(first.start, first.end))
+  if (plaintext.indexOf(0x0A) !== plaintext.length - 1) {
+    throw new Error('会话文件的第一个 Zstandard 帧不是独立 header')
+  }
+  return headerSessionId(plaintext)
+}
+
 function backupName(path: string): string {
   const stamp = new Date().toISOString().replace(/[:.]/gu, '-')
   return resolve(dirname(path), `${basename(path)}.agent-rp-backup-${stamp}-${randomUUID().slice(0, 8)}`)
@@ -227,6 +320,10 @@ export async function repairAgentRpSessionFile(
   const info = await lstat(path)
   if (!info.isFile() || info.isSymbolicLink()) throw new Error('修复目标必须是普通会话文件，不能是目录或符号链接')
   const input = await readFile(path)
+  const sessionId = artifactSessionId(input, encoding)
+  if (options.expectedSessionId !== undefined && sessionId !== options.expectedSessionId) {
+    throw new Error(`会话文件 header ID ${JSON.stringify(sessionId)} 与请求的 ${JSON.stringify(options.expectedSessionId)} 不一致`)
+  }
   const patched = encoding === 'jsonl.zstd' ? patchZstd(input) : patchPlaintext(input)
   if (patched.unknownAgentRpEventTypes.length > 0) {
     throw new Error(`会话还包含本工具不认识的 Agent RP 事件：${patched.unknownAgentRpEventTypes.join('、')}`)
@@ -234,6 +331,7 @@ export async function repairAgentRpSessionFile(
   if (options.apply !== true || !patched.changed) {
     return {
       path,
+      sessionId,
       encoding,
       repairedEvents: patched.repairedEvents,
       alreadySafeEvents: patched.alreadySafeEvents,
@@ -249,6 +347,7 @@ export async function repairAgentRpSessionFile(
   const backupPath = await replaceWithBackup(path, patched.output, info.mode)
   return {
     path,
+    sessionId,
     encoding,
     repairedEvents: patched.repairedEvents,
     alreadySafeEvents: patched.alreadySafeEvents,
@@ -256,4 +355,14 @@ export async function repairAgentRpSessionFile(
     applied: true,
     backupPath,
   }
+}
+
+/** Locate and inspect/repair one unique default-JSONL Session by exact id. */
+export async function repairAgentRpSessionById(
+  sessionsRoot: string,
+  sessionId: string,
+  options: Omit<AgentRpSessionRepairOptions, 'expectedSessionId'> = {},
+): Promise<AgentRpSessionRepairResult> {
+  const path = await locateAgentRpSessionFile(sessionsRoot, sessionId)
+  return repairAgentRpSessionFile(path, { ...options, expectedSessionId: sessionId })
 }

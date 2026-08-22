@@ -1,22 +1,48 @@
 #!/usr/bin/env node
 
-import { repairAgentRpSessionFile } from './session-repair.ts'
+import { homedir } from 'node:os'
+import { resolve } from 'node:path'
+import { repairAgentRpSessionById, repairAgentRpSessionFile } from './session-repair.ts'
 
 function usage(): never {
-  console.error('用法：dsh-agent-rp-repair-session [--apply] <session.jsonl.zstd>')
+  console.error('用法：dsh-agent-rp-repair-session [--apply] <session.jsonl|session.jsonl.zstd>')
+  console.error('      dsh-agent-rp-repair-session [--apply] --session <id> [--root <sessions目录>]')
   console.error('默认只读检查；关闭 DSH 后显式加 --apply 才会备份并修复。')
   process.exit(2)
 }
 
 const args = process.argv.slice(2)
-const apply = args.includes('--apply')
-const positional = args.filter(arg => arg !== '--apply')
-if (positional.length !== 1 || args.some(arg => arg.startsWith('--') && arg !== '--apply')) usage()
+let apply = false
+let sessionId: string | undefined
+let root: string | undefined
+const positional: string[] = []
+for (let index = 0; index < args.length; index += 1) {
+  const argument = args[index]!
+  if (argument === '--apply') {
+    apply = true
+  } else if (argument === '--session' || argument === '--root') {
+    const value = args[index + 1]
+    if (value === undefined || value.startsWith('--')) usage()
+    if (argument === '--session') sessionId = value
+    else root = value
+    index += 1
+  } else if (argument.startsWith('--')) {
+    usage()
+  } else {
+    positional.push(argument)
+  }
+}
+if (sessionId === undefined ? positional.length !== 1 || root !== undefined : positional.length !== 0) usage()
+
+const defaultRoot = resolve(process.env['DSH_HOME']?.trim() || resolve(homedir(), '.dsh'), 'sessions')
 
 try {
-  const result = await repairAgentRpSessionFile(positional[0]!, { apply })
+  const result = sessionId === undefined
+    ? await repairAgentRpSessionFile(positional[0]!, { apply })
+    : await repairAgentRpSessionById(root ?? defaultRoot, sessionId, { apply })
   if (!apply) {
     console.log(`只读检查完成：${result.path}`)
+    console.log(`会话 ID：${result.sessionId}`)
     console.log(`需要修复的旧事件：${result.repairedEvents}`)
     console.log(`已经安全的 Agent RP 事件：${result.alreadySafeEvents}`)
     if (result.repairedEvents > 0) console.log('请先完全关闭 DSH，再用同一条命令加 --apply 执行。')
