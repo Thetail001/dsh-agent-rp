@@ -1,6 +1,7 @@
 /** Host adapter for session-owned World Info management. */
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
 import { readActiveSessionWorldInfos } from './import/session-world-info.ts'
 import {
@@ -14,9 +15,9 @@ import {
 } from './world-info-configuration-core.ts'
 import { readTavernHelperState } from './tavern-helper.ts'
 
-/** Resolve all imported books in their prompt order. */
-export function readSessionLorebookSources(agent: Agent): readonly SessionLorebookSource[] {
-  const active = readActiveSessionCharacter(agent.session.events)
+/** Resolve all imported books in their prompt order from the durable Session log. */
+export function readSessionLorebookSourcesFromEvents(events: readonly SessionEvent[]): readonly SessionLorebookSource[] {
+  const active = readActiveSessionCharacter(events)
   const card = active === undefined ? undefined : cardFromImportMeta(active.meta)
   return withTavernWorldbooks([
     ...(card?.lorebook === undefined || active === undefined ? [] : [{
@@ -26,19 +27,31 @@ export function readSessionLorebookSources(agent: Agent): readonly SessionLorebo
       lorebook: card.lorebook,
       degradations: card.degradations.filter(value => value.startsWith('lorebook-')),
     }]),
-    ...readActiveSessionWorldInfos(agent.session.events).map(value => ({
+    ...readActiveSessionWorldInfos(events).map(value => ({
       id: `standalone:${value.result.sourceAttachmentId}`,
       name: value.result.name,
       source: 'standalone' as const,
       lorebook: value.worldInfo.lorebook,
       degradations: value.result.degradations,
     })),
-  ], readTavernHelperState(agent.session.events))
+  ], readTavernHelperState(events))
 }
 
-/** Resolve only the books that should participate in the next model request. */
+/** Host convenience wrapper for callers that already own an Agent. */
+export function readSessionLorebookSources(agent: Agent): readonly SessionLorebookSource[] {
+  return readSessionLorebookSourcesFromEvents(agent.session.events)
+}
+
+/** Resolve only the books that should participate in the next model request from the Session log. */
+export function readActiveSessionLorebookSourcesFromEvents(
+  events: readonly SessionEvent[],
+): readonly SessionLorebookSource[] {
+  return activeTavernWorldbooks(readSessionLorebookSourcesFromEvents(events), readTavernHelperState(events))
+}
+
+/** Host convenience wrapper for callers that already own an Agent. */
 export function readActiveSessionLorebookSources(agent: Agent): readonly SessionLorebookSource[] {
-  return activeTavernWorldbooks(readSessionLorebookSources(agent), readTavernHelperState(agent.session.events))
+  return readActiveSessionLorebookSourcesFromEvents(agent.session.events)
 }
 
 /** Execute one World Info manager mutation and persist its complete overlay snapshot. */

@@ -34,7 +34,6 @@ import { parseCharx } from './import/charx.ts'
 import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
 import { readCharacterCardPng } from './import/png.ts'
 import {
-  cardFromImportMeta,
   isCharxCharacterCardAttachment,
   isJsonCharacterCardAttachment,
   isPngCharacterCardAttachment,
@@ -60,7 +59,6 @@ import {
 import {
   isJsonWorldInfoAttachment,
   prepareWorldInfoImportResult,
-  readWorldInfoLibrarySessionSeed,
   type WorldInfoImportMeta,
 } from './import/session-world-info.ts'
 import {
@@ -84,7 +82,6 @@ import { createEjsWorldInfoBooks, EjsTemplateEngine, type EjsTemplateContext } f
 import { installBundledAgentRpPreset } from './preset.ts'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { createAgentRpProjectionDefinition } from './projection.ts'
-import { readCurrentSessionMvuState } from './mvu.ts'
 import { installMvuStreamCompletion } from './mvu-stream.ts'
 import { installPromptRegexStream } from './prompt-regex-stream.ts'
 import { assembleSillyTavernPreset, type AssembledSillyTavernPreset } from './preset-prompt.ts'
@@ -103,7 +100,7 @@ import {
 } from './character-library-protocol.ts'
 import { installPersonaLibraryHttp } from './persona-library-http.ts'
 import { PersonaLibrary } from './persona-library.ts'
-import { parseSessionPersona, resolveSessionPersonaIdentity } from './session-persona.ts'
+import { parseSessionPersona } from './session-persona.ts'
 import { executePersonaCommand } from './persona-command.ts'
 import { executeSillyTavernChatCommand } from './sillytavern-chat-command.ts'
 import { installSillyTavernChatHttp } from './sillytavern-chat-http.ts'
@@ -112,15 +109,7 @@ import { installSillyTavernChatExportHttp } from './sillytavern-chat-export-http
 import { installSessionLaunchHttp } from './session-launch-http.ts'
 import { executeGenerationCommand } from './generation.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
-import {
-  configuredLorebook,
-  readWorldInfoConfiguration,
-  worldInfoTokenBudget,
-} from './world-info-configuration-core.ts'
-import {
-  executeWorldInfoConfiguration,
-  readActiveSessionLorebookSources,
-} from './world-info-configuration.ts'
+import { executeWorldInfoConfiguration } from './world-info-configuration.ts'
 import { WorldInfoLibrary } from './world-info-library.ts'
 import { executeWorldInfoLibraryCommand } from './world-info-library-command.ts'
 import { installWorldInfoLibraryHttp } from './world-info-library-http.ts'
@@ -147,6 +136,7 @@ import {
   worldbookCharacterContext,
   type WorldbookCharacterContextRegistry,
 } from './worldbook-character-context.ts'
+import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -469,12 +459,6 @@ function latestUserAttachments(agent: Agent): { eventSeq: number; attachments: C
   throw new Error('没有找到导入请求；请在同一条消息中附上 Character Card PNG、JSON 或 CHARX')
 }
 
-function importedCharacter(agentsByScope: WeakMap<ScopeKey, Agent>, scope: ScopeKey | undefined) {
-  if (scope === undefined) return undefined
-  const agent = agentsByScope.get(scope)
-  return agent === undefined ? undefined : readActiveSessionCharacter(agent.session.events)
-}
-
 function ejsVariableScopes(state: TavernHelperState | undefined): NonNullable<EjsTemplateContext['variableScopes']> {
   return state?.scopes ?? {}
 }
@@ -743,17 +727,16 @@ export function installAgentRp(
       const agent = scope === undefined ? undefined : agentsByScope.get(scope)
       const pendingMessages = agent === undefined ? [] : pendingMessagesByAgent.get(agent) ?? []
       if (agent !== undefined) pendingMessagesByAgent.delete(agent)
-      const active = importedCharacter(agentsByScope, scope)
       if (agent === undefined) return renderCharacterPrompt(config)
-      const tavern = readTavernHelperState(agent.session.events)
+      const runtime = resolveSessionRoleplayRuntime({
+        session: agent.session,
+        deployment: config,
+        memoryWriteAvailable: rememberIntentByAgent.get(agent) === true,
+        templateEngineAvailable: options.ejsTemplateEngine !== undefined,
+      })
+      const { snapshot, tavern } = runtime
       const injectedScanText = tavernInjectedScanText(tavern)
-      const sources = readActiveSessionLorebookSources(agent)
-      const worldInfoConfiguration = readWorldInfoConfiguration(agent.session.events)
-      const aggregateWorldInfoBudget = worldInfoTokenBudget(worldInfoConfiguration)
-      const configuredSources = sources.map(source => ({
-        source,
-        configured: configuredLorebook(source, worldInfoConfiguration).lorebook,
-      }))
+      const configuredSources = runtime.lorebooks
       const books = configuredSources.map(({ source, configured }) => ({
         id: source.id,
         name: source.name,
@@ -769,14 +752,13 @@ export function installAgentRp(
         }
         return { character: collect('character'), standalone: collect('standalone') }
       }
-      if (active === undefined) {
-        const importedChat = readSillyTavernChatIdentity(agent.session.events)
-        const worldInfoSeed = readWorldInfoLibrarySessionSeed(agent.session.events)
-        const identity = resolveSessionPersonaIdentity(agent.session.events, undefined, importedChat?.userName)
-        const characterName = importedChat?.characterName ?? worldInfoSeed?.meta.result.name ?? config.characterName
+      if (runtime.card === undefined) {
+        const importedChat = runtime.importedChat
+        const worldInfoSeed = runtime.worldScenario
+        const characterName = snapshot.actor?.name ?? snapshot.experience.name
         const templateOptions = ejsLorebookOptions(options.ejsTemplateEngine, {
           characterName,
-          userName: identity.userName ?? '用户',
+          userName: snapshot.participant?.name ?? '用户',
           messages: [...roleplayVisibleDialogue(agent.session, pendingMessages), ...injectedScanText],
           transcript: roleplayVisibleTranscript(agent.session, pendingMessages),
           variableScopes: ejsVariableScopes(tavern),
@@ -788,14 +770,14 @@ export function installAgentRp(
           pendingMessages,
           scanText: injectedScanText,
           templateOptions,
-          ...(aggregateWorldInfoBudget === undefined ? {} : { tokenBudget: aggregateWorldInfoBudget }),
+          ...(snapshot.world.tokenBudget === undefined ? {} : { tokenBudget: snapshot.world.tokenBudget }),
         }))
-        const preset = readActiveSessionPreset(agent.session.events)?.preset
-        if (preset !== undefined) {
-          const assembled = assembleSillyTavernPreset(preset, {
+        if (snapshot.prompt.strategy === 'modules' && runtime.preset !== undefined) {
+          const assembled = assembleSillyTavernPreset(runtime.preset.preset, {
             characterName,
-            ...(identity.userName === undefined ? {} : { userName: identity.userName }),
-            ...(identity.persona === undefined ? {} : { userPersona: identity.persona.description }),
+            ...(snapshot.participant?.name === undefined ? {} : { userName: snapshot.participant.name }),
+            ...(snapshot.participant?.description === undefined
+              ? {} : { userPersona: snapshot.participant.description }),
             worldInfoBefore: standaloneLore.beforeCharacter,
             worldInfoAfter: standaloneLore.afterCharacter,
             session: agent.session,
@@ -809,7 +791,11 @@ export function installAgentRp(
         if (importedChat !== undefined) {
           return [
             ...standaloneLore.beforeCharacter,
-            renderImportedChatPrompt(importedChat.characterName, identity.userName, identity.persona?.description),
+            renderImportedChatPrompt(
+              importedChat.characterName,
+              snapshot.participant?.name,
+              snapshot.participant?.description,
+            ),
             ...standaloneLore.afterCharacter,
           ].join('\n\n')
         }
@@ -817,22 +803,15 @@ export function installAgentRp(
           return renderWorldInfoScenarioPrompt(
             standaloneLore.beforeCharacter,
             standaloneLore.afterCharacter,
-            identity.persona?.description,
+            snapshot.participant?.description,
           )
         }
         return renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter)
       }
-      const importedCard = cardFromImportMeta(active.meta)
-      const cardLorebook = configuredSources.find(value => value.source.source === 'character')?.configured
-      const { lorebook: _importedLorebook, ...cardWithoutLorebook } = importedCard
-      const card = cardLorebook === undefined ? cardWithoutLorebook : { ...importedCard, lorebook: cardLorebook }
-      const identity = resolveSessionPersonaIdentity(
-        agent.session.events,
-        active.result.userName,
-        readSillyTavernChatIdentity(agent.session.events)?.userName,
-      )
-      const { persona, userName } = identity
-      const mvu = readCurrentSessionMvuState(card, agent.session)
+      const card = runtime.card
+      const userName = snapshot.participant?.name
+      const userPersona = snapshot.participant?.description
+      const mvu = runtime.mvu
       const templateOptions = ejsLorebookOptions(options.ejsTemplateEngine, {
         characterName: card.nickname?.trim() || card.name,
         userName: userName ?? '用户',
@@ -849,14 +828,13 @@ export function installAgentRp(
         scanText: injectedScanText,
         ...(mvu === undefined ? {} : { statData: mvu.statData }),
         templateOptions,
-        ...(aggregateWorldInfoBudget === undefined ? {} : { tokenBudget: aggregateWorldInfoBudget }),
+        ...(snapshot.world.tokenBudget === undefined ? {} : { tokenBudget: snapshot.world.tokenBudget }),
       }))
-      const preset = readActiveSessionPreset(agent.session.events)?.preset
-      if (preset !== undefined) {
-        const assembled = assembleSillyTavernPreset(preset, {
+      if (snapshot.prompt.strategy === 'modules' && runtime.preset !== undefined) {
+        const assembled = assembleSillyTavernPreset(runtime.preset.preset, {
           card,
           ...(userName === undefined ? {} : { userName }),
-          ...(persona === undefined ? {} : { userPersona: persona.description }),
+          ...(userPersona === undefined ? {} : { userPersona }),
           worldInfoBefore: [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
           worldInfoAfter: [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
           session: agent.session,
@@ -874,7 +852,7 @@ export function installAgentRp(
         [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
         userName,
         mvu?.statData,
-        persona?.description,
+        userPersona,
         templateOptions,
       )
     },
