@@ -126,7 +126,10 @@ import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 import { prepareRoleplayTurn } from './roleplay-turn-plan.ts'
 import { RoleplayTurnCoordinator } from './roleplay-turn-coordinator.ts'
 import { appendSessionRoleplayTurnPlan } from './session-roleplay-turn-plan.ts'
-import { recoverSessionRoleplayTurns } from './session-roleplay-turn-recovery.ts'
+import {
+  createSessionRoleplayTurnBoundary,
+  recoverSessionRoleplayTurns,
+} from './session-roleplay-turn-recovery.ts'
 import { collectSessionRoleplaySettlementContributions } from './session-roleplay-turn-settlement.ts'
 import {
   appendRoleplayTurnSettlement,
@@ -904,8 +907,9 @@ export function installAgentRp(
           })
           return
         }
+        const boundary = createSessionRoleplayTurnBoundary(session, event)
         const resolved = resolveSessionRoleplayRuntime({
-          session,
+          session: boundary.session,
           deployment: config,
           memoryWriteAvailable: plans.some(({ plan }) => plan.memory.write),
           templateEngineAvailable: options.ejsTemplateEngine !== undefined,
@@ -915,10 +919,10 @@ export function installAgentRp(
           turn,
           result,
           plans,
-          events: session.events,
+          events: boundary.events,
           after: resolved.snapshot,
           contributions: collectSessionRoleplaySettlementContributions({
-            session,
+            session: boundary.session,
             turn,
             plans,
             ...(resolved.mvu === undefined ? {} : { mvu: resolved.mvu }),

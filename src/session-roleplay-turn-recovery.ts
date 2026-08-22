@@ -28,6 +28,27 @@ export interface SessionRoleplayTurnRecoveryResult {
   readonly turns: readonly number[]
 }
 
+/** Exact immutable Session prefix owned by one closing turn. */
+export interface SessionRoleplayTurnBoundary {
+  readonly session: Session
+  readonly events: readonly SessionEvent[]
+}
+
+/** Detach the log through one concrete turn/end, excluding every later write. */
+export function createSessionRoleplayTurnBoundary(
+  session: Session,
+  closing: SessionEvent<'turn/end'>,
+): SessionRoleplayTurnBoundary {
+  const prefix = session.events.slice(0, closing.seq + 1)
+  const last = prefix.at(-1)
+  if (last?.type !== 'turn/end' || last.seq !== closing.seq
+    || last.data.turn !== closing.data.turn) {
+    throw new Error('Roleplay turn boundary is unavailable from this Session')
+  }
+  const boundary = Session.create(session.id, prefix)
+  return { session: boundary, events: boundary.events.slice(0, prefix.length) }
+}
+
 function referencesRecoverable(plans: readonly RoleplayTurnPlanReference[]): boolean {
   return plans.length > 0 && plans.every(plan => plan.receipt !== undefined
     && plan.receipt.memoryWriteAvailable !== undefined
@@ -65,10 +86,10 @@ export function recoverSessionRoleplayTurns(input: {
       : readSessionRoleplayTurnPlanReferences(input.session.events, closing.data.turn, closing.seq)
     if (!referencesRecoverable(plans)) continue
     if (settlement?.type !== 'agent-rp/turn-settlement') {
-      const boundary = Session.create(input.session.id, input.session.events.slice(0, closing.seq + 1))
+      const boundary = createSessionRoleplayTurnBoundary(input.session, closing)
       const memoryWriteAvailable = plans.some(plan => plan.receipt?.memoryWriteAvailable === true)
       const resolved = resolveSessionRoleplayRuntime({
-        session: boundary,
+        session: boundary.session,
         deployment: input.deployment,
         memoryWriteAvailable,
         ...(input.templateEngineAvailable === undefined
@@ -79,10 +100,10 @@ export function recoverSessionRoleplayTurns(input: {
         turn: closing.data.turn,
         result: closing.data.reason.kind,
         plans,
-        events: boundary.events.slice(0, closing.seq + 1),
+        events: boundary.events,
         after: resolved.snapshot,
         contributions: collectSessionRoleplaySettlementContributionsFromReferences({
-          session: boundary,
+          session: boundary.session,
           turn: closing.data.turn,
           plans,
           ...(resolved.mvu === undefined ? {} : { mvu: resolved.mvu }),

@@ -13,7 +13,10 @@ import {
   readRoleplayTurnSettlements,
 } from '../src/roleplay-turn-settlement.ts'
 import { resolveSessionRoleplayRuntime } from '../src/session-roleplay-runtime.ts'
-import { recoverSessionRoleplayTurns } from '../src/session-roleplay-turn-recovery.ts'
+import {
+  createSessionRoleplayTurnBoundary,
+  recoverSessionRoleplayTurns,
+} from '../src/session-roleplay-turn-recovery.ts'
 import {
   appendSessionRoleplayTurnPlan,
   readSessionRoleplayTurnPlans,
@@ -121,6 +124,17 @@ test('recovers a cold-closed turn and folds a late causal browser state into pre
     sessionId: String(session.id),
     replySeq: assistant.seq,
   }, true)
+
+  const closing = session.events.find(event => event.type === 'turn/end' && event.data.turn === 1)
+  assert.equal(closing?.type, 'turn/end')
+  const exactBoundary = createSessionRoleplayTurnBoundary(session, closing!)
+  assert.equal(exactBoundary.events.at(-1)?.seq, closing?.seq)
+  assert.equal(exactBoundary.events.some(event => event.seq === late.eventSeq), false)
+  assert.deepEqual(resolveSessionRoleplayRuntime({
+    session: exactBoundary.session,
+    deployment,
+    memoryWriteAvailable: true,
+  }).snapshot, boundary.snapshot)
 
   const restarted = Session.create(session.id, session.events)
   assert.equal(readRoleplayTurnSettlements(restarted.events).length, 0)
