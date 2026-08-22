@@ -10,6 +10,7 @@ import {
   compileRoleplayModulePresentationUpdate,
   compileRoleplayReplyVersionPresentation,
   readLatestRoleplayPresentationForReply,
+  resolveRoleplayPresentModuleIds,
 } from './roleplay-turn-presentation.ts'
 import {
   roleplayPresentedState,
@@ -53,17 +54,16 @@ function causalTavernState(
   return undefined
 }
 
-function presentsModule(plans: readonly BoundRoleplayTurnPlan[], moduleId: string): boolean {
-  return plans.some(({ plan }) => plan.runtime.modules.some(module =>
-    module.id === moduleId && module.phases.includes('present')))
-}
-
 function initialTavernContribution(input: {
   readonly session: Session
   readonly settlementEvent: Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }>
-  readonly plans: readonly BoundRoleplayTurnPlan[]
+  readonly plans?: readonly BoundRoleplayTurnPlan[]
 }): RoleplayPresentationContribution | undefined {
-  if (!presentsModule(input.plans, TAVERN_HELPER_ROLEPLAY_MODULE_ID)) return undefined
+  const presentModules = resolveRoleplayPresentModuleIds(
+    input.settlementEvent.data.plans,
+    input.plans ?? [],
+  )
+  if (!presentModules.includes(TAVERN_HELPER_ROLEPLAY_MODULE_ID)) return undefined
   const replySeq = input.settlementEvent.data.reply?.eventSeq
   const causal = replySeq === undefined
     ? undefined
@@ -96,7 +96,7 @@ function initialTavernContribution(input: {
 export function compileInitialSessionRoleplayTurnPresentation(input: {
   readonly session: Session
   readonly settlementEvent: Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }>
-  readonly plans: readonly BoundRoleplayTurnPlan[]
+  readonly plans?: readonly BoundRoleplayTurnPlan[]
 }): RoleplayTurnPresentation {
   const tavern = initialTavernContribution(input)
   return compileInitialRoleplayTurnPresentation({

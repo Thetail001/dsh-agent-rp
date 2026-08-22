@@ -45,23 +45,16 @@ import {
 } from '../src/memory.ts'
 import { substituteCardMacros } from '../src/prompt.ts'
 import {
-  appendRoleplayTurnPresentation,
   readCurrentRoleplayTurnPresentation,
   readRoleplayTurnPresentations,
 } from '../src/roleplay-turn-presentation.ts'
 import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
 import {
-  appendRoleplayTurnSettlement,
-  compileRoleplayTurnSettlement,
   readRoleplayTurnSettlements,
 } from '../src/roleplay-turn-settlement.ts'
 import { resolveSessionRoleplayRuntime } from '../src/session-roleplay-runtime.ts'
-import {
-  compileInitialSessionRoleplayTurnPresentation,
-} from '../src/session-roleplay-turn-presentation.ts'
-import {
-  collectSessionRoleplaySettlementContributions,
-} from '../src/session-roleplay-turn-settlement.ts'
+import { recoverSessionRoleplayTurns } from '../src/session-roleplay-turn-recovery.ts'
+import { appendSessionRoleplayTurnPlan } from '../src/session-roleplay-turn-plan.ts'
 import {
   appendTavernHelperState,
   initializeTavernHelperPresetState,
@@ -126,6 +119,8 @@ export interface RoleplayTurnAuditResult {
     readonly events: number
     readonly settlementRecovered: boolean
     readonly presentationRecovered: boolean
+    readonly preDispatchReceiptRecovered: boolean
+    readonly coldSettlementRecovered: boolean
     readonly resourceReferencesMatch: boolean
     readonly worldActivationMatches: boolean
     readonly stateReferencesResolve: boolean
@@ -267,10 +262,11 @@ function appendSyntheticTurn(
   session: Session,
   turn: number,
   pending: ReturnType<typeof createUserMessage>,
+  plan: ReturnType<typeof prepareRoleplayTurn>,
 ): Extract<SessionEvent, { type: 'assistant/message' }> {
-  session.append('user/message', pending, { surfaceOp: 'append' })
-  session.append('turn/start', { turn })
   session.append('step/start', { turn, step: 1 })
+  session.append('user/message', pending, { surfaceOp: 'append' })
+  appendSessionRoleplayTurnPlan(session, turn, 1, plan)
   const reply = session.append('assistant/message', {
     turn,
     step: 1,
@@ -353,6 +349,8 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
     source: { kind: 'user' },
     content: [{ type: 'text', text: '[agent-rp:model-free-audit-input]' }],
   })
+  const turn = nextTurn(session.events)
+  session.append('turn/start', { turn })
   const before = resolveSessionRoleplayRuntime({
     session,
     deployment,
@@ -366,36 +364,22 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
     resolved: before,
     templateEngine: engine,
   })
-  const turn = nextTurn(session.events)
-  const reply = appendSyntheticTurn(session, turn, pending)
-  const after = resolveSessionRoleplayRuntime({
+  const reply = appendSyntheticTurn(session, turn, pending, plan)
+  const recovery = recoverSessionRoleplayTurns({
     session,
     deployment,
-    memoryWriteAvailable: true,
     templateEngineAvailable: true,
   })
-  const plans = [{ step: 1, plan }]
-  const settlement = compileRoleplayTurnSettlement({
-    sessionId: String(session.id),
-    turn,
-    result: 'completed',
-    plans,
-    events: session.events,
-    after: after.snapshot,
-    contributions: collectSessionRoleplaySettlementContributions({
-      session,
-      turn,
-      plans,
-      ...(after.mvu === undefined ? {} : { mvu: after.mvu }),
-    }),
-  })
-  const settlementEvent = appendRoleplayTurnSettlement(session, settlement)
-  const presentation = compileInitialSessionRoleplayTurnPresentation({
-    session,
-    settlementEvent,
-    plans,
-  })
-  appendRoleplayTurnPresentation(session, presentation)
+  const settlementEvent = session.events.find(event => event.type === 'agent-rp/turn-settlement'
+    && event.data.turn === turn)
+  if (settlementEvent?.type !== 'agent-rp/turn-settlement') {
+    throw new Error('Roleplay turn audit settlement recovery failed')
+  }
+  const settlement = settlementEvent.data
+  const presentation = readCurrentRoleplayTurnPresentation(session.events)
+  if (presentation === undefined || presentation.settlementSeq !== settlementEvent.seq) {
+    throw new Error('Roleplay turn audit presentation recovery failed')
+  }
 
   const reopened = Session.create(session.id, structuredClone(session.events))
   const recoveredSettlement = readRoleplayTurnSettlements(reopened.events).find(value => value.turn === turn)
@@ -412,6 +396,9 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
     templateEngineAvailable: true,
   })
   const receipt = recoveredSettlement?.plans[0]?.receipt
+  const preDispatchReceiptRecovered = reopened.events.some(event => event.type === 'agent-rp/turn-plan'
+    && event.data.turn === turn && event.data.reference.step === 1)
+  const coldSettlementRecovered = recovery.settlements === 1 && recovery.presentations === 1
   const runtimeResourceIds = [
     replayed.snapshot.experience.id,
     ...(replayed.snapshot.actor === undefined ? [] : [replayed.snapshot.actor.id]),
@@ -469,6 +456,7 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
   if (receipt === undefined || !settlementRecovered || !presentationRecovered
     || !equalStrings(runtimeResourceIds, receiptResourceIds)
     || !worldActivationMatches || !stateReferencesResolve || !memoryReferencesResolve
+    || !preDispatchReceiptRecovered || !coldSettlementRecovered
     || !currentReplyMatches || !nextPrepareContinues) {
     throw new Error('Roleplay turn audit replay invariant failed')
   }
@@ -521,6 +509,8 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
       events: reopened.events.length,
       settlementRecovered,
       presentationRecovered,
+      preDispatchReceiptRecovered,
+      coldSettlementRecovered,
       resourceReferencesMatch: true,
       worldActivationMatches,
       stateReferencesResolve,

@@ -125,6 +125,8 @@ import {
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 import { prepareRoleplayTurn } from './roleplay-turn-plan.ts'
 import { RoleplayTurnCoordinator } from './roleplay-turn-coordinator.ts'
+import { appendSessionRoleplayTurnPlan } from './session-roleplay-turn-plan.ts'
+import { recoverSessionRoleplayTurns } from './session-roleplay-turn-recovery.ts'
 import { collectSessionRoleplaySettlementContributions } from './session-roleplay-turn-settlement.ts'
 import {
   appendRoleplayTurnSettlement,
@@ -785,6 +787,20 @@ export function installAgentRp(
     const sessionIds = new Set([String(agent.id), String(agent.session.id)])
     worldbookCharacterDisposers.set(agent, [...sessionIds].map(sessionId =>
       worldbookCharacters?.register(sessionId, resolveCharacter) ?? (() => {})))
+    if (supportsAgentRpSessionEvents(agent.session)) {
+      queueMicrotask(() => {
+        if (!settlementRuntimeActive || agentsByScope.get(agent) !== agent) return
+        try {
+          recoverSessionRoleplayTurns({
+            session: agent.session,
+            deployment: config,
+            templateEngineAvailable: options.ejsTemplateEngine !== undefined,
+          })
+        } catch (error: unknown) {
+          ctx.logger.warn(`agent-rp: turn recovery failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      })
+    }
   })
   ctx.on('agent/disposed', ({ agent }) => {
     agentsByScope.delete(agent)
@@ -832,6 +848,9 @@ export function installAgentRp(
     const activePlan = agentsByScope.get(agent) === agent
       ? turnCoordinator.bindStep(agent, turn, step)
       : undefined
+    if (activePlan !== undefined && supportsAgentRpSessionEvents(agent.session)) {
+      appendSessionRoleplayTurnPlan(agent.session, turn, step, activePlan)
+    }
     const config = await next()
     if (agentsByScope.get(agent) !== agent) return config
     const generation = activePlan?.generation
@@ -870,7 +889,6 @@ export function installAgentRp(
     const agent = agentsBySession.get(String(session.id))
     if (agent === undefined || agentsByScope.get(agent) !== agent) return
     const plans = turnCoordinator.completeTurn(agent, event.data.turn)
-    if (plans.length === 0) return
     if (!supportsAgentRpSessionEvents(session)) return
     const result = event.data.reason.kind
     const turn = event.data.turn
@@ -878,6 +896,14 @@ export function installAgentRp(
       if (!settlementRuntimeActive || session.events.some(candidate =>
         candidate.type === 'agent-rp/turn-settlement' && candidate.data.turn === turn)) return
       try {
+        if (plans.length === 0) {
+          recoverSessionRoleplayTurns({
+            session,
+            deployment: config,
+            templateEngineAvailable: options.ejsTemplateEngine !== undefined,
+          })
+          return
+        }
         const resolved = resolveSessionRoleplayRuntime({
           session,
           deployment: config,

@@ -21,6 +21,8 @@ test('audits a complete model-free turn and reopens it from the Session log', as
     ...result.replay,
     settlementRecovered: true,
     presentationRecovered: true,
+    preDispatchReceiptRecovered: true,
+    coldSettlementRecovered: true,
     resourceReferencesMatch: true,
     worldActivationMatches: true,
     stateReferencesResolve: true,

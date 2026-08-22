@@ -286,6 +286,8 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
       promptId: 'prompt:test',
       stateIds: ['state:test'],
       moduleIds: ['roleplay:memory', 'roleplay:world', 'roleplay:state'],
+      settleModules: [{ moduleId: 'roleplay:memory', stateIds: [] }],
+      presentModuleIds: [],
     },
     world: {
       activeEntries: [{ resourceId: 'world:test', entryIds: ['entry:test'] }],
@@ -295,6 +297,7 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
     promptDiagnostics: { enabledModules: 2, unsupportedMacros: 1, templateFailures: 0 },
     stateReads: [{ id: 'state:test', revision: 2, eventSeq: 0 }],
     memoryReads: [{ id: 'memory:test', sourceEventSeq: 0 }],
+    memoryWriteAvailable: true,
     generation: { temperature: 0.7, maxTokens: 2048 },
     prepare: {
       modules: [{ moduleId: 'roleplay:memory', outcome: 'applied', contributions: 1 }],

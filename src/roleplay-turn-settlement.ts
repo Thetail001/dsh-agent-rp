@@ -29,6 +29,13 @@ export interface RoleplayTurnPlanReceipt {
     readonly promptId?: string
     readonly stateIds: readonly string[]
     readonly moduleIds: readonly string[]
+    /** Settle ownership retained so a cold restart can close the turn without volatile plans. */
+    readonly settleModules?: readonly {
+      readonly moduleId: string
+      readonly stateIds: readonly string[]
+    }[]
+    /** Present participation retained so a cold restart can rebuild the selected surface. */
+    readonly presentModuleIds?: readonly string[]
   }
   readonly world: {
     readonly activeEntries: readonly { readonly resourceId: string; readonly entryIds: readonly string[] }[]
@@ -42,6 +49,7 @@ export interface RoleplayTurnPlanReceipt {
     readonly eventSeq?: number
   }[]
   readonly memoryReads: RoleplayTurnPlan['memory']['reads']
+  readonly memoryWriteAvailable?: boolean
   readonly generation: RoleplayTurnPlan['generation']
   readonly prepare: RoleplayTurnPlan['prepare']
 }
@@ -110,14 +118,16 @@ export interface CompileRoleplayTurnSettlementInput {
   readonly contributions?: readonly RoleplayTurnSettlementContribution[]
 }
 
-function stateById(bindings: readonly RoleplayStateBinding[]): ReadonlyMap<string, RoleplayStateBinding> {
+function stateById(
+  bindings: readonly Pick<RoleplayStateBinding, 'id' | 'revision'>[],
+): ReadonlyMap<string, Pick<RoleplayStateBinding, 'id' | 'revision'>> {
   return new Map(bindings.map(binding => [binding.id, binding]))
 }
 
 function stateSettlement(
   id: string,
-  before: RoleplayStateBinding | undefined,
-  after: RoleplayStateBinding | undefined,
+  before: Pick<RoleplayStateBinding, 'id' | 'revision'> | undefined,
+  after: Pick<RoleplayStateBinding, 'id' | 'revision'> | undefined,
   error: string | undefined,
 ): RoleplayStateSettlement {
   const revisions = {
@@ -168,6 +178,12 @@ function planReceipt(plan: RoleplayTurnPlan): RoleplayTurnPlanReceipt {
       ...(plan.runtime.prompt.resource === undefined ? {} : { promptId: plan.runtime.prompt.resource.id }),
       stateIds: plan.runtime.state.map(binding => binding.id),
       moduleIds: plan.runtime.modules.map(module => module.id),
+      settleModules: plan.runtime.modules.filter(module => module.phases.includes('settle')).map(module => ({
+        moduleId: module.id,
+        stateIds: [...(module.stateIds ?? [])],
+      })),
+      presentModuleIds: plan.runtime.modules.filter(module => module.phases.includes('present'))
+        .map(module => module.id),
     },
     world: {
       activeEntries: plan.world.resources.map(resource => ({
@@ -184,9 +200,18 @@ function planReceipt(plan: RoleplayTurnPlan): RoleplayTurnPlanReceipt {
       ...(read.eventSeq === undefined ? {} : { eventSeq: read.eventSeq }),
     })),
     memoryReads: plan.memory.reads.map(read => ({ ...read })),
+    memoryWriteAvailable: plan.memory.write,
     generation: { ...plan.generation },
     prepare: { modules: plan.prepare.modules.map(module => ({ ...module })) },
   }
+}
+
+/** Freeze one prepared plan into the content-free reference persisted before provider dispatch. */
+export function createRoleplayTurnPlanReference(
+  step: number,
+  plan: RoleplayTurnPlan,
+): RoleplayTurnPlanReference {
+  return { step, input: plan.input, receipt: planReceipt(plan) }
 }
 
 interface SettleModuleContract {
@@ -194,23 +219,26 @@ interface SettleModuleContract {
   readonly stateIds: ReadonlySet<string>
 }
 
-function settleModuleContracts(plans: readonly BoundRoleplayTurnPlan[]): readonly SettleModuleContract[] {
+function settleModuleContractsFromReferences(
+  plans: readonly RoleplayTurnPlanReference[],
+): readonly SettleModuleContract[] {
   const contracts = new Map<string, Set<string>>()
   const stateOwners = new Map<string, string>()
-  for (const { plan } of plans) {
-    for (const module of plan.runtime.modules) {
-      if (!module.phases.includes('settle')) continue
-      let stateIds = contracts.get(module.id)
+  for (const reference of plans) {
+    const modules = reference.receipt?.runtime.settleModules
+    if (modules === undefined) throw new Error('Roleplay plan receipt cannot recover settle ownership')
+    for (const module of modules) {
+      let stateIds = contracts.get(module.moduleId)
       if (stateIds === undefined) {
         stateIds = new Set()
-        contracts.set(module.id, stateIds)
+        contracts.set(module.moduleId, stateIds)
       }
-      for (const stateId of module.stateIds ?? []) {
+      for (const stateId of module.stateIds) {
         const owner = stateOwners.get(stateId)
-        if (owner !== undefined && owner !== module.id) {
-          throw new Error(`Roleplay state ${stateId} is owned by both ${owner} and ${module.id}`)
+        if (owner !== undefined && owner !== module.moduleId) {
+          throw new Error(`Roleplay state ${stateId} is owned by both ${owner} and ${module.moduleId}`)
         }
-        stateOwners.set(stateId, module.id)
+        stateOwners.set(stateId, module.moduleId)
         stateIds.add(stateId)
       }
     }
@@ -275,13 +303,42 @@ function settleModules(
 export function compileRoleplayTurnSettlement(
   input: CompileRoleplayTurnSettlementInput,
 ): RoleplayTurnSettlement {
+  return compileRoleplayTurnSettlementFromReferences({
+    sessionId: input.sessionId,
+    turn: input.turn,
+    result: input.result,
+    plans: input.plans.map(({ step, plan }) => createRoleplayTurnPlanReference(step, plan)),
+    events: input.events,
+    after: input.after,
+    ...(input.contributions === undefined ? {} : { contributions: input.contributions }),
+  })
+}
+
+export interface CompileRoleplayTurnSettlementFromReferencesInput {
+  readonly sessionId: string
+  readonly turn: number
+  readonly result: string
+  readonly plans: readonly RoleplayTurnPlanReference[]
+  readonly events: readonly SessionEvent[]
+  readonly after: RoleplayRuntimeSnapshot
+  readonly contributions?: readonly RoleplayTurnSettlementContribution[]
+}
+
+/** Rebuild a missing turn settlement after restart from pre-dispatch plan receipts. */
+export function compileRoleplayTurnSettlementFromReferences(
+  input: CompileRoleplayTurnSettlementFromReferencesInput,
+): RoleplayTurnSettlement {
   if (input.plans.length === 0) throw new Error('Roleplay settlement requires at least one prepared plan')
   const plans = [...input.plans].sort((left, right) => left.step - right.step)
   const steps = new Set<number>()
-  for (const { step, plan } of plans) {
-    if (!Number.isSafeInteger(step) || step < 1) throw new Error('Roleplay settlement step must be positive')
-    if (steps.has(step)) throw new Error(`Roleplay settlement contains duplicate step ${String(step)}`)
-    steps.add(step)
+  for (const plan of plans) {
+    if (!Number.isSafeInteger(plan.step) || plan.step < 1) {
+      throw new Error('Roleplay settlement step must be positive')
+    }
+    if (steps.has(plan.step)) {
+      throw new Error(`Roleplay settlement contains duplicate step ${String(plan.step)}`)
+    }
+    steps.add(plan.step)
     if (plan.input.sessionId !== input.sessionId) {
       throw new Error('Roleplay settlement plan belongs to another Session')
     }
@@ -289,9 +346,12 @@ export function compileRoleplayTurnSettlement(
       || plan.input.sessionSeq > input.events.length) {
       throw new Error('Roleplay settlement plan references an unavailable Session boundary')
     }
+    if (plan.receipt === undefined || plan.receipt.memoryWriteAvailable === undefined) {
+      throw new Error('Roleplay plan receipt is too old for cold settlement recovery')
+    }
   }
-  const firstPlan = plans[0]!.plan
-  const contracts = settleModuleContracts(plans)
+  const firstReceipt = plans[0]!.receipt!
+  const contracts = settleModuleContractsFromReferences(plans)
   const contributions = settlementContributions(contracts, input.contributions ?? [])
   const stateFailures = new Map<string, string>()
   for (const contract of contracts) {
@@ -299,7 +359,7 @@ export function compileRoleplayTurnSettlement(
     if (contribution?.outcome !== 'failed' || contribution.error === undefined) continue
     for (const stateId of contract.stateIds) stateFailures.set(stateId, contribution.error)
   }
-  const beforeStates = stateById(firstPlan.stateReads)
+  const beforeStates = stateById(firstReceipt.stateReads)
   const afterStates = stateById(input.after.state)
   const stateIds = new Set([...beforeStates.keys(), ...afterStates.keys(), ...stateFailures.keys()])
   const state = [...stateIds].map(id => stateSettlement(
@@ -308,12 +368,13 @@ export function compileRoleplayTurnSettlement(
     afterStates.get(id),
     stateFailures.get(id),
   ))
-  const beforeMemory = readAgentRpMemoryHistory(input.events.slice(0, firstPlan.input.sessionSeq))
+  const firstSeq = plans[0]!.input.sessionSeq
+  const beforeMemory = readAgentRpMemoryHistory(input.events.slice(0, firstSeq))
   const afterMemory = readAgentRpMemoryHistory(input.events)
   const beforeAll = new Set(beforeMemory.all.map(memory => String(memory.id)))
   const afterActive = new Set(afterMemory.active.map(memory => String(memory.id)))
   const memory = {
-    writeAvailable: plans.some(({ plan }) => plan.memory.write),
+    writeAvailable: plans.some(plan => plan.receipt!.memoryWriteAvailable === true),
     createdIds: afterMemory.all.filter(memoryRecord => !beforeAll.has(String(memoryRecord.id)))
       .map(memoryRecord => String(memoryRecord.id)),
     supersededIds: beforeMemory.active.filter(memoryRecord => !afterActive.has(String(memoryRecord.id)))
@@ -326,13 +387,11 @@ export function compileRoleplayTurnSettlement(
     sessionId: input.sessionId,
     turn: input.turn,
     result: input.result,
-    plans: plans.map(({ step, plan }) => ({ step, input: plan.input, receipt: planReceipt(plan) })),
+    plans,
     ...(reply === undefined ? {} : { reply }),
     state,
     memory,
-    settle: {
-      modules: settleModules(contracts, state, memory, contributions),
-    },
+    settle: { modules: settleModules(contracts, state, memory, contributions) },
   }
 }
 

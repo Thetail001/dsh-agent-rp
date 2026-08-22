@@ -1,7 +1,10 @@
 /** Replayable selection of the visible reply and runtime state presented for one Roleplay turn. */
 
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
-import type { BoundRoleplayTurnPlan } from './roleplay-turn-settlement.ts'
+import type {
+  BoundRoleplayTurnPlan,
+  RoleplayTurnPlanReference,
+} from './roleplay-turn-settlement.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import {
   normalizeRoleplayTurnPresentation as importedNormalizePresentation,
@@ -76,6 +79,19 @@ function presentModuleIds(plans: readonly BoundRoleplayTurnPlan[]): readonly str
   return [...ids]
 }
 
+/** Resolve present participation from durable receipts, falling back only for older live plans. */
+export function resolveRoleplayPresentModuleIds(
+  references: readonly RoleplayTurnPlanReference[],
+  fallbackPlans: readonly BoundRoleplayTurnPlan[] = [],
+): readonly string[] {
+  const recorded = references.map(reference => reference.receipt?.runtime.presentModuleIds)
+  if (recorded.every((ids): ids is readonly string[] => ids !== undefined)) {
+    return [...new Set(recorded.flat())]
+  }
+  if (fallbackPlans.length > 0) return presentModuleIds(fallbackPlans)
+  throw new Error('Roleplay plan receipt cannot recover present participation')
+}
+
 function defaultModuleOutcomes(
   moduleIds: readonly string[],
   hasReply: boolean,
@@ -138,10 +154,10 @@ function applyContributions(
 export function compileInitialRoleplayTurnPresentation(input: {
   readonly session: Session
   readonly settlementEvent: Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }>
-  readonly plans: readonly BoundRoleplayTurnPlan[]
+  readonly plans?: readonly BoundRoleplayTurnPlan[]
   readonly contributions?: readonly RoleplayPresentationContribution[]
 }): RoleplayTurnPresentation {
-  const { session, settlementEvent, plans } = input
+  const { session, settlementEvent } = input
   const settlement = settlementEvent.data
   if (settlement.sessionId !== String(session.id)) throw new Error('Roleplay settlement belongs to another Session')
   const reply = settlement.reply === undefined ? undefined : assistantAt(session.events, settlement.reply.eventSeq)
@@ -149,7 +165,10 @@ export function compileInitialRoleplayTurnPresentation(input: {
     throw new Error('Roleplay settlement reply identity changed')
   }
   const presented = applyContributions(
-    defaultModuleOutcomes(presentModuleIds(plans), reply !== undefined),
+    defaultModuleOutcomes(
+      resolveRoleplayPresentModuleIds(settlement.plans, input.plans ?? []),
+      reply !== undefined,
+    ),
     settlementStates(settlementEvent),
     input.contributions ?? [],
   )
