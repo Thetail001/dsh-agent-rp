@@ -142,6 +142,7 @@ import { NativeIdentityStore } from './native-identity.ts'
 import { installNativeIdentityHttp } from './native-identity-http.ts'
 import {
   createWorldbookCharacterContextRegistry,
+  installWorldbookSnapshotCoalescing,
   WORLDBOOK_CHARACTER_CONTEXT_KEY,
   worldbookCharacterContext,
   type WorldbookCharacterContextRegistry,
@@ -1216,6 +1217,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
   if (resolved.mode === 'host') {
     const worldbookCharacters = createWorldbookCharacterContextRegistry()
     ctx.provide(WORLDBOOK_CHARACTER_CONTEXT_KEY as never, worldbookCharacters as never)
+    installWorldbookSnapshotCoalescing(ctx)
     const ejsTemplateEngine = await loadEjsTemplateEngine(ctx)
     const characterLibrary = new CharacterLibrary()
     const personaLibrary = new PersonaLibrary()
