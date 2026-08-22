@@ -124,11 +124,11 @@ import {
   type WorldbookCharacterContextRegistry,
 } from './worldbook-character-context.ts'
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
-import { prepareRoleplayTurn, type RoleplayTurnPlan } from './roleplay-turn-plan.ts'
+import { prepareRoleplayTurn } from './roleplay-turn-plan.ts'
+import { RoleplayTurnCoordinator } from './roleplay-turn-coordinator.ts'
 import {
   appendRoleplayTurnSettlement,
   compileRoleplayTurnSettlement,
-  type BoundRoleplayTurnPlan,
 } from './roleplay-turn-settlement.ts'
 import {
   appendRoleplayTurnPresentation,
@@ -475,8 +475,7 @@ export function installAgentRp(
   const rememberIntentByAgent = new WeakMap<Agent, boolean>()
   const rememberRestrictions = new Map<Agent, () => void>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
-  const turnPlanByAgent = new WeakMap<Agent, RoleplayTurnPlan>()
-  const turnPlansByAgent = new WeakMap<Agent, Map<number, Map<number, RoleplayTurnPlan>>>()
+  const turnCoordinator = new RoleplayTurnCoordinator<Agent>()
   let settlementRuntimeActive = true
   ctx.effect(() => () => {
     settlementRuntimeActive = false
@@ -733,7 +732,7 @@ export function installAgentRp(
         resolved,
         ...(options.ejsTemplateEngine === undefined ? {} : { templateEngine: options.ejsTemplateEngine }),
       })
-      turnPlanByAgent.set(agent, plan)
+      turnCoordinator.prepare(agent, plan)
       return plan.prompt.systemPromptText
     },
     complete: true,
@@ -765,8 +764,7 @@ export function installAgentRp(
     rememberRestrictions.get(agent)?.()
     rememberRestrictions.delete(agent)
     pendingMessagesByAgent.delete(agent)
-    turnPlanByAgent.delete(agent)
-    turnPlansByAgent.delete(agent)
+    turnCoordinator.release(agent)
     for (const dispose of worldbookCharacterDisposers.get(agent) ?? []) dispose()
     worldbookCharacterDisposers.delete(agent)
   })
@@ -779,12 +777,12 @@ export function installAgentRp(
   installPromptRegexStream(
     ctx,
     sessionId => agentsBySession.get(sessionId),
-    agent => turnPlanByAgent.get(agent)?.prompt,
+    agent => turnCoordinator.current(agent)?.prompt,
   )
   installMvuStreamCompletion(
     ctx,
     sessionId => agentsBySession.get(sessionId),
-    agent => turnPlanByAgent.get(agent),
+    agent => turnCoordinator.current(agent),
   )
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {
     if (agentsByScope.get(agent) !== agent) return
@@ -806,20 +804,9 @@ export function installAgentRp(
     },
   })
   ctx.on('agent/request', async ({ agent, turn, step }, next) => {
-    const activePlan = agentsByScope.get(agent) === agent ? turnPlanByAgent.get(agent) : undefined
-    if (activePlan !== undefined) {
-      let turns = turnPlansByAgent.get(agent)
-      if (turns === undefined) {
-        turns = new Map()
-        turnPlansByAgent.set(agent, turns)
-      }
-      let steps = turns.get(turn)
-      if (steps === undefined) {
-        steps = new Map()
-        turns.set(turn, steps)
-      }
-      if (!steps.has(step)) steps.set(step, activePlan)
-    }
+    const activePlan = agentsByScope.get(agent) === agent
+      ? turnCoordinator.bindStep(agent, turn, step)
+      : undefined
     const config = await next()
     if (agentsByScope.get(agent) !== agent) return config
     const generation = activePlan?.generation
@@ -857,15 +844,8 @@ export function installAgentRp(
     if (event.type !== 'turn/end') return
     const agent = agentsBySession.get(String(session.id))
     if (agent === undefined || agentsByScope.get(agent) !== agent) return
-    const turns = turnPlansByAgent.get(agent)
-    const steps = turns?.get(event.data.turn)
-    if (steps === undefined || steps.size === 0) return
-    turns?.delete(event.data.turn)
-    if (turns?.size === 0) turnPlansByAgent.delete(agent)
-    turnPlanByAgent.delete(agent)
-    const plans: readonly BoundRoleplayTurnPlan[] = [...steps]
-      .map(([step, plan]) => ({ step, plan }))
-      .sort((left, right) => left.step - right.step)
+    const plans = turnCoordinator.completeTurn(agent, event.data.turn)
+    if (plans.length === 0) return
     const result = event.data.reason.kind
     const turn = event.data.turn
     queueMicrotask(() => {
