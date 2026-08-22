@@ -15,6 +15,7 @@ import {
   applyTavernHelperMutation,
   appendTavernHelperStateAttachment,
   encodeTavernHelperState,
+  encodeTavernHelperStateAttachment,
   initializeTavernHelperPresetState,
   initializeTavernHelperState,
   parseTavernHelperMutationRequest,
@@ -23,6 +24,7 @@ import {
   TAVERN_HELPER_ROLEPLAY_STATE_ID,
   type TavernMutationCause,
 } from './tavern-helper.ts'
+import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
 
 function latestCausalPresentation(agent: Agent, replySeq: number): RoleplayTurnPresentation | undefined {
   for (let index = agent.session.events.length - 1; index >= 0; index -= 1) {
@@ -111,8 +113,14 @@ export function executeTavernHelperMutation(invocation: {
       : { scopes: { ...mutated.scopes, message: chat.messageVariables } }),
   }
   if (request.cause !== undefined) {
-    const attached = appendTavernHelperStateAttachment(invocation.agent.session, next, request.cause, active)
-    return { kind: 'success', sourceEventSeq: attached.eventSeq }
+    if (supportsAgentRpSessionEvents(invocation.agent.session)) {
+      const attached = appendTavernHelperStateAttachment(invocation.agent.session, next, request.cause, active)
+      return { kind: 'success', sourceEventSeq: attached.eventSeq }
+    }
+    return {
+      kind: 'success',
+      text: encodeTavernHelperStateAttachment({ format: 0, cause: request.cause, active, state: next }),
+    }
   }
   return { kind: 'success', text: encodeTavernHelperState(next) }
 }

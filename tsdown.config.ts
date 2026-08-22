@@ -7,45 +7,47 @@ function isHostExternal(id: string): boolean {
     || id === '@jitl/quickjs-singlefile-mjs-release-sync'
 }
 
-const host: UserConfig = {
-  entry: { index: 'src/index.ts', 'repair-session': 'src/session-repair-cli.ts' },
-  outDir: 'lib',
-  format: ['esm'],
-  platform: 'node',
-  target: 'es2024',
-  fixedExtension: false,
-  dts: false,
-  clean: false,
-  deps: {
-    neverBundle: isHostExternal,
-    alwaysBundle: id => isHostExternal(id) ? undefined : true,
-  },
-  plugins: [{
-    name: 'bundle-browser-safe-fflate',
-    resolveId(id) {
-      return id === 'fflate' ? resolve('node_modules/fflate/esm/browser.js') : null
+function host(entry: Readonly<Record<string, string>>): UserConfig {
+  return {
+    entry,
+    outDir: 'lib',
+    format: ['esm'],
+    platform: 'node',
+    target: 'es2024',
+    fixedExtension: false,
+    dts: false,
+    clean: false,
+    deps: {
+      neverBundle: isHostExternal,
+      alwaysBundle: id => isHostExternal(id) ? undefined : true,
     },
-  }, {
-    name: 'assert-profile-host-externals',
-    generateBundle(_options, bundle) {
-      for (const output of Object.values(bundle)) {
-        if (output.type !== 'chunk') continue
-        const invalid = [...output.imports, ...output.dynamicImports]
-          .filter(id => !isHostExternal(id))
-        if (invalid.length > 0) this.error(`Host bundle retains unsupported imports: ${invalid.join(', ')}`)
-      }
-    },
-  }, {
-    name: 'normalize-generated-host-bundle',
-    generateBundle(_options, bundle) {
-      for (const output of Object.values(bundle)) {
-        if (output.type !== 'chunk') continue
-        output.code = output.code
-          .replace(/^\/\/#(?:end)?region.*(?:\r?\n|$)/gmu, '')
-          .replace(/[ \t]+$/gmu, '')
-      }
-    },
-  }],
+    plugins: [{
+      name: 'bundle-browser-safe-fflate',
+      resolveId(id) {
+        return id === 'fflate' ? resolve('node_modules/fflate/esm/browser.js') : null
+      },
+    }, {
+      name: 'assert-profile-host-externals',
+      generateBundle(_options, bundle) {
+        for (const output of Object.values(bundle)) {
+          if (output.type !== 'chunk') continue
+          const invalid = [...output.imports, ...output.dynamicImports]
+            .filter(id => !isHostExternal(id))
+          if (invalid.length > 0) this.error(`Host bundle retains unsupported imports: ${invalid.join(', ')}`)
+        }
+      },
+    }, {
+      name: 'normalize-generated-host-bundle',
+      generateBundle(_options, bundle) {
+        for (const output of Object.values(bundle)) {
+          if (output.type !== 'chunk') continue
+          output.code = output.code
+            .replace(/^\/\/#(?:end)?region.*(?:\r?\n|$)/gmu, '')
+            .replace(/[ \t]+$/gmu, '')
+        }
+      },
+    }],
+  }
 }
 
 const client: UserConfig = {
@@ -79,4 +81,8 @@ const client: UserConfig = {
   },
 }
 
-export default defineConfig([host, client])
+export default defineConfig([
+  host({ index: 'src/index.ts' }),
+  host({ 'repair-session': 'src/session-repair-cli.ts' }),
+  client,
+])

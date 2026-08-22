@@ -5,6 +5,7 @@ import type { ImportedCharacterFrontend, ImportedTavernHelperScript } from './im
 import { AGENT_RP_CAPABILITIES } from './extension-capability.ts'
 import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import { decodeGenerationCommandResult } from './generation-command-result.ts'
 import {
   parseTavernScriptIdentity,
   tavernScriptIdentity,
@@ -277,6 +278,7 @@ export type TavernHelperMutationRequest = WithTavernMutationCause<TavernHelperVa
   | TavernScriptTreeMutationRequest>
 
 const STATE_PREFIX = 'agent-rp-tavern-helper-v0:'
+const STATE_ATTACHMENT_PREFIX = 'agent-rp-tavern-helper-attachment-v0:'
 const MAX_MUTATION_BYTES = Math.max(
   AGENT_RP_CAPABILITIES['session.variables.replace'].runtimePolicies['tavern-script-frame-v0'].requestBytes,
   AGENT_RP_CAPABILITIES['world-info.session.mutate'].runtimePolicies['tavern-script-frame-v0'].requestBytes,
@@ -1125,11 +1127,58 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
   }
 }
 
+/** Serialize one causal branch attachment into its owning command result. */
+export function encodeTavernHelperStateAttachment(attachment: TavernHelperStateAttachment): string {
+  return `${STATE_ATTACHMENT_PREFIX}${JSON.stringify({
+    format: 0,
+    cause: attachment.cause,
+    active: attachment.active,
+    state: encodeTavernHelperState(attachment.state),
+  })}`
+}
+
+/** Decode a causal branch attachment while declining unrelated command results. */
+export function decodeTavernHelperStateAttachment(
+  text: string | undefined,
+): TavernHelperStateAttachment | undefined {
+  if (text?.startsWith(STATE_ATTACHMENT_PREFIX) !== true) return undefined
+  const parsed = JSON.parse(text.slice(STATE_ATTACHMENT_PREFIX.length)) as Record<string, unknown>
+  if (parsed.format !== 0 || typeof parsed.active !== 'boolean' || typeof parsed.state !== 'string'
+    || Object.keys(parsed).some(key => !['format', 'cause', 'active', 'state'].includes(key))) {
+    throw new Error('Tavern Helper state attachment is invalid')
+  }
+  const cause = parseMutationCause(parsed.cause)
+  const state = decodeTavernHelperState(parsed.state)
+  if (cause === undefined || state === undefined
+    || state.lastMutation?.cause?.sessionId !== cause.sessionId
+    || state.lastMutation.cause.replySeq !== cause.replySeq) {
+    throw new Error('Tavern Helper state attachment has inconsistent cause or state')
+  }
+  return { format: 0, cause, active: parsed.active, state }
+}
+
+function decodeGenerationTavernHelperState(text: string | undefined): TavernHelperState | undefined {
+  const generation = decodeGenerationCommandResult(text)
+  return generation?.tavern === undefined
+    ? undefined
+    : decodeTavernHelperState(`${STATE_PREFIX}${JSON.stringify(generation.tavern)}`)
+}
+
+/** Decode the state selected by one command result; inactive branches remain non-current. */
+export function decodeActiveTavernHelperState(text: string | undefined): TavernHelperState | undefined {
+  const generation = decodeGenerationTavernHelperState(text)
+  if (generation !== undefined) return generation
+  const attachment = decodeTavernHelperStateAttachment(text)
+  return attachment === undefined
+    ? decodeTavernHelperState(text)
+    : attachment.active ? attachment.state : undefined
+}
+
 function stateFromEvent(event: SessionEvent): TavernHelperState | undefined {
   if (event.type === 'agent-rp/tavern-state') return event.data
   if (event.type === 'agent-rp/tavern-state-attachment') return event.data.active ? event.data.state : undefined
   return event.type === 'command/done' && event.data.kind === 'success'
-    ? decodeTavernHelperState(event.data.text)
+    ? decodeActiveTavernHelperState(event.data.text)
     : undefined
 }
 
@@ -1174,9 +1223,12 @@ export function readTavernHelperStateSnapshotAt(
   eventSeq: number,
 ): TavernHelperStateSnapshot {
   const event = events[eventSeq]
+  const commandAttachment = event?.type === 'command/done' && event.data.kind === 'success'
+    ? decodeTavernHelperStateAttachment(event.data.text)
+    : undefined
   const state = event?.type === 'agent-rp/tavern-state-attachment'
     ? event.data.state
-    : event === undefined ? undefined : stateFromEvent(event)
+    : commandAttachment?.state ?? (event === undefined ? undefined : stateFromEvent(event))
   if (state === undefined) throw new Error('回复版本引用的脚本状态不存在')
   return { eventSeq, state }
 }

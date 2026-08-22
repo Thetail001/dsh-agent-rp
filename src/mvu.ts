@@ -5,7 +5,8 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { ImportedCharacterCard } from './import/types.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
-import { decodeTavernHelperState } from './tavern-helper.ts'
+import { decodeActiveTavernHelperState } from './tavern-helper.ts'
+import { decodeGenerationMvuCheckpoint } from './generation-command-result.ts'
 
 export const MVU_ROLEPLAY_MODULE_ID = 'adapter:mvu'
 export const MVU_ROLEPLAY_STATE_ID = 'state:mvu'
@@ -93,13 +94,25 @@ export function readCurrentMvuState(
       lastError = event.data.lastError
       continue
     }
+    if (event.type === 'command/done' && event.data.kind === 'success') {
+      const checkpoint = decodeGenerationMvuCheckpoint(event.data.text)
+      const surface = checkpoint === undefined
+        ? undefined
+        : events.find(candidate => candidate.seq === checkpoint.surfaceSeq)
+      if (surface?.type === 'assistant/message') {
+        statData = checkpoint!.mvu.statData
+        updateCount = checkpoint!.mvu.updateCount
+        lastError = checkpoint!.mvu.lastError
+        continue
+      }
+    }
     if (event.type === 'agent-rp/tavern-state' || event.type === 'agent-rp/tavern-state-attachment'
       || (event.type === 'command/done' && event.data.kind === 'success')) {
       const scriptState = event.type === 'agent-rp/tavern-state'
         ? event.data
         : event.type === 'agent-rp/tavern-state-attachment'
           ? event.data.active ? event.data.state : undefined
-          : decodeTavernHelperState(event.data.text)
+          : decodeActiveTavernHelperState(event.data.text)
       const scope = scriptState?.lastMutation?.scope
       if (scriptState !== undefined && (scope === 'message' || scope === 'chat')) {
         const variables = scriptState.scopes[scope]

@@ -20,6 +20,7 @@ import type {
 } from './roleplay-turn-presentation-types.ts'
 import type { BoundRoleplayTurnPlan } from './roleplay-turn-settlement.ts'
 import {
+  decodeTavernHelperStateAttachment,
   decodeTavernHelperState,
   readTavernHelperStateSnapshot,
   TAVERN_HELPER_ROLEPLAY_MODULE_ID,
@@ -44,8 +45,10 @@ function causalTavernState(
       continue
     }
     if (event.type !== 'command/done' || event.data.kind !== 'success') continue
-    const state = decodeTavernHelperState(event.data.text)
-    if (state?.lastMutation?.cause?.replySeq === replySeq) return { eventSeq: event.seq, state }
+    const attachment = decodeTavernHelperStateAttachment(event.data.text)
+    const state = attachment?.state ?? decodeTavernHelperState(event.data.text)
+    const cause = attachment?.cause ?? state?.lastMutation?.cause
+    if (cause?.replySeq === replySeq && state !== undefined) return { eventSeq: event.seq, state }
   }
   return undefined
 }
@@ -124,7 +127,10 @@ function presentationForGeneration(
       ...(generation.mvu === undefined ? {} : { eventSeq: event.seq }),
     }] })
   }
-  const tavern = readTavernHelperStateSnapshot(session.events, event.seq)
+  const replayedTavern = readTavernHelperStateSnapshot(session.events, event.seq)
+  const tavern = generation.tavern === undefined
+    ? replayedTavern
+    : { eventSeq: event.seq, state: generation.tavern }
   const baselineTavern = roleplayPresentedState(baseline, TAVERN_HELPER_ROLEPLAY_STATE_ID)
   const hasTavernModule = baseline.present.modules.some(module =>
     module.moduleId === TAVERN_HELPER_ROLEPLAY_MODULE_ID)
@@ -159,12 +165,15 @@ function presentationForTavernMutation(
   session: Session,
   event: Extract<SessionEvent, { type: 'command/done' | 'agent-rp/tavern-state-attachment' }>,
 ): RoleplayTurnPresentation | undefined {
+  const commandAttachment = event.type === 'command/done'
+    ? decodeTavernHelperStateAttachment(event.data.text)
+    : undefined
   const tavern = event.type === 'agent-rp/tavern-state-attachment'
     ? event.data.state
-    : decodeTavernHelperState(event.data.text)
+    : commandAttachment?.state ?? decodeTavernHelperState(event.data.text)
   const cause = event.type === 'agent-rp/tavern-state-attachment'
     ? event.data.cause
-    : tavern?.lastMutation?.cause
+    : commandAttachment?.cause ?? tavern?.lastMutation?.cause
   if (tavern === undefined || cause === undefined || cause.sessionId !== String(session.id)) return undefined
   const reply = eventAt(session.events, cause.replySeq)
   if (reply?.type !== 'assistant/message') throw new Error('Roleplay presentation references a missing reply')

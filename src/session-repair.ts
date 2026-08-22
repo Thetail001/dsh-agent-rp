@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { lstat, open, readFile, rename, unlink } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 import { constants, zstdCompressSync, zstdDecompressSync, type ZstdOptions } from 'node:zlib'
+import { AGENT_RP_SESSION_EVENT_TYPES } from './session-event-compat.ts'
 
 const ZSTD_MAGIC = 0xFD2FB528
 const CHECKSUM_OPTIONS: ZstdOptions = {
@@ -12,20 +13,7 @@ const CHECKSUM_OPTIONS: ZstdOptions = {
 
 /** Known private Agent RP event types that are safe to admit during legacy repair. */
 export const LEGACY_AGENT_RP_EVENT_TYPES: ReadonlySet<string> = new Set([
-  'agent-rp/character-card-seed',
-  'agent-rp/memory-seed',
-  'agent-rp/mvu-state',
-  'agent-rp/persona-seed',
-  'agent-rp/sillytavern-chat-import',
-  'agent-rp/sillytavern-preset-seed',
-  'agent-rp/state',
-  'agent-rp/tavern-generation-request',
-  'agent-rp/tavern-generation-result',
-  'agent-rp/tavern-state',
-  'agent-rp/tavern-state-attachment',
-  'agent-rp/turn-presentation',
-  'agent-rp/turn-settlement',
-  'agent-rp/world-info-library-seed',
+  ...AGENT_RP_SESSION_EVENT_TYPES,
 ] as const)
 
 interface ZstdFrameRange {

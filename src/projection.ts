@@ -37,7 +37,7 @@ import { decodeSillyTavernChatCommandRecord, type SillyTavernChatCommandRecord }
 import { decodeWorldInfoLibraryImport } from './world-info-library-protocol.ts'
 import { decodePersonaCommandRecord } from './persona-command-protocol.ts'
 import {
-  decodeTavernHelperState,
+  decodeActiveTavernHelperState,
   initializeTavernHelperPresetState,
   initializeTavernHelperState,
   type TavernHelperState,
@@ -698,9 +698,8 @@ export function createAgentRpProjectionDefinition(
       ? state
       : { ...state, surface, auxiliaryGenerations }
     if (event.type === 'agent-rp/mvu-state') return { ...withSurface, mvu: event.data }
-    if (event.type === 'agent-rp/state') {
-      return { ...withSurface, nativeStates: applyRoleplayStateEvent(withSurface.nativeStates, event) }
-    }
+    const nativeStates = applyRoleplayStateEvent(withSurface.nativeStates, event)
+    if (nativeStates !== withSurface.nativeStates) return { ...withSurface, nativeStates }
     if (event.type === 'agent-rp/turn-presentation') {
       const presentation = normalizeRoleplayTurnPresentation(event.data)
       return presentation.current ? { ...withSurface, presentation } : withSurface
@@ -748,7 +747,7 @@ export function createAgentRpProjectionDefinition(
           ? event.data
           : event.type === 'agent-rp/tavern-state-attachment'
             ? event.data.active ? event.data.state : undefined
-            : decodeTavernHelperState(event.data.text)
+            : decodeActiveTavernHelperState(event.data.text)
         if (tavern !== undefined) {
           const mvu = mvuAfterTavernMutation(withSurface.mvu, tavern)
           return {

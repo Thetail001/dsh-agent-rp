@@ -1,16 +1,23 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { CommandId } from '@deepseek-ai/dsh-commands'
 import { AGENT_RP_CAPABILITIES } from '../src/extension-capability.ts'
 import {
   applyTavernHelperMutation,
+  decodeActiveTavernHelperState,
   decodeTavernHelperState,
+  decodeTavernHelperStateAttachment,
   encodeTavernHelperState,
+  encodeTavernHelperStateAttachment,
   initializeTavernHelperState,
   initializeTavernHelperPresetState,
   parseTavernHelperMutationRequest,
+  readTavernHelperStateSnapshot,
+  readTavernHelperStateSnapshotAt,
   tavernInjectedInChatPrompts,
   tavernInjectedScanText,
 } from '../src/tavern-helper.ts'
@@ -31,6 +38,9 @@ import { tavernMutationMatchesCapability } from '../src/client/tavern-capability
 import { summarizeTavernAuxiliaryGenerations } from '../src/tavern-generation-log.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
 import { tavernScriptIdentity } from '../src/tavern-script-identity.ts'
+import { executeTavernHelperMutation } from '../src/tavern-helper-command.ts'
+import { parseCharacterCardJson } from '../src/import/character-card.ts'
+import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 
 interface CapturedIgnorableEvent {
   readonly type: string
@@ -571,6 +581,75 @@ test('round-trips the hidden Tavern prefix in durable script state', () => {
     { seq: 3, role: 'user', text: '旧问题' },
     { seq: 4, role: 'assistant', text: '旧回复' },
   ])
+})
+
+test('keeps inactive causal command attachments replayable without selecting their state', () => {
+  const cause = { format: 0 as const, sessionId: 'causal-session', replySeq: 7 }
+  const initial = initializeTavernHelperState({
+    regexScripts: [], tavernHelperScriptNames: [], tavernHelperVariables: {}, tavernHelperScripts: [],
+  }, 'card-causal')
+  const state = applyTavernHelperMutation(initial, parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0, scope: 'chat', variables: { branch: 'older' }, cause,
+  })))
+  const activeText = encodeTavernHelperStateAttachment({ format: 0, cause, active: true, state })
+  const inactiveText = encodeTavernHelperStateAttachment({ format: 0, cause, active: false, state })
+
+  assert.deepEqual(decodeTavernHelperStateAttachment(inactiveText), {
+    format: 0, cause, active: false, state,
+  })
+  assert.deepEqual(decodeActiveTavernHelperState(activeText), state)
+  assert.equal(decodeActiveTavernHelperState(inactiveText), undefined)
+
+  const session = Session.create(SessionId('causal-command-attachment'))
+  const commandId = CommandId('causal-command')
+  session.append('command/run', {
+    commandId, name: 'rp-tavern-state', args: '{}', source: { kind: 'user' },
+  })
+  session.append('command/done', { commandId, kind: 'success', text: inactiveText })
+  assert.equal(readTavernHelperStateSnapshot(session.events), undefined)
+  assert.deepEqual(readTavernHelperStateSnapshotAt(session.events, 1), { eventSeq: 1, state })
+
+  let projected = agentRpProjectionDefinition.init()
+  for (const event of session.events) projected = agentRpProjectionDefinition.apply(projected, event)
+  assert.equal(projected.tavern, undefined)
+})
+
+test('persists a causal script mutation through command/done on the published Host', () => {
+  const card = parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v2', spec_version: '2.0',
+    data: {
+      name: '兼容角色', description: '', personality: '', scenario: '', first_mes: '你好', mes_example: '',
+      creator_notes: '', system_prompt: '', post_history_instructions: '', alternate_greetings: [], tags: [],
+      creator: 'fixture', character_version: '1.0', extensions: {},
+    },
+  }))
+  const seed = createCharacterCardSessionSeed(card, {
+    kind: 'file', attachmentId: AttachmentId('sha256:published-tavern-command'), bytes: 1,
+    name: 'card.json', mediaType: 'application/json',
+  }, 0, '你好')
+  const session = Session.create(SessionId('published-tavern-command'), seed)
+  const replySeq = session.surface.nodes.at(-1)
+  assert.notEqual(replySeq, undefined)
+  const commandId = CommandId('published-tavern-command-write')
+  session.append('command/run', {
+    commandId, name: 'rp-tavern-variables', source: { kind: 'user' },
+  })
+  const rawInput = JSON.stringify({
+    format: 0,
+    scope: 'chat',
+    variables: { mood: 'calm' },
+    cause: { format: 0, sessionId: String(session.id), replySeq },
+  })
+
+  const result = executeTavernHelperMutation({ agent: { session } as Agent, rawInput })
+  assert.equal(result.sourceEventSeq, undefined)
+  assert.match(result.text ?? '', /^agent-rp-tavern-helper-attachment-v0:/u)
+  session.append('command/done', { commandId, ...result })
+
+  assert.equal(session.events.some(event => event.type === 'agent-rp/tavern-state-attachment'), false)
+  assert.deepEqual(readTavernHelperStateSnapshot(session.events)?.state.scopes.chat, { mood: 'calm' })
+  const reopened = Session.create(SessionId('published-tavern-command-replay'), session.events)
+  assert.deepEqual(readTavernHelperStateSnapshot(reopened.events), readTavernHelperStateSnapshot(session.events))
 })
 
 test('persists isolated Tavern Helper variable namespaces', () => {

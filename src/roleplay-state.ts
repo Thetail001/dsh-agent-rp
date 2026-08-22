@@ -62,6 +62,8 @@ declare module '@deepseek-ai/dsh-session' {
 const STATE_ID_PATTERN = /^state:[\p{L}\p{N}](?:[\p{L}\p{N}._:/-]{0,126}[\p{L}\p{N}])?$/u
 const MODULE_ID_PATTERN = /^[\p{L}\p{N}](?:[\p{L}\p{N}._:/-]{0,158}[\p{L}\p{N}])?$/u
 
+const ROLEPLAY_STATE_RESULT_PREFIX = 'agent-rp-state-v0:'
+
 function identifier(value: unknown, label: string, pattern: RegExp): string {
   if (typeof value !== 'string' || !pattern.test(value)) {
     throw new Error(`Roleplay ${label} is invalid: ${JSON.stringify(value)}`)
@@ -156,6 +158,17 @@ export function parseRoleplayStateRecord(value: unknown): RoleplayStateRecord {
   }
 }
 
+/** Encode a state revision into the owning private command's durable result. */
+export function encodeRoleplayStateRecord(record: RoleplayStateRecord): string {
+  return `${ROLEPLAY_STATE_RESULT_PREFIX}${JSON.stringify(parseRoleplayStateRecord(record))}`
+}
+
+/** Decode a state revision while declining unrelated command results. */
+export function decodeRoleplayStateRecord(text: string | undefined): RoleplayStateRecord | undefined {
+  if (text?.startsWith(ROLEPLAY_STATE_RESULT_PREFIX) !== true) return undefined
+  return parseRoleplayStateRecord(JSON.parse(text.slice(ROLEPLAY_STATE_RESULT_PREFIX.length)))
+}
+
 function applyRoleplayStateRecord(
   states: readonly RoleplayStateSnapshot[],
   record: RoleplayStateRecord,
@@ -182,14 +195,19 @@ function applyRoleplayStateRecord(
 /** Incrementally apply one required state event to a replay projection. */
 export function applyRoleplayStateEvent(
   states: readonly RoleplayStateSnapshot[],
-  event: SessionEvent<'agent-rp/state'>,
+  event: SessionEvent,
 ): readonly RoleplayStateSnapshot[] {
-  return applyRoleplayStateRecord(states, parseRoleplayStateRecord(event.data), event.seq)
+  const record = event.type === 'agent-rp/state'
+    ? parseRoleplayStateRecord(event.data)
+    : event.type === 'command/done' && event.data.kind === 'success'
+      ? decodeRoleplayStateRecord(event.data.text)
+      : undefined
+  return record === undefined ? states : applyRoleplayStateRecord(states, record, event.seq)
 }
 
 function verifyUserWrite(
   events: readonly SessionEvent[],
-  event: SessionEvent<'agent-rp/state'>,
+  event: SessionEvent,
   record: RoleplayStateRecord,
 ): void {
   if (record.writerModuleId !== ROLEPLAY_STATE_USER_WRITER_ID || record.ownerModuleId === undefined) return
@@ -199,6 +217,9 @@ function verifyUserWrite(
   if (source?.type !== 'command/run' || source.seq >= event.seq || source.data.name !== 'rp-state'
     || source.data.source.kind !== 'user' || typeof source.data.args !== 'string') {
     throw new Error('Roleplay player state write has no matching command source')
+  }
+  if (event.type === 'command/done' && String(event.data.commandId) !== String(source.data.commandId)) {
+    throw new Error('Roleplay player state result does not match its command source')
   }
   const request = parseRoleplayStateCommandRequest(source.data.args)
   if (request.id !== record.id || request.expectedRevision + 1 !== record.revision
@@ -214,8 +235,13 @@ export function readRoleplayStates(
 ): readonly RoleplayStateSnapshot[] {
   let current: readonly RoleplayStateSnapshot[] = []
   for (const event of events) {
-    if (event.seq >= beforeSeq || event.type !== 'agent-rp/state') continue
-    const record = parseRoleplayStateRecord(event.data)
+    if (event.seq >= beforeSeq) continue
+    const record = event.type === 'agent-rp/state'
+      ? parseRoleplayStateRecord(event.data)
+      : event.type === 'command/done' && event.data.kind === 'success'
+        ? decodeRoleplayStateRecord(event.data.text)
+        : undefined
+    if (record === undefined) continue
     verifyUserWrite(events, event, record)
     current = applyRoleplayStateRecord(current, record, event.seq)
   }
@@ -253,12 +279,12 @@ export function appendRoleplayState(
   return { ...event.data, ownerModuleId, eventSeq: event.seq }
 }
 
-/** Append a player-authorized edit that remains causally tied to its private command. */
-export function appendUserRoleplayState(
+/** Validate and prepare one player state revision without choosing its Host persistence seam. */
+export function prepareUserRoleplayState(
   session: Session,
   request: RoleplayStateCommandRequest,
   sourceEventSeq: number,
-): RoleplayStateSnapshot {
+): RoleplayStateRecord {
   const source = session.events[sourceEventSeq]
   if (source?.type !== 'command/run' || source.data.name !== 'rp-state' || source.seq !== session.seq - 1
     || typeof source.data.args !== 'string') {
@@ -276,7 +302,7 @@ export function appendUserRoleplayState(
       `状态“${request.id}”已经变化：界面版本 ${String(request.expectedRevision)}，当前版本 ${String(currentRevision)}`,
     )
   }
-  const record: RoleplayStateRecord = {
+  return {
     format: 0,
     id: request.id,
     revision: currentRevision + 1,
@@ -285,6 +311,15 @@ export function appendUserRoleplayState(
     sourceEventSeq,
     value: stateValue(request.value),
   }
+}
+
+/** Append a player-authorized edit that remains causally tied to its private command. */
+export function appendUserRoleplayState(
+  session: Session,
+  request: RoleplayStateCommandRequest,
+  sourceEventSeq: number,
+): RoleplayStateSnapshot {
+  const record = prepareUserRoleplayState(session, request, sourceEventSeq)
   const event = appendAgentRpSessionEvent(session, 'agent-rp/state', record)
   return { ...event.data, ownerModuleId: record.ownerModuleId!, eventSeq: event.seq }
 }
