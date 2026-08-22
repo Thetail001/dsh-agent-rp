@@ -368,6 +368,57 @@ test('triggers one reply after a Tavern script appends a user message', async ()
   ])
 })
 
+test('retries one reasoning-only Tavern trigger before surfacing an empty reply failure', async () => {
+  const session = Session.create(SessionId('tavern-trigger-empty-recovery'))
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '完成开场' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  const prompts: string[] = []
+  const agent = {
+    session,
+    status: 'idle',
+    inbox: { hasPending: false },
+    followup(message: ReturnType<typeof createUserMessage>) {
+      prompts.push(message.content[0]?.type === 'text' ? message.content[0].text : '')
+      appendAssistant(session, prompts.length + 1, prompts.length === 1 ? '' : '补全后的角色开场')
+    },
+    whenIdle: async () => {},
+    cancel: () => {},
+  }
+
+  const result = await executeTavernTrigger({
+    agent: agent as never, rawInput: '', signal: new AbortController().signal,
+  })
+
+  assert.equal(prompts.length, 2)
+  assert.match(prompts[1]!, /previous attempt ended without a visible answer/u)
+  assert.deepEqual(JSON.parse(result.text), { format: 0, assistantSeq: 2 })
+})
+
+test('bounds Tavern empty-reply recovery to one retry', async () => {
+  const session = Session.create(SessionId('tavern-trigger-empty-bounded'))
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '完成开场' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  let attempts = 0
+  const agent = {
+    session,
+    status: 'idle',
+    inbox: { hasPending: false },
+    followup() {
+      attempts += 1
+      appendAssistant(session, attempts + 1, '')
+    },
+    whenIdle: async () => {},
+    cancel: () => {},
+  }
+
+  await assert.rejects(executeTavernTrigger({
+    agent: agent as never, rawInput: '', signal: new AbortController().signal,
+  }), /连续两次没有生成可见/u)
+  assert.equal(attempts, 2)
+})
+
 test('refuses a bare Tavern trigger without a latest user message', async () => {
   const session = Session.create(SessionId('tavern-trigger-without-user'))
   appendAssistant(session, 1, '角色上一条回复')

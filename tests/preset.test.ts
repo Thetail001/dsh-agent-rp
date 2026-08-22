@@ -24,6 +24,18 @@ import { installBundledAgentRpPreset } from '../src/preset.ts'
 
 const SOURCE = resolve('preset')
 
+test('profile bundle keeps its managed Agent preset discoverable', () => {
+  const patch = readFileSync('cordis.patch.yml', 'utf8')
+  assert.match(patch, /- id: agent-presets\s+config:\s+[^]*?default: standard\s+includeUserRoot: true/u)
+})
+
+test('roleplay preset exposes search without inheriting coding authority', () => {
+  const composition = readFileSync('preset/agent.cordis.yml', 'utf8')
+  assert.match(composition, /name: '@deepseek-ai\/dsh-tool-web'/u)
+  assert.doesNotMatch(composition, /dsh-tool-(?:bash|fs|skill|subagent)/u)
+  assert.match(readFileSync('preset/preset.yml', 'utf8'), /受控联网搜索/u)
+})
+
 function temporaryRoot(): string {
   return mkdtempSync(join(tmpdir(), 'dsh-agent-rp-preset-'))
 }

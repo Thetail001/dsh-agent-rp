@@ -2,3 +2,11 @@
   name: '@dsh-external/dsh-agent-rp'
   config:
     mode: character
+
+# Roleplay may need current public information, but it must not inherit the
+# coding preset's shell, filesystem, subagents, or other workspace authority.
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: false
+    searchTimeoutMs: 60000

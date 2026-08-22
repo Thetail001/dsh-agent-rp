@@ -147,6 +147,7 @@ import {
   type SillyTavernJsonKind,
 } from './import-hint.ts'
 import { parseTavernSlashCommand } from './tavern-slash.ts'
+import { parseComputedColor, roleplayContrastOverride, type RoleplayContrastPalette } from './theme-contrast.ts'
 import {
   executeTavernStorageRequest,
   readTavernExtensionSettings,
@@ -1704,6 +1705,32 @@ const agentRpResponsiveStyle = `
   color: var(--dsw-alias-label-tertiary);
 }
 [data-agent-rp-generation-action] svg { flex: 0 0 auto; }
+[data-conversation-scroll][data-agent-rp-session][data-agent-rp-assistant-contrast='dark']
+  [data-chat-flow-kind='assistant-step'] {
+  --dsw-alias-label-primary: #17181d;
+  --dsw-alias-label-primary-dimmed: rgba(23, 24, 29, .84);
+  --dsw-alias-label-secondary: rgba(23, 24, 29, .74);
+  --dsw-alias-label-tertiary: rgba(23, 24, 29, .58);
+  --dsw-alias-label-caption: rgba(23, 24, 29, .48);
+}
+[data-conversation-scroll][data-agent-rp-session][data-agent-rp-assistant-contrast='light']
+  [data-chat-flow-kind='assistant-step'],
+[data-conversation-scroll][data-agent-rp-session][data-agent-rp-assistant-contrast='light-scrim']
+  [data-chat-flow-kind='assistant-step'] {
+  --dsw-alias-label-primary: #f9fafb;
+  --dsw-alias-label-primary-dimmed: rgba(249, 250, 251, .86);
+  --dsw-alias-label-secondary: rgba(249, 250, 251, .76);
+  --dsw-alias-label-tertiary: rgba(249, 250, 251, .60);
+  --dsw-alias-label-caption: rgba(249, 250, 251, .50);
+}
+[data-conversation-scroll][data-agent-rp-session][data-agent-rp-assistant-contrast='light-scrim']
+  [data-chat-flow-kind='assistant-step'] {
+  background: rgba(12, 14, 20, .68);
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 12px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .18);
+  padding: 10px 12px;
+}
 [data-agent-rp-generation-action] .agent-rp-generation-loading {
   animation: agent-rp-action-spin 900ms linear infinite;
 }
@@ -6449,9 +6476,12 @@ function PresetPromptEditorDialog({ prompt, onClose, onApply, onDelete }: {
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const resolvedDepth = Number(injectionDepth)
   const resolvedOrder = Number(injectionOrder)
+  const validDepth = Object.is(resolvedDepth, prompt.injectionDepth)
+    || (Number.isSafeInteger(resolvedDepth) && resolvedDepth >= 0 && resolvedDepth <= 9999)
+  const validOrder = Object.is(resolvedOrder, prompt.injectionOrder)
+    || (Number.isSafeInteger(resolvedOrder) && resolvedOrder >= 0 && resolvedOrder <= 9999)
   const validInjection = injectionPosition === 0 || (
-    Number.isSafeInteger(resolvedDepth) && resolvedDepth >= 0 && resolvedDepth <= 9999
-    && Number.isSafeInteger(resolvedOrder) && resolvedOrder >= 0 && resolvedOrder <= 9999
+    validDepth && validOrder
   )
   return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label={`编辑${prompt.name || prompt.identifier}`} style={{
     alignItems: 'center', background: 'rgba(0,0,0,.7)', display: 'flex', inset: 0,
@@ -9610,6 +9640,48 @@ function roleplayComposerDockComponent(
       }
     }
   }, [background?.index, projection?.avatarLibraryId, viewMode])
+  useLayoutEffect(() => {
+    const scroll = rootRef.current?.closest<HTMLElement>('[data-conversation-scroll]')
+    if (scroll == null) return
+    scroll.dataset.agentRpSession = 'true'
+    const applyContrastContract = (): void => {
+      const scrollStyle = getComputedStyle(scroll)
+      const foreground = scrollStyle.getPropertyValue('--dsw-alias-label-primary').trim() || scrollStyle.color
+      let background: string | undefined
+      let externalBackgroundImage = false
+      for (let element: HTMLElement | null = scroll; element !== null; element = element.parentElement) {
+        const style = getComputedStyle(element)
+        if (style.backgroundImage !== 'none' && element.dataset.agentRpBackground !== 'true') {
+          externalBackgroundImage = true
+        }
+        const parsed = parseComputedColor(style.backgroundColor)
+        if (background === undefined && parsed !== undefined && parsed.alpha >= .98) background = style.backgroundColor
+      }
+      let palette: RoleplayContrastPalette | undefined
+      let contract: RoleplayContrastPalette | 'light-scrim' | undefined
+      if (scroll.dataset.agentRpBackground === 'true') contract = 'light'
+      else if (externalBackgroundImage) contract = 'light-scrim'
+      else if (background !== undefined) {
+        palette = roleplayContrastOverride(foreground, background)
+        contract = palette
+      }
+      if (contract === undefined) delete scroll.dataset.agentRpAssistantContrast
+      else scroll.dataset.agentRpAssistantContrast = contract
+    }
+    applyContrastContract()
+    const observer = new MutationObserver(applyContrastContract)
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] })
+    if (document.body !== null) observer.observe(document.body, {
+      attributes: true, attributeFilter: ['class', 'style', 'data-theme'],
+    })
+    const queued = window.requestAnimationFrame(applyContrastContract)
+    return () => {
+      window.cancelAnimationFrame(queued)
+      observer.disconnect()
+      delete scroll.dataset.agentRpSession
+      delete scroll.dataset.agentRpAssistantContrast
+    }
+  }, [background?.index, sessionId, viewMode])
   useLayoutEffect(() => {
     const dock = rootRef.current?.closest<HTMLElement>('[data-slot="conversation.composer.dock"]')
     const inputRoot = dock?.parentElement

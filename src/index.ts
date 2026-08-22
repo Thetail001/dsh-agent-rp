@@ -140,6 +140,12 @@ import { installTavernModelListHttp } from './tavern-model-list-http.ts'
 import { installRpDistributionBridgeHttp } from './rp-distribution-bridge-http.ts'
 import { NativeIdentityStore } from './native-identity.ts'
 import { installNativeIdentityHttp } from './native-identity-http.ts'
+import {
+  createWorldbookCharacterContextRegistry,
+  WORLDBOOK_CHARACTER_CONTEXT_KEY,
+  worldbookCharacterContext,
+  type WorldbookCharacterContextRegistry,
+} from './worldbook-character-context.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -522,6 +528,15 @@ export function installAgentRp(
   const worldInfoLibrary = new WorldInfoLibrary()
   const generatedImageLibrary = new GeneratedImageLibrary()
   const workspaceSettings = new WorkspaceSettingsStore()
+  let worldbookCharacters: WorldbookCharacterContextRegistry | undefined
+  try {
+    const candidate = ctx.get(WORLDBOOK_CHARACTER_CONTEXT_KEY as never) as WorldbookCharacterContextRegistry | undefined
+    if (candidate !== undefined && typeof candidate.register === 'function'
+      && typeof candidate.getCurrentCharacter === 'function') worldbookCharacters = candidate
+  } catch {
+    worldbookCharacters = undefined
+  }
+  const worldbookCharacterDisposers = new Map<Agent, readonly (() => void)[]>()
 
   commands.register({
     name: 'rp-tavern-variables',
@@ -868,6 +883,22 @@ export function installAgentRp(
     agentsByScope.set(agent, agent)
     agentsBySession.set(String(agent.session.id), agent)
     setRememberAvailable(agent, false)
+    const resolveCharacter = () => {
+      const active = readActiveSessionCharacter(agent.session.events)
+      if (active === undefined) return undefined
+      let originalFilename: string | undefined
+      if (active.result.libraryId !== undefined) {
+        try {
+          originalFilename = characterLibrary.get(active.result.libraryId).originalFilename
+        } catch {
+          originalFilename = undefined
+        }
+      }
+      return worldbookCharacterContext(active.meta, originalFilename)
+    }
+    const sessionIds = new Set([String(agent.id), String(agent.session.id)])
+    worldbookCharacterDisposers.set(agent, [...sessionIds].map(sessionId =>
+      worldbookCharacters?.register(sessionId, resolveCharacter) ?? (() => {})))
   })
   ctx.on('agent/disposed', ({ agent }) => {
     agentsByScope.delete(agent)
@@ -876,7 +907,15 @@ export function installAgentRp(
     rememberRestrictions.delete(agent)
     pendingMessagesByAgent.delete(agent)
     presetPromptPlanByAgent.delete(agent)
+    for (const dispose of worldbookCharacterDisposers.get(agent) ?? []) dispose()
+    worldbookCharacterDisposers.delete(agent)
   })
+  ctx.effect(() => () => {
+    for (const disposers of worldbookCharacterDisposers.values()) {
+      for (const dispose of disposers) dispose()
+    }
+    worldbookCharacterDisposers.clear()
+  }, 'agent-rp: worldbook character contexts')
   installPromptRegexStream(
     ctx,
     sessionId => agentsBySession.get(sessionId),
@@ -1175,6 +1214,8 @@ async function loadEjsTemplateEngine(ctx: Context): Promise<EjsTemplateEngine | 
 export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> {
   const resolved = resolveConfig(config)
   if (resolved.mode === 'host') {
+    const worldbookCharacters = createWorldbookCharacterContextRegistry()
+    ctx.provide(WORLDBOOK_CHARACTER_CONTEXT_KEY as never, worldbookCharacters as never)
     const ejsTemplateEngine = await loadEjsTemplateEngine(ctx)
     const characterLibrary = new CharacterLibrary()
     const personaLibrary = new PersonaLibrary()

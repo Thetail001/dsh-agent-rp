@@ -116,14 +116,56 @@ test('adds, runs, edits, and deletes one session-owned module', () => {
     order: active.preset.order.filter(entry => entry.identifier !== 'main'),
     content: [], generation: {}, regex: [],
   }), /built-in module.*cannot be deleted/u)
-  assert.throws(() => parsePresetConfigurationRequest(JSON.stringify({
+  const invalidDepth = parsePresetConfigurationRequest(JSON.stringify({
     operation: 'replace', revision: 0,
     prompts: [...prompts, {
       identifier: 'bad-depth', name: '错误深度', role: 'system', content: '',
       injectionPosition: 1, injectionDepth: -1, injectionOrder: 100,
     }],
     order: active.preset.order, content: [], generation: {}, regex: [],
-  })), /injectionDepth/u)
+  }))
+  assert.throws(() => configurePreset(active, invalidDepth), /injectionDepth/u)
+})
+
+test('round-trips legacy injection metadata while rejecting newly invalid values', () => {
+  const imported = parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [{
+      identifier: 'legacy-in-chat', name: '旧聊天内注入', role: 'system', content: 'legacy',
+      injection_position: 1, injection_depth: 4, injection_order: 10_001,
+    }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: 'legacy-in-chat', enabled: true }] }],
+  }), 'legacy-injection-order.json')
+  const active = {
+    result: {
+      version: 0 as const, name: imported.name, sourceEventSeq: 0, sourceAttachmentId: 'legacy-source',
+      promptCount: 1, enabledCount: 1, regexScriptCount: 0,
+    },
+    importedPreset: imported,
+    preset: imported,
+    revision: 0,
+  }
+  const unchanged = parsePresetConfigurationRequest(JSON.stringify({
+    operation: 'replace', revision: 0,
+    prompts: [{
+      identifier: 'legacy-in-chat', name: '只改名称', role: 'system', content: 'legacy',
+      injectionPosition: 1, injectionDepth: 4, injectionOrder: 10_001,
+    }],
+    order: imported.order, content: [], generation: {}, regex: [],
+  }))
+  const configured = configurePreset(active, unchanged)
+  assert.equal(configured.prompts[0]?.name, '只改名称')
+  assert.equal(configured.prompts[0]?.injectionOrder, 10_001)
+  assert.equal(JSON.parse(exportSillyTavernPresetJson(configured)).prompts[0].injection_order, 10_001)
+
+  const invalidEdit = parsePresetConfigurationRequest(JSON.stringify({
+    operation: 'replace', revision: 0,
+    prompts: [{
+      identifier: 'legacy-in-chat', name: '旧聊天内注入', role: 'system', content: 'legacy',
+      injectionPosition: 1, injectionDepth: 4, injectionOrder: 10_002,
+    }],
+    order: imported.order, content: [], generation: {}, regex: [],
+  }))
+  assert.throws(() => configurePreset(active, invalidEdit), /injectionOrder must be an integer from 0 to 9999/u)
 })
 
 test('round-trips the author module catalog independently from the active order', () => {
