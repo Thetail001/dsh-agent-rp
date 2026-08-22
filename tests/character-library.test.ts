@@ -7,6 +7,7 @@ import { strToU8, zipSync } from 'fflate'
 import { CharacterLibrary } from '../src/character-library.ts'
 import { parseCharacterCardJsonBytes } from '../src/import/character-card.ts'
 import { parseCharx } from '../src/import/charx.ts'
+import { readCharacterCardPng } from '../src/import/png.ts'
 
 test('keeps one exact reusable Character Card asset with selectable greetings', (context) => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-character-library-'))
@@ -131,6 +132,8 @@ test('returns safe Tavern Helper and degradation diagnostics with library entrie
     runOnEdit: false,
     minDepth: null,
     maxDepth: null,
+    locallyOverridden: false,
+    replacedByDisplayExtension: false,
   }])
   assert.equal(imported.entry.greetings[0], '<标题>开场</标题>')
   assert.equal(imported.entry.renderedGreetings[0], '```html\n<h1>开场</h1>\n```')
@@ -210,6 +213,11 @@ test('keeps the original CHARX archive reusable', (context) => {
   assert.deepEqual(library.image(imported.id, 2)?.data, emotion)
   assert.equal(library.image(imported.id, 3), undefined)
   assert.deepEqual(library.asset(imported.id).data, archive)
+  const edited = library.updateContent(imported.id, { ...imported.content, name: 'CHARX 本机版' }, 0)
+  const exported = library.exportModified(imported.id)
+  assert.equal(exported.mediaType, 'application/zip')
+  assert.equal(parseCharx(exported.data).card.name, 'CHARX 本机版')
+  assert.deepEqual(library.asset(edited.id).data, archive)
 })
 
 test('keeps local wording fixes and standalone display regexes beside the original card', (context) => {
@@ -285,4 +293,55 @@ test('keeps local wording fixes and standalone display regexes beside the origin
   assert.equal(library.setDisplayExtensionEnabled(imported.id, extensionId, true).displayExtensions[0]?.enabled, true)
   assert.equal(library.removeDisplayExtension(imported.id, extensionId).displayExtensions.length, 0)
   assert.deepEqual(library.asset(imported.id).data, data)
+})
+
+test('saves reversible character fields and regex switches beside every original transport', (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-character-revisions-'))
+  context.after(() => { rmSync(root, { recursive: true, force: true }) })
+  const source = JSON.parse(readFileSync('tests/fixtures/manual-character-card.json', 'utf8')) as Record<string, unknown>
+  const sourceData = source.data as Record<string, unknown>
+  const extensions = sourceData.extensions as Record<string, unknown>
+  extensions.regex_scripts = [{
+    scriptName: '称呼替换', findRegex: '/白露/gu', replaceString: '小白', trimStrings: [], placement: [2],
+    disabled: false, markdownOnly: false, promptOnly: false, runOnEdit: false, substituteRegex: 0,
+    minDepth: null, maxDepth: null,
+  }]
+  const bytes = new TextEncoder().encode(JSON.stringify(source))
+  const library = new CharacterLibrary({ root })
+  const imported = library.importFile({ data: bytes, filename: '白露.json', mediaType: 'application/json' })
+  const edited = library.updateContent(imported.id, {
+    ...imported.content,
+    name: '白露·本机版',
+    description: '只在本机修改的角色描述。',
+    firstMessage: '新的默认开场。',
+    alternateGreetings: ['新的备选开场。'],
+  }, 0)
+
+  assert.equal(edited.localRevision, 1)
+  assert.equal(edited.localEdits, true)
+  assert.equal(edited.name, '白露·本机版')
+  assert.deepEqual(edited.greetings, ['新的默认开场。', '新的备选开场。'])
+  assert.deepEqual(library.asset(imported.id).data, bytes)
+  assert.throws(() => library.updateContent(imported.id, edited.content, 0), /已在别处改变/u)
+
+  const regexEdited = library.setRegexEnabled(imported.id, 0, false, 1)
+  assert.equal(regexEdited.localRevision, 2)
+  assert.equal(regexEdited.regexScripts[0]?.enabled, false)
+  assert.equal(regexEdited.regexScripts[0]?.locallyOverridden, true)
+  assert.equal(library.resolve(imported.id).card.frontend.regexScripts[0]?.disabled, true)
+  assert.equal(parseCharacterCardJsonBytes(library.exportModified(imported.id).data).name, '白露·本机版')
+
+  const restored = library.resetLocalEdits(imported.id, 2)
+  assert.equal(restored.localRevision, 3)
+  assert.equal(restored.localEdits, false)
+  assert.equal(restored.name, '白露')
+  assert.equal(restored.regexScripts[0]?.enabled, true)
+
+  const png = new Uint8Array(readFileSync('tests/fixtures/manual-character-card.png'))
+  const pngEntry = library.importFile({ data: png, filename: '白露.png', mediaType: 'image/png' })
+  const pngEdited = library.updateContent(pngEntry.id, { ...pngEntry.content, name: 'PNG 本机版' }, 0)
+  const exportedPng = library.exportModified(pngEntry.id)
+  assert.equal(exportedPng.mediaType, 'image/png')
+  assert.equal(parseCharacterCardJsonBytes(new TextEncoder().encode(readCharacterCardPng(exportedPng.data).json)).name, 'PNG 本机版')
+  assert.deepEqual(library.asset(pngEdited.id).data, png)
 })

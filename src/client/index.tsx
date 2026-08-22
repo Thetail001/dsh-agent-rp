@@ -124,9 +124,11 @@ import {
   fetchCharacterDetail,
   fetchCharacterWorldInfoPage,
   notifyCharacterLibraryChanged,
+  updateCharacterEdits,
   updateCharacterRemoteResource,
   updateCharacterRemoteResourcePolicy,
 } from './character-library-client.ts'
+import { CharacterContentEditor } from './character-content-editor.tsx'
 import {
   parseCardCapabilityRequest, parseCardExternalWindowCapabilityRequest,
   parseCardExternalWindowControlRequest, parseCardExternalWindowDeliveryReport,
@@ -234,6 +236,7 @@ import {
   type CharacterLibraryCollection,
   type CharacterLibraryDetail,
   type CharacterLibraryImportResult,
+  type CharacterLibraryRegexScript,
   type CharacterLibrarySummary,
   type CharacterRemoteResourceApproval,
 } from '../character-library-protocol.ts'
@@ -1426,11 +1429,17 @@ function regexStateLabel(script: CharacterRegexScriptSummary): string {
   }
 }
 
-function CharacterRegexScriptsSection({ scripts, promptRegex }: {
+function CharacterRegexScriptsSection({ scripts, promptRegex, editable }: {
   readonly scripts: readonly IndexedCharacterRegexSummary[]
   readonly promptRegex?: AgentRpProjection['promptRegex']
+  readonly editable?: {
+    readonly detail: CharacterLibraryDetail
+    readonly onChange: (detail: CharacterLibraryDetail) => void
+    readonly onError: (message: string) => void
+  }
 }) {
   const [open, setOpen] = useState(false)
+  const [updatingIndex, setUpdatingIndex] = useState<number>()
   const enabled = scripts.filter(script => script.enabled).length
   const warnings = scripts.filter(script => script.state === 'partial'
     || script.state === 'unsupported' || script.state === 'invalid').length
@@ -1451,6 +1460,7 @@ function CharacterRegexScriptsSection({ scripts, promptRegex }: {
         这张角色卡没有自带正则脚本
       </div>}
       {scripts.map(script => {
+        const libraryScript = script as Partial<CharacterLibraryRegexScript>
         const trace = traceByIndex.get(script.index)
         const target = script.display && script.prompt ? '显示与生成'
           : script.display ? '界面显示' : script.prompt ? '生成提示' : '无目标'
@@ -1468,10 +1478,40 @@ function CharacterRegexScriptsSection({ scripts, promptRegex }: {
             <span title={script.scriptName} style={{ fontSize: '11px', fontWeight: 620, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {script.scriptName || `未命名脚本 ${script.index + 1}`}
             </span>
+            {editable !== undefined && <button type="button" role="switch" aria-checked={script.enabled}
+              aria-label={`${script.enabled ? '停用' : '启用'}正则 ${script.scriptName || script.index + 1}`}
+              disabled={updatingIndex !== undefined}
+              onClick={() => {
+                setUpdatingIndex(script.index)
+                editable.onError('')
+                void updateCharacterEdits(editable.detail.id, {
+                  format: 0,
+                  operation: 'set-regex-enabled',
+                  revision: editable.detail.localRevision,
+                  index: script.index,
+                  enabled: !script.enabled,
+                }).then(entry => {
+                  setUpdatingIndex(undefined)
+                  editable.onChange(entry)
+                  notifyCharacterLibraryChanged(entry.id)
+                }, reason => {
+                  setUpdatingIndex(undefined)
+                  editable.onError(reason instanceof Error ? reason.message : String(reason))
+                })
+              }} style={{
+                alignItems: 'center', background: script.enabled ? 'color-mix(in srgb, var(--dsw-alias-accent, #5b8def) 72%, transparent)' : 'var(--dsw-alias-bg-base, #171719)',
+                border: '1px solid var(--dsw-alias-border-l2, #4a4a50)', borderRadius: '999px', cursor: updatingIndex === undefined ? 'pointer' : 'wait',
+                display: 'inline-flex', flex: '0 0 auto', height: '20px', marginLeft: 'auto', padding: '2px', width: '34px',
+              }}>
+              <span aria-hidden="true" style={{
+                background: '#fff', borderRadius: '50%', height: '14px', transform: script.enabled ? 'translateX(14px)' : 'translateX(0)',
+                transition: 'transform 150ms ease', width: '14px',
+              }} />
+            </button>}
             <span style={{
               color: script.state === 'active' || script.state === 'disabled' ? 'inherit' : '#d9a85f',
-              flex: 'none', fontSize: '10px', marginLeft: 'auto', opacity: script.state === 'active' ? .58 : .82,
-            }}>{regexStateLabel(script)}</span>
+              flex: 'none', fontSize: '10px', marginLeft: editable === undefined ? 'auto' : 0, opacity: script.state === 'active' ? .58 : .82,
+            }}>{updatingIndex === script.index ? '保存中…' : regexStateLabel(script)}</span>
           </div>
           <div style={{ fontSize: '10px', lineHeight: 1.5, marginTop: '3px', opacity: .46 }}>
             {[target, script.placement.map(regexPlacementLabel).join('、') || '未设置消息位置',
@@ -1480,6 +1520,12 @@ function CharacterRegexScriptsSection({ scripts, promptRegex }: {
               script.runOnEdit ? '编辑时也运行' : undefined].filter(Boolean).join(' · ')}
           </div>
           {traceLabel !== undefined && <div style={{ fontSize: '10px', marginTop: '3px', opacity: .58 }}>{traceLabel}</div>}
+          {libraryScript.replacedByDisplayExtension === true && <div style={{ fontSize: '10px', marginTop: '3px', opacity: .52 }}>
+            当前由本机显示扩展替代；关闭显示扩展后会继续采用这个开关
+          </div>}
+          {libraryScript.locallyOverridden === true && <div style={{ fontSize: '10px', marginTop: '3px', opacity: .52 }}>
+            本机开关与原卡不同，可在「角色设定」中一并恢复
+          </div>}
         </div>
       })}
     </div>
@@ -5598,8 +5644,28 @@ function CharacterLibraryDialog({
               }}>{importing ? '正在导入…' : '导入角色卡'}</button>}
           </div>}
           {selected !== undefined && <>
+            <CharacterContentEditor
+              detail={selected}
+              color={color}
+              onChange={entry => {
+                setSelected(entry)
+                setEntries(current => current?.map(item => item.id === entry.id ? entry : item))
+                setGreetingIndex(current => Math.min(current, Math.max(0, entry.greetings.length - 1)))
+                notifyCharacterLibraryChanged(entry.id)
+              }}
+              onNotice={message => { setActionNotice(message); setError(undefined) }}
+              onError={message => { setError(message === '' ? undefined : message) }}
+            />
             <CharacterWorldInfoSection key={selected.id} detail={selected} />
-            <CharacterRegexScriptsSection scripts={selected.regexScripts} />
+            <CharacterRegexScriptsSection scripts={selected.regexScripts} {...(typeof (selected.localRevision as number | undefined) !== 'number' ? {} : { editable: {
+              detail: selected,
+              onChange: entry => {
+                setSelected(entry)
+                setEntries(current => current?.map(item => item.id === entry.id ? entry : item))
+                setActionNotice('角色卡正则开关已保存')
+              },
+              onError: message => { setError(message === '' ? undefined : message) },
+            } })} />
             {selected.tavernHelper !== undefined && <div style={{
               background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
               borderRadius: '10px', fontSize: '11px', lineHeight: 1.55, margin: '4px 0 12px', padding: '9px 11px',

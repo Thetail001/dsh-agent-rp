@@ -1,6 +1,7 @@
 /** Host-owned reusable Character Card library retaining original transport bytes. */
 
 import { createHash, randomUUID } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import {
   existsSync,
   mkdirSync,
@@ -12,6 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
+import { unzipSync, zipSync } from 'fflate'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { CharacterImportTransport } from './import/session-character.ts'
@@ -25,7 +27,8 @@ import { charxAvatar, charxImageAssets, parseCharx, readCharxImageAsset } from '
 import { AI_OUTPUT_PLACEMENT, renderCharacterDisplay, summarizeCharacterRegexScript } from './frontend-regex.ts'
 import {
   CHARACTER_REMOTE_RESOURCE_TYPES,
-  type CharacterLibraryDetail, type CharacterLibraryDisplayExtension, type CharacterLibraryImage,
+  type CharacterLibraryDetail, type CharacterLibraryDisplayExtension, type CharacterLibraryEditableContent,
+  type CharacterLibraryImage, type CharacterLibraryRegexScript,
   type CharacterLibraryImportResult, type CharacterLibrarySummary, type CharacterLibraryWorldInfo,
   type CharacterLibraryWorldInfoEntry, type CharacterLibraryWorldInfoPage, type CharacterRemoteResourceApproval,
   type CharacterRemoteResourcePolicy, type CharacterRemoteResourceType,
@@ -87,10 +90,18 @@ interface StoredDisplayExtension {
 
 interface StoredCharacterOverlay {
   readonly format: 0
+  readonly revision: number
+  readonly content?: CharacterLibraryEditableContent
+  readonly regexOverrides: readonly StoredRegexOverride[]
   readonly textReplacements: readonly StoredTextReplacement[]
   readonly displayExtensions: readonly StoredDisplayExtension[]
   readonly approvedRemoteResources: readonly CharacterRemoteResourceApproval[]
   readonly remoteResourcePolicy: CharacterRemoteResourcePolicy
+}
+
+interface StoredRegexOverride {
+  readonly index: number
+  readonly enabled: boolean
 }
 
 /** Browser-selected standalone SillyTavern display regex. */
@@ -124,6 +135,12 @@ export interface CharacterLibraryOptions {
 interface CharacterLibraryAsset {
   readonly summary: CharacterLibrarySummary
   readonly originalFilename: string
+  readonly mediaType: string
+  readonly data: Uint8Array
+}
+
+export interface CharacterLibraryExportAsset {
+  readonly filename: string
   readonly mediaType: string
   readonly data: Uint8Array
 }
@@ -166,6 +183,42 @@ function object(value: unknown, label: string): Record<string, unknown> {
 function nonNegativeInteger(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new Error(`${label} must be a non-negative integer`)
   return value
+}
+
+function editableContent(value: unknown, label: string): CharacterLibraryEditableContent {
+  const content = object(value, label)
+  const fields = ['name', 'description', 'personality', 'scenario', 'messageExample', 'firstMessage'] as const
+  for (const field of fields) {
+    if (typeof content[field] !== 'string') throw new Error(`${label}.${field} must be a string`)
+  }
+  const name = (content.name as string).trim()
+  if (name === '' || name.length > 200) throw new Error('角色名称不能为空且不能超过 200 个字符')
+  if (!Array.isArray(content.alternateGreetings)
+    || content.alternateGreetings.length > 256
+    || content.alternateGreetings.some(greeting => typeof greeting !== 'string')) {
+    throw new Error('备选开场必须是最多 256 条文字')
+  }
+  return {
+    name,
+    description: content.description as string,
+    personality: content.personality as string,
+    scenario: content.scenario as string,
+    messageExample: content.messageExample as string,
+    firstMessage: content.firstMessage as string,
+    alternateGreetings: [...content.alternateGreetings] as string[],
+  }
+}
+
+function characterContent(card: ImportedCharacterCard): CharacterLibraryEditableContent {
+  return {
+    name: card.name,
+    description: card.description,
+    personality: card.personality,
+    scenario: card.scenario,
+    messageExample: card.messageExample,
+    firstMessage: card.firstMessage,
+    alternateGreetings: [...card.alternateGreetings],
+  }
 }
 
 function parseTavernHelperSummary(value: unknown): TavernHelperImportSummary | undefined {
@@ -258,6 +311,23 @@ function parseOverlay(value: unknown): StoredCharacterOverlay {
     }
     return replacement as unknown as StoredTextReplacement
   })
+  const revision = record.revision === undefined ? 0 : nonNegativeInteger(record.revision, 'character library overlay revision')
+  const content = record.content === undefined
+    ? undefined : editableContent(record.content, 'character library overlay content')
+  if (record.regexOverrides !== undefined && !Array.isArray(record.regexOverrides)) {
+    throw new Error('character library overlay has invalid regex overrides')
+  }
+  const regexOverrides = (record.regexOverrides ?? []).map((item, position) => {
+    const override = object(item, `character library regex override ${position + 1}`)
+    if (typeof override.enabled !== 'boolean') throw new Error('character library overlay has an invalid regex override')
+    return {
+      index: nonNegativeInteger(override.index, `character library regex override ${position + 1} index`),
+      enabled: override.enabled,
+    }
+  })
+  if (new Set(regexOverrides.map(override => override.index)).size !== regexOverrides.length) {
+    throw new Error('character library overlay has duplicate regex overrides')
+  }
   const displayExtensions = record.displayExtensions.map((item, index) => {
     const extension = object(item, `character library display extension ${index + 1}`)
     if (typeof extension.id !== 'string' || !DISPLAY_EXTENSION_ID_PATTERN.test(extension.id)
@@ -314,7 +384,8 @@ function parseOverlay(value: unknown): StoredCharacterOverlay {
     throw new Error('character library overlay has an invalid resource policy')
   }
   return {
-    format: 0, textReplacements, displayExtensions,
+    format: 0, revision, ...(content === undefined ? {} : { content }), regexOverrides,
+    textReplacements, displayExtensions,
     approvedRemoteResources: [...approvedRemoteResources.values()].sort((left, right) =>
       left.origin.localeCompare(right.origin) || left.type.localeCompare(right.type)),
     remoteResourcePolicy,
@@ -323,7 +394,8 @@ function parseOverlay(value: unknown): StoredCharacterOverlay {
 
 function emptyOverlay(): StoredCharacterOverlay {
   return {
-    format: 0, textReplacements: [], displayExtensions: [], approvedRemoteResources: [], remoteResourcePolicy: 'prompt',
+    format: 0, revision: 0, regexOverrides: [], textReplacements: [], displayExtensions: [],
+    approvedRemoteResources: [], remoteResourcePolicy: 'prompt',
   }
 }
 
@@ -423,7 +495,8 @@ function scriptJson(script: ImportedRegexScript): Record<string, unknown> {
 
 function applyOverlay(card: ImportedCharacterCard, overlay: StoredCharacterOverlay): ImportedCharacterCard {
   const enabled = overlay.displayExtensions.filter(extension => extension.enabled)
-  if (overlay.textReplacements.length === 0 && enabled.length === 0) return card
+  if (overlay.textReplacements.length === 0 && enabled.length === 0
+    && overlay.content === undefined && overlay.regexOverrides.length === 0) return card
   let raw: unknown = structuredClone(card.raw)
   for (const replacement of overlay.textReplacements) {
     const state = { matches: 0 }
@@ -432,9 +505,34 @@ function applyOverlay(card: ImportedCharacterCard, overlay: StoredCharacterOverl
       throw new Error('character library local text correction no longer matches its source')
     }
   }
-  if (enabled.length > 0) {
-    const data = cardData(raw)
+  const data = cardData(raw)
+  if (overlay.content !== undefined) {
+    data.name = overlay.content.name
+    data.description = overlay.content.description
+    data.personality = overlay.content.personality
+    data.scenario = overlay.content.scenario
+    data.mes_example = overlay.content.messageExample
+    data.first_mes = overlay.content.firstMessage
+    data.alternate_greetings = [...overlay.content.alternateGreetings]
+  }
+  if (overlay.regexOverrides.length > 0) {
     const extensions = data.extensions === undefined ? {} : object(data.extensions, 'character card overlay extensions')
+    const stored = extensions.regex_scripts
+    const scripts = stored === undefined ? [] : Array.isArray(stored) ? [...stored] : (() => {
+      throw new Error('character card overlay regex scripts must be an array')
+    })()
+    for (const override of overlay.regexOverrides) {
+      const script = scripts[override.index]
+      if (script === undefined) throw new Error('character library regex override no longer matches its source')
+      const record = object(script, `character card regex ${override.index + 1}`)
+      scripts[override.index] = { ...record, disabled: !override.enabled }
+    }
+    extensions.regex_scripts = scripts
+    data.extensions = extensions
+  }
+  if (enabled.length > 0) {
+    const currentData = cardData(raw)
+    const extensions = currentData.extensions === undefined ? {} : object(currentData.extensions, 'character card overlay extensions')
     const stored = extensions.regex_scripts
     const original = stored === undefined ? [] : Array.isArray(stored) ? stored : (() => {
       throw new Error('character card overlay regex scripts must be an array')
@@ -444,7 +542,7 @@ function applyOverlay(card: ImportedCharacterCard, overlay: StoredCharacterOverl
       ...original.filter((_script, index) => !replaced.has(index)),
       ...enabled.map(extension => scriptJson(extension.script)),
     ]
-    data.extensions = extensions
+    currentData.extensions = extensions
   }
   return parseCharacterCardValue(raw as JsonValue)
 }
@@ -453,6 +551,63 @@ function safeFilename(value: string | undefined, transport: 'png' | 'json' | 'ch
   const fallback = `character.${transport}`
   const name = basename(value?.trim() || fallback).trim()
   return name === '' ? fallback : name.slice(0, 240)
+}
+
+function editedFilename(value: string, transport: 'png' | 'json' | 'charx'): string {
+  const suffix = new RegExp(`\\.${transport}$`, 'iu')
+  const stem = basename(value).replace(suffix, '').trim() || 'character'
+  return `${stem}.edited.${transport}`
+}
+
+const CRC_TABLE = Uint32Array.from({ length: 256 }, (_value, index) => {
+  let crc = index
+  for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) === 0 ? crc >>> 1 : 0xedb88320 ^ (crc >>> 1)
+  return crc >>> 0
+})
+
+function pngCrc32(value: Uint8Array): number {
+  let crc = 0xffffffff
+  for (const byte of value) crc = CRC_TABLE[(crc ^ byte) & 0xff]! ^ (crc >>> 8)
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+function pngTextChunk(keyword: 'ccv3' | 'chara', json: Uint8Array): Uint8Array {
+  const type = Buffer.from('tEXt', 'ascii')
+  const base64 = Buffer.from(json).toString('base64')
+  const value = Buffer.concat([
+    Buffer.from(keyword, 'ascii'), Buffer.from([0]), Buffer.from(base64, 'latin1'),
+  ])
+  const result = Buffer.alloc(12 + value.byteLength)
+  result.writeUInt32BE(value.byteLength, 0)
+  type.copy(result, 4)
+  value.copy(result, 8)
+  result.writeUInt32BE(pngCrc32(Buffer.concat([type, value])), 8 + value.byteLength)
+  return result
+}
+
+function editedPng(source: Uint8Array, keyword: 'ccv3' | 'chara', json: Uint8Array): Uint8Array {
+  const parts: Uint8Array[] = [source.subarray(0, 8)]
+  let offset = 8
+  let inserted = false
+  while (offset < source.byteLength) {
+    if (source.byteLength - offset < 12) throw new Error('character card PNG has a truncated chunk')
+    const length = new DataView(source.buffer, source.byteOffset + offset, 4).getUint32(0)
+    const end = offset + 12 + length
+    if (!Number.isSafeInteger(end) || end > source.byteLength) throw new Error('character card PNG has an invalid chunk')
+    const type = Buffer.from(source.subarray(offset + 4, offset + 8)).toString('ascii')
+    const data = source.subarray(offset + 8, offset + 8 + length)
+    const nul = type === 'tEXt' ? data.indexOf(0) : -1
+    const textKeyword = nul < 0 ? '' : Buffer.from(data.subarray(0, nul)).toString('latin1').toLocaleLowerCase()
+    if (type === 'IEND' && !inserted) {
+      parts.push(pngTextChunk(keyword, json))
+      inserted = true
+    }
+    if (!(type === 'tEXt' && textKeyword === keyword)) parts.push(source.subarray(offset, end))
+    offset = end
+    if (type === 'IEND') break
+  }
+  if (!inserted) throw new Error('character card PNG has no IEND chunk')
+  return new Uint8Array(Buffer.concat(parts.map(part => Buffer.from(part))))
 }
 
 function summary(
@@ -526,10 +681,19 @@ function greetingDetail(card: ImportedCharacterCard): {
   }
 }
 
-function regexScriptDetail(card: ImportedCharacterCard): CharacterLibraryDetail['regexScripts'] {
-  return card.frontend.regexScripts.map((script, index) => ({
+function regexScriptDetail(
+  sourceCard: ImportedCharacterCard,
+  overlay: StoredCharacterOverlay,
+): readonly CharacterLibraryRegexScript[] {
+  const overrides = new Map(overlay.regexOverrides.map(override => [override.index, override.enabled]))
+  const replaced = new Set(overlay.displayExtensions.filter(extension => extension.enabled)
+    .flatMap(extension => extension.replacedCardRegexIndices))
+  const localCard = applyOverlay(sourceCard, { ...overlay, displayExtensions: [] })
+  return localCard.frontend.regexScripts.map((script, index) => ({
     index,
     ...summarizeCharacterRegexScript(script),
+    locallyOverridden: overrides.has(index),
+    replacedByDisplayExtension: replaced.has(index),
   }))
 }
 
@@ -600,10 +764,13 @@ function characterDetail(
     remoteResourcePolicy: parsed.overlay.remoteResourcePolicy,
     ...(worldInfo === undefined ? {} : { worldInfo }),
     degradations: parsed.card.degradations,
-    regexScripts: regexScriptDetail(parsed.card),
+    regexScripts: regexScriptDetail(parsed.sourceCard, parsed.overlay),
     displayExtensions: displayExtensionDetail(parsed.overlay, parsed.sourceCard),
     localCorrectionCount: parsed.overlay.textReplacements.reduce((total, replacement) =>
       total + replacement.expectedMatches, 0),
+    content: characterContent(parsed.card),
+    localRevision: parsed.overlay.revision,
+    localEdits: parsed.overlay.content !== undefined || parsed.overlay.regexOverrides.length > 0,
   }
 }
 
@@ -690,6 +857,34 @@ export class CharacterLibrary {
       originalFilename: entry.meta.originalFilename,
       mediaType: entry.meta.mediaType,
       data: entry.data,
+    }
+  }
+
+  /** Export the effective local revision in the original transport while retaining the source asset. */
+  exportModified(id: string): CharacterLibraryExportAsset {
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    const json = new TextEncoder().encode(`${JSON.stringify(parsed.card.raw, null, 2)}\n`)
+    if (entry.meta.transport === 'json') {
+      return {
+        filename: editedFilename(entry.meta.originalFilename, 'json'),
+        mediaType: 'application/json',
+        data: json,
+      }
+    }
+    if (entry.meta.transport === 'png') {
+      return {
+        filename: editedFilename(entry.meta.originalFilename, 'png'),
+        mediaType: 'image/png',
+        data: editedPng(entry.data, entry.meta.metadataKeyword!, json),
+      }
+    }
+    const files = unzipSync(entry.data)
+    files['card.json'] = json
+    return {
+      filename: editedFilename(entry.meta.originalFilename, 'charx'),
+      mediaType: 'application/zip',
+      data: zipSync(files),
     }
   }
 
@@ -964,6 +1159,56 @@ export class CharacterLibrary {
     return this.get(id)
   }
 
+  /** Save a complete local character definition without rewriting the imported asset. */
+  updateContent(id: string, value: CharacterLibraryEditableContent, revision: number): CharacterLibraryDetail {
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    this.assertLocalRevision(parsed.overlay, revision)
+    const content = editableContent(value, '角色设定')
+    const source = characterContent(parsed.sourceCard)
+    const { content: _previousContent, ...withoutContent } = parsed.overlay
+    const next: StoredCharacterOverlay = {
+      ...withoutContent,
+      revision: parsed.overlay.revision + 1,
+      ...(JSON.stringify(content) === JSON.stringify(source) ? {} : { content }),
+    }
+    return this.commitLocalRevision(entry, parsed.sourceCard, next)
+  }
+
+  /** Enable or pause one card-owned regex through the same reversible local revision. */
+  setRegexEnabled(id: string, index: number, enabled: boolean, revision: number): CharacterLibraryDetail {
+    if (!Number.isSafeInteger(index) || index < 0 || typeof enabled !== 'boolean') throw new Error('角色卡正则开关无效')
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    this.assertLocalRevision(parsed.overlay, revision)
+    const source = parsed.sourceCard.frontend.regexScripts[index]
+    if (source === undefined) throw new Error('角色卡中没有这条正则')
+    const sourceEnabled = !source.disabled
+    const regexOverrides = [
+      ...parsed.overlay.regexOverrides.filter(override => override.index !== index),
+      ...(enabled === sourceEnabled ? [] : [{ index, enabled }]),
+    ].sort((left, right) => left.index - right.index)
+    return this.commitLocalRevision(entry, parsed.sourceCard, {
+      ...parsed.overlay,
+      revision: parsed.overlay.revision + 1,
+      regexOverrides,
+    })
+  }
+
+  /** Restore imported character fields and regex switches while retaining permissions and display extensions. */
+  resetLocalEdits(id: string, revision: number): CharacterLibraryDetail {
+    const entry = this.readId(id)
+    const parsed = this.parseStored(entry.meta, entry.data)
+    this.assertLocalRevision(parsed.overlay, revision)
+    if (parsed.overlay.content === undefined && parsed.overlay.regexOverrides.length === 0) return this.get(id)
+    const { content: _content, ...withoutContent } = parsed.overlay
+    return this.commitLocalRevision(entry, parsed.sourceCard, {
+      ...withoutContent,
+      revision: parsed.overlay.revision + 1,
+      regexOverrides: [],
+    })
+  }
+
   /** Hide one reusable card from the everyday collection without touching its original asset. */
   archive(id: string): CharacterLibraryDetail {
     const entry = this.readId(id)
@@ -1036,6 +1281,29 @@ export class CharacterLibrary {
     } finally {
       rmSync(staging, { force: true })
     }
+  }
+
+  private assertLocalRevision(overlay: StoredCharacterOverlay, revision: number): void {
+    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('角色修订版本无效')
+    if (revision !== overlay.revision) throw new Error('角色设定已在别处改变，请刷新后重试')
+  }
+
+  private commitLocalRevision(
+    entry: { readonly meta: StoredCharacterMetadata; readonly data: Uint8Array },
+    sourceCard: ImportedCharacterCard,
+    overlay: StoredCharacterOverlay,
+  ): CharacterLibraryDetail {
+    // Parse before committing so a too-large or structurally invalid edit never replaces the last usable revision.
+    applyOverlay(sourceCard, overlay)
+    this.writeOverlay(entry.meta.id, overlay)
+    const updatedMeta = {
+      ...entry.meta,
+      updatedAt: Math.max(Date.now(), entry.meta.updatedAt + 1),
+    }
+    const parsed = this.parseStored(updatedMeta, entry.data)
+    const detail = characterDetail(updatedMeta, parsed, true)
+    this.writeMetadata({ ...updatedMeta, index: storedIndex(detail) })
+    return detail
   }
 
   private parseStored(meta: StoredCharacterMetadata, data: Uint8Array): ParsedStoredCharacter {

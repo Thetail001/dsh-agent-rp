@@ -5,7 +5,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { CharacterLibrary } from './character-library.ts'
 import {
-  CHARACTER_LIBRARY_PATH, type CharacterLibraryDetail, type CharacterRemoteResourceType,
+  CHARACTER_LIBRARY_PATH, type CharacterLibraryDetail, type CharacterLibraryEditRequest,
+  type CharacterRemoteResourceType,
 } from './character-library-protocol.ts'
 import { isCharacterRemoteResourceType } from './card-remote-resource.ts'
 import {
@@ -32,6 +33,31 @@ async function readUpload(request: IncomingMessage): Promise<Uint8Array> {
     emptyMessage: '角色卡文件为空',
     tooLargeMessage: '角色卡文件过大',
   }))
+}
+
+async function readEditRequest(request: IncomingMessage): Promise<CharacterLibraryEditRequest> {
+  let value: unknown
+  try {
+    value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await readUpload(request)))
+  } catch (error) {
+    throw new Error('角色修订请求不是有效 JSON', { cause: error })
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('角色修订请求无效')
+  const record = value as Record<string, unknown>
+  if (record.format !== 0 || typeof record.operation !== 'string'
+    || typeof record.revision !== 'number' || !Number.isSafeInteger(record.revision) || record.revision < 0) {
+    throw new Error('角色修订请求字段无效')
+  }
+  if (record.operation === 'save-content' && typeof record.content === 'object' && record.content !== null) {
+    return record as unknown as CharacterLibraryEditRequest
+  }
+  if (record.operation === 'set-regex-enabled'
+    && typeof record.index === 'number' && Number.isSafeInteger(record.index) && record.index >= 0
+    && typeof record.enabled === 'boolean') {
+    return record as unknown as CharacterLibraryEditRequest
+  }
+  if (record.operation === 'reset') return record as unknown as CharacterLibraryEditRequest
+  throw new Error('角色修订操作无效')
 }
 
 function pathParts(request: IncomingMessage): readonly string[] {
@@ -145,6 +171,17 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
           return
         }
         if (request.method === 'POST' && parts.length === 2 && parts[0] !== undefined
+          && parts[1] === 'edits') {
+          const edit = await readEditRequest(request)
+          const entry = edit.operation === 'save-content'
+            ? library.updateContent(parts[0], edit.content, edit.revision)
+            : edit.operation === 'set-regex-enabled'
+              ? library.setRegexEnabled(parts[0], edit.index, edit.enabled, edit.revision)
+              : library.resetLocalEdits(parts[0], edit.revision)
+          json(response, 200, { format: 0, entry: browserDetail(entry) })
+          return
+        }
+        if (request.method === 'POST' && parts.length === 2 && parts[0] !== undefined
           && (parts[1] === 'archive' || parts[1] === 'restore')) {
           const entry = parts[1] === 'archive' ? library.archive(parts[0]) : library.restore(parts[0])
           json(response, 200, { format: 0, entry: browserDetail(entry) })
@@ -208,6 +245,18 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
           response.writeHead(200, {
             'cache-control': 'private, max-age=31536000, immutable',
             'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(asset.originalFilename)}`,
+            'content-length': String(asset.data.byteLength),
+            'content-type': asset.mediaType,
+            'x-content-type-options': 'nosniff',
+          })
+          response.end(asset.data)
+          return
+        }
+        if (request.method === 'GET' && parts.length === 2 && parts[0] !== undefined && parts[1] === 'export') {
+          const asset = library.exportModified(parts[0])
+          response.writeHead(200, {
+            'cache-control': 'no-store',
+            'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(asset.filename)}`,
             'content-length': String(asset.data.byteLength),
             'content-type': asset.mediaType,
             'x-content-type-options': 'nosniff',

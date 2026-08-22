@@ -78,6 +78,45 @@ export interface CharacterLibraryDisplayExtension {
   readonly replacedCardRegexNames: readonly string[]
 }
 
+/** Player-editable character definition kept beside the immutable imported asset. */
+export interface CharacterLibraryEditableContent {
+  readonly name: string
+  readonly description: string
+  readonly personality: string
+  readonly scenario: string
+  readonly messageExample: string
+  readonly firstMessage: string
+  readonly alternateGreetings: readonly string[]
+}
+
+/** One card-owned regex with stable source addressing for local enable switches. */
+export interface CharacterLibraryRegexScript extends CharacterRegexScriptSummary {
+  readonly index: number
+  readonly locallyOverridden: boolean
+  readonly replacedByDisplayExtension: boolean
+}
+
+/** Optimistic, reversible mutation of one local character revision. */
+export type CharacterLibraryEditRequest =
+  | {
+    readonly format: 0
+    readonly operation: 'save-content'
+    readonly revision: number
+    readonly content: CharacterLibraryEditableContent
+  }
+  | {
+    readonly format: 0
+    readonly operation: 'set-regex-enabled'
+    readonly revision: number
+    readonly index: number
+    readonly enabled: boolean
+  }
+  | {
+    readonly format: 0
+    readonly operation: 'reset'
+    readonly revision: number
+  }
+
 /** One compact reusable Character Card shown in the library. */
 export interface CharacterLibrarySummary {
   readonly id: string
@@ -118,11 +157,17 @@ export interface CharacterLibraryDetail extends CharacterLibrarySummary {
   readonly worldInfo?: CharacterLibraryWorldInfo
   readonly degradations: readonly CharacterImportDegradation[]
   /** Card-owned regex metadata without expressions, replacements, or card text. */
-  readonly regexScripts: readonly (CharacterRegexScriptSummary & { readonly index: number })[]
+  readonly regexScripts: readonly CharacterLibraryRegexScript[]
   /** Display-only extensions stored beside, rather than inside, the original card asset. */
   readonly displayExtensions: readonly CharacterLibraryDisplayExtension[]
   /** Exact local text corrections applied without rewriting the imported asset. */
   readonly localCorrectionCount: number
+  /** Effective editable fields after applying the local revision. */
+  readonly content: CharacterLibraryEditableContent
+  /** Monotonic revision used to reject stale editor and regex writes. */
+  readonly localRevision: number
+  /** Whether character fields or card-owned regex switches differ from the imported asset. */
+  readonly localEdits: boolean
 }
 
 /** What changed when one local card file was added to the library. */
