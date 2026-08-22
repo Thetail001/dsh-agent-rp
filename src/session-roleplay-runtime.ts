@@ -147,6 +147,7 @@ export function resolveSessionRoleplayRuntime(input: {
       id: 'state:tavern-helper',
       owner: 'session' as const,
       adapter: 'sillytavern:tavern-helper',
+      revision: tavern.revision,
     }]),
   ]
   const modules: RoleplayModuleBinding[] = [

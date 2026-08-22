@@ -32,7 +32,7 @@ import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import type { ImportedCharacterCard, ImportedRegexScript } from './import/types.ts'
 import {
   prepareSillyTavernProviderMessages,
-  type SillyTavernPromptPlan,
+  type RoleplayProviderPromptPlan,
 } from './preset-prompt.ts'
 import { resolveSessionPersonaIdentity } from './session-persona.ts'
 
@@ -237,15 +237,15 @@ export function applyPromptRegexSurface(
 export function installPromptRegexStream(
   ctx: Context,
   agentForSession: (sessionId: string) => Agent | undefined,
-  promptPlanForAgent: (agent: Agent) => SillyTavernPromptPlan = () => ({
-    beforeHistory: [], afterHistory: [], inChat: [], includeHistory: true,
-  }),
+  promptPlanForAgent: (agent: Agent) => RoleplayProviderPromptPlan | undefined = () => undefined,
 ): void {
   ctx.on('llm/stream', (options, next) => {
     if (!isAgentLoopDispatch(options) || options.sessionId === undefined) return next()
     const agent = agentForSession(String(options.sessionId))
     if (agent === undefined) return next()
-    const plan = promptPlanForAgent(agent)
+    const plan = promptPlanForAgent(agent) ?? {
+      beforeHistory: [], afterHistory: [], inChat: [], includeHistory: true,
+    }
     const active = readActiveSessionCharacter(agent.session.events)
     if (active === undefined) {
       if (plan.beforeHistory.length === 0 && plan.afterHistory.length === 0 && plan.inChat.length === 0

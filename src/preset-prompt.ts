@@ -7,7 +7,6 @@ import type {
   ImportedSillyTavernPreset,
   SillyTavernPresetContinuation,
   SillyTavernPresetPrompt,
-  SillyTavernPresetRole,
 } from './import/sillytavern-preset.ts'
 import { substituteCardMacros } from './prompt.ts'
 import { substituteSillyTavernIdentityMacros } from './sillytavern-identity-macro.ts'
@@ -28,40 +27,54 @@ export interface PresetPromptInputs {
   readonly renderTemplate?: (template: string) => EjsTemplateResult
 }
 
-/** One ordered Prompt Manager module after marker and macro expansion. */
-export interface SillyTavernOrderedPrompt {
-  readonly role: SillyTavernPresetRole
+/** Provider-neutral role retained by one ordered prompt contribution. */
+export type RoleplayPromptRole = 'system' | 'user' | 'assistant'
+
+/** One ordered prompt module after adapter expansion. */
+export interface RoleplayOrderedPrompt {
+  readonly role: RoleplayPromptRole
   readonly content: string
 }
 
-/** Host-compatible prompt split around SillyTavern's chatHistory marker. */
-export interface AssembledSillyTavernPreset {
-  readonly beforeHistory: readonly SillyTavernOrderedPrompt[]
-  readonly afterHistory: readonly SillyTavernOrderedPrompt[]
-  readonly inChat: readonly SillyTavernInChatPrompt[]
+/** Host-compatible prompt split around the conversation history. */
+export interface RoleplayAssembledPrompt {
+  readonly beforeHistory: readonly RoleplayOrderedPrompt[]
+  readonly afterHistory: readonly RoleplayOrderedPrompt[]
+  readonly inChat: readonly RoleplayInChatPrompt[]
   readonly includeHistory: boolean
-  readonly continuation?: SillyTavernContinuationPlan
+  readonly continuation?: RoleplayContinuationPlan
   readonly enabledPromptCount: number
   readonly unsupportedMacroCount: number
   readonly templateFailureCount: number
 }
 
 /** Prompt fields required by the final LLM message assembly seam. */
-export type SillyTavernPromptPlan = Pick<
-  AssembledSillyTavernPreset,
+export type RoleplayProviderPromptPlan = Pick<
+  RoleplayAssembledPrompt,
   'beforeHistory' | 'afterHistory' | 'inChat' | 'includeHistory' | 'continuation'
 >
 
 /** Expanded continuation behavior retained until the final provider message seam. */
-export interface SillyTavernContinuationPlan extends SillyTavernPresetContinuation {}
+export interface RoleplayContinuationPlan {
+  readonly prefill: boolean
+  readonly postfix: '' | ' ' | '\n' | '\n\n'
+  readonly nudgePrompt: string
+}
 
-/** One expanded Prompt Manager module placed relative to recent chat messages. */
-export interface SillyTavernInChatPrompt {
-  readonly role: SillyTavernPresetRole
+/** One expanded prompt module placed relative to recent chat messages. */
+export interface RoleplayInChatPrompt {
+  readonly role: RoleplayPromptRole
   readonly content: string
   readonly depth: number
   readonly order: number
 }
+
+/** Compatibility names retained for existing adapter callers. */
+export type SillyTavernOrderedPrompt = RoleplayOrderedPrompt
+export type AssembledSillyTavernPreset = RoleplayAssembledPrompt
+export type SillyTavernPromptPlan = RoleplayProviderPromptPlan
+export type SillyTavernContinuationPlan = RoleplayContinuationPlan
+export type SillyTavernInChatPrompt = RoleplayInChatPrompt
 
 interface MacroState {
   readonly variables: Map<string, string>
@@ -270,7 +283,7 @@ function continuationPlan(
   continuation: SillyTavernPresetContinuation | undefined,
   inputs: PresetPromptInputs,
   state: MacroState,
-): SillyTavernContinuationPlan | undefined {
+): RoleplayContinuationPlan | undefined {
   if (continuation === undefined) return undefined
   const card = inputs.card
   const source = card === undefined
@@ -282,7 +295,7 @@ function continuationPlan(
 /** Insert expanded in-chat modules using SillyTavern's depth, priority, and role ordering. */
 export function injectSillyTavernInChatPrompts(
   messages: readonly Message[],
-  prompts: readonly SillyTavernInChatPrompt[],
+  prompts: readonly RoleplayInChatPrompt[],
 ): Message[] {
   if (prompts.length === 0) return [...messages]
   const result = [...messages]
@@ -312,7 +325,7 @@ export function injectSillyTavernInChatPrompts(
   return result
 }
 
-function orderedMessage(prompt: SillyTavernOrderedPrompt): Message {
+function orderedMessage(prompt: RoleplayOrderedPrompt): Message {
   return createMessage({
     role: prompt.role,
     source: { kind: 'plugin', plugin: 'dsh-agent-rp-preset' },
@@ -326,7 +339,7 @@ function orderedMessage(prompt: SillyTavernOrderedPrompt): Message {
  */
 export function injectSillyTavernPromptPlan(
   messages: readonly Message[],
-  plan: SillyTavernPromptPlan,
+  plan: RoleplayProviderPromptPlan,
 ): Message[] {
   const history = plan.includeHistory ? injectSillyTavernInChatPrompts(messages, plan.inChat) : []
   return [
@@ -359,7 +372,7 @@ function withContinuationPostfix(message: Message, postfix: SillyTavernPresetCon
 /** Apply SillyTavern continue-prefill or continue-nudge semantics after all prompt modules are placed. */
 export function applySillyTavernContinuation(
   messages: readonly Message[],
-  continuation: SillyTavernContinuationPlan | undefined,
+  continuation: RoleplayContinuationPlan | undefined,
 ): Message[] {
   if (continuation === undefined) return [...messages]
   const instructionIndex = messages.findLastIndex(isContinueInstruction)
@@ -381,7 +394,7 @@ export function applySillyTavernContinuation(
 /** Produce the exact provider-facing order after prompt placement and continuation handling. */
 export function prepareSillyTavernProviderMessages(
   messages: readonly Message[],
-  plan: SillyTavernPromptPlan,
+  plan: RoleplayProviderPromptPlan,
 ): Message[] {
   return applySillyTavernContinuation(injectSillyTavernPromptPlan(messages, plan), plan.continuation)
 }
@@ -390,7 +403,7 @@ export function prepareSillyTavernProviderMessages(
 export function assembleSillyTavernPreset(
   preset: ImportedSillyTavernPreset,
   inputs: PresetPromptInputs,
-): AssembledSillyTavernPreset {
+): RoleplayAssembledPrompt {
   const byId = new Map(preset.prompts.map(prompt => [prompt.identifier, prompt]))
   const state: MacroState = {
     variables: new Map(),
@@ -399,9 +412,9 @@ export function assembleSillyTavernPreset(
     unsupported: 0,
     templateFailures: 0,
   }
-  const before: SillyTavernOrderedPrompt[] = []
-  const after: SillyTavernOrderedPrompt[] = []
-  const inChat: SillyTavernInChatPrompt[] = []
+  const before: RoleplayOrderedPrompt[] = []
+  const after: RoleplayOrderedPrompt[] = []
+  const inChat: RoleplayInChatPrompt[] = []
   let pastHistory = false
   let includeHistory = false
   let enabledPromptCount = 0

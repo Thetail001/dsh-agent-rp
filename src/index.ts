@@ -69,22 +69,15 @@ import {
 } from './import/session-preset.ts'
 import {
   renderCharacterPrompt,
-  renderImportedChatPrompt,
-  renderImportedCharacterPrompt,
-  renderWorldInfoScenarioPrompt,
   renderMemoryContext,
-  roleplayVisibleDialogue,
-  roleplayVisibleTranscript,
-  renderSessionLorebooks,
   substituteCardMacros,
 } from './prompt.ts'
-import { createEjsWorldInfoBooks, EjsTemplateEngine, type EjsTemplateContext } from './ejs-template.ts'
+import { EjsTemplateEngine } from './ejs-template.ts'
 import { installBundledAgentRpPreset } from './preset.ts'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { createAgentRpProjectionDefinition } from './projection.ts'
 import { installMvuStreamCompletion } from './mvu-stream.ts'
 import { installPromptRegexStream } from './prompt-regex-stream.ts'
-import { assembleSillyTavernPreset, type AssembledSillyTavernPreset } from './preset-prompt.ts'
 import { configurePresetFromCommand } from './preset-configuration.ts'
 import { PresetLibrary } from './preset-library.ts'
 import { installPresetLibraryHttp } from './preset-library-http.ts'
@@ -117,12 +110,6 @@ import { GeneratedImageLibrary } from './generated-image-library.ts'
 import { executeImageGenerationCommand } from './image-generation-command.ts'
 import { installImageGenerationHttp } from './image-generation-http.ts'
 import { executeTavernHelperMutation } from './tavern-helper-command.ts'
-import {
-  readTavernHelperState,
-  tavernInjectedInChatPrompts,
-  tavernInjectedScanText,
-  type TavernHelperState,
-} from './tavern-helper.ts'
 import { executeTavernTrigger } from './tavern-trigger.ts'
 import { installTavernGenerationHttp } from './tavern-generation-http.ts'
 import { installTavernModelListHttp } from './tavern-model-list-http.ts'
@@ -137,6 +124,7 @@ import {
   type WorldbookCharacterContextRegistry,
 } from './worldbook-character-context.ts'
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
+import { prepareRoleplayTurn, type RoleplayTurnPlan } from './roleplay-turn-plan.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -459,17 +447,6 @@ function latestUserAttachments(agent: Agent): { eventSeq: number; attachments: C
   throw new Error('没有找到导入请求；请在同一条消息中附上 Character Card PNG、JSON 或 CHARX')
 }
 
-function ejsVariableScopes(state: TavernHelperState | undefined): NonNullable<EjsTemplateContext['variableScopes']> {
-  return state?.scopes ?? {}
-}
-
-function ejsLorebookOptions(engine: EjsTemplateEngine | undefined, context: EjsTemplateContext) {
-  return engine === undefined ? {} : {
-    regexEngine: engine,
-    renderTemplate: engine.createRenderer(context),
-  }
-}
-
 /**
  * Attach one persistent character identity and memory tool to a top-level Agent.
  * @param agent - published top-level Agent whose scope owns every registration.
@@ -488,7 +465,7 @@ export function installAgentRp(
   const rememberIntentByAgent = new WeakMap<Agent, boolean>()
   const rememberRestrictions = new Map<Agent, () => void>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
-  const presetPromptPlanByAgent = new WeakMap<Agent, AssembledSillyTavernPreset>()
+  const turnPlanByAgent = new WeakMap<Agent, RoleplayTurnPlan>()
   const gateway = ctx.get('apiProxy') as PromptAttachmentGateway | undefined
   const commands = (ctx as Context & { commands: HumanCommandGateway }).commands
   const setRememberAvailable = (agent: Agent, available: boolean): void => {
@@ -728,133 +705,21 @@ export function installAgentRp(
       const pendingMessages = agent === undefined ? [] : pendingMessagesByAgent.get(agent) ?? []
       if (agent !== undefined) pendingMessagesByAgent.delete(agent)
       if (agent === undefined) return renderCharacterPrompt(config)
-      const runtime = resolveSessionRoleplayRuntime({
+      const resolved = resolveSessionRoleplayRuntime({
         session: agent.session,
         deployment: config,
         memoryWriteAvailable: rememberIntentByAgent.get(agent) === true,
         templateEngineAvailable: options.ejsTemplateEngine !== undefined,
       })
-      const { snapshot, tavern } = runtime
-      const injectedScanText = tavernInjectedScanText(tavern)
-      const configuredSources = runtime.lorebooks
-      const books = configuredSources.map(({ source, configured }) => ({
-        id: source.id,
-        name: source.name,
-        lorebook: configured,
-      }))
-      const splitLore = (rendered: ReturnType<typeof renderSessionLorebooks>) => {
-        const collect = (source: 'character' | 'standalone') => {
-          const selected = rendered.books.filter((_book, index) => configuredSources[index]?.source.source === source)
-          return {
-            beforeCharacter: selected.flatMap(book => book.inspected.beforeCharacter),
-            afterCharacter: selected.flatMap(book => book.inspected.afterCharacter),
-          }
-        }
-        return { character: collect('character'), standalone: collect('standalone') }
-      }
-      if (runtime.card === undefined) {
-        const importedChat = runtime.importedChat
-        const worldInfoSeed = runtime.worldScenario
-        const characterName = snapshot.actor?.name ?? snapshot.experience.name
-        const templateOptions = ejsLorebookOptions(options.ejsTemplateEngine, {
-          characterName,
-          userName: snapshot.participant?.name ?? '用户',
-          messages: [...roleplayVisibleDialogue(agent.session, pendingMessages), ...injectedScanText],
-          transcript: roleplayVisibleTranscript(agent.session, pendingMessages),
-          variableScopes: ejsVariableScopes(tavern),
-          worldInfoBooks: createEjsWorldInfoBooks(books),
-        })
-        const { standalone: standaloneLore } = splitLore(renderSessionLorebooks({
-          books,
-          session: agent.session,
-          pendingMessages,
-          scanText: injectedScanText,
-          templateOptions,
-          ...(snapshot.world.tokenBudget === undefined ? {} : { tokenBudget: snapshot.world.tokenBudget }),
-        }))
-        if (snapshot.prompt.strategy === 'modules' && runtime.preset !== undefined) {
-          const assembled = assembleSillyTavernPreset(runtime.preset.preset, {
-            characterName,
-            ...(snapshot.participant?.name === undefined ? {} : { userName: snapshot.participant.name }),
-            ...(snapshot.participant?.description === undefined
-              ? {} : { userPersona: snapshot.participant.description }),
-            worldInfoBefore: standaloneLore.beforeCharacter,
-            worldInfoAfter: standaloneLore.afterCharacter,
-            session: agent.session,
-            pendingMessages,
-            ...(templateOptions.renderTemplate === undefined ? {} : { renderTemplate: templateOptions.renderTemplate }),
-          })
-          presetPromptPlanByAgent.set(agent, assembled)
-          return ''
-        }
-        presetPromptPlanByAgent.delete(agent)
-        if (importedChat !== undefined) {
-          return [
-            ...standaloneLore.beforeCharacter,
-            renderImportedChatPrompt(
-              importedChat.characterName,
-              snapshot.participant?.name,
-              snapshot.participant?.description,
-            ),
-            ...standaloneLore.afterCharacter,
-          ].join('\n\n')
-        }
-        if (worldInfoSeed !== undefined) {
-          return renderWorldInfoScenarioPrompt(
-            standaloneLore.beforeCharacter,
-            standaloneLore.afterCharacter,
-            snapshot.participant?.description,
-          )
-        }
-        return renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter)
-      }
-      const card = runtime.card
-      const userName = snapshot.participant?.name
-      const userPersona = snapshot.participant?.description
-      const mvu = runtime.mvu
-      const templateOptions = ejsLorebookOptions(options.ejsTemplateEngine, {
-        characterName: card.nickname?.trim() || card.name,
-        userName: userName ?? '用户',
-        messages: [...roleplayVisibleDialogue(agent.session, pendingMessages), ...injectedScanText],
-        transcript: roleplayVisibleTranscript(agent.session, pendingMessages),
-        variableScopes: ejsVariableScopes(tavern),
-        ...(mvu === undefined ? {} : { statData: mvu.statData }),
-        worldInfoBooks: createEjsWorldInfoBooks(books),
-      })
-      const { standalone: standaloneLore, character: characterLore } = splitLore(renderSessionLorebooks({
-        books,
+      const plan = prepareRoleplayTurn({
         session: agent.session,
         pendingMessages,
-        scanText: injectedScanText,
-        ...(mvu === undefined ? {} : { statData: mvu.statData }),
-        templateOptions,
-        ...(snapshot.world.tokenBudget === undefined ? {} : { tokenBudget: snapshot.world.tokenBudget }),
-      }))
-      if (snapshot.prompt.strategy === 'modules' && runtime.preset !== undefined) {
-        const assembled = assembleSillyTavernPreset(runtime.preset.preset, {
-          card,
-          ...(userName === undefined ? {} : { userName }),
-          ...(userPersona === undefined ? {} : { userPersona }),
-          worldInfoBefore: [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
-          worldInfoAfter: [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
-          session: agent.session,
-          pendingMessages,
-          mvuEnabled: mvu !== undefined,
-          ...(templateOptions.renderTemplate === undefined ? {} : { renderTemplate: templateOptions.renderTemplate }),
-        })
-        presetPromptPlanByAgent.set(agent, assembled)
-        return ''
-      }
-      presetPromptPlanByAgent.delete(agent)
-      return renderImportedCharacterPrompt(
-        card,
-        [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
-        [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
-        userName,
-        mvu?.statData,
-        userPersona,
-        templateOptions,
-      )
+        deployment: config,
+        resolved,
+        ...(options.ejsTemplateEngine === undefined ? {} : { templateEngine: options.ejsTemplateEngine }),
+      })
+      turnPlanByAgent.set(agent, plan)
+      return plan.prompt.systemPromptText
     },
     complete: true,
   })
@@ -885,7 +750,7 @@ export function installAgentRp(
     rememberRestrictions.get(agent)?.()
     rememberRestrictions.delete(agent)
     pendingMessagesByAgent.delete(agent)
-    presetPromptPlanByAgent.delete(agent)
+    turnPlanByAgent.delete(agent)
     for (const dispose of worldbookCharacterDisposers.get(agent) ?? []) dispose()
     worldbookCharacterDisposers.delete(agent)
   })
@@ -898,19 +763,7 @@ export function installAgentRp(
   installPromptRegexStream(
     ctx,
     sessionId => agentsBySession.get(sessionId),
-    (agent) => {
-      const plan = presetPromptPlanByAgent.get(agent)
-      return {
-        beforeHistory: plan?.beforeHistory ?? [],
-        afterHistory: plan?.afterHistory ?? [],
-        includeHistory: plan?.includeHistory ?? true,
-        ...(plan?.continuation === undefined ? {} : { continuation: plan.continuation }),
-        inChat: [
-          ...(plan?.inChat ?? []),
-          ...tavernInjectedInChatPrompts(readTavernHelperState(agent.session.events)),
-        ],
-      }
-    },
+    agent => turnPlanByAgent.get(agent)?.prompt,
   )
   installMvuStreamCompletion(ctx, sessionId => agentsBySession.get(sessionId))
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {
@@ -935,7 +788,8 @@ export function installAgentRp(
   ctx.on('agent/request', async ({ agent }, next) => {
     const config = await next()
     if (agentsByScope.get(agent) !== agent) return config
-    const generation = readActiveSessionPreset(agent.session.events)?.preset.generation
+    const generation = turnPlanByAgent.get(agent)?.generation
+      ?? readActiveSessionPreset(agent.session.events)?.preset.generation
     if (generation === undefined) return config
     const requestedEffort = generation.reasoningEffort
     const modelInfo = requestedEffort === undefined || requestedEffort === 'auto'
