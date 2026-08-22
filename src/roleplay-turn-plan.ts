@@ -154,6 +154,8 @@ export interface RoleplayTurnPlan {
 
 export interface PrepareRoleplayTurnInput {
   readonly session: Session
+  /** Exact logical next seq when replay construction appended a non-semantic lifecycle marker. */
+  readonly sessionBoundarySeq?: number
   readonly pendingMessages?: readonly UserMessage[]
   readonly deployment: ResolvedConfig
   readonly resolved: ResolvedSessionRoleplayRuntime
@@ -254,6 +256,11 @@ export function resolveRoleplayPrepareModuleOutcomes(
 /** Compile all Session resources into the exact immutable inputs consumed by the next generation. */
 export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTurnPlan {
   const pendingMessages = input.pendingMessages ?? []
+  const sessionBoundarySeq = input.sessionBoundarySeq ?? input.session.seq
+  if (!Number.isSafeInteger(sessionBoundarySeq) || sessionBoundarySeq < 0
+    || sessionBoundarySeq > input.session.seq) {
+    throw new Error('Roleplay preparation Session boundary is invalid')
+  }
   const { resolved } = input
   const { snapshot, tavern } = resolved
   const injectedScanText = tavernInjectedScanText(tavern)
@@ -278,7 +285,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
       .flatMap(block => block.type === 'text' ? [block.text] : [])).join('\n'),
     entropy: JSON.stringify([
       String(input.session.id),
-      input.session.seq,
+      sessionBoundarySeq,
       ...pendingMessages.map(message => String(message.id)),
     ]),
     stableEntropy: String(input.session.id),
@@ -453,7 +460,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     format: 0,
     input: {
       sessionId: String(input.session.id),
-      sessionSeq: input.session.seq,
+      sessionSeq: sessionBoundarySeq,
       pendingMessageIds: pendingMessages.map(message => String(message.id)),
     },
     runtime: snapshot,

@@ -20,6 +20,7 @@ import {
 import {
   appendSessionRoleplayTurnPlan,
   readSessionRoleplayTurnPlans,
+  replaySessionRoleplayTurnPlan,
 } from '../src/session-roleplay-turn-plan.ts'
 import { collectSessionRoleplaySettlementContributions } from '../src/session-roleplay-turn-settlement.ts'
 import {
@@ -77,6 +78,18 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
   assert.deepEqual(records[0]?.data.reference.receipt.runtime.settleModules, [{
     moduleId: 'roleplay:memory', stateIds: [],
   }])
+  const record = records[0]
+  assert.ok(record)
+  assert.deepEqual(replaySessionRoleplayTurnPlan({
+    session: reopened,
+    record,
+    deployment,
+  }), plan)
+  assert.throws(() => replaySessionRoleplayTurnPlan({
+    session: reopened,
+    record,
+    deployment: resolveConfig({ characterName: '漂移后的恢复测试角色' }),
+  }), /content digest/u)
   assert.doesNotMatch(JSON.stringify(records), /恢复测试角色|继续测试/u)
 })
 

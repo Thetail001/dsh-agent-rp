@@ -277,7 +277,12 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
   })
   assert.deepEqual(settlement.plans.map(reference => reference.step), [1, 2])
   assert.equal(settlement.plans[0]?.input.sessionSeq, first.input.sessionSeq)
-  assert.deepEqual(settlement.plans[0]?.receipt, {
+  const { preparedPlanSha256, preparedPlanSectionsSha256, ...firstReceipt } = settlement.plans[0]!.receipt!
+  assert.match(preparedPlanSha256 ?? '', /^[a-f0-9]{64}$/u)
+  assert.deepEqual(Object.keys(preparedPlanSectionsSha256 ?? {}), [
+    'format', 'input', 'runtime', 'world', 'prompt', 'stateReads', 'memory', 'generation', 'prepare',
+  ])
+  assert.deepEqual(firstReceipt, {
     runtime: {
       experienceId: 'actor:test',
       actorId: 'actor:card',

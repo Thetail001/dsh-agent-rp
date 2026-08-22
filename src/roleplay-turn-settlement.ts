@@ -1,5 +1,6 @@
 /** Durable, source-neutral result compiled when one Roleplay turn closes. */
 
+import { createHash } from 'node:crypto'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { readAgentRpMemoryHistory } from './memory.ts'
 import {
@@ -21,6 +22,10 @@ export interface RoleplayTurnPlanReference {
 
 /** Durable resource and decision references retained without duplicating model-visible prose. */
 export interface RoleplayTurnPlanReceipt {
+  /** Content-free proof that replay rebuilt the complete provider-neutral plan byte-for-byte. */
+  readonly preparedPlanSha256?: string
+  /** Per-section proofs used to diagnose drift without retaining model-visible prose twice. */
+  readonly preparedPlanSectionsSha256?: Readonly<Record<keyof RoleplayTurnPlan, string>>
   readonly runtime: {
     readonly experienceId: string
     readonly actorId?: string
@@ -52,6 +57,21 @@ export interface RoleplayTurnPlanReceipt {
   readonly memoryWriteAvailable?: boolean
   readonly generation: RoleplayTurnPlan['generation']
   readonly prepare: RoleplayTurnPlan['prepare']
+}
+
+/** Stable content digest for one JSON-only prepared plan. */
+export function roleplayTurnPlanSha256(plan: RoleplayTurnPlan): string {
+  return createHash('sha256').update(JSON.stringify(plan)).digest('hex')
+}
+
+/** Stable content digests for the named top-level sections of one prepared plan. */
+export function roleplayTurnPlanSectionSha256(
+  plan: RoleplayTurnPlan,
+): Readonly<Record<keyof RoleplayTurnPlan, string>> {
+  return Object.fromEntries(Object.entries(plan).map(([key, value]) => [
+    key,
+    createHash('sha256').update(JSON.stringify(value)).digest('hex'),
+  ])) as unknown as Readonly<Record<keyof RoleplayTurnPlan, string>>
 }
 
 /** Revision change observed at the turn boundary for one runtime state namespace. */
@@ -170,6 +190,8 @@ function latestTurnReply(
 
 function planReceipt(plan: RoleplayTurnPlan): RoleplayTurnPlanReceipt {
   return {
+    preparedPlanSha256: roleplayTurnPlanSha256(plan),
+    preparedPlanSectionsSha256: roleplayTurnPlanSectionSha256(plan),
     runtime: {
       experienceId: plan.runtime.experience.id,
       ...(plan.runtime.actor === undefined ? {} : { actorId: plan.runtime.actor.id }),

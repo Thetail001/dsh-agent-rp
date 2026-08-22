@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-agent-rp",
-  "version": "0.0.0-rc.207",
+  "version": "0.0.0-rc.208",
   "private": true,
   "license": "MIT",
   "type": "module",

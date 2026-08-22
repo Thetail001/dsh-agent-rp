@@ -1,11 +1,16 @@
 /** Pre-dispatch Roleplay plan receipts persisted independently from volatile Agent ownership. */
 
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
-import type { RoleplayTurnPlan } from './roleplay-turn-plan.ts'
+import { Session, type SessionEvent, type UserMessage } from '@deepseek-ai/dsh-session'
+import type { ResolvedConfig } from './config.ts'
+import type { EjsTemplateEngine } from './ejs-template.ts'
+import { prepareRoleplayTurn, type RoleplayTurnPlan } from './roleplay-turn-plan.ts'
 import {
   createRoleplayTurnPlanReference,
+  roleplayTurnPlanSha256,
+  roleplayTurnPlanSectionSha256,
   type RoleplayTurnPlanReference,
 } from './roleplay-turn-settlement.ts'
+import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 
 /** Content-free prepared plan bound to the exact model step that will consume it. */
@@ -75,4 +80,83 @@ export function readSessionRoleplayTurnPlanReferences(
     .filter(event => event.seq < beforeSeq && event.data.turn === turn)
     .map(event => event.data.reference)
     .sort((left, right) => left.step - right.step)
+}
+
+function pendingMessagesForRecord(
+  events: readonly SessionEvent[],
+  record: SessionEvent<'agent-rp/turn-plan'>,
+): readonly UserMessage[] {
+  const { input } = record.data.reference
+  if (new Set(input.pendingMessageIds).size !== input.pendingMessageIds.length) {
+    throw new Error('Roleplay turn plan contains duplicate pending message ids')
+  }
+  const candidates = events.slice(input.sessionSeq, record.seq).flatMap(event =>
+    event.type === 'user/message' ? [event.data] : [])
+  return input.pendingMessageIds.map(id => {
+    const matches = candidates.filter(message => String(message.id) === id)
+    if (matches.length !== 1) {
+      throw new Error(`Roleplay turn plan pending message ${JSON.stringify(id)} is unavailable or ambiguous`)
+    }
+    return matches[0]!
+  })
+}
+
+/** Rebuild one complete prepared plan from its exact Session prefix and verify its content digest. */
+export function replaySessionRoleplayTurnPlan(input: {
+  readonly session: Session
+  readonly record: SessionEvent<'agent-rp/turn-plan'>
+  readonly deployment: ResolvedConfig
+  readonly templateEngine?: EjsTemplateEngine
+}): RoleplayTurnPlan {
+  const { session, record } = input
+  const stored = session.events[record.seq]
+  if (stored?.type !== 'agent-rp/turn-plan' || !sameRecord(stored.data, record.data)) {
+    throw new Error('Roleplay turn plan record is not present at its declared Session boundary')
+  }
+  const reference = record.data.reference
+  if (record.data.sessionId !== String(session.id) || reference.input.sessionId !== String(session.id)) {
+    throw new Error('Roleplay turn plan belongs to another Session')
+  }
+  if (!Number.isSafeInteger(reference.input.sessionSeq) || reference.input.sessionSeq < 0
+    || reference.input.sessionSeq >= record.seq) {
+    throw new Error('Roleplay turn plan references an unavailable preparation boundary')
+  }
+  const expectedDigest = reference.receipt.preparedPlanSha256
+  const expectedSections = reference.receipt.preparedPlanSectionsSha256
+  if (expectedDigest === undefined || expectedSections === undefined) {
+    throw new Error('Roleplay turn plan is too old for exact replay verification')
+  }
+  const boundary = Session.create(session.id, session.events.slice(0, reference.input.sessionSeq))
+  const resolved = resolveSessionRoleplayRuntime({
+    session: boundary,
+    deployment: input.deployment,
+    memoryWriteAvailable: reference.receipt.memoryWriteAvailable === true,
+    templateEngineAvailable: input.templateEngine !== undefined,
+  })
+  const replayed = prepareRoleplayTurn({
+    session: boundary,
+    sessionBoundarySeq: reference.input.sessionSeq,
+    pendingMessages: pendingMessagesForRecord(session.events, record),
+    deployment: input.deployment,
+    resolved,
+    ...(input.templateEngine === undefined ? {} : { templateEngine: input.templateEngine }),
+  })
+  if (JSON.stringify(replayed.input) !== JSON.stringify(reference.input)) {
+    const messageIdsMatch = JSON.stringify(replayed.input.pendingMessageIds)
+      === JSON.stringify(reference.input.pendingMessageIds)
+    throw new Error('Roleplay turn plan input drifted during replay '
+      + `(boundary ${String(reference.input.sessionSeq)} -> ${String(replayed.input.sessionSeq)}, `
+      + `pending ids match: ${String(messageIdsMatch)})`)
+  }
+  if (roleplayTurnPlanSha256(replayed) !== expectedDigest) {
+    const actualSections = roleplayTurnPlanSectionSha256(replayed)
+    const sections = (Object.keys(actualSections) as (keyof RoleplayTurnPlan)[])
+      .filter(key => actualSections[key] !== expectedSections[key])
+    throw new Error(`Roleplay turn plan no longer matches its durable content digest (${sections.join(', ')})`)
+  }
+  const replayedReference = createRoleplayTurnPlanReference(reference.step, replayed)
+  if (JSON.stringify(replayedReference) !== JSON.stringify(reference)) {
+    throw new Error('Roleplay turn plan references no longer match their durable receipt')
+  }
+  return replayed
 }
