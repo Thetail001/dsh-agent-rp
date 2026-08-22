@@ -3,11 +3,22 @@
 import { snapshotJsonValue, type JsonValue, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ImportedCharacterFrontend, ImportedTavernHelperScript } from './import/types.ts'
 import { AGENT_RP_CAPABILITIES } from './extension-capability.ts'
+import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
+import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import { decodeGenerationCommandResult } from './generation-command-result.ts'
 import {
   parseTavernScriptIdentity,
   tavernScriptIdentity,
   type TavernScriptScope,
 } from './tavern-script-identity.ts'
+
+export const TAVERN_HELPER_ROLEPLAY_MODULE_ID = 'adapter:tavern-helper'
+export const TAVERN_HELPER_ROLEPLAY_STATE_ID = 'state:tavern-helper'
+
+/** Browser-owned script settlement may arrive after the Host turn boundary. */
+export function tavernHelperTurnSettlementContribution(): RoleplayTurnSettlementContribution {
+  return { moduleId: TAVERN_HELPER_ROLEPLAY_MODULE_ID, outcome: 'deferred' }
+}
 
 /** Tavern Helper variable namespaces supported by the isolated runtime. */
 export type TavernVariableScope = 'global' | 'preset' | 'character' | 'chat' | 'message' | 'script'
@@ -169,6 +180,8 @@ export interface TavernHelperState {
     readonly scope: TavernVariableScope | 'worldbook' | 'injection' | 'script-tree'
     readonly scriptScope?: TavernScriptTreeScope
     readonly scriptId?: string
+    /** Stable Host identity of the assistant reply whose browser event caused this write. */
+    readonly cause?: TavernMutationCause
   }
 }
 
@@ -176,12 +189,29 @@ declare module '@deepseek-ai/dsh-session' {
   interface SessionEventMap {
     /** @mode event Complete Tavern Helper state selected for the active reply version. */
     'agent-rp/tavern-state': TavernHelperState
+    /** Branch-local Tavern Helper state produced for one causal reply, active only when explicitly marked. */
+    'agent-rp/tavern-state-attachment': TavernHelperStateAttachment
   }
 }
 
 /** One durable Tavern Helper snapshot and the event that owns it. */
 export interface TavernHelperStateSnapshot {
   readonly eventSeq: number
+  readonly state: TavernHelperState
+}
+
+/** Browser-to-Host causal identity for a mutation triggered while presenting one reply. */
+export interface TavernMutationCause {
+  readonly format: 0
+  readonly sessionId: string
+  readonly replySeq: number
+}
+
+/** Full script state attached to one reply without necessarily changing the active branch. */
+export interface TavernHelperStateAttachment {
+  readonly format: 0
+  readonly cause: TavernMutationCause
+  readonly active: boolean
   readonly state: TavernHelperState
 }
 
@@ -238,11 +268,17 @@ export interface TavernInjectionMutationRequest {
   readonly prompts: readonly Omit<TavernInjectedPrompt, 'scriptId' | 'scriptScope'>[]
 }
 
+type WithTavernMutationCause<Request> = Request extends unknown
+  ? Request & { readonly cause?: TavernMutationCause }
+  : never
+
 /** One validated mutation sent by an isolated Tavern Helper script. */
-export type TavernHelperMutationRequest = TavernHelperVariableMutationRequest | TavernWorldbookMutationRequest
-  | TavernChatMutationRequest | TavernInjectionMutationRequest | TavernScriptTreeMutationRequest
+export type TavernHelperMutationRequest = WithTavernMutationCause<TavernHelperVariableMutationRequest
+  | TavernWorldbookMutationRequest | TavernChatMutationRequest | TavernInjectionMutationRequest
+  | TavernScriptTreeMutationRequest>
 
 const STATE_PREFIX = 'agent-rp-tavern-helper-v0:'
+const STATE_ATTACHMENT_PREFIX = 'agent-rp-tavern-helper-attachment-v0:'
 const MAX_MUTATION_BYTES = Math.max(
   AGENT_RP_CAPABILITIES['session.variables.replace'].runtimePolicies['tavern-script-frame-v0'].requestBytes,
   AGENT_RP_CAPABILITIES['world-info.session.mutate'].runtimePolicies['tavern-script-frame-v0'].requestBytes,
@@ -682,6 +718,33 @@ export function initializeTavernHelperPresetState(
   }
 }
 
+function parseMutationCause(value: unknown): TavernMutationCause | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Tavern Helper mutation cause must be an object')
+  }
+  const cause = value as Record<string, unknown>
+  if (cause.format !== 0 || typeof cause.sessionId !== 'string' || cause.sessionId === ''
+    || cause.sessionId.length > 512 || !Number.isSafeInteger(cause.replySeq) || Number(cause.replySeq) < 0) {
+    throw new Error('Tavern Helper mutation cause is invalid')
+  }
+  return { format: 0, sessionId: cause.sessionId, replySeq: Number(cause.replySeq) }
+}
+
+function withMutationCause<Request extends { readonly format: 0 }>(
+  request: Request,
+  cause: TavernMutationCause | undefined,
+): Request & { readonly cause?: TavernMutationCause } {
+  return { ...request, ...(cause === undefined ? {} : { cause }) }
+}
+
+function lastMutation<Request extends TavernHelperMutationRequest>(
+  request: Request,
+  mutation: Omit<NonNullable<TavernHelperState['lastMutation']>, 'cause'>,
+): NonNullable<TavernHelperState['lastMutation']> {
+  return { ...mutation, ...(request.cause === undefined ? {} : { cause: request.cause }) }
+}
+
 /** Parse one browser-authored variable replacement. */
 export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutationRequest {
   if (new TextEncoder().encode(raw).byteLength > MAX_MUTATION_BYTES) throw new Error('Tavern Helper update is too large')
@@ -695,30 +758,35 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
     throw new Error('Tavern Helper variable update must be an object')
   }
   const value = parsed as Record<string, unknown>
+  const cause = parseMutationCause(value.cause)
   if (value.format === 0 && value.operation === 'set-chat-messages') {
     const messages = chatMessages(value.messages, false)
     if (messages.some(message => message.message_id === undefined)) throw new Error('set-chat-messages requires message_id')
-    return { format: 0, operation: value.operation, messages }
+    return withMutationCause({ format: 0, operation: value.operation, messages }, cause)
   }
   if (value.format === 0 && value.operation === 'create-chat-messages') {
     const rawInsertAt = value.insertAt ?? value.insert_at ?? 'end'
     const insertAt = rawInsertAt === 'end' ? rawInsertAt : integer(rawInsertAt, 'create-chat-messages insertAt')
-    return { format: 0, operation: value.operation, messages: chatMessages(value.messages, true), insertAt }
+    return withMutationCause({
+      format: 0, operation: value.operation, messages: chatMessages(value.messages, true), insertAt,
+    }, cause)
   }
   if (value.format === 0 && value.operation === 'delete-chat-messages') {
     if (!Array.isArray(value.messageIds) || value.messageIds.some(messageId => !Number.isSafeInteger(messageId))) {
       throw new Error('delete-chat-messages requires integer messageIds')
     }
-    return { format: 0, operation: value.operation, messageIds: value.messageIds as number[] }
+    return withMutationCause({
+      format: 0, operation: value.operation, messageIds: value.messageIds as number[],
+    }, cause)
   }
   if (value.format === 0 && value.operation === 'rotate-chat-messages') {
-    return {
+    return withMutationCause({
       format: 0,
       operation: value.operation,
       begin: integer(value.begin, 'rotate-chat-messages begin'),
       middle: integer(value.middle, 'rotate-chat-messages middle'),
       end: integer(value.end, 'rotate-chat-messages end'),
-    }
+    }, cause)
   }
   if (value.format === 0 && value.operation === 'set-chat-hidden') {
     const start = integer(value.start, 'set-chat-hidden start')
@@ -726,46 +794,53 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
     if (start < 0 || end < start || typeof value.hidden !== 'boolean') {
       throw new Error('set-chat-hidden requires a valid non-negative range and hidden flag')
     }
-    return { format: 0, operation: value.operation, start, end, hidden: value.hidden }
+    return withMutationCause({ format: 0, operation: value.operation, start, end, hidden: value.hidden }, cause)
   }
   if (value.format === 0 && value.operation === 'replace-script-trees') {
     if (value.scope !== 'global' && value.scope !== 'preset' && value.scope !== 'character') {
       throw new Error('Tavern Helper script tree scope is invalid')
     }
-    return {
+    return withMutationCause({
       format: 0,
       operation: value.operation,
       scope: value.scope,
       trees: tavernScriptTrees(value.trees),
-    }
+    }, cause)
   }
   if (value.format === 0 && value.operation === 'replace-worldbook') {
-    return { format: 0, operation: value.operation, name: worldbookName(value.name), entries: worldbookEntries(value.entries) }
+    return withMutationCause({
+      format: 0, operation: value.operation, name: worldbookName(value.name), entries: worldbookEntries(value.entries),
+    }, cause)
   }
   if (value.format === 0 && value.operation === 'delete-worldbook') {
-    return { format: 0, operation: value.operation, name: worldbookName(value.name) }
+    return withMutationCause({ format: 0, operation: value.operation, name: worldbookName(value.name) }, cause)
   }
   if (value.format === 0 && value.operation === 'bind-global-worldbooks') {
-    return { format: 0, operation: value.operation, names: stringArray(value.names, 'global worldbook names').map(worldbookName) }
+    return withMutationCause({
+      format: 0, operation: value.operation,
+      names: stringArray(value.names, 'global worldbook names').map(worldbookName),
+    }, cause)
   }
   if (value.format === 0 && value.operation === 'bind-character-worldbooks') {
     const primary = value.primary === null ? null : worldbookName(value.primary)
-    return {
+    return withMutationCause({
       format: 0,
       operation: value.operation,
       primary,
       additional: stringArray(value.additional, 'additional character worldbook names').map(worldbookName),
-    }
+    }, cause)
   }
   if (value.format === 0 && value.operation === 'bind-chat-worldbook') {
-    return { format: 0, operation: value.operation, name: value.name === null ? null : worldbookName(value.name) }
+    return withMutationCause({
+      format: 0, operation: value.operation, name: value.name === null ? null : worldbookName(value.name),
+    }, cause)
   }
   if (value.format === 0 && value.operation === 'replace-script-injections') {
     if (typeof value.scriptId !== 'string' || value.scriptId === '') {
       throw new Error('Tavern Helper injected prompts require a scriptId')
     }
     const scriptScope = tavernScriptScope(value.scriptScope, 'Tavern Helper injected prompt scriptScope')
-    return {
+    return withMutationCause({
       format: 0,
       operation: value.operation,
       scriptScope,
@@ -773,7 +848,7 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
       prompts: injectedPrompts(value.prompts, { scriptScope, scriptId: value.scriptId }).map(({
         scriptId: _scriptId, scriptScope: _scriptScope, ...prompt
       }) => prompt),
-    }
+    }, cause)
   }
   if (value.format !== 0 || (value.scope !== 'global' && value.scope !== 'preset'
     && value.scope !== 'character' && value.scope !== 'chat' && value.scope !== 'message'
@@ -784,19 +859,19 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
     if (typeof value.scriptId !== 'string' || value.scriptId === '') {
       throw new Error('Tavern Helper scriptId must be a non-empty string')
     }
-    return {
+    return withMutationCause({
       format: 0,
       scope: value.scope,
       scriptScope: tavernScriptScope(value.scriptScope, 'Tavern Helper scriptScope'),
       scriptId: value.scriptId,
       variables: record(value.variables, 'Tavern Helper variables'),
-    }
+    }, cause)
   }
-  return {
+  return withMutationCause({
     format: 0,
     scope: value.scope,
     variables: record(value.variables, 'Tavern Helper variables'),
-  }
+  }, cause)
 }
 
 /** Apply one validated namespace replacement. */
@@ -808,7 +883,7 @@ export function applyTavernHelperMutation(
     if (request.operation === 'set-chat-messages' || request.operation === 'create-chat-messages'
       || request.operation === 'delete-chat-messages' || request.operation === 'rotate-chat-messages'
       || request.operation === 'set-chat-hidden') {
-      return { ...state, revision: state.revision + 1, lastMutation: { scope: 'chat' } }
+      return { ...state, revision: state.revision + 1, lastMutation: lastMutation(request, { scope: 'chat' }) }
     }
     if (request.operation === 'replace-script-trees') {
       const scriptTrees = { ...state.scriptTrees, [request.scope]: request.trees }
@@ -840,7 +915,7 @@ export function applyTavernHelperMutation(
           ? {} : { injectedPrompts: state.injectedPrompts.filter(prompt => activeIds.has(
               tavernScriptIdentity(prompt.scriptScope, prompt.scriptId),
             )) }),
-        lastMutation: { scope: 'script-tree' },
+        lastMutation: lastMutation(request, { scope: 'script-tree' }),
       }
     }
     if (request.operation === 'replace-script-injections') {
@@ -855,7 +930,9 @@ export function applyTavernHelperMutation(
             ...prompt, scriptScope: request.scriptScope, scriptId: request.scriptId,
           })),
         ],
-        lastMutation: { scope: 'injection', scriptScope: request.scriptScope, scriptId: request.scriptId },
+        lastMutation: lastMutation(request, {
+          scope: 'injection', scriptScope: request.scriptScope, scriptId: request.scriptId,
+        }),
       }
     }
     if (request.operation === 'replace-worldbook') {
@@ -866,7 +943,7 @@ export function applyTavernHelperMutation(
         revision: state.revision + 1,
         worldbooks: { ...state.worldbooks, [request.name]: request.entries },
         deletedWorldbookNames: [...deleted],
-        lastMutation: { scope: 'worldbook' },
+        lastMutation: lastMutation(request, { scope: 'worldbook' }),
       }
     }
     if (request.operation === 'delete-worldbook') {
@@ -876,7 +953,7 @@ export function applyTavernHelperMutation(
         revision: state.revision + 1,
         worldbooks,
         deletedWorldbookNames: [...new Set([...(state.deletedWorldbookNames ?? []), request.name])],
-        lastMutation: { scope: 'worldbook' },
+        lastMutation: lastMutation(request, { scope: 'worldbook' }),
       }
     }
     const bindings = state.worldbookBindings ?? {}
@@ -885,7 +962,10 @@ export function applyTavernHelperMutation(
       : request.operation === 'bind-character-worldbooks'
         ? { ...bindings, character: { primary: request.primary, additional: request.additional } }
         : { ...bindings, chat: request.name }
-    return { ...state, revision: state.revision + 1, worldbookBindings, lastMutation: { scope: 'worldbook' } }
+    return {
+      ...state, revision: state.revision + 1, worldbookBindings,
+      lastMutation: lastMutation(request, { scope: 'worldbook' }),
+    }
   }
   if (request.scope === 'script') {
     const scriptKey = tavernScriptIdentity(request.scriptScope, request.scriptId)
@@ -896,14 +976,16 @@ export function applyTavernHelperMutation(
       ...state,
       revision: state.revision + 1,
       scripts: { ...state.scripts, [scriptKey]: request.variables },
-      lastMutation: { scope: 'script', scriptScope: request.scriptScope, scriptId: request.scriptId },
+      lastMutation: lastMutation(request, {
+        scope: 'script', scriptScope: request.scriptScope, scriptId: request.scriptId,
+      }),
     }
   }
   return {
     ...state,
     revision: state.revision + 1,
     scopes: { ...state.scopes, [request.scope]: request.variables },
-    lastMutation: { scope: request.scope },
+    lastMutation: lastMutation(request, { scope: request.scope }),
   }
 }
 
@@ -1019,10 +1101,12 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     const scriptScope = value.scriptScope === undefined
       ? (typeof value.scriptId === 'string' ? legacyPromptScope(value.scriptId) : undefined)
       : tavernScriptScope(value.scriptScope, 'Tavern Helper last mutation scriptScope')
+    const cause = parseMutationCause(value.cause)
     lastMutation = {
       scope: value.scope,
       ...(scriptScope === undefined ? {} : { scriptScope }),
       ...(value.scriptId === undefined ? {} : { scriptId: value.scriptId }),
+      ...(cause === undefined ? {} : { cause }),
     }
   }
   return {
@@ -1043,16 +1127,79 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
   }
 }
 
+/** Serialize one causal branch attachment into its owning command result. */
+export function encodeTavernHelperStateAttachment(attachment: TavernHelperStateAttachment): string {
+  return `${STATE_ATTACHMENT_PREFIX}${JSON.stringify({
+    format: 0,
+    cause: attachment.cause,
+    active: attachment.active,
+    state: encodeTavernHelperState(attachment.state),
+  })}`
+}
+
+/** Decode a causal branch attachment while declining unrelated command results. */
+export function decodeTavernHelperStateAttachment(
+  text: string | undefined,
+): TavernHelperStateAttachment | undefined {
+  if (text?.startsWith(STATE_ATTACHMENT_PREFIX) !== true) return undefined
+  const parsed = JSON.parse(text.slice(STATE_ATTACHMENT_PREFIX.length)) as Record<string, unknown>
+  if (parsed.format !== 0 || typeof parsed.active !== 'boolean' || typeof parsed.state !== 'string'
+    || Object.keys(parsed).some(key => !['format', 'cause', 'active', 'state'].includes(key))) {
+    throw new Error('Tavern Helper state attachment is invalid')
+  }
+  const cause = parseMutationCause(parsed.cause)
+  const state = decodeTavernHelperState(parsed.state)
+  if (cause === undefined || state === undefined
+    || state.lastMutation?.cause?.sessionId !== cause.sessionId
+    || state.lastMutation.cause.replySeq !== cause.replySeq) {
+    throw new Error('Tavern Helper state attachment has inconsistent cause or state')
+  }
+  return { format: 0, cause, active: parsed.active, state }
+}
+
+function decodeGenerationTavernHelperState(text: string | undefined): TavernHelperState | undefined {
+  const generation = decodeGenerationCommandResult(text)
+  return generation?.tavern === undefined
+    ? undefined
+    : decodeTavernHelperState(`${STATE_PREFIX}${JSON.stringify(generation.tavern)}`)
+}
+
+/** Decode the state selected by one command result; inactive branches remain non-current. */
+export function decodeActiveTavernHelperState(text: string | undefined): TavernHelperState | undefined {
+  const generation = decodeGenerationTavernHelperState(text)
+  if (generation !== undefined) return generation
+  const attachment = decodeTavernHelperStateAttachment(text)
+  return attachment === undefined
+    ? decodeTavernHelperState(text)
+    : attachment.active ? attachment.state : undefined
+}
+
 function stateFromEvent(event: SessionEvent): TavernHelperState | undefined {
   if (event.type === 'agent-rp/tavern-state') return event.data
+  if (event.type === 'agent-rp/tavern-state-attachment') return event.data.active ? event.data.state : undefined
   return event.type === 'command/done' && event.data.kind === 'success'
-    ? decodeTavernHelperState(event.data.text)
+    ? decodeActiveTavernHelperState(event.data.text)
     : undefined
 }
 
 /** Append an explicit state selection used by reply regeneration and swipe changes. */
 export function appendTavernHelperState(session: Session, state: TavernHelperState): TavernHelperStateSnapshot {
-  const event = session.append('agent-rp/tavern-state', state)
+  const event = appendAgentRpSessionEvent(session, 'agent-rp/tavern-state', state)
+  return { eventSeq: event.seq, state }
+}
+
+/** Persist a causal state branch; inactive attachments never replace the Session's selected state. */
+export function appendTavernHelperStateAttachment(
+  session: Session,
+  state: TavernHelperState,
+  cause: TavernMutationCause,
+  active: boolean,
+): TavernHelperStateSnapshot {
+  const event = appendAgentRpSessionEvent(
+    session,
+    'agent-rp/tavern-state-attachment',
+    { format: 0, cause, active, state },
+  )
   return { eventSeq: event.seq, state }
 }
 
@@ -1076,7 +1223,12 @@ export function readTavernHelperStateSnapshotAt(
   eventSeq: number,
 ): TavernHelperStateSnapshot {
   const event = events[eventSeq]
-  const state = event === undefined ? undefined : stateFromEvent(event)
+  const commandAttachment = event?.type === 'command/done' && event.data.kind === 'success'
+    ? decodeTavernHelperStateAttachment(event.data.text)
+    : undefined
+  const state = event?.type === 'agent-rp/tavern-state-attachment'
+    ? event.data.state
+    : commandAttachment?.state ?? (event === undefined ? undefined : stateFromEvent(event))
   if (state === undefined) throw new Error('回复版本引用的脚本状态不存在')
   return { eventSeq, state }
 }

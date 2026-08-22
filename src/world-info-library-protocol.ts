@@ -11,6 +11,14 @@ export interface WorldInfoLibraryUpload {
   readonly name: string
   readonly entryCount: number
   readonly degradations: readonly string[]
+  readonly defaultForNewSessions: boolean
+}
+
+/** Host-owned preference for attaching one retained World Info source to future RP Sessions. */
+export interface WorldInfoLibraryPreferenceRequest {
+  readonly format: 0
+  readonly id: string
+  readonly defaultForNewSessions: boolean
 }
 
 /** Successful browser upload response. */

@@ -3,6 +3,9 @@
 import {
   TAVERN_EXECUTION_PATH,
   TAVERN_PREFLIGHT_PATH,
+  type TavernExecutionBatchRequest,
+  type TavernExecutionBatchResult,
+  type TavernExecutionBatchResultEntry,
   type TavernExecutionRequest,
   type TavernExecutionResult,
   type TavernPreflightRequest,
@@ -89,4 +92,29 @@ export async function fetchTavernExecution(
     throw new Error(value.error ?? `脚本执行计划读取失败（${response.status}）`)
   }
   return value.execution
+}
+
+/** Read several exact preflight-cache hits through one connection, or request the single-plan fallback. */
+export async function fetchCachedTavernExecutions(
+  request: TavernExecutionBatchRequest,
+  signal: AbortSignal,
+): Promise<readonly TavernExecutionBatchResultEntry[] | undefined> {
+  const response = await fetch(TAVERN_EXECUTION_PATH, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+    signal,
+  })
+  if (response.status === 409) return undefined
+  const value = await response.json() as Partial<TavernExecutionBatchResult> & { readonly error?: string }
+  if (!response.ok || value.format !== 1 || !Array.isArray(value.entries)
+    || value.entries.length !== request.entries.length) {
+    throw new Error(value.error ?? `批量脚本执行计划读取失败（${response.status}）`)
+  }
+  const expected = new Set(request.entries.map(entry => JSON.stringify([entry.scope, entry.scriptId])))
+  if (value.entries.some(entry => typeof entry !== 'object' || entry === null || Array.isArray(entry)
+    || (entry.scope !== 'character' && entry.scope !== 'preset') || typeof entry.scriptId !== 'string'
+    || !expected.delete(JSON.stringify([entry.scope, entry.scriptId])) || !validExecution(entry.execution))
+    || expected.size !== 0) throw new Error('批量脚本执行计划响应无效')
+  return value.entries as readonly TavernExecutionBatchResultEntry[]
 }

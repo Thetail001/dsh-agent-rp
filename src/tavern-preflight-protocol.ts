@@ -1,6 +1,6 @@
 /** Browser-safe protocol for preflighting static Tavern Helper resources before Session launch. */
 
-/** Same-origin endpoint that inspects selected character and preset scripts without executing them. */
+/** Same-origin endpoint that inspects selected launch resources without executing them. */
 export const TAVERN_PREFLIGHT_PATH = '/api/agent-rp/tavern-preflight'
 
 /** Same-origin endpoint that returns one Host-resolved execution plan. */
@@ -19,7 +19,7 @@ export interface TavernPreflightScriptApproval {
 /** Model-free request to inspect every enabled script selected for a future Session. */
 export interface TavernPreflightRequest {
   readonly format: 0
-  readonly characterId: string
+  readonly characterId?: string
   readonly presetId?: string
   readonly scriptApprovals: readonly TavernPreflightScriptApproval[]
 }
@@ -52,7 +52,7 @@ export interface TavernPreflightResult {
 /** Request one imported script without sending its source back through the browser. */
 export interface TavernExecutionRequest {
   readonly format: 0
-  readonly characterId: string
+  readonly characterId?: string
   readonly presetId?: string
   readonly scope: TavernPreflightScope
   readonly scriptId: string
@@ -63,4 +63,32 @@ export interface TavernExecutionRequest {
 export interface TavernExecutionResult {
   readonly format: 0
   readonly execution: import('./tavern-script-resolver.ts').TavernScriptExecution
+}
+
+/** One script identity requested from the successful preflight cache. */
+export interface TavernExecutionBatchEntry {
+  readonly scope: TavernPreflightScope
+  readonly scriptId: string
+  readonly approvedOrigins: readonly string[]
+}
+
+/** Request several already-preflighted plans through one browser connection. */
+export interface TavernExecutionBatchRequest {
+  readonly format: 1
+  readonly characterId?: string
+  readonly presetId?: string
+  readonly entries: readonly TavernExecutionBatchEntry[]
+}
+
+/** One cached plan retaining its scope and script identity. */
+export interface TavernExecutionBatchResultEntry {
+  readonly scope: TavernPreflightScope
+  readonly scriptId: string
+  readonly execution: import('./tavern-script-resolver.ts').TavernScriptExecution
+}
+
+/** Host-resolved plans returned together only after every exact cache key matches. */
+export interface TavernExecutionBatchResult {
+  readonly format: 1
+  readonly entries: readonly TavernExecutionBatchResultEntry[]
 }

@@ -281,6 +281,7 @@ export function classifyAgentRpRuntime(
   snapshot: AgentRpBrowserCompatibilitySnapshot | undefined,
   timedOut = false,
   approveRuntimeFonts = false,
+  expectedTavernScripts = 0,
 ): PollDecision {
   if (snapshot === undefined) return timedOut ? failed('diagnostic-unavailable') : 'pending'
   const session = snapshot.session
@@ -310,6 +311,13 @@ export function classifyAgentRpRuntime(
     return timedOut ? failed('frame-unregistered') : 'pending'
   }
   const tavern = session.tavern
+  // A selected source plan that contained scripts must not silently degrade
+  // into the mathematically "healthy" 0/0 runtime produced by a missing
+  // Session projection. Give normal projection delivery time to settle, then
+  // fail the smoke if fewer scripts reached the mounted runtime than preflight saw.
+  if ((tavern?.scripts ?? 0) < expectedTavernScripts) {
+    return timedOut ? failed('runtime-failed') : 'pending'
+  }
   if (tavern !== undefined && tavern.ready + tavern.failed < tavern.scripts) {
     return timedOut ? failed('runtime-failed') : 'pending'
   }
@@ -502,7 +510,9 @@ export async function runAgentRpBrowserCompatibilitySmoke(
   }
   const runtime = await poll(
     driver, input.timeoutMs, pollMs,
-    (snapshot, timedOut) => classifyAgentRpRuntime(snapshot, timedOut, input.approveRuntimeFonts),
+    (snapshot, timedOut) => classifyAgentRpRuntime(
+      snapshot, timedOut, input.approveRuntimeFonts, preflight.snapshot?.preflight?.scripts ?? 0,
+    ),
     input.waitForManualApproval,
   )
   if (runtime.decision.status !== 'healthy' || runtime.snapshot === undefined) return runtime
@@ -562,7 +572,9 @@ export async function runAgentRpBrowserCompatibilitySmoke(
   // snapshot while the final product state is still booting.
   return poll(
     driver, input.timeoutMs, pollMs,
-    (snapshot, timedOut) => classifyAgentRpRuntime(snapshot, timedOut, input.approveRuntimeFonts),
+    (snapshot, timedOut) => classifyAgentRpRuntime(
+      snapshot, timedOut, input.approveRuntimeFonts, preflight.snapshot?.preflight?.scripts ?? 0,
+    ),
     input.waitForManualApproval,
   )
 }

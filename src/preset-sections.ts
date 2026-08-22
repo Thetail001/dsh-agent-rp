@@ -13,7 +13,7 @@ export interface PresetSectionPrompt {
 export interface PresetPromptSection<T extends PresetSectionPrompt> {
   readonly key: string
   readonly title: string
-  readonly kind: 'base' | 'named' | 'detached'
+  readonly kind: 'base' | 'named'
   readonly prompts: readonly T[]
   readonly enabledCount: number
 }
@@ -54,11 +54,6 @@ export function projectPresetPromptSections<T extends PresetSectionPrompt>(promp
   const custom = prompts.filter(prompt => prompt.attached && prompt.imported === false)
   if (custom.length > 0) {
     grouped.push({ key: 'custom', title: '自定义模块', kind: 'named', prompts: custom })
-  }
-
-  const detached = prompts.filter(prompt => !prompt.attached)
-  if (detached.length > 0) {
-    grouped.push({ key: 'detached', title: '未加入当前顺序', kind: 'detached', prompts: detached })
   }
 
   return grouped

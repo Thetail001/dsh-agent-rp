@@ -128,8 +128,8 @@ function validateImport(events: readonly SessionEvent[], resultEvent: SessionEve
     throw new Error('import_world_info source attachment is absent from its user message')
   }
   const name = worldInfo.name?.trim() || attachment.name.replace(/\.json$/iu, '')
-  if (result.name !== name || result.entryCount !== worldInfo.lorebook.entries.length
-    || JSON.stringify(result.degradations) !== JSON.stringify(worldInfo.degradations)) {
+  // Degradations describe the importer version that wrote the event, not an immutable source fact.
+  if (result.name !== name || result.entryCount !== worldInfo.lorebook.entries.length) {
     throw new Error('import_world_info result summary does not match durable metadata')
   }
   return { result, meta: { ...meta, raw: worldInfo.raw }, worldInfo }
@@ -154,8 +154,7 @@ export function readActiveSessionWorldInfos(events: readonly SessionEvent[]): Ac
       }
       const worldInfo = parseWorldInfoJson(JSON.stringify(meta.raw))
       if (meta.result.name !== (worldInfo.name?.trim() || meta.result.name)
-        || meta.result.entryCount !== worldInfo.lorebook.entries.length
-        || JSON.stringify(meta.result.degradations) !== JSON.stringify(worldInfo.degradations)) {
+        || meta.result.entryCount !== worldInfo.lorebook.entries.length) {
         throw new Error('世界书启动种子与内容不一致')
       }
       active.set(expectedAttachment, { result: meta.result, meta, worldInfo })
@@ -174,8 +173,7 @@ export function readActiveSessionWorldInfos(events: readonly SessionEvent[]): Ac
       }
       const worldInfo = parseWorldInfoJson(JSON.stringify(meta.raw))
       if (meta.result.name !== (worldInfo.name?.trim() || meta.result.name)
-        || meta.result.entryCount !== worldInfo.lorebook.entries.length
-        || JSON.stringify(meta.result.degradations) !== JSON.stringify(worldInfo.degradations)) {
+        || meta.result.entryCount !== worldInfo.lorebook.entries.length) {
         throw new Error('世界书导入结果与来源不一致')
       }
       active.set(expectedAttachment, { result: meta.result, meta, worldInfo })

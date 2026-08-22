@@ -87,6 +87,82 @@ test('imports V1 and preserves unknown JSON fields', () => {
   assert.deepEqual(card.alternateGreetings, [])
 })
 
+test('ignores malformed optional nicknames without rejecting or rewriting the card', () => {
+  for (const nickname of [null, 42, { exporter: 'placeholder' }] as const) {
+    const raw = { ...base, nickname }
+    const card = parseCharacterCardJson(JSON.stringify(raw))
+
+    assert.equal(card.nickname, undefined)
+    assert.equal(card.name, '白露')
+    assert.deepEqual(card.raw, raw)
+  }
+})
+
+test('preserves and blocks unsupported embedded lorebook positions without rejecting the card', () => {
+  const raw = {
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: v2Data({
+      character_book: {
+        extensions: {},
+        entries: [{
+          keys: ['钟楼'],
+          content: '这条内容使用聊天深度插入。',
+          extensions: { position: 4 },
+          position: 'after_char',
+          enabled: true,
+          insertion_order: 1,
+        }],
+      },
+    }),
+  }
+  const card = parseCharacterCardJson(JSON.stringify(raw))
+
+  assert.equal(card.lorebook?.entries[0]?.position, 'after_char')
+  assert.deepEqual(card.lorebook?.entries[0]?.compatibilityBlockers, ['entry-unsupported-position'])
+  assert.equal(card.degradations.includes('lorebook-position'), true)
+  assert.deepEqual(activateLorebook(card.lorebook!, ['去钟楼。']), {
+    beforeCharacter: [],
+    afterCharacter: [],
+  })
+  assert.deepEqual(card.raw, raw)
+})
+
+test('accepts exporter-style numeric positions in the character-book position field', () => {
+  const raw = {
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: v2Data({
+      character_book: {
+        extensions: {},
+        entries: [
+          {
+            keys: [], content: '角色之前。', extensions: {}, position: 0,
+            enabled: true, insertion_order: 2,
+          },
+          {
+            keys: [], content: '角色之后。', extensions: {}, position: 1,
+            enabled: true, insertion_order: 1,
+          },
+          {
+            keys: ['深度'], content: '需要指定深度注入。', extensions: {}, position: 4,
+            enabled: true, insertion_order: 0,
+          },
+        ],
+      },
+    }),
+  }
+  const card = parseCharacterCardJson(JSON.stringify(raw))
+
+  assert.deepEqual(card.lorebook?.entries.map(entry => entry.position), [
+    'before_char', 'after_char', 'after_char',
+  ])
+  assert.deepEqual(card.lorebook?.entries.map(entry => entry.compatibilityBlockers ?? []), [
+    [], [], ['entry-unsupported-position'],
+  ])
+  assert.deepEqual(card.raw, raw)
+})
+
 test('imports the complete Tavern Helper script tree and initial variables', () => {
   const card = parseCharacterCardJson(JSON.stringify({
     spec: 'chara_card_v2',

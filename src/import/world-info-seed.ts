@@ -10,11 +10,11 @@ import {
   type WorldInfoLibrarySeedRecord,
 } from './session-world-info.ts'
 
-/** Build a replayable Session seed that activates one retained World Info source. */
-export function createWorldInfoLibrarySessionSeed(
+function worldInfoLibrarySeedEvent(
   asset: WorldInfoLibraryAsset,
-  persona?: SessionPersonaSnapshot,
-): readonly SessionEvent[] {
+  seq: number,
+  time: number,
+): SessionEvent {
   const attachment = {
     kind: 'file' as const,
     attachmentId: AttachmentId(`library:${asset.upload.id}`),
@@ -22,7 +22,7 @@ export function createWorldInfoLibrarySessionSeed(
     name: asset.filename,
     mediaType: 'application/json',
   }
-  const value = prepareWorldInfoImportResult(asset.worldInfo, 0, attachment)
+  const value = prepareWorldInfoImportResult(asset.worldInfo, seq, attachment)
   const { raw, ...result } = value
   const meta: WorldInfoImportMeta = { format: 0, result, raw }
   const data: WorldInfoLibrarySeedRecord = {
@@ -30,14 +30,32 @@ export function createWorldInfoLibrarySessionSeed(
     worldInfoLibraryId: asset.upload.id,
     meta,
   }
-  const time = Date.now()
-  const events: SessionEvent[] = [{
+  return {
     type: 'agent-rp/world-info-library-seed',
-    seq: 0,
+    seq,
     time,
     data,
     ignorable: true,
-  }]
+  }
+}
+
+/** Activate one retained World Info source by extending an existing replayable seed. */
+export function appendWorldInfoLibrarySessionSeed(
+  events: readonly SessionEvent[],
+  asset: WorldInfoLibraryAsset,
+): readonly SessionEvent[] {
+  const next = [...structuredClone(events), worldInfoLibrarySeedEvent(asset, events.length, Date.now())]
+  const validated = Session.create(SessionId('agent-rp-world-info-append-validation'), next)
+  return Object.freeze(validated.events.slice(0, next.length))
+}
+
+/** Build a replayable Session seed that activates one retained World Info source. */
+export function createWorldInfoLibrarySessionSeed(
+  asset: WorldInfoLibraryAsset,
+  persona?: SessionPersonaSnapshot,
+): readonly SessionEvent[] {
+  const time = Date.now()
+  const events: SessionEvent[] = [worldInfoLibrarySeedEvent(asset, 0, time)]
   if (persona !== undefined) {
     events.push({
       type: 'agent-rp/persona-seed',

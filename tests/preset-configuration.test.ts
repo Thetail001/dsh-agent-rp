@@ -10,6 +10,7 @@ import {
 import { createPresetSessionSeed, readActiveSessionPreset } from '../src/import/session-preset.ts'
 import { parseSillyTavernPresetJson } from '../src/import/sillytavern-preset.ts'
 import { assembleSillyTavernPreset } from '../src/preset-prompt.ts'
+import { exportSillyTavernPresetJson } from '../src/preset-export.ts'
 import type { FileAttachmentRef } from '../src/import/session-character.ts'
 import { importTavernRegex } from '../src/tavern-regex.ts'
 
@@ -94,14 +95,15 @@ test('adds, runs, edits, and deletes one session-owned module', () => {
   assert.equal(added.prompts.at(-1)?.systemPrompt, false)
   assert.equal(added.prompts.at(-1)?.marker, false)
   assert.equal(added.prompts.at(-1)?.injectionPosition, 0)
-  assert.match(assembleSillyTavernPreset(added, {
+  const assembled = assembleSillyTavernPreset(added, {
     card: {
       format: 0, version: 2, specVersion: '2.0', name: '角色', description: '', personality: '', scenario: '',
       firstMessage: '', messageExample: '', alternateGreetings: [], systemPrompt: '', postHistoryInstructions: '',
       frontend: { regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {} }, degradations: [], raw: {},
     },
     worldInfoBefore: [], worldInfoAfter: [], session: Session.create(SessionId('custom-preset-prompt')), pendingMessages: [],
-  }).system, /SillyTavern user prompt · 自定义.*只在本会话使用/su)
+  })
+  assert.deepEqual(assembled.beforeHistory.at(-1), { role: 'user', content: '只在本会话使用' })
 
   const deleted = configurePreset({ ...active, preset: added, revision: 1 }, {
     operation: 'replace', revision: 1, prompts,
@@ -114,14 +116,106 @@ test('adds, runs, edits, and deletes one session-owned module', () => {
     order: active.preset.order.filter(entry => entry.identifier !== 'main'),
     content: [], generation: {}, regex: [],
   }), /built-in module.*cannot be deleted/u)
-  assert.throws(() => parsePresetConfigurationRequest(JSON.stringify({
+  const invalidDepth = parsePresetConfigurationRequest(JSON.stringify({
     operation: 'replace', revision: 0,
     prompts: [...prompts, {
       identifier: 'bad-depth', name: '错误深度', role: 'system', content: '',
       injectionPosition: 1, injectionDepth: -1, injectionOrder: 100,
     }],
     order: active.preset.order, content: [], generation: {}, regex: [],
-  })), /injectionDepth/u)
+  }))
+  assert.throws(() => configurePreset(active, invalidDepth), /injectionDepth/u)
+})
+
+test('round-trips legacy injection metadata while rejecting newly invalid values', () => {
+  const imported = parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [{
+      identifier: 'legacy-in-chat', name: '旧聊天内注入', role: 'system', content: 'legacy',
+      injection_position: 1, injection_depth: 4, injection_order: 10_001,
+    }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: 'legacy-in-chat', enabled: true }] }],
+  }), 'legacy-injection-order.json')
+  const active = {
+    result: {
+      version: 0 as const, name: imported.name, sourceEventSeq: 0, sourceAttachmentId: 'legacy-source',
+      promptCount: 1, enabledCount: 1, regexScriptCount: 0,
+    },
+    importedPreset: imported,
+    preset: imported,
+    revision: 0,
+  }
+  const unchanged = parsePresetConfigurationRequest(JSON.stringify({
+    operation: 'replace', revision: 0,
+    prompts: [{
+      identifier: 'legacy-in-chat', name: '只改名称', role: 'system', content: 'legacy',
+      injectionPosition: 1, injectionDepth: 4, injectionOrder: 10_001,
+    }],
+    order: imported.order, content: [], generation: {}, regex: [],
+  }))
+  const configured = configurePreset(active, unchanged)
+  assert.equal(configured.prompts[0]?.name, '只改名称')
+  assert.equal(configured.prompts[0]?.injectionOrder, 10_001)
+  assert.equal(JSON.parse(exportSillyTavernPresetJson(configured)).prompts[0].injection_order, 10_001)
+
+  const invalidEdit = parsePresetConfigurationRequest(JSON.stringify({
+    operation: 'replace', revision: 0,
+    prompts: [{
+      identifier: 'legacy-in-chat', name: '旧聊天内注入', role: 'system', content: 'legacy',
+      injectionPosition: 1, injectionDepth: 4, injectionOrder: 10_002,
+    }],
+    order: imported.order, content: [], generation: {}, regex: [],
+  }))
+  assert.throws(() => configurePreset(active, invalidEdit), /injectionOrder must be an integer from 0 to 9999/u)
+})
+
+test('round-trips the author module catalog independently from the active order', () => {
+  const imported = parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [
+      { identifier: 'system', name: '系统', role: 'system', content: 'system', marker: true },
+      { identifier: 'style-default', name: '默认文风', role: 'system', content: 'default' },
+      { identifier: 'style-a', name: '备选文风 A', role: 'system', content: 'style a' },
+      { identifier: 'style-b', name: '备选文风 B', role: 'system', content: 'style b' },
+    ],
+    prompt_order: [{ character_id: 100001, order: [
+      { identifier: 'system', enabled: true },
+      { identifier: 'style-default', enabled: true },
+    ] }],
+  }), 'module-catalog.json')
+  const active = {
+    result: {
+      version: 0 as const, name: imported.name, sourceEventSeq: 0, sourceAttachmentId: 'catalog-source',
+      promptCount: imported.prompts.length, enabledCount: 2, regexScriptCount: 0,
+    },
+    importedPreset: imported,
+    preset: imported,
+    revision: 0,
+  }
+  const configured = configurePreset(active, {
+    operation: 'replace', revision: 0,
+    prompts: imported.prompts.map(prompt => ({
+      identifier: prompt.identifier, name: prompt.name, role: prompt.role, content: prompt.content,
+    })),
+    order: [
+      { identifier: 'system', enabled: true },
+      { identifier: 'style-a', enabled: true },
+    ],
+    content: [], generation: {}, regex: [],
+  })
+
+  assert.equal(configured.prompts.length, 4)
+  assert.deepEqual(configured.order.map(entry => entry.identifier), ['system', 'style-a'])
+  assert.equal(configured.prompts.find(prompt => prompt.identifier === 'style-default')?.content, 'default')
+  assert.equal(configured.prompts.find(prompt => prompt.identifier === 'style-b')?.content, 'style b')
+
+  const exported = JSON.parse(exportSillyTavernPresetJson(configured)) as {
+    prompts: Array<{ identifier: string }>
+    prompt_order: Array<{ order: Array<{ identifier: string; enabled: boolean }> }>
+  }
+  assert.deepEqual(exported.prompts.map(prompt => prompt.identifier), ['system', 'style-default', 'style-a', 'style-b'])
+  assert.deepEqual(exported.prompt_order[0]?.order, [
+    { identifier: 'system', enabled: true },
+    { identifier: 'style-a', enabled: true },
+  ])
 })
 
 test('keeps extension markers fixed and restores the exact imported defaults', () => {
@@ -175,8 +269,9 @@ test('replays the latest session configuration and rejects stale editor revision
     },
     worldInfoBefore: [], worldInfoAfter: [], session: Session.create(SessionId('configured-preset-prompt')), pendingMessages: [],
   })
-  assert.match(assembled.system, /edited style/u)
-  assert.doesNotMatch(assembled.system, /^style$/mu)
+  const assembledText = assembled.beforeHistory.map(prompt => prompt.content).join('\n')
+  assert.match(assembledText, /edited style/u)
+  assert.doesNotMatch(assembledText, /^style$/mu)
   assert.equal(replayed?.importedPreset.order[1]?.enabled, false)
   assert.throws(() => configurePreset(replayed!, {
     operation: 'toggle', revision: 0, identifier: 'style', enabled: false,
@@ -200,6 +295,15 @@ test('decodes the private manager command at its Host boundary', () => {
   assert.deepEqual(parsePresetConfigurationRequest(JSON.stringify({
     operation: 'generation', revision: 0, reasoningEffort: 'provider-owned-level',
   })), { operation: 'generation', revision: 0, reasoningEffort: 'provider-owned-level' })
+  const blankName = parsePresetConfigurationRequest(JSON.stringify({
+    operation: 'replace', revision: 0,
+    prompts: [{ identifier: 'unnamed-module', name: '', role: 'system', content: '保留模块正文' }],
+    order: [{ identifier: 'unnamed-module', enabled: false }],
+    content: [], generation: {}, regex: [],
+  }))
+  assert.equal(blankName.operation, 'replace')
+  if (blankName.operation !== 'replace') assert.fail('expected replace operation')
+  assert.equal(blankName.prompts?.[0]?.name, 'unnamed-module')
 })
 
 test('edits preset regex switches and depths independently from prompt modules', () => {

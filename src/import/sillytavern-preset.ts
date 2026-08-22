@@ -43,6 +43,13 @@ export interface SillyTavernPresetGeneration {
   readonly repetitionPenalty?: number
 }
 
+/** Preset-owned behavior for continuing the latest assistant reply. */
+export interface SillyTavernPresetContinuation {
+  readonly prefill: boolean
+  readonly postfix: '' | ' ' | '\n' | '\n\n'
+  readonly nudgePrompt: string
+}
+
 /** Non-executable extension settings used to explain native coverage accurately. */
 export interface SillyTavernPresetExtensionCompatibility {
   readonly macroNestEnabled?: boolean
@@ -63,6 +70,8 @@ export interface ImportedSillyTavernPreset {
   readonly prompts: readonly SillyTavernPresetPrompt[]
   readonly order: readonly SillyTavernPresetOrderEntry[]
   readonly generation: SillyTavernPresetGeneration
+  /** Optional for replay compatibility with Agent RP snapshots created before rc.173. */
+  readonly continuation?: SillyTavernPresetContinuation
   readonly formats: {
     readonly worldInfo: string
     readonly scenario: string
@@ -113,6 +122,10 @@ function optionalObject(value: unknown): Record<string, unknown> | undefined {
     : undefined
 }
 
+function continuationPostfix(value: unknown): SillyTavernPresetContinuation['postfix'] {
+  return value === '' || value === ' ' || value === '\n' || value === '\n\n' ? value : ' '
+}
+
 function extensionCompatibility(
   extensions: Record<string, unknown>,
   rawRegex: unknown,
@@ -145,13 +158,14 @@ function prompt(value: unknown, index: number): SillyTavernPresetPrompt {
   const record = object(value, `prompts[${index}]`)
   const identifier = text(record.identifier).trim()
   if (identifier === '') throw new Error(`prompts[${index}].identifier must be non-empty`)
+  const importedName = text(record.name)
   const role = record.role === 'model' ? 'assistant' : record.role ?? 'system'
   if (role !== 'system' && role !== 'user' && role !== 'assistant') {
     throw new Error(`prompts[${index}].role is unsupported`)
   }
   return {
     identifier,
-    name: text(record.name, identifier),
+    name: importedName.trim() === '' ? identifier : importedName,
     role,
     content: text(record.content),
     marker: record.marker === true,
@@ -242,6 +256,11 @@ export function parseSillyTavernPresetJson(source: string, fileName = 'SillyTave
       ...optionalFinite(record.frequency_penalty, 'frequency_penalty') === undefined ? {} : { frequencyPenalty: record.frequency_penalty as number },
       ...optionalFinite(record.presence_penalty, 'presence_penalty') === undefined ? {} : { presencePenalty: record.presence_penalty as number },
       ...optionalFinite(record.repetition_penalty, 'repetition_penalty') === undefined ? {} : { repetitionPenalty: record.repetition_penalty as number },
+    },
+    continuation: {
+      prefill: record.continue_prefill === true,
+      postfix: continuationPostfix(record.continue_postfix),
+      nudgePrompt: text(record.continue_nudge_prompt, '[Continue your last message without repeating its original content.]'),
     },
     formats: {
       worldInfo: text(record.wi_format, '{0}'),

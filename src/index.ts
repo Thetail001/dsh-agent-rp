@@ -34,7 +34,6 @@ import { parseCharx } from './import/charx.ts'
 import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
 import { readCharacterCardPng } from './import/png.ts'
 import {
-  cardFromImportMeta,
   isCharxCharacterCardAttachment,
   isJsonCharacterCardAttachment,
   isPngCharacterCardAttachment,
@@ -60,7 +59,6 @@ import {
 import {
   isJsonWorldInfoAttachment,
   prepareWorldInfoImportResult,
-  readWorldInfoLibrarySessionSeed,
   type WorldInfoImportMeta,
 } from './import/session-world-info.ts'
 import {
@@ -71,13 +69,7 @@ import {
 } from './import/session-preset.ts'
 import {
   renderCharacterPrompt,
-  renderImportedChatPrompt,
-  renderImportedCharacterPrompt,
-  renderWorldInfoScenarioPrompt,
   renderMemoryContext,
-  roleplayVisibleDialogue,
-  roleplayVisibleTranscript,
-  renderSessionLorebooks,
   substituteCardMacros,
 } from './prompt.ts'
 import { withToolGuidance } from './tool-guidance.ts'
@@ -88,19 +80,18 @@ import {
   type PublishedRoleplayImageMeta,
   type PublishedRoleplayImageValue,
 } from './roleplay-image.ts'
-import { createEjsWorldInfoBooks, EjsTemplateEngine, type EjsTemplateContext } from './ejs-template.ts'
+import { EjsTemplateEngine } from './ejs-template.ts'
 import { installBundledAgentRpPreset } from './preset.ts'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { createAgentRpProjectionDefinition } from './projection.ts'
-import { readCurrentSessionMvuState } from './mvu.ts'
 import { installMvuStreamCompletion } from './mvu-stream.ts'
 import { installPromptRegexStream } from './prompt-regex-stream.ts'
-import { assembleSillyTavernPreset, type SillyTavernInChatPrompt } from './preset-prompt.ts'
 import { configurePresetFromCommand } from './preset-configuration.ts'
 import { PresetLibrary } from './preset-library.ts'
 import { installPresetLibraryHttp } from './preset-library-http.ts'
 import { executePresetLibraryCommand } from './preset-library-command.ts'
 import { installTavernExecutionHttp, installTavernPreflightHttp } from './tavern-preflight-http.ts'
+import { TavernExecutionPlanCache } from './tavern-preflight.ts'
 import { CharacterLibrary } from './character-library.ts'
 import { executeCharacterLibraryCommand } from './character-library-command.ts'
 import { installCharacterLibraryHttp } from './character-library-http.ts'
@@ -110,7 +101,7 @@ import {
 } from './character-library-protocol.ts'
 import { installPersonaLibraryHttp } from './persona-library-http.ts'
 import { PersonaLibrary } from './persona-library.ts'
-import { parseSessionPersona, resolveSessionPersonaIdentity } from './session-persona.ts'
+import { parseSessionPersona } from './session-persona.ts'
 import { executePersonaCommand } from './persona-command.ts'
 import { executeSillyTavernChatCommand } from './sillytavern-chat-command.ts'
 import { installSillyTavernChatHttp } from './sillytavern-chat-http.ts'
@@ -119,15 +110,7 @@ import { installSillyTavernChatExportHttp } from './sillytavern-chat-export-http
 import { installSessionLaunchHttp } from './session-launch-http.ts'
 import { executeGenerationCommand } from './generation.ts'
 import type { AgentRpHttpServer } from './host-http.ts'
-import {
-  configuredLorebook,
-  readWorldInfoConfiguration,
-  worldInfoTokenBudget,
-} from './world-info-configuration-core.ts'
-import {
-  executeWorldInfoConfiguration,
-  readActiveSessionLorebookSources,
-} from './world-info-configuration.ts'
+import { executeWorldInfoConfiguration } from './world-info-configuration.ts'
 import { WorldInfoLibrary } from './world-info-library.ts'
 import { executeWorldInfoLibraryCommand } from './world-info-library-command.ts'
 import { installWorldInfoLibraryHttp } from './world-info-library-http.ts'
@@ -135,22 +118,57 @@ import { GeneratedImageLibrary } from './generated-image-library.ts'
 import { executeImageGenerationCommand } from './image-generation-command.ts'
 import { installImageGenerationHttp } from './image-generation-http.ts'
 import { executeTavernHelperMutation } from './tavern-helper-command.ts'
-import {
-  readTavernHelperState,
-  tavernInjectedInChatPrompts,
-  tavernInjectedScanText,
-  type TavernHelperState,
-} from './tavern-helper.ts'
 import { executeTavernTrigger } from './tavern-trigger.ts'
 import { installTavernGenerationHttp } from './tavern-generation-http.ts'
 import { installTavernModelListHttp } from './tavern-model-list-http.ts'
 import { installRpDistributionBridgeHttp } from './rp-distribution-bridge-http.ts'
 import { NativeIdentityStore } from './native-identity.ts'
 import { installNativeIdentityHttp } from './native-identity-http.ts'
+import {
+  createWorldbookCharacterContextRegistry,
+  installWorldbookSnapshotCoalescing,
+  WORLDBOOK_CHARACTER_CONTEXT_KEY,
+  worldbookCharacterContext,
+  type WorldbookCharacterContextRegistry,
+} from './worldbook-character-context.ts'
+import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
+import { prepareRoleplayTurn } from './roleplay-turn-plan.ts'
+import { RoleplayTurnCoordinator } from './roleplay-turn-coordinator.ts'
+import { collectSessionRoleplaySettlementContributions } from './session-roleplay-turn-settlement.ts'
+import {
+  appendRoleplayTurnSettlement,
+  compileRoleplayTurnSettlement,
+} from './roleplay-turn-settlement.ts'
+import {
+  appendRoleplayTurnPresentation,
+} from './roleplay-turn-presentation.ts'
+import {
+  compileInitialSessionRoleplayTurnPresentation,
+  compileSessionRoleplayTurnPresentationUpdate,
+} from './session-roleplay-turn-presentation.ts'
+import { executeRoleplayStateCommand } from './roleplay-state-command.ts'
+import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
 export { Config }
+export {
+  applyRoleplayStateEvent,
+  appendRoleplayState,
+  appendUserRoleplayState,
+  parseRoleplayStateRecord,
+  parseRoleplayStateCommandRequest,
+  readRoleplayStates,
+  renderRoleplayStateContext,
+  ROLEPLAY_STATE_MODULE_ID,
+  ROLEPLAY_STATE_USER_WRITER_ID,
+} from './roleplay-state.ts'
+export type {
+  RoleplayStateCommandRequest,
+  RoleplayStateRecord,
+  RoleplayStateSnapshot,
+  WriteRoleplayStateInput,
+} from './roleplay-state.ts'
 export { AGENT_RP_EMBEDDED_IDENTITY_CHANNEL } from './embedded-identity-protocol.ts'
 export type {
   EmbeddedNativeIdentityFailure,
@@ -476,23 +494,6 @@ function latestUserAttachments(agent: Agent): { eventSeq: number; attachments: C
   throw new Error('没有找到导入请求；请在同一条消息中附上 Character Card PNG、JSON 或 CHARX')
 }
 
-function importedCharacter(agentsByScope: WeakMap<ScopeKey, Agent>, scope: ScopeKey | undefined) {
-  if (scope === undefined) return undefined
-  const agent = agentsByScope.get(scope)
-  return agent === undefined ? undefined : readActiveSessionCharacter(agent.session.events)
-}
-
-function ejsVariableScopes(state: TavernHelperState | undefined): NonNullable<EjsTemplateContext['variableScopes']> {
-  return state?.scopes ?? {}
-}
-
-function ejsLorebookOptions(engine: EjsTemplateEngine | undefined, context: EjsTemplateContext) {
-  return engine === undefined ? {} : {
-    regexEngine: engine,
-    renderTemplate: engine.createRenderer(context),
-  }
-}
-
 /**
  * Attach one persistent character identity and memory tool to a top-level Agent.
  * @param agent - published top-level Agent whose scope owns every registration.
@@ -512,8 +513,11 @@ export function installAgentRp(
   const rememberIntentByAgent = new WeakMap<Agent, boolean>()
   const rememberRestrictions = new Map<Agent, () => void>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
-  const presetAfterHistoryByAgent = new WeakMap<Agent, string>()
-  const presetInChatByAgent = new WeakMap<Agent, readonly SillyTavernInChatPrompt[]>()
+  const turnCoordinator = new RoleplayTurnCoordinator<Agent>()
+  let settlementRuntimeActive = true
+  ctx.effect(() => () => {
+    settlementRuntimeActive = false
+  }, 'agent-rp: turn settlement lifetime')
   const gateway = ctx.get('apiProxy') as PromptAttachmentGateway | undefined
   const commands = (ctx as Context & { commands: HumanCommandGateway }).commands
   const setRememberAvailable = (agent: Agent, available: boolean): void => {
@@ -583,6 +587,15 @@ export function installAgentRp(
     }
     return undefined
   }
+  let worldbookCharacters: WorldbookCharacterContextRegistry | undefined
+  try {
+    const candidate = ctx.get(WORLDBOOK_CHARACTER_CONTEXT_KEY as never) as WorldbookCharacterContextRegistry | undefined
+    if (candidate !== undefined && typeof candidate.register === 'function'
+      && typeof candidate.getCurrentCharacter === 'function') worldbookCharacters = candidate
+  } catch {
+    worldbookCharacters = undefined
+  }
+  const worldbookCharacterDisposers = new Map<Agent, readonly (() => void)[]>()
 
   commands.register({
     name: 'rp-tavern-variables',
@@ -625,6 +638,13 @@ export function installAgentRp(
     recordInput: false,
     handler: executeAgentRpMemoryCommand,
   })
+  ctx.effect(() => commands.register({
+    name: 'rp-state',
+    description: 'explicitly edit durable native roleplay state',
+    input: { hint: '<private native state payload>' },
+    recordInput: false,
+    handler: executeRoleplayStateCommand,
+  }), 'agent-rp: native state player command')
   commands.register({
     name: 'rp-preset-configure',
     description: 'update this roleplay Session preset',
@@ -788,124 +808,22 @@ export function installAgentRp(
       const agent = scope === undefined ? undefined : agentsByScope.get(scope)
       const pendingMessages = agent === undefined ? [] : pendingMessagesByAgent.get(agent) ?? []
       if (agent !== undefined) pendingMessagesByAgent.delete(agent)
-      const active = importedCharacter(agentsByScope, scope)
       if (agent === undefined) return guidedPersona(renderCharacterPrompt(config))
-      const tavern = readTavernHelperState(agent.session.events)
-      const injectedScanText = tavernInjectedScanText(tavern)
-      const sources = readActiveSessionLorebookSources(agent)
-      const worldInfoConfiguration = readWorldInfoConfiguration(agent.session.events)
-      const configuredSources = sources.map(source => ({
-        source,
-        configured: configuredLorebook(source, worldInfoConfiguration).lorebook,
-      }))
-      const books = configuredSources.map(({ source, configured }) => ({
-        id: source.id,
-        name: source.name,
-        lorebook: configured,
-      }))
-      const splitLore = (rendered: ReturnType<typeof renderSessionLorebooks>) => {
-        const collect = (source: 'character' | 'standalone') => {
-          const selected = rendered.books.filter((_book, index) => configuredSources[index]?.source.source === source)
-          return {
-            beforeCharacter: selected.flatMap(book => book.inspected.beforeCharacter),
-            afterCharacter: selected.flatMap(book => book.inspected.afterCharacter),
-          }
-        }
-        return { character: collect('character'), standalone: collect('standalone') }
-      }
-      if (active === undefined) {
-        const importedChat = readSillyTavernChatIdentity(agent.session.events)
-        const worldInfoSeed = readWorldInfoLibrarySessionSeed(agent.session.events)
-        const identity = resolveSessionPersonaIdentity(agent.session.events, undefined, importedChat?.userName)
-        const templateOptions = ejsLorebookOptions(options.ejsTemplateEngine, {
-          characterName: importedChat?.characterName ?? worldInfoSeed?.meta.result.name ?? config.characterName,
-          userName: identity.userName ?? '用户',
-          messages: [...roleplayVisibleDialogue(agent.session, pendingMessages), ...injectedScanText],
-          transcript: roleplayVisibleTranscript(agent.session, pendingMessages),
-          variableScopes: ejsVariableScopes(tavern),
-          worldInfoBooks: createEjsWorldInfoBooks(books),
-        })
-        const { standalone: standaloneLore } = splitLore(renderSessionLorebooks({
-          books,
-          session: agent.session,
-          pendingMessages,
-          scanText: injectedScanText,
-          templateOptions,
-          tokenBudget: worldInfoTokenBudget(worldInfoConfiguration),
-        }))
-        if (importedChat !== undefined) {
-          return guidedPersona([
-            ...standaloneLore.beforeCharacter,
-            renderImportedChatPrompt(importedChat.characterName, identity.userName, identity.persona?.description),
-            ...standaloneLore.afterCharacter,
-          ].join('\n\n'))
-        }
-        if (worldInfoSeed !== undefined) {
-          return guidedPersona(renderWorldInfoScenarioPrompt(
-            standaloneLore.beforeCharacter,
-            standaloneLore.afterCharacter,
-            identity.persona?.description,
-          ))
-        }
-        return guidedPersona(renderCharacterPrompt(config, standaloneLore.beforeCharacter, standaloneLore.afterCharacter))
-      }
-      const importedCard = cardFromImportMeta(active.meta)
-      const cardLorebook = configuredSources.find(value => value.source.source === 'character')?.configured
-      const { lorebook: _importedLorebook, ...cardWithoutLorebook } = importedCard
-      const card = cardLorebook === undefined ? cardWithoutLorebook : { ...importedCard, lorebook: cardLorebook }
-      const identity = resolveSessionPersonaIdentity(
-        agent.session.events,
-        active.result.userName,
-        readSillyTavernChatIdentity(agent.session.events)?.userName,
-      )
-      const { persona, userName } = identity
-      const mvu = readCurrentSessionMvuState(card, agent.session)
-      const templateOptions = ejsLorebookOptions(options.ejsTemplateEngine, {
-        characterName: card.nickname?.trim() || card.name,
-        userName: userName ?? '用户',
-        messages: [...roleplayVisibleDialogue(agent.session, pendingMessages), ...injectedScanText],
-        transcript: roleplayVisibleTranscript(agent.session, pendingMessages),
-        variableScopes: ejsVariableScopes(tavern),
-        ...(mvu === undefined ? {} : { statData: mvu.statData }),
-        worldInfoBooks: createEjsWorldInfoBooks(books),
+      const resolved = resolveSessionRoleplayRuntime({
+        session: agent.session,
+        deployment: config,
+        memoryWriteAvailable: rememberIntentByAgent.get(agent) === true,
+        templateEngineAvailable: options.ejsTemplateEngine !== undefined,
       })
-      const { standalone: standaloneLore, character: characterLore } = splitLore(renderSessionLorebooks({
-        books,
+      const plan = prepareRoleplayTurn({
         session: agent.session,
         pendingMessages,
-        scanText: injectedScanText,
-        ...(mvu === undefined ? {} : { statData: mvu.statData }),
-        templateOptions,
-        tokenBudget: worldInfoTokenBudget(worldInfoConfiguration),
-      }))
-      const preset = readActiveSessionPreset(agent.session.events)?.preset
-      if (preset !== undefined) {
-        const assembled = assembleSillyTavernPreset(preset, {
-          card,
-          ...(userName === undefined ? {} : { userName }),
-          ...(persona === undefined ? {} : { userPersona: persona.description }),
-          worldInfoBefore: [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
-          worldInfoAfter: [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
-          session: agent.session,
-          pendingMessages,
-          mvuEnabled: mvu !== undefined,
-          ...(templateOptions.renderTemplate === undefined ? {} : { renderTemplate: templateOptions.renderTemplate }),
-        })
-        presetAfterHistoryByAgent.set(agent, assembled.afterHistory)
-        presetInChatByAgent.set(agent, assembled.inChat)
-        return guidedPersona(assembled.system)
-      }
-      presetAfterHistoryByAgent.delete(agent)
-      presetInChatByAgent.delete(agent)
-      return guidedPersona(renderImportedCharacterPrompt(
-        card,
-        [...standaloneLore.beforeCharacter, ...characterLore.beforeCharacter],
-        [...characterLore.afterCharacter, ...standaloneLore.afterCharacter],
-        userName,
-        mvu?.statData,
-        persona?.description,
-        templateOptions,
-      ))
+        deployment: config,
+        resolved,
+        ...(options.ejsTemplateEngine === undefined ? {} : { templateEngine: options.ejsTemplateEngine }),
+      })
+      turnCoordinator.prepare(agent, plan)
+      return guidedPersona(plan.prompt.systemPromptText)
     },
     complete: true,
   })
@@ -913,6 +831,22 @@ export function installAgentRp(
     agentsByScope.set(agent, agent)
     agentsBySession.set(String(agent.session.id), agent)
     setRememberAvailable(agent, false)
+    const resolveCharacter = () => {
+      const active = readActiveSessionCharacter(agent.session.events)
+      if (active === undefined) return undefined
+      let originalFilename: string | undefined
+      if (active.result.libraryId !== undefined) {
+        try {
+          originalFilename = characterLibrary.get(active.result.libraryId).originalFilename
+        } catch {
+          originalFilename = undefined
+        }
+      }
+      return worldbookCharacterContext(active.meta, originalFilename)
+    }
+    const sessionIds = new Set([String(agent.id), String(agent.session.id)])
+    worldbookCharacterDisposers.set(agent, [...sessionIds].map(sessionId =>
+      worldbookCharacters?.register(sessionId, resolveCharacter) ?? (() => {})))
   })
   ctx.on('agent/pre-step', async ({ agent, turn }, next) => {
     publishTurnByAgent.set(agent, turn)
@@ -925,8 +859,9 @@ export function installAgentRp(
     rememberRestrictions.get(agent)?.()
     rememberRestrictions.delete(agent)
     pendingMessagesByAgent.delete(agent)
-    presetAfterHistoryByAgent.delete(agent)
-    presetInChatByAgent.delete(agent)
+    turnCoordinator.release(agent)
+    for (const dispose of worldbookCharacterDisposers.get(agent) ?? []) dispose()
+    worldbookCharacterDisposers.delete(agent)
     publishFailures.delete(agent)
     publishTurnByAgent.delete(agent)
     const restriction = publishRestrictions.get(agent)
@@ -937,15 +872,22 @@ export function installAgentRp(
       ctx.logger.warn(`agent-rp: failed to dispose publish_roleplay_image restriction: ${String(error)}`)
     }
   })
+  ctx.effect(() => () => {
+    for (const disposers of worldbookCharacterDisposers.values()) {
+      for (const dispose of disposers) dispose()
+    }
+    worldbookCharacterDisposers.clear()
+  }, 'agent-rp: worldbook character contexts')
   installPromptRegexStream(
     ctx,
     sessionId => agentsBySession.get(sessionId),
-    agent => [
-      ...(presetInChatByAgent.get(agent) ?? []),
-      ...tavernInjectedInChatPrompts(readTavernHelperState(agent.session.events)),
-    ],
+    agent => turnCoordinator.current(agent)?.prompt,
   )
-  installMvuStreamCompletion(ctx, sessionId => agentsBySession.get(sessionId))
+  installMvuStreamCompletion(
+    ctx,
+    sessionId => agentsBySession.get(sessionId),
+    agent => turnCoordinator.current(agent),
+  )
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {
     if (agentsByScope.get(agent) !== agent) return
     setRememberAvailable(agent, requestsPersistentMemory(message))
@@ -965,22 +907,14 @@ export function installAgentRp(
       )
     },
   })
-  ctx.systemPrompt.context({
-    name: 'agent-rp:preset-after-history',
-    order: 60,
-    text: ({ scope }) => {
-      if (scope === undefined) return ''
-      const agent = agentsByScope.get(scope)
-      if (agent === undefined) return ''
-      const value = presetAfterHistoryByAgent.get(agent) ?? ''
-      presetAfterHistoryByAgent.delete(agent)
-      return value
-    },
-  })
-  ctx.on('agent/request', async ({ agent }, next) => {
+  ctx.on('agent/request', async ({ agent, turn, step }, next) => {
+    const activePlan = agentsByScope.get(agent) === agent
+      ? turnCoordinator.bindStep(agent, turn, step)
+      : undefined
     const config = await next()
     if (agentsByScope.get(agent) !== agent) return config
-    const generation = readActiveSessionPreset(agent.session.events)?.preset.generation
+    const generation = activePlan?.generation
+      ?? readActiveSessionPreset(agent.session.events)?.preset.generation
     if (generation === undefined) return config
     const requestedEffort = generation.reasoningEffort
     const modelInfo = requestedEffort === undefined || requestedEffort === 'auto'
@@ -997,6 +931,62 @@ export function installAgentRp(
         : { maxTokens: Math.min(generation.maxTokens, config.maxTokens ?? generation.maxTokens) },
       ...supportedEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(supportedEffort) },
     }
+  })
+  ctx.on('session/event', (session, event) => {
+    if (event.type === 'agent-rp/tavern-state-attachment'
+      || (event.type === 'command/done' && event.data.kind === 'success')) {
+      queueMicrotask(() => {
+        if (!settlementRuntimeActive) return
+        try {
+          const presentation = compileSessionRoleplayTurnPresentationUpdate(session, event)
+          if (presentation !== undefined) appendRoleplayTurnPresentation(session, presentation)
+        } catch (error: unknown) {
+          ctx.logger.warn(`agent-rp: presentation update failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      })
+    }
+    if (event.type !== 'turn/end') return
+    const agent = agentsBySession.get(String(session.id))
+    if (agent === undefined || agentsByScope.get(agent) !== agent) return
+    const plans = turnCoordinator.completeTurn(agent, event.data.turn)
+    if (plans.length === 0) return
+    if (!supportsAgentRpSessionEvents(session)) return
+    const result = event.data.reason.kind
+    const turn = event.data.turn
+    queueMicrotask(() => {
+      if (!settlementRuntimeActive || session.events.some(candidate =>
+        candidate.type === 'agent-rp/turn-settlement' && candidate.data.turn === turn)) return
+      try {
+        const resolved = resolveSessionRoleplayRuntime({
+          session,
+          deployment: config,
+          memoryWriteAvailable: plans.some(({ plan }) => plan.memory.write),
+          templateEngineAvailable: options.ejsTemplateEngine !== undefined,
+        })
+        const settlement = compileRoleplayTurnSettlement({
+          sessionId: String(session.id),
+          turn,
+          result,
+          plans,
+          events: session.events,
+          after: resolved.snapshot,
+          contributions: collectSessionRoleplaySettlementContributions({
+            session,
+            turn,
+            plans,
+            ...(resolved.mvu === undefined ? {} : { mvu: resolved.mvu }),
+          }),
+        })
+        const settlementEvent = appendRoleplayTurnSettlement(session, settlement)
+        appendRoleplayTurnPresentation(session, compileInitialSessionRoleplayTurnPresentation({
+          session,
+          settlementEvent,
+          plans,
+        }))
+      } catch (error: unknown) {
+        ctx.logger.warn(`agent-rp: turn settlement failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    })
   })
   ctx.systemPrompt.context({ name: 'sandbox:policy', order: 0, text: '' })
   ctx.systemPrompt.context({ name: 'approval:policy', order: 0, text: '' })
@@ -1316,6 +1306,9 @@ async function loadEjsTemplateEngine(ctx: Context): Promise<EjsTemplateEngine | 
 export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> {
   const resolved = resolveConfig(config)
   if (resolved.mode === 'host') {
+    const worldbookCharacters = createWorldbookCharacterContextRegistry()
+    ctx.provide(WORLDBOOK_CHARACTER_CONTEXT_KEY as never, worldbookCharacters as never)
+    installWorldbookSnapshotCoalescing(ctx)
     const ejsTemplateEngine = await loadEjsTemplateEngine(ctx)
     const characterLibrary = new CharacterLibrary()
     const personaLibrary = new PersonaLibrary()
@@ -1336,8 +1329,9 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         installCharacterLibraryHttp(webCtx, characterLibrary, server)
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
         installPresetLibraryHttp(webCtx, presetLibrary, server)
-        installTavernPreflightHttp(webCtx, characterLibrary, presetLibrary, server)
-        installTavernExecutionHttp(webCtx, characterLibrary, presetLibrary, server)
+        const tavernExecutionPlans = new TavernExecutionPlanCache()
+        installTavernPreflightHttp(webCtx, characterLibrary, presetLibrary, server, tavernExecutionPlans)
+        installTavernExecutionHttp(webCtx, characterLibrary, presetLibrary, server, tavernExecutionPlans)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)
         installSillyTavernChatExportHttp(webCtx, ctx, server)
         installAgentRpMemoryHttp(webCtx, ctx, server)

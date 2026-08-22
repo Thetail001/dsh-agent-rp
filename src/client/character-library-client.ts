@@ -3,6 +3,7 @@
 import {
   CHARACTER_LIBRARY_PATH,
   type CharacterLibraryDetail,
+  type CharacterLibraryEditRequest,
   type CharacterLibraryWorldInfoPage,
   type CharacterRemoteResourcePolicy,
   type CharacterRemoteResourceType,
@@ -32,9 +33,18 @@ export function notifyCharacterLibraryChanged(id: string): void {
   window.dispatchEvent(new CustomEvent(characterLibraryChangedEvent, { detail: { id } }))
 }
 
-async function postCharacterMutation(path: string, fallbackError: string): Promise<CharacterLibraryDetail> {
+async function postCharacterMutation(
+  path: string,
+  fallbackError: string,
+  body?: CharacterLibraryEditRequest,
+): Promise<CharacterLibraryDetail> {
   const response = await fetch(`${CHARACTER_LIBRARY_PATH}${path}`, {
-    method: 'POST', headers: { accept: 'application/json' },
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
   const value = await response.json() as {
     readonly error?: string
@@ -45,6 +55,14 @@ async function postCharacterMutation(path: string, fallbackError: string): Promi
     throw new Error(value.error ?? `${fallbackError}（${response.status}）`)
   }
   return value.entry
+}
+
+/** Save character fields, toggle card regexes, or restore the imported definition. */
+export async function updateCharacterEdits(
+  id: string,
+  request: CharacterLibraryEditRequest,
+): Promise<CharacterLibraryDetail> {
+  return postCharacterMutation(`/${encodeURIComponent(id)}/edits`, '角色设定保存失败', request)
 }
 
 /** Approve or revoke one exact remote origin and resource type. */

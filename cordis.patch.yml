@@ -1,3 +1,11 @@
+- id: agent-presets
+  config:
+    # Agent RP installs its managed composition in the standard user preset
+    # root. Some DSH/DSHA profile layers disable that root, which makes the
+    # installed preset impossible to select even though the plugin is healthy.
+    default: standard
+    includeUserRoot: true
+
 - insert:
     - id: dsh-agent-rp-host
       name: '@dsh-external/dsh-agent-rp'

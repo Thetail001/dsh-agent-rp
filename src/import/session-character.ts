@@ -253,9 +253,9 @@ function validateImport(events: readonly SessionEvent[], resultEvent: SessionEve
     throw new Error('import_character_card CHARX transport does not match its source attachment')
   }
   const expectedGreeting = [card.firstMessage, ...card.alternateGreetings][result.greetingIndex]
+  // Degradations are an import-time capability snapshot; the current parser may legitimately support more.
   if (result.name !== card.name || result.cardVersion !== card.version
-    || result.selectedGreeting !== expectedGreeting
-    || JSON.stringify(result.degradations) !== JSON.stringify(card.degradations)) {
+    || result.selectedGreeting !== expectedGreeting) {
     throw new Error('import_character_card result summary does not match durable card metadata')
   }
   return { result, meta: { ...meta, raw: card.raw } }
@@ -289,10 +289,10 @@ export function readActiveSessionCharacter(events: readonly SessionEvent[]): Act
           && result.sourceAttachmentId === String(attachment.attachmentId)
         : /^card-[a-f0-9]{32}$/u.test(libraryId) && result.libraryId === libraryId
           && result.sourceAttachmentId === `library:${libraryId}`
+      // Keep historical capability diagnoses replayable after the importer gains native support.
       if (event.data.format !== 0 || !validSource || result.sourceEventSeq !== event.seq
         || result.name !== card.name || result.cardVersion !== card.version
-        || result.selectedGreeting !== expectedGreeting
-        || JSON.stringify(result.degradations) !== JSON.stringify(card.degradations)) {
+        || result.selectedGreeting !== expectedGreeting) {
         throw new Error('agent-rp/character-card-seed has invalid provenance')
       }
       active = { result, meta: { ...meta, raw: card.raw } }
@@ -310,8 +310,7 @@ export function readActiveSessionCharacter(events: readonly SessionEvent[]): Act
         const card = parseCharacterCardValue(launch.meta.raw)
         const expectedGreeting = [card.firstMessage, ...card.alternateGreetings][launch.meta.result.greetingIndex]
         if (launch.meta.result.name !== card.name || launch.meta.result.cardVersion !== card.version
-          || launch.meta.result.selectedGreeting !== expectedGreeting
-          || JSON.stringify(launch.meta.result.degradations) !== JSON.stringify(card.degradations)) {
+          || launch.meta.result.selectedGreeting !== expectedGreeting) {
           throw new Error('角色库启动结果与角色卡不一致')
         }
         active = { result: launch.meta.result, meta: { ...launch.meta, raw: card.raw } }

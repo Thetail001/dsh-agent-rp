@@ -101,14 +101,12 @@ export function activeTavernWorldbooks(
 const RESULT_PREFIX = 'agent-rp-world-info-v0:'
 const INITIAL_STATE: WorldInfoConfigurationState = { format: 0, revision: 0, overrides: [] }
 
-/** Default aggregate World Info cap for one model request. */
-export const DEFAULT_SESSION_WORLD_INFO_TOKEN_BUDGET = 4_096
 /** Largest player-selected aggregate World Info cap accepted by the Session manager. */
 export const MAX_SESSION_WORLD_INFO_TOKEN_BUDGET = 100_000
 
-/** Resolve an older overlay snapshot to the current aggregate World Info cap. */
-export function worldInfoTokenBudget(state: WorldInfoConfigurationState): number {
-  return state.tokenBudget ?? DEFAULT_SESSION_WORLD_INFO_TOKEN_BUDGET
+/** Resolve the optional player-selected aggregate cap; omission leaves final capacity to the model context. */
+export function worldInfoTokenBudget(state: WorldInfoConfigurationState): number | undefined {
+  return state.tokenBudget === undefined || state.tokenBudget === 0 ? undefined : state.tokenBudget
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -185,6 +183,12 @@ function target(record: Record<string, unknown>, label: string): { readonly book
   return { bookId, entryIndex: nonNegativeInteger(record.entryIndex, `${label}.entryIndex`) }
 }
 
+function requestedBookId(record: Record<string, unknown>, label: string): string {
+  const bookId = text(record.bookId, `${label}.bookId`)
+  if (bookId.trim() === '') throw new Error(`${label}.bookId 不能为空`)
+  return bookId
+}
+
 /** Parse one private World Info manager request. */
 export function parseWorldInfoConfigurationRequest(source: string): WorldInfoConfigurationRequest {
   let value: unknown
@@ -198,6 +202,18 @@ export function parseWorldInfoConfigurationRequest(source: string): WorldInfoCon
     const tokenBudget = nonNegativeInteger(record.tokenBudget, 'tokenBudget')
     if (tokenBudget > MAX_SESSION_WORLD_INFO_TOKEN_BUDGET) throw new Error('tokenBudget 过大')
     return { operation: 'set-budget', revision, tokenBudget }
+  }
+  if (record.operation === 'reset-book') {
+    return { operation: 'reset-book', revision, bookId: requestedBookId(record, '世界书操作请求') }
+  }
+  if (record.operation === 'set-book-enabled') {
+    if (typeof record.enabled !== 'boolean') throw new Error('enabled 必须是布尔值')
+    return {
+      operation: 'set-book-enabled',
+      revision,
+      bookId: requestedBookId(record, '世界书操作请求'),
+      enabled: record.enabled,
+    }
   }
   const addressed = target(record, '世界书操作请求')
   if (record.operation === 'toggle') {
@@ -231,11 +247,12 @@ function parseState(value: unknown): WorldInfoConfigurationState {
   const keys = parsed.map(item => `${item.bookId}\u0000${item.entryIndex}`)
   if (new Set(keys).size !== keys.length) throw new Error('世界书配置包含重复条目')
   const overrides = parsed.filter(item => item.deleted || item.entry !== undefined)
-  const tokenBudget = record.tokenBudget === undefined
+  const parsedTokenBudget = record.tokenBudget === undefined
     ? undefined : nonNegativeInteger(record.tokenBudget, 'tokenBudget')
-  if (tokenBudget !== undefined && tokenBudget > MAX_SESSION_WORLD_INFO_TOKEN_BUDGET) {
+  if (parsedTokenBudget !== undefined && parsedTokenBudget > MAX_SESSION_WORLD_INFO_TOKEN_BUDGET) {
     throw new Error('世界书配置 tokenBudget 过大')
   }
+  const tokenBudget = parsedTokenBudget === 0 ? undefined : parsedTokenBudget
   return {
     format: 0,
     revision: nonNegativeInteger(record.revision, 'revision'),
@@ -297,6 +314,7 @@ function applyEditable(entry: ImportedLorebookEntry, value: WorldInfoEditableEnt
     ...value,
     useRegex: entry.useRegex,
     hasDecorators: entry.hasDecorators,
+    ...(entry.compatibilityBlockers === undefined ? {} : { compatibilityBlockers: entry.compatibilityBlockers }),
   }
 }
 
@@ -345,7 +363,45 @@ export function configureWorldInfo(
   if (request.revision !== state.revision) throw new Error('世界书已在别处改变，请刷新后重试')
   if (request.operation === 'reset-all') return { ...state, revision: state.revision + 1, overrides: [] }
   if (request.operation === 'set-budget') {
+    if (request.tokenBudget === 0) {
+      const { tokenBudget: _removed, ...withoutTokenBudget } = state
+      return { ...withoutTokenBudget, revision: state.revision + 1 }
+    }
     return { ...state, revision: state.revision + 1, tokenBudget: request.tokenBudget }
+  }
+  if (request.operation === 'reset-book') {
+    if (!sources.some(source => source.id === request.bookId)) throw new Error('目标世界书不存在')
+    return {
+      ...state,
+      revision: state.revision + 1,
+      overrides: state.overrides.filter(item => item.bookId !== request.bookId),
+    }
+  }
+  if (request.operation === 'set-book-enabled') {
+    const source = sources.find(book => book.id === request.bookId)
+    if (source === undefined) throw new Error('目标世界书不存在')
+    const current = new Map(state.overrides.filter(item => item.bookId === request.bookId)
+      .map(item => [item.entryIndex, item]))
+    const overrides = source.lorebook.entries.flatMap((original, entryIndex) => {
+      const prior = current.get(entryIndex) ?? { bookId: request.bookId, entryIndex, deleted: false }
+      const entry = { ...(prior.entry ?? editableWorldInfoEntry(original)), enabled: request.enabled }
+      const matchesOriginal = JSON.stringify(entry) === JSON.stringify(editableWorldInfoEntry(original))
+      if (!prior.deleted && matchesOriginal) return []
+      return [{
+        bookId: request.bookId,
+        entryIndex,
+        deleted: prior.deleted,
+        ...(matchesOriginal ? {} : { entry }),
+      }]
+    })
+    return {
+      ...state,
+      revision: state.revision + 1,
+      overrides: [
+        ...state.overrides.filter(item => item.bookId !== request.bookId),
+        ...overrides,
+      ],
+    }
   }
   const source = sources.find(book => book.id === request.bookId)
   const original = source?.lorebook.entries[request.entryIndex]

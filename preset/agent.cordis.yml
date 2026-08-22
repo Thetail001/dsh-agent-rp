@@ -13,3 +13,11 @@
 - id: agent-rp-pwsh
   name: '@deepseek-ai/dsh-tool-pwsh'
   disabled: !!js process.platform !== 'win32'
+
+# Roleplay may need current public information, but it must not inherit the
+# coding preset's shell, filesystem, subagents, or other workspace authority.
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: false
+    searchTimeoutMs: 60000

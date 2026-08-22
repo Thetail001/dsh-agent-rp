@@ -6,7 +6,7 @@ import type { ImportedRegexScript, ImportedTavernHelperScript } from './import/t
 /** Normalized fields that can be represented by a standalone SillyTavern preset. */
 export type ExportableSillyTavernPreset = Pick<
   ImportedSillyTavernPreset,
-  'prompts' | 'order' | 'generation' | 'formats' | 'regexScripts' | 'tavernHelperScripts' | 'tavernHelperVariables'
+  'prompts' | 'order' | 'generation' | 'continuation' | 'formats' | 'regexScripts' | 'tavernHelperScripts' | 'tavernHelperVariables'
 >
 
 function prompt(prompt: SillyTavernPresetPrompt): Record<string, unknown> {
@@ -61,6 +61,7 @@ function helperScript(script: ImportedTavernHelperScript): Record<string, unknow
 /** Serialize the supported current configuration as a new SillyTavern preset JSON file. */
 export function exportSillyTavernPresetJson(preset: ExportableSillyTavernPreset): string {
   const generation = preset.generation
+  const continuation = preset.continuation
   const helperScripts = preset.tavernHelperScripts ?? []
   const helperVariables = preset.tavernHelperVariables ?? {}
   const hasHelper = helperScripts.length > 0 || Object.keys(helperVariables).length > 0
@@ -77,6 +78,11 @@ export function exportSillyTavernPresetJson(preset: ExportableSillyTavernPreset)
     ...(generation.frequencyPenalty === undefined ? {} : { frequency_penalty: generation.frequencyPenalty }),
     ...(generation.presencePenalty === undefined ? {} : { presence_penalty: generation.presencePenalty }),
     ...(generation.repetitionPenalty === undefined ? {} : { repetition_penalty: generation.repetitionPenalty }),
+    ...(continuation === undefined ? {} : {
+      continue_prefill: continuation.prefill,
+      continue_postfix: continuation.postfix,
+      continue_nudge_prompt: continuation.nudgePrompt,
+    }),
     wi_format: preset.formats.worldInfo,
     scenario_format: preset.formats.scenario,
     personality_format: preset.formats.personality,

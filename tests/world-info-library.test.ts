@@ -53,7 +53,7 @@ test('imports Host-owned World Info through a private command without a model tu
 
   let state = agentRpProjectionDefinition.init()
   for (const event of session.events) state = agentRpProjectionDefinition.apply(state, event)
-  const projected = agentRpProjectionDefinition.view(state)
+  const projected = agentRpProjectionDefinition.wire.view(state)
   assert.equal(projected.worldInfo.books[0]?.name, '海城')
   assert.equal(projected.worldInfoCount, 1)
 })
@@ -68,5 +68,9 @@ test('deduplicates the same World Info bytes and rejects non-World-Info JSON', c
   assert.deepEqual(library.list(), [first])
   assert.equal(Buffer.from(library.asset(first.id).data).equals(source), true)
   assert.equal(library.asset(first.id).filename, '海城.json')
+  assert.equal(first.defaultForNewSessions, false)
+  assert.equal(library.setDefault(first.id, true).defaultForNewSessions, true)
+  assert.deepEqual(new WorldInfoLibrary({ root }).defaultIds(), [first.id])
+  assert.equal(library.setDefault(first.id, false).defaultForNewSessions, false)
   assert.throws(() => library.importFile({ data: Buffer.from('{"name":"not a book"}'), filename: 'wrong.json' }), /entries/u)
 })

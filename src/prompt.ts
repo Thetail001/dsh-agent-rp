@@ -113,7 +113,7 @@ export function renderImportedWorldInfos(
   }, { beforeCharacter: [] as string[], afterCharacter: [] as string[] })
 }
 
-/** Activate every Session book under one aggregate budget while retaining source identity. */
+/** Activate every Session book while retaining source identity and honoring an optional player-selected cap. */
 export function renderSessionLorebooks(input: {
   readonly books: readonly { readonly id: string; readonly lorebook: ImportedLorebook }[]
   readonly session: Session
@@ -121,14 +121,14 @@ export function renderSessionLorebooks(input: {
   readonly scanText?: readonly string[]
   readonly statData?: import('@deepseek-ai/dsh-session').JsonValue
   readonly templateOptions?: LorebookActivationOptions
-  readonly tokenBudget: number
+  readonly tokenBudget?: number
 }) {
   const scanText = input.scanText ?? []
   const inspected = createNativeWorldEngine(input.templateOptions).evaluate({
     format: 0,
     books: input.books,
     messages: [...visibleDialogue(input.session, input.pendingMessages ?? []), ...scanText],
-    tokenBudget: input.tokenBudget,
+    ...(input.tokenBudget === undefined ? {} : { tokenBudget: input.tokenBudget }),
   })
   const render = (values: readonly string[]) => values.map(value => substituteMvuMacros(value, input.statData))
   return {
@@ -184,12 +184,16 @@ export function renderImportedCharacterPrompt(
     ? original
     : substituteCardMacros(card.systemPrompt, card, userName).replaceAll('{{original}}', original)
   const system = renderCardTemplate(systemSource, templateOptions)
+  const labeledField = (label: string, value: string): readonly string[] => {
+    const rendered = renderCardTemplate(substituteCardMacros(value, card, userName), templateOptions)
+    return rendered.trim().length === 0 ? [] : [`${label}：${rendered}`]
+  }
   const parts = [
     system,
     ...loreBefore.map(value => substituteCardMacros(value, card, userName)),
-    `角色描述：${renderCardTemplate(substituteCardMacros(card.description, card, userName), templateOptions)}`,
-    `性格：${renderCardTemplate(substituteCardMacros(card.personality, card, userName), templateOptions)}`,
-    `当前场景：${renderCardTemplate(substituteCardMacros(card.scenario, card, userName), templateOptions)}`,
+    ...labeledField('角色描述', card.description),
+    ...labeledField('性格', card.personality),
+    ...labeledField('当前场景', card.scenario),
     ...(userPersona?.trim() ? [`与角色对话的人：${userPersona.trim()}`] : []),
     ...(card.messageExample.trim().length === 0 ? [] : [`对话示例：\n${renderCardTemplate(substituteCardMacros(card.messageExample, card, userName), templateOptions)}`]),
     ...loreAfter.map(value => substituteCardMacros(value, card, userName)),

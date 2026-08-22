@@ -791,14 +791,23 @@ test('keeps an approved nested web frame on its own HTTPS origin inside an opaqu
   const navigation = tavernScriptFrameNavigation(externalDocument)
   assert.doesNotMatch(navigation.url, /__PRIVATE_CARD_PAYLOAD__/u)
   assert.doesNotMatch(navigation.program, /__PRIVATE_CARD_PAYLOAD__/u)
+  assert.ok(navigation.vendors.every(vendor => !vendor.includes('__PRIVATE_CARD_PAYLOAD__')))
   assert.match(navigation.program, /globalThis\.__dshBootSnapshot/u)
   const navigationShell = new TextDecoder().decode(Uint8Array.from(
     atob(navigation.url.slice(navigation.url.indexOf(',') + 1)), value => value.charCodeAt(0),
   ))
   assert.match(navigationShell, /dsh-agent-rp-tavern-loader/u)
+  assert.match(navigationShell, /bootstrap-started/u)
+  assert.match(navigationShell, /bootstrap-finished/u)
+  assert.match(navigationShell, /Array\.isArray\(message\.vendors\)/u)
   assert.doesNotMatch(navigationShell, /__PRIVATE_CARD_PAYLOAD__/u)
   assert.doesNotMatch(navigationShell, /data-dsh-runtime-vendor/u)
-  assert.match(navigation.program, /jquery 3\.7\.1/iu)
+  assert.match(navigation.vendors.join('\n'), /jquery 3\.7\.1/iu)
+  assert.match(navigation.vendors.join('\n'), /lodash 4\.17\.21/iu)
+  assert.doesNotMatch(navigation.program, /jquery 3\.7\.1/iu)
+  assert.match(navigation.program, /startup-phase/u)
+  assert.match(navigation.program, /value:'runtime'/u)
+  assert.match(navigation.program, /value:'script'/u)
   assert.ok(navigationShell.length < 20_000)
   assert.ok(navigation.program.length > navigationShell.length)
 })
@@ -947,6 +956,7 @@ test('preflights selected character and preset resources without executing scrip
   })
   const sources = [{
     scope: 'character' as const,
+    ownerId: 'card-a',
     scripts: [
       script('remote-ui', "import 'https://preflight.example.test/runtime.js';"),
       script('local-ui', [
@@ -959,6 +969,7 @@ test('preflights selected character and preset resources without executing scrip
     ],
   }, {
     scope: 'preset' as const,
+    ownerId: 'preset-a',
     scripts: [script('invalid-ui', 'const path = location.hash; import(path);')],
   }]
   const first = await inspectTavernPreflight(sources, [], AbortSignal.timeout(5_000))
@@ -2534,6 +2545,7 @@ test('consumes only one-shot prompt injections after a completed generation even
   runInNewContext(source!, context)
   ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
     action: 'event', eventType: 'generation_ended', args: [0],
+    mutationCause: { format: 0, sessionId: 'session-test', replySeq: 7 },
   })
   await new Promise(resolve => setTimeout(resolve, 0))
   const mutation = (context.posted as Record<string, unknown>[])
@@ -2541,6 +2553,9 @@ test('consumes only one-shot prompt injections after a completed generation even
   assert.deepEqual(JSON.parse(JSON.stringify(mutation?.prompts)), [
     { id: 'lasting', position: 'in_chat', depth: 0, role: 'system', content: '保留', shouldScan: true, once: false },
   ])
+  assert.deepEqual(JSON.parse(JSON.stringify(mutation?.cause)), {
+    format: 0, sessionId: 'session-test', replySeq: 7,
+  })
 })
 
 test('persists canonical MVU initialization listener changes', async () => {

@@ -1,0 +1,37 @@
+{
+  "spec": "chara_card_v2",
+  "spec_version": "2.0",
+  "data": {
+    "name": "权限预检夹具",
+    "description": "只用于无模型启动权限回归。",
+    "personality": "安静。",
+    "scenario": "测试场景。",
+    "first_mes": "门还没锁。",
+    "mes_example": "",
+    "creator_notes": "公开规范手工测试夹具",
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "alternate_greetings": [],
+    "tags": ["fixture"],
+    "creator": "dsh-agent-rp",
+    "character_version": "1.0",
+    "extensions": {
+      "regex_scripts": [
+        {
+          "scriptName": "远程图片权限夹具",
+          "findRegex": "<fixture-image>(.*?)</fixture-image>",
+          "replaceString": "<img src=\"https://migration-preflight.example.test/$1.png\">",
+          "trimStrings": [],
+          "placement": [2],
+          "disabled": false,
+          "markdownOnly": true,
+          "promptOnly": false,
+          "runOnEdit": true,
+          "substituteRegex": 0,
+          "minDepth": null,
+          "maxDepth": null
+        }
+      ]
+    }
+  }
+}

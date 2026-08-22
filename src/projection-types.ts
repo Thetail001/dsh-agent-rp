@@ -7,6 +7,11 @@ import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
 import type { TavernHelperState } from './tavern-helper.ts'
 import type { PromptRegexTraceRecord } from './frontend-regex.ts'
 import type { PublishedRoleplayImageRef } from './image-generation-protocol.ts'
+import type { RoleplayTurnPresentation } from './roleplay-turn-presentation-types.ts'
+
+/** Stable fallback identity used by resource-only roleplay Sessions. */
+export const DEFAULT_AGENT_RP_CHARACTER_NAME = '角色会话'
+
 
 /** Current character identity and migration summary for one Roleplay Session. */
 export interface AgentRpProjection {
@@ -25,6 +30,15 @@ export interface AgentRpProjection {
   readonly avatarAttachmentId?: string
   readonly avatarLibraryId?: string
   readonly importedMessageCount: number
+  /** Native structured state currently active in this Session. */
+  readonly nativeStates: readonly {
+    readonly id: string
+    readonly revision: number
+    readonly ownerModuleId: string
+    readonly writerModuleId: string
+    readonly eventSeq: number
+    readonly value: JsonValue
+  }[]
   /** Content-free counts for audited auxiliary Tavern model requests. */
   readonly auxiliaryGenerations?: {
     readonly requests: number
@@ -38,7 +52,8 @@ export interface AgentRpProjection {
   readonly worldInfo: {
     readonly revision: number
     readonly activeCount: number
-    readonly tokenBudget: number
+    /** Optional player-selected aggregate cap; omission means Agent RP does not truncate the activated books. */
+    readonly tokenBudget?: number
     readonly approximateTokens: number
     readonly budgetExcludedCount: number
     readonly failureCounts: import('./world-engine-diagnostic.ts').WorldEngineFailureCounts
@@ -71,6 +86,7 @@ export interface AgentRpProjection {
         readonly ignoreBudget: boolean
         readonly useRegex: boolean
         readonly hasDecorators: boolean
+        readonly compatibilityBlockers: readonly import('./import/types.ts').LorebookEntryCompatibilityBlocker[]
         readonly active: boolean
         readonly reason: import('./import/lorebook.ts').LorebookActivationReason
         readonly matchedKeys: readonly string[]
@@ -125,6 +141,8 @@ export interface AgentRpProjection {
     readonly images: readonly PublishedRoleplayImageRef[]
     readonly caption?: string
   }[]
+  /** Unified present-phase selection behind the visible reply and its runtime state. */
+  readonly presentation?: RoleplayTurnPresentation
   readonly preset?: {
     readonly libraryId?: string
     readonly name: string

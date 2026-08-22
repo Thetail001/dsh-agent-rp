@@ -103,11 +103,29 @@ test('locates a slow startup without treating an unfinished projection as an emp
       'data-agent-rp-tavern-permission-state': 'startup-blocked',
       'data-agent-rp-tavern-plan-ms': '92',
       'data-agent-rp-tavern-first-ready-ms': '118',
+      'data-agent-rp-tavern-navigation-first-ms': '98',
+      'data-agent-rp-tavern-navigation-last-ms': '101',
+      'data-agent-rp-tavern-bootstrap-first-ms': '102',
+      'data-agent-rp-tavern-bootstrap-last-ms': '105',
+      'data-agent-rp-tavern-runtime-first-ms': '108',
+      'data-agent-rp-tavern-runtime-last-ms': '112',
+      'data-agent-rp-tavern-script-first-ms': '109',
+      'data-agent-rp-tavern-script-last-ms': '113',
+      'data-agent-rp-tavern-program-min-ms': '6',
+      'data-agent-rp-tavern-program-max-ms': '14',
+      'data-agent-rp-tavern-execution-min-ms': '2',
+      'data-agent-rp-tavern-execution-max-ms': '9',
     })],
   }))
   assert.deepEqual(authorization.startup, {
     phase: 'authorization', sessionElapsedMs: 531, projectionMs: 214, characterMs: 531,
     tavernPlanMs: 92, tavernFirstReadyMs: 118,
+    tavernNavigationFirstMs: 98, tavernNavigationLastMs: 101,
+    tavernBootstrapFirstMs: 102, tavernBootstrapLastMs: 105,
+    tavernRuntimeFirstMs: 108, tavernRuntimeLastMs: 112,
+    tavernScriptFirstMs: 109, tavernScriptLastMs: 113,
+    tavernProgramMinMs: 6, tavernProgramMaxMs: 14,
+    tavernExecutionMinMs: 2, tavernExecutionMaxMs: 9,
   })
 })
 

@@ -63,6 +63,7 @@ function browserSnapshot(options: {
   readonly worldInfoManager?: 'closed' | 'open'
   readonly permissionDuration?: AgentRpCompatSmokePermissionDuration
   readonly blockedFonts?: number
+  readonly runtimeScripts?: number
 } = {}): AgentRpBrowserCompatibilitySnapshot {
   const runtime = options.runtime
   const blockedFonts = options.blockedFonts ?? 0
@@ -97,7 +98,8 @@ function browserSnapshot(options: {
         },
       },
       tavern: {
-        scripts: 1, frames: 1, ready: runtime === 'pending' ? 0 : 1, failed: 0,
+        scripts: options.runtimeScripts ?? 1, frames: options.runtimeScripts ?? 1,
+        ready: runtime === 'pending' ? 0 : options.runtimeScripts ?? 1, failed: 0,
         pendingPermissions: blockedFonts, queuedGenerations: 0, queuedModelLists: 0,
         blockedResources: blockedFonts, blockedResourceOrigins: blockedFonts,
         blockedResourceClasses: blockedFonts === 0 ? {} : { font: blockedFonts },
@@ -174,6 +176,17 @@ test('keeps transitional card frames pending before assigning a stable failure s
   })
   assert.deepEqual(classifyAgentRpRuntime(browserSnapshot({ runtime: 'failed' })), {
     status: 'failed', stage: 'runtime-failed', exitCode: 3,
+  })
+})
+
+test('does not accept an empty Tavern runtime when preflight selected scripts', () => {
+  const missing = browserSnapshot({ runtime: 'healthy', runtimeScripts: 0 })
+  assert.equal(classifyAgentRpRuntime(missing, false, false, 1), 'pending')
+  assert.deepEqual(classifyAgentRpRuntime(missing, true, false, 1), {
+    status: 'failed', stage: 'runtime-failed', exitCode: 3,
+  })
+  assert.deepEqual(classifyAgentRpRuntime(missing, false, false, 0), {
+    status: 'healthy', stage: 'healthy', exitCode: 0,
   })
 })
 

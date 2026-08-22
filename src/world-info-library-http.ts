@@ -6,6 +6,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
   jsonResponse as json,
   readBoundedRequestBody,
+  readJsonRequest,
   trustedBrowserRequest,
   type AgentRpHttpServer,
 } from './host-http.ts'
@@ -39,8 +40,29 @@ export function installWorldInfoLibraryHttp(
         json(response, 200, { format: 0, entries: library.list() })
         return
       }
+      if (request.method === 'PATCH') {
+        try {
+          const value = await readJsonRequest(request, {
+            limit: 4 * 1024,
+            emptyMessage: '世界书默认加载设置为空',
+            tooLargeMessage: '世界书默认加载设置过大',
+            invalidMessage: '世界书默认加载设置不是有效 JSON',
+          })
+          if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('世界书默认加载设置无效')
+          const record = value as Record<string, unknown>
+          if (record.format !== 0 || typeof record.id !== 'string'
+            || typeof record.defaultForNewSessions !== 'boolean'
+            || Object.keys(record).some(key => !['format', 'id', 'defaultForNewSessions'].includes(key))) {
+            throw new Error('世界书默认加载设置字段无效')
+          }
+          json(response, 200, { format: 0, upload: library.setDefault(record.id, record.defaultForNewSessions) })
+        } catch (error: unknown) {
+          json(response, 400, { error: error instanceof Error ? error.message : String(error) })
+        }
+        return
+      }
       if (request.method !== 'POST') {
-        response.setHeader('allow', 'GET, POST')
+        response.setHeader('allow', 'GET, PATCH, POST')
         json(response, 405, { error: 'method not allowed' })
         return
       }

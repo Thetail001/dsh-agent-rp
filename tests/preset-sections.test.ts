@@ -25,6 +25,15 @@ test('recognizes author-defined preset dividers without changing their prompt en
     { key: 'base', title: '基础提示', enabledCount: 1, identifiers: ['main'] },
     { key: 'section:style-heading', title: '文风要求', enabledCount: 1, identifiers: ['style-heading', 'style-a', 'style-b'] },
     { key: 'custom', title: '自定义模块', enabledCount: 1, identifiers: ['custom'] },
-    { key: 'detached', title: '未加入当前顺序', enabledCount: 0, identifiers: ['extra'] },
   ])
+})
+
+test('keeps catalog modules out of active-order presentation groups', () => {
+  const sections = projectPresetPromptSections([
+    { identifier: 'active', name: '当前模块', attached: true, enabled: true },
+    { identifier: 'choice-a', name: '备选文风 A', attached: false, enabled: false },
+    { identifier: 'choice-b', name: '备选文风 B', attached: false, enabled: false },
+  ])
+
+  assert.deepEqual(sections.map(section => section.prompts.map(prompt => prompt.identifier)), [['active']])
 })

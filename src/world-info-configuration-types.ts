@@ -33,13 +33,15 @@ export interface WorldInfoConfigurationState {
   readonly format: 0
   readonly revision: number
   readonly overrides: readonly WorldInfoEntryOverride[]
-  /** Aggregate cap across every active book; omitted records use the current default. */
+  /** Optional player-selected aggregate cap across every active book; omitted records do not add a plugin cap. */
   readonly tokenBudget?: number
 }
 
 /** Browser mutation accepted by the World Info manager. */
 export type WorldInfoConfigurationRequest =
   | { readonly operation: 'toggle'; readonly revision: number; readonly bookId: string; readonly entryIndex: number; readonly enabled: boolean }
+  | { readonly operation: 'set-book-enabled'; readonly revision: number; readonly bookId: string; readonly enabled: boolean }
+  | { readonly operation: 'reset-book'; readonly revision: number; readonly bookId: string }
   | { readonly operation: 'edit'; readonly revision: number; readonly bookId: string; readonly entryIndex: number; readonly entry: WorldInfoEditableEntry }
   | { readonly operation: 'delete'; readonly revision: number; readonly bookId: string; readonly entryIndex: number; readonly deleted: boolean }
   | { readonly operation: 'reset-entry'; readonly revision: number; readonly bookId: string; readonly entryIndex: number }

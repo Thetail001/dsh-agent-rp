@@ -11,6 +11,7 @@ export const CHARACTER_IMPORT_DEGRADATIONS = [
   'future-card-version',
   'group-greetings',
   'lorebook-decorators',
+  'lorebook-position',
   'lorebook-regex',
   'lorebook-recursion',
   'remote-assets',
@@ -116,6 +117,8 @@ export interface ImportedLorebookEntry {
   readonly useRegex: boolean
   /** Decorator syntax remains exportable but never activates. */
   readonly hasDecorators: boolean
+  /** Source-authored behavior retained separately from the user's enable switch until the native engine supports it. */
+  readonly compatibilityBlockers?: readonly LorebookEntryCompatibilityBlocker[]
 }
 
 /** Character-specific lorebook normalized for deterministic activation. */
@@ -141,6 +144,16 @@ export const WORLD_INFO_IMPORT_DEGRADATIONS = [
 
 /** One SillyTavern World Info feature retained in raw JSON but not executed. */
 export type WorldInfoImportDegradation = typeof WORLD_INFO_IMPORT_DEGRADATIONS[number]
+
+/** Entry-local World Info behavior that must not be approximated by the native engine. */
+export type LorebookEntryCompatibilityBlocker = Extract<WorldInfoImportDegradation,
+  | 'entry-advanced-matching'
+  | 'entry-probability'
+  | 'entry-unsupported-position'
+  | 'lorebook-recursion'
+  | 'timed-effects'
+  | 'vector-matching'
+>
 
 /** Lossless standalone SillyTavern World Info import. */
 export interface ImportedWorldInfo {

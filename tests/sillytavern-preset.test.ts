@@ -27,6 +27,9 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
     reasoning_effort: 'low',
     top_p: 0.88,
     top_k: 40,
+    continue_prefill: true,
+    continue_postfix: '\n',
+    continue_nudge_prompt: '继续 {{lastChatMessage}}',
     extensions: {
       regex_scripts: Array.from({ length: 40 }, (_, index) => ({
         scriptName: `正则 ${index}`,
@@ -86,6 +89,11 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
     topP: 0.88,
     topK: 40,
   })
+  assert.deepEqual(preset.continuation, {
+    prefill: true,
+    postfix: '\n',
+    nudgePrompt: '继续 {{lastChatMessage}}',
+  })
   assert.deepEqual(preset.extensionSummary, {
     regexScriptCount: 40,
     hasSPreset: true,
@@ -113,6 +121,28 @@ test('imports every Prompt Manager module without dropping disabled entries', ()
   assert.equal(preset.prompts.at(-1)?.content, `内容 ${moduleCount - 1}`)
 })
 
+test('selects the SillyTavern global order while retaining every author-provided catalog module', () => {
+  const prompts = Array.from({ length: 141 }, (_, index) => ({
+    identifier: `module-${index}`,
+    name: `模块 ${index}`,
+    role: 'system',
+    content: `内容 ${index}`,
+  }))
+  const preset = parseSillyTavernPresetJson(JSON.stringify({
+    prompts,
+    prompt_order: [
+      { character_id: 100000, order: prompts.slice(0, 11).map(prompt => ({ identifier: prompt.identifier, enabled: true })) },
+      { character_id: 100001, order: prompts.slice(0, 63).map((prompt, index) => ({ identifier: prompt.identifier, enabled: index < 30 })) },
+    ],
+  }), 'module-library.json')
+
+  assert.equal(preset.prompts.length, 141)
+  assert.equal(preset.order.length, 63)
+  assert.equal(preset.order.filter(entry => entry.enabled).length, 30)
+  assert.equal(preset.prompts.filter(prompt => !preset.order.some(entry => entry.identifier === prompt.identifier)).length, 78)
+  assert.equal(preset.prompts.at(-1)?.name, '模块 140')
+})
+
 test('normalizes the model role used by community presets to assistant', () => {
   const preset = parseSillyTavernPresetJson(JSON.stringify({
     prompts: [
@@ -127,6 +157,16 @@ test('normalizes the model role used by community presets to assistant', () => {
 
   assert.equal(preset.prompts[1]?.role, 'assistant')
   assert.equal(preset.order[1]?.enabled, false)
+})
+
+test('uses the identifier when a community preset leaves a module name blank', () => {
+  const preset = parseSillyTavernPresetJson(JSON.stringify({
+    prompts: [{ identifier: 'unnamed-module', name: '   ', role: 'system', content: '保留模块正文' }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: 'unnamed-module', enabled: false }] }],
+  }), 'blank-module-name.json')
+
+  assert.equal(preset.prompts[0]?.name, 'unnamed-module')
+  assert.equal(preset.prompts[0]?.content, '保留模块正文')
 })
 
 test('imports Tavern Helper preset extensions serialized as key-value entries', () => {

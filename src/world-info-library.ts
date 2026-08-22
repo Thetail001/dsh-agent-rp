@@ -55,6 +55,29 @@ export class WorldInfoLibrary {
       .sort((left, right) => left.name.localeCompare(right.name))
   }
 
+  /** List sources selected as defaults for newly created RP Sessions. */
+  defaultIds(): readonly string[] {
+    if (!existsSync(this.root)) return []
+    return readdirSync(this.root)
+      .filter(filename => /^world-info-[a-f0-9]{32}\.default$/u.test(filename))
+      .flatMap(filename => {
+        const id = filename.slice(0, -'.default'.length)
+        return this.isDefault(id) ? [this.resolve(id).upload] : []
+      })
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .map(entry => entry.id)
+  }
+
+  /** Persist whether one retained source should be preselected for future RP Sessions. */
+  setDefault(id: string, enabled: boolean): WorldInfoLibraryUpload {
+    this.readSource(id)
+    if (enabled && !this.isDefault(id) && this.defaultIds().length >= 16) {
+      throw new Error('新会话默认世界书最多可以选择 16 本')
+    }
+    writeFileSync(join(this.root, `${id}.default`), enabled ? '1' : '0', { encoding: 'utf8' })
+    return this.resolve(id).upload
+  }
+
   /** Load the exact original source bytes retained for one import. */
   asset(id: string): WorldInfoLibraryAsset {
     const source = this.readSource(id)
@@ -86,12 +109,18 @@ export class WorldInfoLibrary {
     return { filename, data }
   }
 
+  private isDefault(id: string): boolean {
+    const preferencePath = join(this.root, `${id}.default`)
+    return existsSync(preferencePath) && readFileSync(preferencePath, 'utf8').trim() === '1'
+  }
+
   private describe(id: string, filename: string, worldInfo: ImportedWorldInfo): WorldInfoLibraryUpload {
     return {
       id,
       name: worldInfo.name?.trim() || filename.replace(/\.json$/iu, ''),
       entryCount: worldInfo.lorebook.entries.length,
       degradations: [...worldInfo.degradations],
+      defaultForNewSessions: this.isDefault(id),
     }
   }
 }

@@ -31,8 +31,8 @@ import {
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import type { ImportedCharacterCard, ImportedRegexScript } from './import/types.ts'
 import {
-  injectSillyTavernInChatPrompts,
-  type SillyTavernInChatPrompt,
+  prepareSillyTavernProviderMessages,
+  type RoleplayProviderPromptPlan,
 } from './preset-prompt.ts'
 import { resolveSessionPersonaIdentity } from './session-persona.ts'
 
@@ -237,22 +237,30 @@ export function applyPromptRegexSurface(
 export function installPromptRegexStream(
   ctx: Context,
   agentForSession: (sessionId: string) => Agent | undefined,
-  inChatForAgent: (agent: Agent) => readonly SillyTavernInChatPrompt[] = () => [],
+  promptPlanForAgent: (agent: Agent) => RoleplayProviderPromptPlan | undefined = () => undefined,
 ): void {
   ctx.on('llm/stream', (options, next) => {
     if (!isAgentLoopDispatch(options) || options.sessionId === undefined) return next()
     const agent = agentForSession(String(options.sessionId))
     if (agent === undefined) return next()
+    const plan = promptPlanForAgent(agent) ?? {
+      beforeHistory: [], afterHistory: [], inChat: [], includeHistory: true,
+    }
     const active = readActiveSessionCharacter(agent.session.events)
-    if (active === undefined) return next()
+    if (active === undefined) {
+      if (plan.beforeHistory.length === 0 && plan.afterHistory.length === 0 && plan.inChat.length === 0
+        && plan.includeHistory && plan.continuation === undefined) return next()
+      return ctx.llm.stream({ ...options, messages: prepareSillyTavernProviderMessages(options.messages, plan) })
+    }
     const card = cardFromImportMeta(active.meta)
     const preset = readActiveSessionPreset(agent.session.events)?.preset
     const scripts = preset === undefined ? [] : presetRegexScripts(preset)
-    const inChat = inChatForAgent(agent)
     const hasManagedSurface = dialogueNodes(agent.session).some(node => sourceMarker(messageOf(node.current).source) !== undefined)
     const hasPromptScripts = [...scripts, ...card.frontend.regexScripts]
       .some(script => !script.markdownOnly || script.promptOnly)
-    if (!hasPromptScripts && !hasManagedSurface && inChat.length === 0) return next()
+    if (!hasPromptScripts && !hasManagedSurface
+      && plan.beforeHistory.length === 0 && plan.afterHistory.length === 0 && plan.inChat.length === 0
+      && plan.includeHistory && plan.continuation === undefined) return next()
     let messages = options.messages
     if (hasPromptScripts || hasManagedSurface) {
       const identity = resolveSessionPersonaIdentity(
@@ -265,7 +273,7 @@ export function installPromptRegexStream(
     }
     return ctx.llm.stream({
       ...options,
-      messages: injectSillyTavernInChatPrompts(messages, inChat),
+      messages: prepareSillyTavernProviderMessages(messages, plan),
     })
   }, { global: true, prepend: true })
 }

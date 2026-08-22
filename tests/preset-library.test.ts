@@ -47,7 +47,7 @@ function invoke(agent: Agent, library: PresetLibrary, request: object): void {
 function projected(agent: Agent) {
   let state = agentRpProjectionDefinition.init()
   for (const event of agent.session.events) state = agentRpProjectionDefinition.apply(state, event)
-  return agentRpProjectionDefinition.view(state)
+  return agentRpProjectionDefinition.wire.view(state)
 }
 
 test('stores reusable presets outside settings and returns detached session defaults', (context) => {
@@ -59,6 +59,14 @@ test('stores reusable presets outside settings and returns detached session defa
   assert.deepEqual(library.list().map(item => item.name), ['通用预设'])
   assert.equal(library.get(imported.id).preset.extensionSummary.hasSPreset, true)
   assert.deepEqual(library.get(imported.id).preset.extensionCompatibility, { macroNestEnabled: true })
+  const withContinuePrefill = library.import({
+    ...preset(),
+    continuation: { prefill: true, postfix: '\n\n', nudgePrompt: '继续上一条回复' },
+  })
+  assert.notEqual(withContinuePrefill.id, imported.id)
+  assert.deepEqual(library.get(withContinuePrefill.id).preset.continuation, {
+    prefill: true, postfix: '\n\n', nudgePrompt: '继续上一条回复',
+  })
   const withoutMacroNest = library.import(parseSillyTavernPresetJson(JSON.stringify({
     prompts: [{ identifier: 'main', name: '主提示', role: 'system', content: '默认正文' },
       { identifier: 'style', name: '风格', role: 'system', content: '简短' }],

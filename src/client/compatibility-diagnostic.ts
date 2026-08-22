@@ -77,6 +77,18 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly tavernPlanMs?: number
     readonly tavernFirstReadyMs?: number
     readonly tavernSettledMs?: number
+    readonly tavernNavigationFirstMs?: number
+    readonly tavernNavigationLastMs?: number
+    readonly tavernBootstrapFirstMs?: number
+    readonly tavernBootstrapLastMs?: number
+    readonly tavernRuntimeFirstMs?: number
+    readonly tavernRuntimeLastMs?: number
+    readonly tavernScriptFirstMs?: number
+    readonly tavernScriptLastMs?: number
+    readonly tavernProgramMinMs?: number
+    readonly tavernProgramMaxMs?: number
+    readonly tavernExecutionMinMs?: number
+    readonly tavernExecutionMaxMs?: number
   }
   readonly session?: {
     readonly capabilities: {
@@ -307,6 +319,18 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
   const tavernPlanMs = optionalInteger(tavern, 'data-agent-rp-tavern-plan-ms')
   const tavernFirstReadyMs = optionalInteger(tavern, 'data-agent-rp-tavern-first-ready-ms')
   const tavernSettledMs = optionalInteger(tavern, 'data-agent-rp-tavern-settled-ms')
+  const tavernNavigationFirstMs = optionalInteger(tavern, 'data-agent-rp-tavern-navigation-first-ms')
+  const tavernNavigationLastMs = optionalInteger(tavern, 'data-agent-rp-tavern-navigation-last-ms')
+  const tavernBootstrapFirstMs = optionalInteger(tavern, 'data-agent-rp-tavern-bootstrap-first-ms')
+  const tavernBootstrapLastMs = optionalInteger(tavern, 'data-agent-rp-tavern-bootstrap-last-ms')
+  const tavernRuntimeFirstMs = optionalInteger(tavern, 'data-agent-rp-tavern-runtime-first-ms')
+  const tavernRuntimeLastMs = optionalInteger(tavern, 'data-agent-rp-tavern-runtime-last-ms')
+  const tavernScriptFirstMs = optionalInteger(tavern, 'data-agent-rp-tavern-script-first-ms')
+  const tavernScriptLastMs = optionalInteger(tavern, 'data-agent-rp-tavern-script-last-ms')
+  const tavernProgramMinMs = optionalInteger(tavern, 'data-agent-rp-tavern-program-min-ms')
+  const tavernProgramMaxMs = optionalInteger(tavern, 'data-agent-rp-tavern-program-max-ms')
+  const tavernExecutionMinMs = optionalInteger(tavern, 'data-agent-rp-tavern-execution-min-ms')
+  const tavernExecutionMaxMs = optionalInteger(tavern, 'data-agent-rp-tavern-execution-max-ms')
   const startup = status?.getAttribute('data-agent-rp-startup') === null || status === null
     ? undefined
     : {
@@ -317,6 +341,18 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
         ...(tavernPlanMs === undefined ? {} : { tavernPlanMs }),
         ...(tavernFirstReadyMs === undefined ? {} : { tavernFirstReadyMs }),
         ...(tavernSettledMs === undefined ? {} : { tavernSettledMs }),
+        ...(tavernNavigationFirstMs === undefined ? {} : { tavernNavigationFirstMs }),
+        ...(tavernNavigationLastMs === undefined ? {} : { tavernNavigationLastMs }),
+        ...(tavernBootstrapFirstMs === undefined ? {} : { tavernBootstrapFirstMs }),
+        ...(tavernBootstrapLastMs === undefined ? {} : { tavernBootstrapLastMs }),
+        ...(tavernRuntimeFirstMs === undefined ? {} : { tavernRuntimeFirstMs }),
+        ...(tavernRuntimeLastMs === undefined ? {} : { tavernRuntimeLastMs }),
+        ...(tavernScriptFirstMs === undefined ? {} : { tavernScriptFirstMs }),
+        ...(tavernScriptLastMs === undefined ? {} : { tavernScriptLastMs }),
+        ...(tavernProgramMinMs === undefined ? {} : { tavernProgramMinMs }),
+        ...(tavernProgramMaxMs === undefined ? {} : { tavernProgramMaxMs }),
+        ...(tavernExecutionMinMs === undefined ? {} : { tavernExecutionMinMs }),
+        ...(tavernExecutionMaxMs === undefined ? {} : { tavernExecutionMaxMs }),
       }
 
   let session: AgentRpBrowserCompatibilitySnapshot['session']

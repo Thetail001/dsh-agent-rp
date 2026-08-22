@@ -30,26 +30,33 @@ export async function executeTavernTrigger(invocation: {
   if (agent.status !== 'idle' || agent.inbox.hasPending) throw new Error('请等待当前回复完成后再操作')
   if (latestVisibleRole(agent) !== 'user') throw new Error('/trigger 前需要先添加一条用户消息')
 
-  const before = agent.session.seq
   const onAbort = (): void => { agent.cancel({ kind: 'user' }) }
   invocation.signal.addEventListener('abort', onAbort, { once: true })
   try {
-    agent.followup(createUserMessage({
-      content: [{ type: 'text', text: 'Respond to the latest user-authored roleplay message. Output only the in-character response.' }],
-      source: {
-        kind: 'plugin', plugin: 'dsh-agent-rp-tavern-trigger', form: 'notice', summary: '正在继续角色回复',
-      },
-    }))
-    await agent.whenIdle()
-    invocation.signal.throwIfAborted()
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const before = agent.session.seq
+      agent.followup(createUserMessage({
+        content: [{ type: 'text', text: attempt === 0
+          ? 'Respond to the latest user-authored roleplay message. Output only the in-character response.'
+          : 'The previous attempt ended without a visible answer. Produce the in-character response now. Output dialogue or narration, not reasoning or an explanation.' }],
+        source: {
+          kind: 'plugin', plugin: 'dsh-agent-rp-tavern-trigger', form: 'notice',
+          summary: attempt === 0 ? '正在继续角色回复' : '正在补全角色回复',
+        },
+      }))
+      await agent.whenIdle()
+      invocation.signal.throwIfAborted()
+      const generated = agent.session.events.slice(before)
+        .findLast((event): event is Extract<SessionEvent, { type: 'assistant/message' }> =>
+          event.type === 'assistant/message' && event.surfaceOp === 'append')
+      const text = generated?.data.message.content
+        .flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim()
+      if (generated !== undefined && text !== '') {
+        return { kind: 'success', text: JSON.stringify({ format: 0, assistantSeq: generated.seq }) }
+      }
+    }
   } finally {
     invocation.signal.removeEventListener('abort', onAbort)
   }
-  const generated = agent.session.events.slice(before)
-    .findLast((event): event is Extract<SessionEvent, { type: 'assistant/message' }> =>
-      event.type === 'assistant/message' && event.surfaceOp === 'append')
-  const text = generated?.data.message.content
-    .flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim()
-  if (generated === undefined || text === '') throw new Error('模型没有生成可用的角色回复')
-  return { kind: 'success', text: JSON.stringify({ format: 0, assistantSeq: generated.seq }) }
+  throw new Error('模型连续两次没有生成可见的角色回复')
 }

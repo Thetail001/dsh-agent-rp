@@ -112,11 +112,9 @@ function content(value: unknown): readonly { readonly identifier: string; readon
 
 type PromptDefinition = NonNullable<Extract<PresetConfigurationRequest, { operation: 'replace' }>['prompts']>[number]
 
-function optionalPromptInteger(value: unknown, label: string, maximum: number): number | undefined {
+function optionalPromptNumber(value: unknown, label: string): number | undefined {
   if (value === undefined) return undefined
-  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > maximum) {
-    throw new Error(`${label} must be an integer from 0 to ${maximum}`)
-  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${label} must be a finite number`)
   return value as number
 }
 
@@ -129,19 +127,21 @@ function promptDefinitions(value: unknown): readonly PromptDefinition[] | undefi
     const id = identifier(record.identifier, `prompts[${itemIndex}].identifier`)
     if (seen.has(id)) throw new Error(`prompts repeats module ${JSON.stringify(id)}`)
     seen.add(id)
-    if (typeof record.name !== 'string' || record.name.trim() === '') {
-      throw new Error(`prompts[${itemIndex}].name must be a non-empty string`)
-    }
+    const name = typeof record.name === 'string' && record.name.trim() !== '' ? record.name.trim() : id
     if (record.role !== 'system' && record.role !== 'user' && record.role !== 'assistant') {
       throw new Error(`prompts[${itemIndex}].role is unsupported`)
     }
     if (typeof record.content !== 'string') throw new Error(`prompts[${itemIndex}].content must be a string`)
-    const injectionPosition = optionalPromptInteger(record.injectionPosition, `prompts[${itemIndex}].injectionPosition`, 1)
-    const injectionDepth = optionalPromptInteger(record.injectionDepth, `prompts[${itemIndex}].injectionDepth`, 9999)
-    const injectionOrder = optionalPromptInteger(record.injectionOrder, `prompts[${itemIndex}].injectionOrder`, 9999)
+    // SillyTavern's editor suggests these ranges for newly entered values, but
+    // imported presets in the wild can carry older values outside them. Decode
+    // the transport losslessly here; configurePreset validates only values the
+    // user actually changes, so an unrelated edit can round-trip the original.
+    const injectionPosition = optionalPromptNumber(record.injectionPosition, `prompts[${itemIndex}].injectionPosition`)
+    const injectionDepth = optionalPromptNumber(record.injectionDepth, `prompts[${itemIndex}].injectionDepth`)
+    const injectionOrder = optionalPromptNumber(record.injectionOrder, `prompts[${itemIndex}].injectionOrder`)
     return {
       identifier: id,
-      name: record.name.trim(),
+      name,
       role: record.role,
       content: record.content,
       ...(injectionPosition === undefined ? {} : { injectionPosition }),
@@ -149,6 +149,28 @@ function promptDefinitions(value: unknown): readonly PromptDefinition[] | undefi
       ...(injectionOrder === undefined ? {} : { injectionOrder }),
     }
   })
+}
+
+function assertEditedPromptInteger(
+  value: number | undefined,
+  current: number | undefined,
+  label: string,
+  maximum: number,
+): void {
+  if (value === undefined || Object.is(value, current)) return
+  if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
+    throw new Error(`${label} must be an integer from 0 to ${maximum}`)
+  }
+}
+
+function assertEditedPromptInjection(
+  definition: PromptDefinition,
+  current: ImportedSillyTavernPreset['prompts'][number] | undefined,
+): void {
+  const label = `preset module ${JSON.stringify(definition.identifier)}`
+  assertEditedPromptInteger(definition.injectionPosition, current?.injectionPosition, `${label} injectionPosition`, 1)
+  assertEditedPromptInteger(definition.injectionDepth, current?.injectionDepth, `${label} injectionDepth`, 9999)
+  assertEditedPromptInteger(definition.injectionOrder, current?.injectionOrder, `${label} injectionOrder`, 9999)
 }
 
 function finiteOrNull(value: unknown, label: string): number | null {
@@ -264,6 +286,7 @@ export function configurePreset(
       ? active.preset.prompts.map(prompt => ({ ...prompt }))
       : request.prompts.map((definition) => {
           const current = currentById.get(definition.identifier)
+          assertEditedPromptInjection(definition, current)
           if (current === undefined) {
             return {
               ...definition,

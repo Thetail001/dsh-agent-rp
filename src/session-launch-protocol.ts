@@ -14,6 +14,8 @@ export interface CharacterSessionLaunchRequest {
   readonly greetingIndex: number
   readonly persona?: SessionPersonaSnapshot
   readonly presetId?: string
+  /** Additional retained World Info sources in stable prompt order. */
+  readonly worldInfoIds?: readonly string[]
   /** Explicitly copy the source Session's currently active memory for the same character. */
   readonly memory?: 'copy-active'
 }
@@ -26,6 +28,8 @@ export interface WorldInfoSessionLaunchRequest {
   readonly importId: string
   readonly persona?: SessionPersonaSnapshot
   readonly presetId?: string
+  /** Supporting retained World Info sources after the primary scenario book. */
+  readonly worldInfoIds?: readonly string[]
 }
 
 /** Start a new Session from one retained SillyTavern JSONL import. */

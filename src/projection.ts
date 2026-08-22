@@ -13,7 +13,7 @@ import {
   presetTavernHelperScripts,
   type ImportedSillyTavernPreset,
 } from './import/sillytavern-preset.ts'
-import type { AgentRpProjection } from './projection-types.ts'
+import { DEFAULT_AGENT_RP_CHARACTER_NAME, type AgentRpProjection } from './projection-types.ts'
 import { applyMvuReply, readCurrentMvuState } from './mvu.ts'
 import { canEditPresetPrompt, canTogglePresetPrompt } from './preset-configuration.ts'
 import { configurePreset, parsePresetConfigurationRequest } from './preset-configuration-core.ts'
@@ -37,7 +37,7 @@ import { decodeSillyTavernChatCommandRecord, type SillyTavernChatCommandRecord }
 import { decodeWorldInfoLibraryImport } from './world-info-library-protocol.ts'
 import { decodePersonaCommandRecord } from './persona-command-protocol.ts'
 import {
-  decodeTavernHelperState,
+  decodeActiveTavernHelperState,
   initializeTavernHelperPresetState,
   initializeTavernHelperState,
   type TavernHelperState,
@@ -52,6 +52,16 @@ import {
   summarizeTavernAuxiliaryGenerationReplay,
   type TavernAuxiliaryGenerationReplay,
 } from './tavern-generation-log.ts'
+import {
+  normalizeRoleplayTurnPresentation,
+} from './roleplay-turn-presentation-state.ts'
+import type {
+  RoleplayTurnPresentation,
+} from './roleplay-turn-presentation-types.ts'
+import {
+  applyRoleplayStateEvent,
+  type RoleplayStateSnapshot,
+} from './roleplay-state.ts'
 
 
 export type { AgentRpProjection } from './projection-types.ts'
@@ -75,6 +85,8 @@ const projectionSchema = {
       || !Array.isArray(record.publishedImages)
       || (record.currentReplySeq !== undefined && (typeof record.currentReplySeq !== 'number'
         || !Number.isSafeInteger(record.currentReplySeq) || record.currentReplySeq < 0))
+      || (record.presentation !== undefined && (typeof record.presentation !== 'object'
+        || record.presentation === null || Array.isArray(record.presentation)))
       || !validCardVersion
       || (record.characterCardRaw !== undefined && (typeof record.characterCardRaw !== 'object'
         || record.characterCardRaw === null || Array.isArray(record.characterCardRaw)))
@@ -82,6 +94,8 @@ const projectionSchema = {
       || (record.avatarLibraryId !== undefined && typeof record.avatarLibraryId !== 'string')
       || typeof record.importedMessageCount !== 'number' || !Number.isSafeInteger(record.importedMessageCount)
       || record.importedMessageCount < 0
+      || !Array.isArray(record.nativeStates)
+      || !validNativeStates(record.nativeStates)
       || (record.auxiliaryGenerations !== undefined && !validAuxiliaryGenerationSummary(record.auxiliaryGenerations))
       || typeof record.worldInfoCount !== 'number' || !Number.isSafeInteger(record.worldInfoCount)
       || record.worldInfoCount < 0
@@ -95,6 +109,19 @@ const projectionSchema = {
       || !validSource) throw new Error('invalid agentRp projection')
     return value as AgentRpProjection
   },
+}
+
+function validNativeStates(value: readonly unknown[]): boolean {
+  return value.every((state) => {
+    if (typeof state !== 'object' || state === null || Array.isArray(state)) return false
+    const record = state as Record<string, unknown>
+    return typeof record.id === 'string'
+      && typeof record.ownerModuleId === 'string'
+      && typeof record.writerModuleId === 'string'
+      && typeof record.revision === 'number' && Number.isSafeInteger(record.revision) && record.revision > 0
+      && typeof record.eventSeq === 'number' && Number.isSafeInteger(record.eventSeq) && record.eventSeq >= 0
+      && Object.prototype.hasOwnProperty.call(record, 'value')
+  })
 }
 
 function validAuxiliaryGenerationSummary(value: unknown): boolean {
@@ -116,8 +143,8 @@ interface PendingPublishedImage {
 }
 
 interface AgentRpProjectionState {
-  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'worldInfo' | 'presetLibrary' | 'lastRequest' | 'generations' | 'publishedImages' | 'auxiliaryGenerations'>
-
+  readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'worldInfo' | 'presetLibrary' | 'lastRequest'
+  | 'generations' | 'publishedImages' | 'auxiliaryGenerations' | 'presentation' | 'nativeStates'>
   readonly cardWorldInfoCount: number
   readonly cardLorebook?: SessionLorebookSource
   readonly standaloneWorldInfos: Readonly<Record<string, SessionLorebookSource>>
@@ -130,6 +157,7 @@ interface AgentRpProjectionState {
   }[]
   readonly calls: Readonly<Record<string, TrackedCall>>
   readonly personaCommands: Readonly<Record<string, number>>
+  readonly nativeStates: readonly RoleplayStateSnapshot[]
   readonly mvu?: AgentRpProjection['mvu']
   readonly preset?: AgentRpProjection['preset']
   readonly presetState?: ActiveSessionPreset
@@ -141,12 +169,50 @@ interface AgentRpProjectionState {
   readonly publishedImages: AgentRpProjection['publishedImages']
   readonly pendingPublishedImages: readonly PendingPublishedImage[]
   readonly replySeqByTurn: Readonly<Record<string, number>>
+  readonly presentation?: RoleplayTurnPresentation
   readonly tavern?: TavernHelperState
   readonly auxiliaryGenerations: TavernAuxiliaryGenerationReplay
 }
 
+declare module '@deepseek-ai/dsh-session-projection/types' {
+  interface SessionProjectionStateMap {
+    /** Replayable Host state behind the client-visible Agent RP projection. */
+    agentRp: AgentRpProjectionState
+  }
+}
+
+const projectionStateSchema = {
+  parse(value: unknown): AgentRpProjectionState {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new Error('invalid agentRp projection state')
+    }
+    const record = value as Partial<Record<keyof AgentRpProjectionState, unknown>>
+    if (typeof record.character !== 'object' || record.character === null || Array.isArray(record.character)
+      || typeof record.cardWorldInfoCount !== 'number' || !Number.isSafeInteger(record.cardWorldInfoCount)
+      || record.cardWorldInfoCount < 0
+      || typeof record.standaloneWorldInfos !== 'object' || record.standaloneWorldInfos === null
+      || Array.isArray(record.standaloneWorldInfos)
+      || typeof record.worldInfoConfiguration !== 'object' || record.worldInfoConfiguration === null
+      || Array.isArray(record.worldInfoConfiguration)
+      || !Array.isArray(record.surface)
+      || typeof record.calls !== 'object' || record.calls === null || Array.isArray(record.calls)
+      || typeof record.personaCommands !== 'object' || record.personaCommands === null
+      || Array.isArray(record.personaCommands)
+      || !Array.isArray(record.nativeStates) || !validNativeStates(record.nativeStates)
+      || !Array.isArray(record.presetLibrary)
+      || typeof record.generations !== 'object' || record.generations === null || Array.isArray(record.generations)
+      || (record.presentation !== undefined && (typeof record.presentation !== 'object'
+        || record.presentation === null || Array.isArray(record.presentation)))
+      || typeof record.auxiliaryGenerations !== 'object' || record.auxiliaryGenerations === null
+      || Array.isArray(record.auxiliaryGenerations)) {
+      throw new Error('invalid agentRp projection state')
+    }
+    return value as AgentRpProjectionState
+  },
+} as ProjectionDefinition<'agentRp', AgentRpProjectionState>['stateSchema']
+
 const INITIAL_CHARACTER: AgentRpProjectionState['character'] = {
-  characterName: '角色会话',
+  characterName: DEFAULT_AGENT_RP_CHARACTER_NAME,
   description: '',
   personality: '',
   scenario: '',
@@ -321,7 +387,7 @@ function worldInfoProjection(
     format: 0,
     books: configuredSources.map(({ source, configured }) => ({ id: source.id, lorebook: configured.lorebook })),
     messages,
-    tokenBudget: aggregateBudget,
+    ...(aggregateBudget === undefined ? {} : { tokenBudget: aggregateBudget }),
   })
   const books = configuredSources.map(({ source, configured }, sourceIndex) => {
     const inspected = inspectedCollection.books[sourceIndex]!.inspected
@@ -346,6 +412,7 @@ function worldInfoProjection(
           ...editableWorldInfoEntry(entry),
           useRegex: entry.useRegex,
           hasDecorators: entry.hasDecorators,
+          compatibilityBlockers: entry.compatibilityBlockers ?? [],
           active: decision.active && !deleted,
           reason: deleted ? 'deleted' as const : decision.reason,
           matchedKeys: decision.matchedKeys,
@@ -362,7 +429,7 @@ function worldInfoProjection(
   return {
     revision: state.worldInfoConfiguration.revision,
     activeCount,
-    tokenBudget: aggregateBudget,
+    ...(aggregateBudget === undefined ? {} : { tokenBudget: aggregateBudget }),
     approximateTokens: inspectedCollection.approximateTokens,
     budgetExcludedCount: inspectedCollection.books.flatMap(book => book.inspected.entries)
       .filter(entry => entry.reason === 'session-budget-excluded').length,
@@ -579,8 +646,7 @@ function presetProjection(
       ...(generation.repetitionPenalty === undefined ? {} : { repetitionPenalty: generation.repetitionPenalty }),
     },
     formats: { ...preset.formats },
-    degradedRoleCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier)
-      && prompt.role !== 'system' && prompt.injectionPosition !== 1).length,
+    degradedRoleCount: 0,
     preservedInChatCount: preset.prompts.filter(prompt => enabled.has(prompt.identifier) && prompt.injectionPosition === 1).length,
     regexScriptCount: preset.extensionSummary.regexScriptCount,
     enabledRegexScriptCount: regexScripts.filter(script => !script.disabled).length,
@@ -607,17 +673,26 @@ function withoutCall(
   return Object.fromEntries(Object.entries(calls).filter(([id]) => id !== callId))
 }
 
+type AgentRpProjectionDefinition = ProjectionDefinition<'agentRp', AgentRpProjectionState> & {
+  readonly wire: NonNullable<ProjectionDefinition<'agentRp', AgentRpProjectionState>['wire']>
+  /** DSH rc.8 projection contract; retained beside `stateSchema`/`wire` for newer Hosts. */
+  readonly schema: typeof projectionSchema
+  readonly preload: false
+  readonly view: (state: AgentRpProjectionState) => AgentRpProjection
+}
+
 /** Build one projection definition with an optional isolated EJS evaluator. */
 export function createAgentRpProjectionDefinition(
   ejsTemplateEngine?: EjsTemplateEngine,
-): ProjectionDefinition<'agentRp', AgentRpProjectionState> & { readonly preload: false } {
-  return {
+): AgentRpProjectionDefinition {
+  const definition: ProjectionDefinition<'agentRp', AgentRpProjectionState> & {
+    readonly wire: NonNullable<ProjectionDefinition<'agentRp', AgentRpProjectionState>['wire']>
+  } = {
   key: 'agentRp',
-  schema: projectionSchema as never,
+  stateSchema: projectionStateSchema,
   // The value contains full card, lorebook, preset, script, and transcript
   // state. Opening a session reads it from history; bulk session discovery
   // must never serialize it for every conversation.
-  preload: false,
   init: () => ({
     character: INITIAL_CHARACTER,
     cardWorldInfoCount: 0,
@@ -626,6 +701,7 @@ export function createAgentRpProjectionDefinition(
     surface: [],
     calls: {},
     personaCommands: {},
+    nativeStates: [],
     presetLibrary: [],
     generations: {},
 
@@ -643,6 +719,12 @@ export function createAgentRpProjectionDefinition(
       ? state
       : { ...state, surface, auxiliaryGenerations }
     if (event.type === 'agent-rp/mvu-state') return { ...withSurface, mvu: event.data }
+    const nativeStates = applyRoleplayStateEvent(withSurface.nativeStates, event)
+    if (nativeStates !== withSurface.nativeStates) return { ...withSurface, nativeStates }
+    if (event.type === 'agent-rp/turn-presentation') {
+      const presentation = normalizeRoleplayTurnPresentation(event.data)
+      return presentation.current ? { ...withSurface, presentation } : withSurface
+    }
     const trace = promptRegexTrace(event)
     if (trace !== undefined) return { ...withSurface, promptRegex: trace }
     if (event.type === 'command/run' && event.data.name === 'rp-persona') {
@@ -679,11 +761,14 @@ export function createAgentRpProjectionDefinition(
         }
       }
     }
-    if (event.type === 'agent-rp/tavern-state' || (event.type === 'command/done' && event.data.kind === 'success')) {
+    if (event.type === 'agent-rp/tavern-state' || event.type === 'agent-rp/tavern-state-attachment'
+      || (event.type === 'command/done' && event.data.kind === 'success')) {
       try {
         const tavern = event.type === 'agent-rp/tavern-state'
           ? event.data
-          : decodeTavernHelperState(event.data.text)
+          : event.type === 'agent-rp/tavern-state-attachment'
+            ? event.data.active ? event.data.state : undefined
+            : decodeActiveTavernHelperState(event.data.text)
         if (tavern !== undefined) {
           const mvu = mvuAfterTavernMutation(withSurface.mvu, tavern)
           return {
@@ -1109,6 +1194,8 @@ export function createAgentRpProjectionDefinition(
           },
         }
   },
+  wire: {
+  viewSchema: projectionSchema as NonNullable<ProjectionDefinition<'agentRp', AgentRpProjectionState>['wire']>['viewSchema'],
   view: state => {
     const worldInfo = worldInfoProjection(state, ejsTemplateEngine)
     const auxiliaryGenerations = summarizeTavernAuxiliaryGenerationReplay(state.auxiliaryGenerations)
@@ -1118,6 +1205,14 @@ export function createAgentRpProjectionDefinition(
     const hiddenTavernMessages = state.tavern?.hiddenPrefix ?? []
     return {
       ...state.character,
+      nativeStates: state.nativeStates.map(stateValue => ({
+        id: stateValue.id,
+        revision: stateValue.revision,
+        ownerModuleId: stateValue.ownerModuleId,
+        writerModuleId: stateValue.writerModuleId,
+        eventSeq: stateValue.eventSeq,
+        value: stateValue.value,
+      })),
       ...(auxiliaryGenerations.requests === 0 && auxiliaryGenerations.malformed === 0
         ? {}
         : { auxiliaryGenerations }),
@@ -1137,6 +1232,7 @@ export function createAgentRpProjectionDefinition(
       })),
       publishedImages: state.publishedImages,
       ...(state.currentReplySeq === undefined ? {} : { currentReplySeq: state.currentReplySeq }),
+      ...(state.presentation === undefined ? {} : { presentation: state.presentation }),
       ...(state.tavern === undefined ? {} : {
         tavern: {
           ...state.tavern,
@@ -1148,7 +1244,16 @@ export function createAgentRpProjectionDefinition(
       }),
     }
   },
-  stateVersion: 11,
+  },
+  stateVersion: 14,
+  }
+  return {
+    ...definition,
+    // DSH rc.8 reads the client-visible schema and view from the top level.
+    // Newer Hosts read the state schema and the same view through `wire`.
+    schema: projectionSchema,
+    preload: false,
+    view: definition.wire.view,
 
   }
 }

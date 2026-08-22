@@ -35,7 +35,7 @@ function run(agent: Agent, rawInput: string, sequence: number): void {
 function project(agent: Agent) {
   let state = agentRpProjectionDefinition.init()
   for (const event of agent.session.events) state = agentRpProjectionDefinition.apply(state, event)
-  return agentRpProjectionDefinition.view(state)
+  return agentRpProjectionDefinition.wire.view(state)
 }
 
 test('validates private Persona requests without accepting extra fields', () => {
