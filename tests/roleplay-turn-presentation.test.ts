@@ -10,10 +10,18 @@ import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
 import {
   appendRoleplayTurnPresentation,
   compileInitialRoleplayTurnPresentation,
-  compileRoleplayTurnPresentationUpdate,
+  compileRoleplayModulePresentationUpdate,
   readCurrentRoleplayTurnPresentation,
   readRoleplayTurnPresentations,
 } from '../src/roleplay-turn-presentation.ts'
+import {
+  normalizeRoleplayTurnPresentation,
+  roleplayPresentedState,
+} from '../src/roleplay-turn-presentation-state.ts'
+import {
+  compileInitialSessionRoleplayTurnPresentation,
+  compileSessionRoleplayTurnPresentationUpdate,
+} from '../src/session-roleplay-turn-presentation.ts'
 import {
   appendRoleplayTurnSettlement,
   compileRoleplayTurnSettlement,
@@ -114,7 +122,7 @@ test('presents the settled reply with pending browser state and survives replay'
   const reply = appendReply(session, 1, '第一轮回复')
   session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
   const settlementEvent = settle(session, turnPlan, 1)
-  const presentation = compileInitialRoleplayTurnPresentation({
+  const presentation = compileInitialSessionRoleplayTurnPresentation({
     session, settlementEvent, plans: [{ step: 1, plan: turnPlan }],
   })
   const first = appendRoleplayTurnPresentation(session, presentation)
@@ -124,11 +132,10 @@ test('presents the settled reply with pending browser state and survives replay'
   assert.deepEqual(presentation.selectedReply, {
     sourceSeq: reply.seq, surfaceSeq: reply.seq, messageId: String(reply.data.message.id),
   })
-  assert.deepEqual(presentation.state, {
-    mvuStateSeq: settlementEvent.seq,
-    tavernStateSeq: 0,
-    tavernStatus: 'pending',
-  })
+  assert.deepEqual(presentation.state, [
+    { id: 'state:mvu', status: 'settled', eventSeq: settlementEvent.seq },
+    { id: 'state:tavern-helper', status: 'pending', eventSeq: 0 },
+  ])
   assert.deepEqual(presentation.present.modules, [
     { moduleId: 'roleplay:reply-versions', outcome: 'applied', changes: 1 },
     { moduleId: 'adapter:tavern-helper', outcome: 'pending', changes: 0 },
@@ -150,13 +157,13 @@ test('records a blocked turn without inventing a selected reply', () => {
     contributions: [{ moduleId: 'adapter:tavern-helper', outcome: 'deferred' }],
   })
   const settlementEvent = appendRoleplayTurnSettlement(session, settlement)
-  const presentation = compileInitialRoleplayTurnPresentation({
+  const presentation = compileInitialSessionRoleplayTurnPresentation({
     session, settlementEvent, plans: [{ step: 1, plan: turnPlan }],
   })
 
   assert.equal(presentation.selectedReply, undefined)
   assert.equal(presentation.current, false)
-  assert.equal(presentation.state.tavernStatus, 'absent')
+  assert.equal(roleplayPresentedState(presentation, 'state:tavern-helper')?.status, 'absent')
   assert.deepEqual(presentation.present.modules, [
     { moduleId: 'roleplay:reply-versions', outcome: 'idle', changes: 0 },
     { moduleId: 'adapter:tavern-helper', outcome: 'idle', changes: 0 },
@@ -170,7 +177,7 @@ test('attaches a late Tavern mutation to its causal reply after a later reply ex
   const turnPlan = plan(session, [{ id: 'state:tavern-helper', owner: 'session', revision: 0 }])
   const firstReply = appendReply(session, 1, '旧回复')
   const settlementEvent = settle(session, turnPlan, 1)
-  appendRoleplayTurnPresentation(session, compileInitialRoleplayTurnPresentation({
+  appendRoleplayTurnPresentation(session, compileInitialSessionRoleplayTurnPresentation({
     session, settlementEvent, plans: [{ step: 1, plan: turnPlan }],
   }))
   appendReply(session, 2, '更新的回复')
@@ -184,17 +191,16 @@ test('attaches a late Tavern mutation to its causal reply after a later reply ex
   const resultEvent = session.events[result.eventSeq]
   assert.equal(resultEvent?.type, 'agent-rp/tavern-state-attachment')
   if (resultEvent?.type !== 'agent-rp/tavern-state-attachment') throw new Error('missing attachment fixture')
-  const attached = compileRoleplayTurnPresentationUpdate(session, resultEvent)
+  const attached = compileSessionRoleplayTurnPresentationUpdate(session, resultEvent)
 
   assert.notEqual(attached, undefined)
   assert.equal(attached?.selectedReply?.sourceSeq, firstReply.seq)
   assert.equal(attached?.settlementSeq, settlementEvent.seq)
   assert.equal(attached?.current, false)
-  assert.deepEqual(attached?.state, {
-    mvuStateSeq: resultEvent.seq,
-    tavernStateSeq: resultEvent.seq,
-    tavernStatus: 'attached',
-  })
+  assert.deepEqual(attached?.state, [
+    { id: 'state:tavern-helper', status: 'attached', eventSeq: resultEvent.seq },
+    { id: 'state:mvu', status: 'attached', eventSeq: resultEvent.seq },
+  ])
   assert.deepEqual(mutated.lastMutation?.cause, cause)
   assert.equal(readTavernHelperState(session.events)?.revision, 0)
   let projected = agentRpProjectionDefinition.init()
@@ -210,7 +216,7 @@ test('reply-version selection produces the current unified presentation', () => 
   const turnPlan = plan(session)
   const original = appendReply(session, 1, '第一版')
   const settlementEvent = settle(session, turnPlan, 1, false)
-  appendRoleplayTurnPresentation(session, compileInitialRoleplayTurnPresentation({
+  appendRoleplayTurnPresentation(session, compileInitialSessionRoleplayTurnPresentation({
     session, settlementEvent, plans: [{ step: 1, plan: turnPlan }],
   }))
   const alternative = appendReply(session, 2, '第二版')
@@ -241,7 +247,7 @@ test('reply-version selection produces the current unified presentation', () => 
       surfaceSeq: surface.seq,
     }),
   })
-  const presentation = compileRoleplayTurnPresentationUpdate(session, resultEvent)
+  const presentation = compileSessionRoleplayTurnPresentationUpdate(session, resultEvent)
   assert.notEqual(presentation, undefined)
   assert.deepEqual(presentation?.selectedReply, {
     sourceSeq: alternative.seq,
@@ -265,7 +271,7 @@ test('selecting an older reply restores its late branch-local Tavern attachment'
   }])
   const original = appendReply(session, 1, '第一版')
   const settlementEvent = settle(session, turnPlan, 1)
-  appendRoleplayTurnPresentation(session, compileInitialRoleplayTurnPresentation({
+  appendRoleplayTurnPresentation(session, compileInitialSessionRoleplayTurnPresentation({
     session, settlementEvent, plans: [{ step: 1, plan: turnPlan }],
   }))
   const alternative = appendReply(session, 2, '第二版')
@@ -298,7 +304,7 @@ test('selecting an older reply restores its late branch-local Tavern attachment'
       surfaceSeq: surface.seq,
     }),
   })
-  const versionPresentation = compileRoleplayTurnPresentationUpdate(session, generationEvent)
+  const versionPresentation = compileSessionRoleplayTurnPresentationUpdate(session, generationEvent)
   if (versionPresentation === undefined) throw new Error('missing version presentation fixture')
   appendRoleplayTurnPresentation(session, versionPresentation)
 
@@ -309,7 +315,7 @@ test('selecting an older reply restores its late branch-local Tavern attachment'
   const attachment = appendTavernHelperStateAttachment(session, originalLate, cause, false)
   const attachmentEvent = session.events[attachment.eventSeq]
   if (attachmentEvent?.type !== 'agent-rp/tavern-state-attachment') throw new Error('missing attachment fixture')
-  const attachmentPresentation = compileRoleplayTurnPresentationUpdate(session, attachmentEvent)
+  const attachmentPresentation = compileSessionRoleplayTurnPresentationUpdate(session, attachmentEvent)
   if (attachmentPresentation === undefined) throw new Error('missing attachment presentation fixture')
   appendRoleplayTurnPresentation(session, attachmentPresentation)
 
@@ -333,4 +339,78 @@ test('rejects malformed or non-assistant mutation causes', () => {
   assert.throws(() => validateTavernMutationCause({ session } as never, {
     format: 0, sessionId: String(session.id), replySeq: 42,
   }), /does not reference an assistant reply/u)
+})
+
+test('presents arbitrary runtime modules without a source-specific core branch', () => {
+  const session = Session.create(SessionId('presentation-generic-module'))
+  const state = [{ id: 'state:clock', owner: 'session' as const, revision: 4 }]
+  const genericRuntime: RoleplayRuntimeSnapshot = {
+    ...runtime(state),
+    state,
+    modules: [{
+      id: 'roleplay:clock', source: 'native', phases: ['settle', 'present'], stateIds: ['state:clock'],
+    }],
+  }
+  const genericPlan: RoleplayTurnPlan = { ...plan(session, state), runtime: genericRuntime }
+  const reply = appendReply(session, 1, '午夜钟声响起。')
+  const settlement = compileRoleplayTurnSettlement({
+    sessionId: String(session.id), turn: 1, result: 'completed',
+    plans: [{ step: 1, plan: genericPlan }], events: session.events, after: genericRuntime,
+  })
+  const settlementEvent = appendRoleplayTurnSettlement(session, settlement)
+  const initial = compileInitialRoleplayTurnPresentation({
+    session,
+    settlementEvent,
+    plans: [{ step: 1, plan: genericPlan }],
+    contributions: [{
+      module: { moduleId: 'roleplay:clock', outcome: 'pending', changes: 0 },
+      states: [{ id: 'state:clock', status: 'pending', eventSeq: settlementEvent.seq }],
+    }],
+  })
+  appendRoleplayTurnPresentation(session, initial)
+  const updateEvent = session.append('command/done', {
+    commandId: CommandId('presentation-generic-update'), kind: 'success', text: 'clock settled',
+  })
+  const updated = compileRoleplayModulePresentationUpdate({
+    session,
+    eventSeq: updateEvent.seq,
+    moduleId: 'roleplay:clock',
+    replySeq: reply.seq,
+    contributions: [{
+      module: { moduleId: 'roleplay:clock', outcome: 'attached', changes: 1 },
+      states: [{ id: 'state:clock', status: 'attached', eventSeq: updateEvent.seq }],
+    }],
+  })
+
+  assert.deepEqual(initial.state, [{ id: 'state:clock', status: 'pending', eventSeq: settlementEvent.seq }])
+  assert.deepEqual(updated?.trigger, {
+    kind: 'module-update', eventSeq: updateEvent.seq, moduleId: 'roleplay:clock',
+  })
+  assert.deepEqual(updated?.present.modules, [{
+    moduleId: 'roleplay:clock', outcome: 'attached', changes: 1,
+  }])
+  assert.deepEqual(updated?.state, [{ id: 'state:clock', status: 'attached', eventSeq: updateEvent.seq }])
+})
+
+test('normalizes earlier adapter-shaped presentation events on read', () => {
+  const legacy = {
+    format: 0,
+    sessionId: 'presentation-legacy',
+    turn: 1,
+    settlementSeq: 4,
+    trigger: { kind: 'tavern-mutation', eventSeq: 9 },
+    current: true,
+    selectedReply: { sourceSeq: 2, surfaceSeq: 2, messageId: 'legacy-reply' },
+    state: { mvuStateSeq: 9, tavernStateSeq: 9, tavernStatus: 'attached' },
+    present: { modules: [{ moduleId: 'adapter:tavern-helper', outcome: 'attached', changes: 1 }] },
+  } as unknown as Parameters<typeof normalizeRoleplayTurnPresentation>[0]
+
+  const normalized = normalizeRoleplayTurnPresentation(legacy)
+  assert.deepEqual(normalized.trigger, {
+    kind: 'module-update', eventSeq: 9, moduleId: 'adapter:tavern-helper',
+  })
+  assert.deepEqual(normalized.state, [
+    { id: 'state:mvu', status: 'attached', eventSeq: 9 },
+    { id: 'state:tavern-helper', status: 'attached', eventSeq: 9 },
+  ])
 })

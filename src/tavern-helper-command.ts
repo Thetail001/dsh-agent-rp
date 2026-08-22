@@ -1,7 +1,12 @@
 /** Host adapter for isolated Tavern Helper variable writes. */
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { RoleplayTurnPresentation } from './roleplay-turn-presentation-types.ts'
+import {
+  roleplayPresentedState,
+} from './roleplay-turn-presentation-state.ts'
+import type {
+  RoleplayTurnPresentation,
+} from './roleplay-turn-presentation-types.ts'
 import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
 import { readActiveSessionPreset } from './import/session-preset.ts'
 import { presetTavernHelperScripts } from './import/sillytavern-preset.ts'
@@ -15,6 +20,7 @@ import {
   parseTavernHelperMutationRequest,
   readTavernHelperState,
   readTavernHelperStateSnapshotAt,
+  TAVERN_HELPER_ROLEPLAY_STATE_ID,
   type TavernMutationCause,
 } from './tavern-helper.ts'
 
@@ -77,11 +83,12 @@ export function executeTavernHelperMutation(invocation: {
   const presentation = request.cause === undefined
     ? undefined
     : latestCausalPresentation(invocation.agent, request.cause.replySeq)
-  const previous = presentation?.state.tavernStateSeq === undefined
+  const presentedTavern = roleplayPresentedState(presentation, TAVERN_HELPER_ROLEPLAY_STATE_ID)
+  const previous = presentedTavern?.eventSeq === undefined
     ? readTavernHelperState(invocation.agent.session.events)
     : readTavernHelperStateSnapshotAt(
         invocation.agent.session.events,
-        presentation.state.tavernStateSeq,
+        presentedTavern.eventSeq,
       ).state
   const initialized = prepareTavernHelperState(invocation.agent, previous)
   const active = request.cause === undefined || latestVisibleAssistantSeq(invocation.agent)

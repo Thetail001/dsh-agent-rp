@@ -9,16 +9,28 @@ import {
   type MessageSource,
 } from '@deepseek-ai/dsh-llm'
 import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
-import { appendMvuState, applyMvuReply, readCurrentMvuState, readCurrentSessionMvuState } from './mvu.ts'
+import {
+  appendMvuState,
+  applyMvuReply,
+  MVU_ROLEPLAY_STATE_ID,
+  readCurrentMvuState,
+  readCurrentSessionMvuState,
+} from './mvu.ts'
 import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
 import {
   appendTavernHelperState,
   readTavernHelperStateSnapshot,
   readTavernHelperStateSnapshotAt,
+  TAVERN_HELPER_ROLEPLAY_STATE_ID,
   type TavernHelperState,
 } from './tavern-helper.ts'
 import { prepareTavernHelperState } from './tavern-helper-command.ts'
-import type { RoleplayTurnPresentation } from './roleplay-turn-presentation-types.ts'
+import {
+  roleplayPresentedState,
+} from './roleplay-turn-presentation-state.ts'
+import type {
+  RoleplayTurnPresentation,
+} from './roleplay-turn-presentation-types.ts'
 
 /** A complete reply-version group snapshot stored after every mutation. */
 export interface GenerationStateRecord {
@@ -399,7 +411,8 @@ export async function executeGenerationCommand(invocation: {
     const selected = assistantEvent(events, selectedSeq)
     const surface = appendCurrentReplySurface(invocation.agent, current.surfaceSeq, selected)
     const presented = latestPresentationForReply(invocation.agent.session.events, selectedSeq)
-    const presentedTavernStateSeq = presented?.state.tavernStateSeq
+    const presentedTavern = roleplayPresentedState(presented, TAVERN_HELPER_ROLEPLAY_STATE_ID)
+    const presentedTavernStateSeq = presentedTavern?.eventSeq
     if (presentedTavernStateSeq !== undefined && presentedTavernStateSeq !== selectedVersion.tavernStateSeq) {
       selectedVersion = { ...selectedVersion, tavernStateSeq: presentedTavernStateSeq }
       versions[request.versionIndex] = selectedVersion
@@ -407,8 +420,9 @@ export async function executeGenerationCommand(invocation: {
     const selectedVersionState = selectedTavernState(invocation.agent, selectedVersion.tavernStateSeq)
       ?? (currentTavern === undefined ? undefined : initialTavernState(invocation.agent))
     restoreTavernState(invocation.agent, selectedVersionState)
-    const mvuOwnedByPresentedTavern = presented?.state.mvuStateSeq !== undefined
-      && presented.state.mvuStateSeq === presented.state.tavernStateSeq
+    const presentedMvu = roleplayPresentedState(presented, MVU_ROLEPLAY_STATE_ID)
+    const mvuOwnedByPresentedTavern = presentedMvu?.eventSeq !== undefined
+      && presentedMvu.eventSeq === presentedTavern?.eventSeq
     if (selectedVersion.mvu !== undefined && !mvuOwnedByPresentedTavern) {
       appendMvuState(invocation.agent.session, selectedVersion.mvu)
     }

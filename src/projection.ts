@@ -49,7 +49,12 @@ import {
   summarizeTavernAuxiliaryGenerationReplay,
   type TavernAuxiliaryGenerationReplay,
 } from './tavern-generation-log.ts'
-import type { RoleplayTurnPresentation } from './roleplay-turn-presentation-types.ts'
+import {
+  normalizeRoleplayTurnPresentation,
+} from './roleplay-turn-presentation-state.ts'
+import type {
+  RoleplayTurnPresentation,
+} from './roleplay-turn-presentation-types.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -672,7 +677,8 @@ export function createAgentRpProjectionDefinition(
       : { ...state, surface, auxiliaryGenerations }
     if (event.type === 'agent-rp/mvu-state') return { ...withSurface, mvu: event.data }
     if (event.type === 'agent-rp/turn-presentation') {
-      return event.data.current ? { ...withSurface, presentation: event.data } : withSurface
+      const presentation = normalizeRoleplayTurnPresentation(event.data)
+      return presentation.current ? { ...withSurface, presentation } : withSurface
     }
     const trace = promptRegexTrace(event)
     if (trace !== undefined) return { ...withSurface, promptRegex: trace }
@@ -1137,7 +1143,7 @@ export function createAgentRpProjectionDefinition(
     }
   },
   },
-  stateVersion: 12,
+  stateVersion: 13,
   }
   return {
     ...definition,

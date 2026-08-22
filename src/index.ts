@@ -133,9 +133,11 @@ import {
 } from './roleplay-turn-settlement.ts'
 import {
   appendRoleplayTurnPresentation,
-  compileInitialRoleplayTurnPresentation,
-  compileRoleplayTurnPresentationUpdate,
 } from './roleplay-turn-presentation.ts'
+import {
+  compileInitialSessionRoleplayTurnPresentation,
+  compileSessionRoleplayTurnPresentationUpdate,
+} from './session-roleplay-turn-presentation.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -835,7 +837,7 @@ export function installAgentRp(
       queueMicrotask(() => {
         if (!settlementRuntimeActive) return
         try {
-          const presentation = compileRoleplayTurnPresentationUpdate(session, event)
+          const presentation = compileSessionRoleplayTurnPresentationUpdate(session, event)
           if (presentation !== undefined) appendRoleplayTurnPresentation(session, presentation)
         } catch (error: unknown) {
           ctx.logger.warn(`agent-rp: presentation update failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -874,7 +876,7 @@ export function installAgentRp(
           }),
         })
         const settlementEvent = appendRoleplayTurnSettlement(session, settlement)
-        appendRoleplayTurnPresentation(session, compileInitialRoleplayTurnPresentation({
+        appendRoleplayTurnPresentation(session, compileInitialSessionRoleplayTurnPresentation({
           session,
           settlementEvent,
           plans,

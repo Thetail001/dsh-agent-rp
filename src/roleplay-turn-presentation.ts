@@ -1,17 +1,16 @@
-/** Replayable selection of the visible reply and state presented for one Roleplay turn. */
+/** Replayable selection of the visible reply and runtime state presented for one Roleplay turn. */
 
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
-import { decodeGenerationState, type GenerationStateRecord } from './generation.ts'
 import type { BoundRoleplayTurnPlan } from './roleplay-turn-settlement.ts'
+import {
+  normalizeRoleplayTurnPresentation as importedNormalizePresentation,
+} from './roleplay-turn-presentation-state.ts'
 import type {
+  RoleplayPresentedState,
+  RoleplayPresentationContribution,
   RoleplayPresentModuleOutcome,
   RoleplayTurnPresentation,
 } from './roleplay-turn-presentation-types.ts'
-import {
-  decodeTavernHelperState,
-  readTavernHelperStateSnapshot,
-  type TavernHelperStateSnapshot,
-} from './tavern-helper.ts'
 
 declare module '@deepseek-ai/dsh-session' {
   interface SessionEventMap {
@@ -20,16 +19,19 @@ declare module '@deepseek-ai/dsh-session' {
   }
 }
 
+export {
+  normalizeRoleplayTurnPresentation,
+  roleplayPresentedState,
+} from './roleplay-turn-presentation-state.ts'
 export type {
+  RoleplayPresentedState,
+  RoleplayPresentationContribution,
   RoleplayPresentModuleOutcome,
   RoleplayPresentationTrigger,
   RoleplayTurnPresentation,
 } from './roleplay-turn-presentation-types.ts'
 
-function eventAt(
-  events: readonly SessionEvent[],
-  seq: number,
-): SessionEvent | undefined {
+function eventAt(events: readonly SessionEvent[], seq: number): SessionEvent | undefined {
   return events.find(event => event.seq === seq)
 }
 
@@ -39,6 +41,17 @@ function assistantAt(
 ): Extract<SessionEvent, { type: 'assistant/message' }> {
   const event = eventAt(events, seq)
   if (event?.type !== 'assistant/message') throw new Error('Roleplay presentation references a missing reply')
+  return event
+}
+
+function settlementEventAt(
+  events: readonly SessionEvent[],
+  seq: number,
+): Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }> {
+  const event = eventAt(events, seq)
+  if (event?.type !== 'agent-rp/turn-settlement') {
+    throw new Error('Roleplay presentation references a missing settlement')
+  }
   return event
 }
 
@@ -62,57 +75,70 @@ function presentModuleIds(plans: readonly BoundRoleplayTurnPlan[]): readonly str
   return [...ids]
 }
 
-function initialModuleOutcomes(
+function defaultModuleOutcomes(
   moduleIds: readonly string[],
   hasReply: boolean,
-  tavernStatus: RoleplayTurnPresentation['state']['tavernStatus'],
 ): readonly RoleplayPresentModuleOutcome[] {
-  return moduleIds.map((moduleId): RoleplayPresentModuleOutcome => {
-    if (moduleId === 'adapter:tavern-helper') {
-      if (!hasReply) return { moduleId, outcome: 'idle', changes: 0 }
-      if (tavernStatus === 'pending') return { moduleId, outcome: 'pending', changes: 0 }
-      if (tavernStatus === 'attached') return { moduleId, outcome: 'attached', changes: 1 }
-      return { moduleId, outcome: tavernStatus === 'settled' ? 'applied' : 'idle', changes: 0 }
-    }
-    return { moduleId, outcome: hasReply ? 'applied' : 'idle', changes: hasReply ? 1 : 0 }
-  })
+  return moduleIds.map(moduleId => ({
+    moduleId,
+    outcome: hasReply ? 'applied' : 'idle',
+    changes: hasReply ? 1 : 0,
+  }))
 }
 
-function causalTavernState(
-  events: readonly SessionEvent[],
-  replySeq: number,
-  beforeSeq = Number.POSITIVE_INFINITY,
-): TavernHelperStateSnapshot | undefined {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]
-    if (event === undefined || event.seq >= beforeSeq) continue
-    if (event.type === 'agent-rp/tavern-state-attachment') {
-      if (event.data.cause.replySeq === replySeq) return { eventSeq: event.seq, state: event.data.state }
-      continue
-    }
-    if (event.type !== 'command/done' || event.data.kind !== 'success') continue
-    const state = decodeTavernHelperState(event.data.text)
-    if (state?.lastMutation?.cause?.replySeq === replySeq) return { eventSeq: event.seq, state }
+function settlementStates(
+  settlement: Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }>,
+): readonly RoleplayPresentedState[] {
+  return settlement.data.state.map(state => state.outcome === 'removed'
+    ? { id: state.id, status: 'absent' as const }
+    : state.outcome === 'failed'
+      ? {
+          id: state.id,
+          status: 'failed' as const,
+          eventSeq: settlement.seq,
+          ...(state.error === undefined ? {} : { error: state.error }),
+        }
+      : { id: state.id, status: 'settled' as const, eventSeq: settlement.seq })
+}
+
+function updatedModules(
+  modules: readonly RoleplayPresentModuleOutcome[],
+  module: RoleplayPresentModuleOutcome,
+): readonly RoleplayPresentModuleOutcome[] {
+  return modules.some(candidate => candidate.moduleId === module.moduleId)
+    ? modules.map(candidate => candidate.moduleId === module.moduleId ? module : candidate)
+    : [...modules, module]
+}
+
+function updatedStates(
+  states: readonly RoleplayPresentedState[],
+  state: RoleplayPresentedState,
+): readonly RoleplayPresentedState[] {
+  return states.some(candidate => candidate.id === state.id)
+    ? states.map(candidate => candidate.id === state.id ? state : candidate)
+    : [...states, state]
+}
+
+function applyContributions(
+  modules: readonly RoleplayPresentModuleOutcome[],
+  states: readonly RoleplayPresentedState[],
+  contributions: readonly RoleplayPresentationContribution[],
+): { readonly modules: readonly RoleplayPresentModuleOutcome[]; readonly states: readonly RoleplayPresentedState[] } {
+  let nextModules = modules
+  let nextStates = states
+  for (const contribution of contributions) {
+    if (contribution.module !== undefined) nextModules = updatedModules(nextModules, contribution.module)
+    for (const state of contribution.states ?? []) nextStates = updatedStates(nextStates, state)
   }
-  return undefined
+  return { modules: nextModules, states: nextStates }
 }
 
-function settlementEventAt(
-  events: readonly SessionEvent[],
-  seq: number,
-): Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }> {
-  const event = eventAt(events, seq)
-  if (event?.type !== 'agent-rp/turn-settlement') {
-    throw new Error('Roleplay presentation references a missing settlement')
-  }
-  return event
-}
-
-/** Compile the first present-phase snapshot from a completed turn settlement. */
+/** Compile the source-neutral present snapshot at one completed turn boundary. */
 export function compileInitialRoleplayTurnPresentation(input: {
   readonly session: Session
   readonly settlementEvent: Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }>
   readonly plans: readonly BoundRoleplayTurnPlan[]
+  readonly contributions?: readonly RoleplayPresentationContribution[]
 }): RoleplayTurnPresentation {
   const { session, settlementEvent, plans } = input
   const settlement = settlementEvent.data
@@ -121,18 +147,11 @@ export function compileInitialRoleplayTurnPresentation(input: {
   if (reply !== undefined && String(reply.data.message.id) !== settlement.reply?.messageId) {
     throw new Error('Roleplay settlement reply identity changed')
   }
-  const causalTavern = reply === undefined
-    ? undefined
-    : causalTavernState(session.events, reply.seq, settlementEvent.seq)
-  const baselineTavern = causalTavern ?? readTavernHelperStateSnapshot(session.events, settlementEvent.seq)
-  const deferred = settlement.settle.modules.some(module =>
-    module.moduleId === 'adapter:tavern-helper' && module.outcome === 'deferred')
-  const tavernStatus: RoleplayTurnPresentation['state']['tavernStatus'] = causalTavern !== undefined
-    ? 'attached'
-    : deferred && reply !== undefined ? 'pending'
-      : baselineTavern === undefined ? 'absent' : 'settled'
-  const hasMvu = settlement.state.some(state => state.id === 'state:mvu'
-    && state.outcome !== 'removed' && state.outcome !== 'failed')
+  const presented = applyContributions(
+    defaultModuleOutcomes(presentModuleIds(plans), reply !== undefined),
+    settlementStates(settlementEvent),
+    input.contributions ?? [],
+  )
   return {
     format: 0,
     sessionId: String(session.id),
@@ -147,14 +166,8 @@ export function compileInitialRoleplayTurnPresentation(input: {
         messageId: String(reply.data.message.id),
       },
     }),
-    state: {
-      ...(hasMvu ? { mvuStateSeq: settlementEvent.seq } : {}),
-      ...(baselineTavern === undefined ? {} : { tavernStateSeq: baselineTavern.eventSeq }),
-      tavernStatus,
-    },
-    present: {
-      modules: initialModuleOutcomes(presentModuleIds(plans), reply !== undefined, tavernStatus),
-    },
+    state: presented.states,
+    present: { modules: presented.modules },
   }
 }
 
@@ -162,7 +175,16 @@ export function compileInitialRoleplayTurnPresentation(input: {
 export function readRoleplayTurnPresentations(
   events: readonly SessionEvent[],
 ): readonly RoleplayTurnPresentation[] {
-  return events.flatMap(event => event.type === 'agent-rp/turn-presentation' ? [event.data] : [])
+  return events.flatMap(event => event.type === 'agent-rp/turn-presentation'
+    ? [normalizePresentation(event.data)]
+    : [])
+}
+
+function normalizePresentation(presentation: RoleplayTurnPresentation): RoleplayTurnPresentation {
+  const state: unknown = presentation.state
+  if (Array.isArray(state)) return presentation
+  // Local indirection keeps this Host module free of legacy adapter branches.
+  return importedNormalizePresentation(presentation)
 }
 
 /** Latest snapshot that selected the then-current visible assistant reply. */
@@ -171,142 +193,92 @@ export function readCurrentRoleplayTurnPresentation(
 ): RoleplayTurnPresentation | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
-    if (event?.type === 'agent-rp/turn-presentation' && event.data.current) return event.data
+    if (event?.type !== 'agent-rp/turn-presentation') continue
+    const presentation = normalizePresentation(event.data)
+    if (presentation.current) return presentation
   }
   return undefined
 }
 
-function latestPresentationForReply(
+/** Latest snapshot associated with one source or surface reply event. */
+export function readLatestRoleplayPresentationForReply(
   events: readonly SessionEvent[],
   replySeq: number,
 ): RoleplayTurnPresentation | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
-    if (event?.type === 'agent-rp/turn-presentation'
-      && (event.data.selectedReply?.sourceSeq === replySeq
-        || event.data.selectedReply?.surfaceSeq === replySeq)) return event.data
+    if (event?.type !== 'agent-rp/turn-presentation') continue
+    const presentation = normalizePresentation(event.data)
+    if (presentation.selectedReply?.sourceSeq === replySeq
+      || presentation.selectedReply?.surfaceSeq === replySeq) return presentation
   }
   return undefined
 }
 
-function updatedModules(
-  modules: readonly RoleplayPresentModuleOutcome[],
-  module: RoleplayPresentModuleOutcome,
-): readonly RoleplayPresentModuleOutcome[] {
-  return modules.some(candidate => candidate.moduleId === module.moduleId)
-    ? modules.map(candidate => candidate.moduleId === module.moduleId ? module : candidate)
-    : [...modules, module]
-}
-
-function selectedGenerationVersion(
-  generation: GenerationStateRecord,
-): GenerationStateRecord['versions'][number] {
-  const selected = generation.versions.find(version => version.seq === generation.selectedVersionSeq)
-  if (selected === undefined) throw new Error('Roleplay reply version has no selected reply')
-  return selected
-}
-
-function presentationForGeneration(
-  session: Session,
-  event: Extract<SessionEvent, { type: 'command/done' }>,
-  generation: GenerationStateRecord,
-): RoleplayTurnPresentation | undefined {
-  const baseline = latestPresentationForReply(session.events, generation.anchorSeq)
+/** Apply one reply-version selection without knowing which adapters supplied its state. */
+export function compileRoleplayReplyVersionPresentation(input: {
+  readonly session: Session
+  readonly eventSeq: number
+  readonly groupId: string
+  readonly anchorSeq: number
+  readonly selectedVersionSeq: number
+  readonly surfaceSeq: number
+  readonly contributions?: readonly RoleplayPresentationContribution[]
+}): RoleplayTurnPresentation | undefined {
+  const baseline = readLatestRoleplayPresentationForReply(input.session.events, input.anchorSeq)
   if (baseline === undefined) return undefined
-  settlementEventAt(session.events, baseline.settlementSeq)
-  selectedGenerationVersion(generation)
-  const source = assistantAt(session.events, generation.selectedVersionSeq)
-  const surface = assistantAt(session.events, generation.surfaceSeq)
-  const tavern = readTavernHelperStateSnapshot(session.events, event.seq)
-  const tavernStatus = tavern === undefined ? 'absent' as const : 'attached' as const
+  settlementEventAt(input.session.events, baseline.settlementSeq)
+  const source = assistantAt(input.session.events, input.selectedVersionSeq)
+  const surface = assistantAt(input.session.events, input.surfaceSeq)
+  const presented = applyContributions(
+    updatedModules(baseline.present.modules, {
+      moduleId: 'roleplay:reply-versions', outcome: 'applied', changes: 1,
+    }),
+    baseline.state,
+    input.contributions ?? [],
+  )
   return {
     format: 0,
-    sessionId: String(session.id),
+    sessionId: String(input.session.id),
     turn: baseline.turn,
     settlementSeq: baseline.settlementSeq,
-    trigger: { kind: 'reply-version', eventSeq: event.seq },
-    current: latestVisibleAssistantSeq(session) === surface.seq,
+    trigger: { kind: 'reply-version', eventSeq: input.eventSeq },
+    current: latestVisibleAssistantSeq(input.session) === surface.seq,
     selectedReply: {
       sourceSeq: source.seq,
       surfaceSeq: surface.seq,
       messageId: String(surface.data.message.id),
     },
-    state: {
-      ...(generation.mvu === undefined ? {} : { mvuStateSeq: event.seq }),
-      ...(tavern === undefined ? {} : { tavernStateSeq: tavern.eventSeq }),
-      tavernStatus,
-    },
+    state: presented.states,
     version: {
-      groupId: generation.groupId,
-      anchorSeq: generation.anchorSeq,
-      selectedVersionSeq: generation.selectedVersionSeq,
+      groupId: input.groupId,
+      anchorSeq: input.anchorSeq,
+      selectedVersionSeq: input.selectedVersionSeq,
     },
-    present: {
-      modules: updatedModules(
-        updatedModules(baseline.present.modules, {
-          moduleId: 'roleplay:reply-versions', outcome: 'applied', changes: 1,
-        }),
-        {
-          moduleId: 'adapter:tavern-helper',
-          outcome: tavern === undefined ? 'idle' : 'attached',
-          changes: tavern === undefined ? 0 : 1,
-        },
-      ),
-    },
+    present: { modules: presented.modules },
   }
 }
 
-function presentationForTavernMutation(
-  session: Session,
-  event: Extract<SessionEvent, { type: 'command/done' | 'agent-rp/tavern-state-attachment' }>,
-): RoleplayTurnPresentation | undefined {
-  const tavern = event.type === 'agent-rp/tavern-state-attachment'
-    ? event.data.state
-    : decodeTavernHelperState(event.data.text)
-  const cause = event.type === 'agent-rp/tavern-state-attachment'
-    ? event.data.cause
-    : tavern?.lastMutation?.cause
-  if (tavern === undefined || cause === undefined || cause.sessionId !== String(session.id)) return undefined
-  assistantAt(session.events, cause.replySeq)
-  const baseline = latestPresentationForReply(session.events, cause.replySeq)
+/** Apply one causal module update to the presentation associated with its reply. */
+export function compileRoleplayModulePresentationUpdate(input: {
+  readonly session: Session
+  readonly eventSeq: number
+  readonly moduleId: string
+  readonly replySeq: number
+  readonly contributions: readonly RoleplayPresentationContribution[]
+}): RoleplayTurnPresentation | undefined {
+  assistantAt(input.session.events, input.replySeq)
+  const baseline = readLatestRoleplayPresentationForReply(input.session.events, input.replySeq)
   if (baseline?.selectedReply === undefined) return undefined
-  settlementEventAt(session.events, baseline.settlementSeq)
-  const mvuChanged = (tavern.lastMutation?.scope === 'message' || tavern.lastMutation?.scope === 'chat')
-    && typeof tavern.scopes[tavern.lastMutation.scope].stat_data === 'object'
-    && tavern.scopes[tavern.lastMutation.scope].stat_data !== null
-    && !Array.isArray(tavern.scopes[tavern.lastMutation.scope].stat_data)
+  settlementEventAt(input.session.events, baseline.settlementSeq)
+  const presented = applyContributions(baseline.present.modules, baseline.state, input.contributions)
   return {
     ...baseline,
-    trigger: { kind: 'tavern-mutation', eventSeq: event.seq },
-    current: latestVisibleAssistantSeq(session) === baseline.selectedReply.surfaceSeq,
-    state: {
-      ...(baseline.state.mvuStateSeq === undefined && !mvuChanged
-        ? {}
-        : { mvuStateSeq: mvuChanged ? event.seq : baseline.state.mvuStateSeq }),
-      tavernStateSeq: event.seq,
-      tavernStatus: 'attached',
-    },
-    present: {
-      modules: updatedModules(baseline.present.modules, {
-        moduleId: 'adapter:tavern-helper', outcome: 'attached', changes: 1,
-      }),
-    },
+    trigger: { kind: 'module-update', eventSeq: input.eventSeq, moduleId: input.moduleId },
+    current: latestVisibleAssistantSeq(input.session) === baseline.selectedReply.surfaceSeq,
+    state: presented.states,
+    present: { modules: presented.modules },
   }
-}
-
-/** Compile a follow-up presentation from one reply-version or causal Tavern command result. */
-export function compileRoleplayTurnPresentationUpdate(
-  session: Session,
-  event: Extract<SessionEvent, { type: 'command/done' | 'agent-rp/tavern-state-attachment' }>,
-): RoleplayTurnPresentation | undefined {
-  if (event.type === 'agent-rp/tavern-state-attachment') {
-    return presentationForTavernMutation(session, event)
-  }
-  if (event.data.kind !== 'success') return undefined
-  const generation = decodeGenerationState(event.data.text)
-  return generation === undefined
-    ? presentationForTavernMutation(session, event)
-    : presentationForGeneration(session, event, generation)
 }
 
 /** Append one idempotent presentation snapshot through the Host's ignorable-event seam. */
