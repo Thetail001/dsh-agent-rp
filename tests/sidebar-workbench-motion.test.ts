@@ -12,7 +12,7 @@ test('sidebar workbench declares entry motion and reduced-motion fallback', () =
   assert.match(source, /@media \(prefers-reduced-motion: reduce\)/u)
   assert.match(source, /data-agent-rp-workbench-dismiss/u)
   assert.match(source, /createPortal\(<div role="presentation" data-agent-rp-workbench-layer/u)
-  assert.match(source, /createPortal\(<CharacterLibraryDialog/u)
+  assert.match(source, /createPortal\(<RoleplayLaunchComposer/u)
   assert.match(source, /overflow-x: auto;/u)
   assert.match(source, /data-agent-rp-destination-icon/u)
   assert.match(source, /ctx\.slots\.inject\('sidebar\.destinations'/u)
@@ -37,6 +37,23 @@ test('roleplay launch keeps collection management secondary to choosing a charac
   assert.match(source, /open-character-archive/u)
   assert.match(source, /data-agent-rp-action="import-character"/u)
   assert.doesNotMatch(source, /aria-label="角色库分区"/u)
+})
+
+test('sidebar starts one peer-resource composer instead of separate character and world flows', () => {
+  assert.match(source, /function RoleplayLaunchComposer/u)
+  assert.match(source, /data-agent-rp-surface="launch-composer"/u)
+  assert.match(source, /data-agent-rp-action="open-launch-composer"/u)
+  assert.match(source, /data-agent-rp-launch-mode="?/u)
+  assert.match(source, /data-agent-rp-launch-resource="primary"/u)
+  assert.match(source, /data-agent-rp-launch-resource="persona"/u)
+  assert.match(source, /data-agent-rp-launch-resource="preset"/u)
+  assert.match(source, /data-agent-rp-launch-resource="world-info"/u)
+  assert.match(source, /data-agent-rp-launch-preflight=\{launchPhase\}/u)
+  assert.match(source, /onStartCharacter\(/u)
+  assert.match(source, /onStartWorldInfo\(/u)
+  assert.match(source, /onManageResources=\{section =>/u)
+  assert.match(source, /onManageResources\('world-info'\)/u)
+  assert.doesNotMatch(source, /data-agent-rp-action="open-world-info-library"/u)
 })
 
 test('character launch keeps additional World Info in one collapsed resource selection', () => {
@@ -78,8 +95,7 @@ test('every chat migration entry uses one pre-launch resource plan before Sessio
 
 test('sidebar exposes one resource-center drilldown for peer resource types', () => {
   assert.match(source, /data-agent-rp-action="open-resource-center"/u)
-  assert.match(source, /data-agent-rp-action="open-world-info-library"/u)
-  assert.match(source, /无需角色卡，从独立世界书开始/u)
+  assert.match(source, /组合角色或场景、身份、世界与提示策略/u)
   assert.match(source, /data-agent-rp-action="open-session-tools"/u)
   assert.match(source, /new CustomEvent\(openRoleplaySessionToolsEvent/u)
   assert.match(source, /className="agent-rp-session-menu"/u)

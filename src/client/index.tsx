@@ -20,7 +20,7 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { createPortal } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 interface SidebarDestinationOwnerProps {
   readonly wide: boolean
@@ -2539,7 +2539,7 @@ function SidebarRoleplayDestination({
   workspaceSettings, workspaceList,
 }: SidebarRoleplayDestinationProps) {
   const [workbenchOpen, setWorkbenchOpen] = useState(false)
-  const [libraryOpen, setLibraryOpen] = useState(false)
+  const [launchComposerOpen, setLaunchComposerOpen] = useState(false)
   const [migrationOpen, setMigrationOpen] = useState(false)
   const [resourceCenterOpen, setResourceCenterOpen] = useState(false)
   const [resourceCenterSection, setResourceCenterSection] = useState<'characters' | 'world-info'>('characters')
@@ -2587,11 +2587,11 @@ function SidebarRoleplayDestination({
     }).finally(() => { setAccessSaving(false) })
   }
   const closeWorkbench = (): void => { setWorkbenchOpen(false) }
-  const openLibrary = (): void => {
+  const openLaunchComposer = (): void => {
     if (!blankSessionReady || currentSessionId === undefined) return
     setLaunchSessionId(currentSessionId)
     closeWorkbench()
-    setLibraryOpen(true)
+    setLaunchComposerOpen(true)
   }
   const openMigration = (): void => {
     if (!blankSessionReady || currentSessionId === undefined) return
@@ -2603,13 +2603,6 @@ function SidebarRoleplayDestination({
     closeWorkbench()
     setResourceCenterSection('characters')
     setLaunchSessionId(blankSessionReady ? currentSessionId : undefined)
-    setResourceCenterOpen(true)
-  }
-  const openWorldInfoLibrary = (): void => {
-    if (!blankSessionReady || currentSessionId === undefined) return
-    closeWorkbench()
-    setLaunchSessionId(currentSessionId)
-    setResourceCenterSection('world-info')
     setResourceCenterOpen(true)
   }
   const openCurrentSessionTools = (): void => {
@@ -2717,14 +2710,14 @@ function SidebarRoleplayDestination({
           </button>}
           <h2 style={{ fontSize: '13px', margin: '22px 0 10px', opacity: .62 }}>开始</h2>
           <div style={{ display: 'grid', gap: '10px', gridTemplateColumns: 'repeat(auto-fit, minmax(132px, 1fr))' }}>
-            <button type="button" data-agent-rp-action="open-character-library"
-              data-agent-rp-source-session={currentSessionId} disabled={!blankSessionReady} onClick={openLibrary} style={{
+            <button type="button" data-agent-rp-action="open-launch-composer"
+              data-agent-rp-source-session={currentSessionId} disabled={!blankSessionReady} onClick={openLaunchComposer} style={{
               background: `color-mix(in srgb, ${color} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
               borderRadius: '12px', color: 'inherit', cursor: blankSessionReady ? 'pointer' : 'default', font: 'inherit',
               minHeight: '88px', opacity: blankSessionReady ? 1 : .42, padding: '13px', textAlign: 'left',
             }}><span aria-hidden="true" style={{ color, display: 'block', fontSize: '20px', lineHeight: 1 }}>✦</span>
-              <strong style={{ display: 'block', fontSize: '14px', marginTop: '10px' }}>选择角色</strong>
-              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '4px', opacity: .58 }}>配置开场并开始角色对话</span>
+              <strong style={{ display: 'block', fontSize: '14px', marginTop: '10px' }}>开始游玩</strong>
+              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '4px', opacity: .58 }}>组合角色或场景、身份、世界与提示策略</span>
             </button>
             <button type="button" disabled={!blankSessionReady} onClick={openMigration} style={{
               background: 'var(--dsw-alias-bg-layer-1, #292a2e)', border: '1px solid var(--dsw-alias-border-l2, #444)',
@@ -2733,15 +2726,6 @@ function SidebarRoleplayDestination({
             }}><span aria-hidden="true" style={{ color, display: 'block', fontSize: '18px', lineHeight: 1 }}>↗</span>
               <strong style={{ display: 'block', fontSize: '14px', marginTop: '10px' }}>迁移聊天</strong>
               <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '4px', opacity: .58 }}>从酒馆记录或模块化 RP 接续</span>
-            </button>
-            <button type="button" data-agent-rp-action="open-world-info-library"
-              disabled={!blankSessionReady} onClick={openWorldInfoLibrary} style={{
-                background: 'var(--dsw-alias-bg-layer-1, #292a2e)', border: '1px solid var(--dsw-alias-border-l2, #444)',
-                borderRadius: '12px', color: 'inherit', cursor: blankSessionReady ? 'pointer' : 'default', font: 'inherit',
-                minHeight: '88px', opacity: blankSessionReady ? 1 : .42, padding: '13px', textAlign: 'left',
-              }}><span aria-hidden="true" style={{ color, display: 'block', fontSize: '18px', lineHeight: 1 }}>◇</span>
-              <strong style={{ display: 'block', fontSize: '14px', marginTop: '10px' }}>世界书剧情</strong>
-              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '4px', opacity: .58 }}>无需角色卡，从独立世界书开始</span>
             </button>
           </div>
           {!blankSessionReady && <p role="status" style={{
@@ -2769,23 +2753,25 @@ function SidebarRoleplayDestination({
         </div>
       </section>
     </div>, document.body)}
-    {libraryOpen && launchSessionId !== undefined && createPortal(<CharacterLibraryDialog
+    {launchComposerOpen && launchSessionId !== undefined && createPortal(<RoleplayLaunchComposer
       runtimeDiagnostics={runtimeDiagnostics}
-      currentCharacterName=""
       listCharacters={listCharacters}
       readCharacter={readCharacter}
-      setCharacterArchived={setCharacterArchived}
-      importCharacterFile={importCharacterFile}
-      onClose={() => { setLibraryOpen(false) }}
-      onStart={(character, greetingIndex, persona, presetId, worldInfoIds, memory, resourcePermissions) => startCharacterSession(
-        launchSessionId, character, greetingIndex, persona, presetId, worldInfoIds, memory, resourcePermissions,
-      )}
-      listPresets={listPresets}
-      importPresetFile={importPresetFile}
       listWorldInfos={listWorldInfos}
+      listPresets={listPresets}
       listPersonas={listPersonas}
-      savePersona={savePersona}
-      deletePersona={deletePersona}
+      onClose={() => { setLaunchComposerOpen(false) }}
+      onManageResources={section => {
+        setLaunchComposerOpen(false)
+        setResourceCenterSection(section)
+        setResourceCenterOpen(true)
+      }}
+      onStartCharacter={(character, greetingIndex, persona, presetId, worldInfoIds, resourcePermissions) => startCharacterSession(
+        launchSessionId, character, greetingIndex, persona, presetId, worldInfoIds, undefined, resourcePermissions,
+      )}
+      onStartWorldInfo={(worldInfo, persona, presetId, worldInfoIds, resourcePermissions) => startWorldInfoSession(
+        launchSessionId, worldInfo, persona, presetId, worldInfoIds, resourcePermissions,
+      )}
     />, document.body)}
     {migrationOpen && launchSessionId !== undefined && createPortal(<SillyTavernImportDialog
       runtimeDiagnostics={runtimeDiagnostics}
@@ -4777,11 +4763,13 @@ function AdditionalWorldInfoSelection({
   selectedWorldInfoIds,
   onChange,
   excludedIds = [],
+  embedded = false,
 }: {
   readonly listWorldInfos: HeaderProps['listWorldInfos']
   readonly selectedWorldInfoIds: readonly string[] | undefined
   readonly onChange: (ids: readonly string[]) => void
   readonly excludedIds?: readonly string[]
+  readonly embedded?: boolean
 }) {
   const [worldInfos, setWorldInfos] = useState<readonly WorldInfoLibraryUpload[]>()
   const [worldInfoOpen, setWorldInfoOpen] = useState(false)
@@ -4803,12 +4791,12 @@ function AdditionalWorldInfoSelection({
     const defaults = availableWorldInfos.filter(entry => entry.defaultForNewSessions).slice(0, 16).map(entry => entry.id)
     onChange(defaults)
   }, [availableWorldInfos, onChange, selectedWorldInfoIds])
-  return <div style={{ marginTop: '18px' }}>
+  return <div style={{ marginTop: embedded ? 0 : '18px' }}>
     <button type="button" aria-expanded={worldInfoOpen} data-agent-rp-world-info-selection={selection.length}
       onClick={() => { setWorldInfoOpen(value => !value) }} style={{
-        alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #202024)',
-        border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '10px', color: 'inherit',
-        cursor: 'pointer', display: 'flex', font: 'inherit', gap: '9px', padding: '10px 11px',
+        alignItems: 'center', background: embedded ? 'transparent' : 'var(--dsw-alias-bg-layer-1, #202024)',
+        border: embedded ? 0 : '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '10px', color: 'inherit',
+        cursor: 'pointer', display: 'flex', font: 'inherit', gap: '9px', padding: embedded ? 0 : '10px 11px',
         textAlign: 'left', width: '100%',
       }}>
       <span style={{ flex: 1, minWidth: 0 }}>
@@ -4869,6 +4857,458 @@ function AdditionalWorldInfoSelection({
         标记为新会话默认的世界书会自动选中，也可以在这里临时取消；最多 16 本
       </div>
     </div>}
+  </div>
+}
+
+type RoleplayLaunchMode = 'character' | 'world-info'
+
+/** Compose peer RP resources for one new Session without turning any one library into their owner. */
+function RoleplayLaunchComposer({
+  runtimeDiagnostics, listCharacters, readCharacter, listWorldInfos, listPresets, listPersonas,
+  onClose, onManageResources, onStartCharacter, onStartWorldInfo,
+}: {
+  readonly runtimeDiagnostics: AgentRpRuntimeDiagnosticRegistry
+  readonly listCharacters: HeaderProps['listCharacters']
+  readonly readCharacter: HeaderProps['readCharacter']
+  readonly listWorldInfos: HeaderProps['listWorldInfos']
+  readonly listPresets: HeaderProps['listPresets']
+  readonly listPersonas: HeaderProps['listPersonas']
+  readonly onClose: () => void
+  readonly onManageResources: (section: 'characters' | 'world-info') => void
+  readonly onStartCharacter: (
+    character: CharacterLibraryDetail,
+    greetingIndex: number,
+    persona?: SessionPersonaSnapshot,
+    presetId?: string,
+    worldInfoIds?: readonly string[],
+    resourcePermissions?: AgentRpSessionResourcePermissions,
+  ) => Promise<void>
+  readonly onStartWorldInfo: (
+    worldInfo: WorldInfoLibraryUpload,
+    persona?: SessionPersonaSnapshot,
+    presetId?: string,
+    worldInfoIds?: readonly string[],
+    resourcePermissions?: AgentRpSessionResourcePermissions,
+  ) => Promise<void>
+}) {
+  const narrow = useNarrowCharacterLibrary()
+  const [mode, setMode] = useState<RoleplayLaunchMode>('character')
+  const [characters, setCharacters] = useState<readonly CharacterLibrarySummary[]>()
+  const [characterId, setCharacterId] = useState('')
+  const [character, setCharacter] = useState<CharacterLibraryDetail>()
+  const characterRequest = useRef(0)
+  const [worldInfos, setWorldInfos] = useState<readonly WorldInfoLibraryUpload[]>()
+  const [primaryWorldInfoId, setPrimaryWorldInfoId] = useState('')
+  const [selectedWorldInfoIds, setSelectedWorldInfoIds] = useState<readonly string[]>()
+  const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
+  const [personaId, setPersonaId] = useState('')
+  const [greetingIndex, setGreetingIndex] = useState(0)
+  const [permissionDuration, setPermissionDuration] = useState<PreflightPermissionDuration>('remember')
+  const [starting, setStarting] = useState(false)
+  const [error, setError] = useState<string>()
+  const { entries: presets, error: presetError, presetId, selectPreset } = usePresetPreference(listPresets)
+  const selectedPresetId = presetId === '' ? undefined : presetId
+  const selectedPreset = presets?.find(entry => entry.id === selectedPresetId)
+  const primaryWorldInfo = worldInfos?.find(entry => entry.id === primaryWorldInfoId)
+  const selectedPersona = personas?.find(entry => entry.id === personaId)
+
+  useEffect(() => {
+    let current = true
+    void listCharacters('active').then(entries => {
+      if (!current) return
+      setCharacters(entries)
+      setCharacterId(value => value !== '' && entries.some(entry => entry.id === value) ? value : entries[0]?.id ?? '')
+    }, reason => {
+      if (!current) return
+      setCharacters([])
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { current = false }
+  }, [listCharacters])
+  useEffect(() => {
+    let current = true
+    void listWorldInfos().then(entries => {
+      if (!current) return
+      setWorldInfos(entries)
+      setPrimaryWorldInfoId(value => value !== '' && entries.some(entry => entry.id === value)
+        ? value : entries.find(entry => entry.defaultForNewSessions)?.id ?? entries[0]?.id ?? '')
+    }, reason => {
+      if (!current) return
+      setWorldInfos([])
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { current = false }
+  }, [listWorldInfos])
+  useEffect(() => {
+    let current = true
+    void listPersonas().then(entries => {
+      if (current) setPersonas(entries)
+    }, reason => {
+      if (!current) return
+      setPersonas([])
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { current = false }
+  }, [listPersonas])
+  useEffect(() => {
+    const request = ++characterRequest.current
+    if (characterId === '') {
+      setCharacter(undefined)
+      return
+    }
+    setCharacter(undefined)
+    setGreetingIndex(0)
+    void readCharacter(characterId).then(entry => {
+      if (characterRequest.current !== request) return
+      setCharacter(entry)
+      setPermissionDuration(entry.remoteResourcePolicy === 'isolated-https' ? 'trust' : 'remember')
+    }, reason => {
+      if (characterRequest.current !== request) return
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }, [characterId, readCharacter])
+  useEffect(() => {
+    if (mode === 'world-info' && permissionDuration === 'trust') setPermissionDuration('remember')
+  }, [mode, permissionDuration])
+  useEffect(() => {
+    if (mode !== 'world-info' || primaryWorldInfoId === '' || selectedWorldInfoIds?.includes(primaryWorldInfoId) !== true) return
+    setSelectedWorldInfoIds(selectedWorldInfoIds.filter(id => id !== primaryWorldInfoId))
+  }, [mode, primaryWorldInfoId, selectedWorldInfoIds])
+
+  const effectiveCharacter = mode === 'character' ? character : undefined
+  const expectsTavernPreflight = (effectiveCharacter?.tavernHelper?.enabledScriptCount ?? 0) > 0
+    || (selectedPresetId !== undefined
+      && (presets === undefined || (selectedPreset?.tavernHelper?.enabledScriptCount ?? 0) > 0))
+  const expectsCardResourcePreflight = (effectiveCharacter?.remoteResources.length ?? 0) > 0
+  const expectsResourcePreflight = expectsTavernPreflight || expectsCardResourcePreflight
+  const launchPreflight = useTavernLaunchPreflight({
+    expected: expectsTavernPreflight,
+    permissionOwnerId: effectiveCharacter?.id ?? DEFAULT_AGENT_RP_CHARACTER_NAME,
+    ...(effectiveCharacter === undefined ? {} : { characterId: effectiveCharacter.id }),
+    ...(selectedPresetId === undefined ? {} : { presetId: selectedPresetId }),
+  })
+  const pendingScriptResources = launchPreflight.pending
+  const pendingCardResources = effectiveCharacter === undefined
+    ? [] : blockedCardFrameResources(effectiveCharacter.remoteResources, effectiveCharacter)
+  const pendingPermissions = pendingScriptResources.length + pendingCardResources.length
+  const pendingHosts = [...new Set([
+    ...pendingScriptResources.map(item => new URL(item.origin).hostname),
+    ...pendingCardResources.map(item => new URL(item.origin).hostname),
+  ])].sort()
+  const launchPhase = tavernPreflightLaunchPhase({
+    expected: expectsResourcePreflight,
+    loading: launchPreflight.loading,
+    settled: launchPreflight.settled,
+    pendingPermissions,
+  })
+  const ready = mode === 'character' ? character !== undefined : primaryWorldInfo !== undefined
+  const busy = starting || launchPreflight.approving
+  useAgentRpRuntimeDiagnosticContribution(
+    runtimeDiagnostics,
+    'launch-composer-preflight',
+    ready ? {
+      kind: 'preflight',
+      facts: {
+        status: launchPreflight.loading ? 'loading'
+          : pendingPermissions > 0 ? 'permission-required'
+            : launchPreflight.error !== undefined ? 'error' : 'ready',
+        launch: launchPhase,
+        startReadiness: launchPhase,
+        startAction: launchPhase === 'checking' ? 'checking'
+          : launchPhase === 'approval-required' ? 'approve-and-start' : 'start',
+        permissionDuration,
+        scripts: launchPreflight.result?.scripts ?? 0,
+        cardResources: effectiveCharacter?.remoteResources.length ?? 0,
+        pendingCardPermissions: pendingCardResources.length,
+        pendingScriptPermissions: pendingScriptResources.length,
+        pendingScriptOrigins: pendingScriptResources.filter(item => item.kind === 'script').length,
+        pendingImageOrigins: pendingScriptResources.filter(item => item.kind === 'image').length,
+        pendingStyleOrigins: pendingScriptResources.filter(item => item.kind === 'style').length,
+        pendingFrameOrigins: pendingScriptResources.filter(item => item.kind === 'frame').length,
+        pendingPermissions,
+        failed: launchPreflight.result?.failed ?? 0,
+      },
+    } : undefined,
+  )
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && !busy) onClose()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => { document.removeEventListener('keydown', onKeyDown) }
+  }, [busy, onClose])
+
+  const approveCharacterResources = async (): Promise<{
+    readonly character: CharacterLibraryDetail
+    readonly resourcePermissions?: AgentRpSessionResourcePermissions
+  }> => {
+    if (character === undefined) throw new Error('请先选择角色')
+    let detail = character
+    const exactCardResources = permissionDuration === 'trust' ? [] : blockedCardFrameResources(
+      detail.remoteResources, { ...detail, remoteResourcePolicy: 'prompt' },
+    )
+    if (permissionDuration !== 'trust' && detail.remoteResourcePolicy === 'isolated-https') {
+      detail = await updateCharacterRemoteResourcePolicy(detail.id, 'prompt')
+      setCharacter(detail)
+    }
+    const tavern = await launchPreflight.approve(permissionDuration)
+    if (permissionDuration === 'session') return {
+      character: detail,
+      resourcePermissions: {
+        tavern: tavern ?? { scripts: [], images: [], styles: [], fonts: [], frames: [] },
+        card: exactCardResources,
+      },
+    }
+    if (permissionDuration === 'trust') {
+      detail = await updateCharacterRemoteResourcePolicy(detail.id, 'isolated-https')
+      setCharacter(detail)
+    } else {
+      for (const resource of exactCardResources) {
+        detail = await updateCharacterRemoteResource(detail.id, resource.origin, resource.type, true)
+        setCharacter(detail)
+      }
+    }
+    return { character: detail }
+  }
+  const start = (): void => {
+    if (!ready || busy || launchPhase === 'checking') return
+    setStarting(true)
+    setError(undefined)
+    const persona = selectedPersona === undefined ? undefined : {
+      id: selectedPersona.id, name: selectedPersona.name, description: selectedPersona.description,
+    }
+    const additionalWorldInfoIds = (selectedWorldInfoIds ?? [])
+      .filter(id => mode !== 'world-info' || id !== primaryWorldInfoId)
+    void (async (): Promise<void> => {
+      if (mode === 'character') {
+        if (character === undefined) throw new Error('请先选择角色')
+        const approval = launchPhase === 'approval-required'
+          ? await approveCharacterResources() : { character }
+        await onStartCharacter(
+          approval.character, greetingIndex, persona, selectedPresetId,
+          additionalWorldInfoIds, approval.resourcePermissions,
+        )
+        return
+      }
+      if (primaryWorldInfo === undefined) throw new Error('请先选择世界')
+      const tavern = launchPhase === 'approval-required'
+        ? await launchPreflight.approve(permissionDuration) : undefined
+      await onStartWorldInfo(
+        primaryWorldInfo, persona, selectedPresetId, additionalWorldInfoIds,
+        tavern === undefined ? undefined : { tavern, card: [] },
+      )
+    })().then(onClose, reason => {
+      setStarting(false)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }
+  const fieldStyle: CSSProperties = {
+    appearance: 'none', background: 'var(--dsw-alias-bg-layer-1, #202024)',
+    border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '9px', boxSizing: 'border-box',
+    color: 'inherit', font: 'inherit', minHeight: '40px', padding: '9px 36px 9px 10px', width: '100%',
+  }
+  const resourcePanelStyle: CSSProperties = {
+    background: 'var(--dsw-alias-bg-layer-1, #202024)',
+    border: '1px solid var(--dsw-alias-border-l2, #39393c)', borderRadius: '12px', padding: '13px',
+  }
+
+  return <div data-agent-rp-dialog data-agent-rp-surface="launch-composer" role="dialog" aria-modal="true"
+    aria-label="开始游玩" style={{
+      alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0, justifyContent: 'center',
+      padding: narrow ? 0 : '24px', position: 'fixed', zIndex: 1260,
+    }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #151518)', border: narrow ? 0 : '1px solid var(--dsw-alias-border-l2, #38383d)',
+      borderRadius: narrow ? 0 : '16px', boxShadow: narrow ? undefined : '0 24px 80px rgba(0,0,0,.5)',
+      display: 'flex', flexDirection: 'column', height: narrow ? '100dvh' : 'min(760px, calc(100vh - 48px))',
+      maxWidth: '780px', overflow: 'hidden', width: narrow ? '100vw' : 'min(780px, calc(100vw - 48px))',
+    }}>
+      <header style={{
+        alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '12px',
+        padding: narrow ? 'max(12px, env(safe-area-inset-top)) 14px 12px' : '16px 20px',
+      }}>
+        <span aria-hidden="true" style={{ color, display: 'inline-flex' }}><RoleplayDestinationIcon size={22} /></span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h2 style={{ fontSize: '17px', margin: 0 }}>开始游玩</h2>
+          <span style={{ display: 'block', fontSize: '11px', marginTop: '3px', opacity: .5 }}>组合本次会话使用的独立资源</span>
+        </div>
+        <button type="button" aria-label="返回 Agent RP 工作台" disabled={busy} onClick={onClose} style={{
+          alignItems: 'center', background: 'transparent', border: 0, borderRadius: '50%', color: 'inherit',
+          cursor: busy ? 'default' : 'pointer', display: 'inline-flex', font: 'inherit', fontSize: '23px', height: '36px',
+          justifyContent: 'center', opacity: busy ? .45 : 1, padding: 0, width: '36px',
+        }}>×</button>
+      </header>
+      <div style={{ flex: 1, minHeight: 0, overflowX: 'hidden', overflowY: 'auto', padding: narrow ? '18px 15px 24px' : '22px 24px 28px' }}>
+        <section>
+          <span style={{ display: 'block', fontSize: '11px', fontWeight: 620, marginBottom: '8px', opacity: .52 }}>故事起点</span>
+          <div role="radiogroup" aria-label="游玩方式" style={{ display: 'grid', gap: '8px', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+            {([['character', '角色对话', '以角色和开场白进入故事'], ['world-info', '世界场景', '不依赖角色卡进入世界']] as const)
+              .map(([value, title, description]) => <button key={value} type="button" role="radio"
+                aria-checked={mode === value} data-agent-rp-launch-mode={value} onClick={() => { setMode(value); setError(undefined) }} style={{
+                  background: mode === value ? `color-mix(in srgb, ${color} 13%, transparent)` : 'var(--dsw-alias-bg-layer-1, #202024)',
+                  border: mode === value ? `1px solid color-mix(in srgb, ${color} 42%, transparent)` : '1px solid var(--dsw-alias-border-l2, #39393c)',
+                  borderRadius: '11px', color: 'inherit', cursor: 'pointer', font: 'inherit', minWidth: 0,
+                  padding: narrow ? '11px' : '12px 13px', textAlign: 'left',
+                }}>
+                <strong style={{ display: 'block', fontSize: '13px' }}>{title}</strong>
+                <span style={{ display: 'block', fontSize: '10px', lineHeight: 1.45, marginTop: '4px', opacity: .5 }}>{description}</span>
+              </button>)}
+          </div>
+        </section>
+
+        <div style={{ display: 'grid', gap: '12px', gridTemplateColumns: narrow ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))', marginTop: '16px' }}>
+          <section data-agent-rp-launch-resource="primary" style={{ ...resourcePanelStyle, gridColumn: narrow ? undefined : '1 / -1' }}>
+            <label htmlFor="agent-rp-launch-primary" style={{ display: 'block', fontSize: '12px', fontWeight: 620, marginBottom: '7px' }}>
+              {mode === 'character' ? '角色' : '主世界'}
+            </label>
+            <div style={{ position: 'relative' }}>
+              {mode === 'character' ? <select id="agent-rp-launch-primary" value={characterId}
+                onChange={event => { setCharacterId(event.target.value); setError(undefined) }} style={fieldStyle}>
+                <option value="">{characters === undefined ? '正在读取角色…' : characters.length === 0 ? '角色库暂无内容' : '选择角色'}</option>
+                {characters?.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
+              </select> : <select id="agent-rp-launch-primary" value={primaryWorldInfoId}
+                onChange={event => { setPrimaryWorldInfoId(event.target.value); setError(undefined) }} style={fieldStyle}>
+                <option value="">{worldInfos === undefined ? '正在读取世界…' : worldInfos.length === 0 ? '世界书库暂无内容' : '选择主世界'}</option>
+                {worldInfos?.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+              </select>}
+              <SelectChevron />
+            </div>
+            <div style={{ alignItems: 'center', display: 'flex', gap: '10px', marginTop: '10px', minHeight: '40px' }}>
+              {mode === 'character' && character !== undefined && <>
+                <CharacterLibraryAvatar entry={character} size={40} />
+                <span style={{ minWidth: 0 }}>
+                  <strong style={{ display: 'block', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{character.displayName}</strong>
+                  <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .5 }}>{character.greetings.length} 个开场 · {character.worldInfoCount} 条内置世界书</span>
+                </span>
+              </>}
+              {mode === 'world-info' && primaryWorldInfo !== undefined && <span style={{ minWidth: 0 }}>
+                <strong style={{ display: 'block', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{primaryWorldInfo.name}</strong>
+                <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .5 }}>{primaryWorldInfo.entryCount} 条世界条目</span>
+              </span>}
+              {mode === 'character' && characterId !== '' && character === undefined && <span style={{ fontSize: '11px', opacity: .5 }}>正在读取角色设定…</span>}
+              {mode === 'character' && characters?.length === 0 && <span style={{ alignItems: 'center', display: 'flex', flex: 1, gap: '10px', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '11px', opacity: .52 }}>先添加一张角色卡，之后就能在这里直接选择</span>
+                <button type="button" onClick={() => { onManageResources('characters') }} style={{
+                  background: 'transparent', border: 0, color, cursor: 'pointer', flex: '0 0 auto', font: 'inherit', fontSize: '11px', padding: '4px 0', whiteSpace: 'nowrap',
+                }}>前往资源中心</button>
+              </span>}
+              {mode === 'world-info' && worldInfos?.length === 0 && <span style={{ alignItems: 'center', display: 'flex', flex: 1, gap: '10px', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '11px', opacity: .52 }}>先导入一本世界书，场景模式才有故事起点</span>
+                <button type="button" onClick={() => { onManageResources('world-info') }} style={{
+                  background: 'transparent', border: 0, color, cursor: 'pointer', flex: '0 0 auto', font: 'inherit', fontSize: '11px', padding: '4px 0', whiteSpace: 'nowrap',
+                }}>导入世界书</button>
+              </span>}
+            </div>
+            {mode === 'character' && character !== undefined && <div style={{ marginTop: '10px' }}>
+              <label htmlFor="agent-rp-launch-greeting" style={{ display: 'block', fontSize: '11px', marginBottom: '6px', opacity: .55 }}>开场白</label>
+              <div style={{ position: 'relative' }}>
+                <select id="agent-rp-launch-greeting" value={greetingIndex} onChange={event => { setGreetingIndex(Number(event.target.value)) }} style={fieldStyle}>
+                  {character.greetings.map((_, index) => <option key={index} value={index}>{index === 0 ? '默认开场' : `备选开场 ${index}`}</option>)}
+                </select>
+                <SelectChevron />
+              </div>
+              <p style={{ display: '-webkit-box', fontSize: '10px', lineHeight: 1.5, margin: '7px 1px 0', opacity: .48, overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2 }}>
+                {compactCharacterDisplayText(character.renderedGreetings[greetingIndex] ?? character.greetings[greetingIndex] ?? '') || '无开场白'}
+              </p>
+            </div>}
+          </section>
+
+          <section data-agent-rp-launch-resource="persona" style={resourcePanelStyle}>
+            <label htmlFor="agent-rp-launch-persona" style={{ display: 'block', fontSize: '12px', fontWeight: 620, marginBottom: '7px' }}>你的身份</label>
+            <div style={{ position: 'relative' }}>
+              <select id="agent-rp-launch-persona" value={personaId} onChange={event => { setPersonaId(event.target.value) }} style={fieldStyle}>
+                <option value="">暂不设置 Persona</option>
+                {personas?.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+              </select>
+              <SelectChevron />
+            </div>
+            <p style={{ display: '-webkit-box', fontSize: '10px', lineHeight: 1.5, margin: '7px 1px 0', opacity: .48, overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2 }}>
+              {selectedPersona?.description || (personas === undefined ? '正在读取 Persona…' : '本次可以不使用固定身份')}
+            </p>
+          </section>
+
+          <section data-agent-rp-launch-resource="preset" style={resourcePanelStyle}>
+            <label htmlFor="agent-rp-launch-preset" style={{ display: 'block', fontSize: '12px', fontWeight: 620, marginBottom: '7px' }}>提示策略</label>
+            <div style={{ position: 'relative' }}>
+              <select id="agent-rp-launch-preset" value={presetId} onChange={event => { selectPreset(event.target.value) }} style={fieldStyle}>
+                <option value="">不使用预设</option>
+                {presets?.map(entry => <option key={entry.id} value={entry.id}>{presetLibraryOptionLabel(entry, presets)}</option>)}
+              </select>
+              <SelectChevron />
+            </div>
+            <p style={{ fontSize: '10px', lineHeight: 1.5, margin: '7px 1px 0', opacity: .48 }}>
+              {presetError ?? (presets === undefined ? '正在读取预设…' : selectedPreset === undefined
+                ? '使用 Agent RP 的基础提示策略'
+                : `${selectedPreset.enabledCount}/${selectedPreset.promptCount} 个提示模块启用`)}
+            </p>
+          </section>
+        </div>
+
+        <section data-agent-rp-launch-resource="world-info" style={{ ...resourcePanelStyle, marginTop: '12px' }}>
+          <AdditionalWorldInfoSelection
+            listWorldInfos={listWorldInfos}
+            selectedWorldInfoIds={selectedWorldInfoIds}
+            onChange={setSelectedWorldInfoIds}
+            excludedIds={mode === 'world-info' && primaryWorldInfoId !== '' ? [primaryWorldInfoId] : []}
+            embedded
+          />
+        </section>
+
+        {expectsResourcePreflight && <section data-agent-rp-launch-preflight={launchPhase}
+          data-agent-rp-resource-permission-duration={permissionDuration} style={{
+            ...resourcePanelStyle, background: pendingPermissions > 0
+              ? 'color-mix(in srgb, var(--dsw-alias-state-warning, #d5a64c) 9%, transparent)'
+              : resourcePanelStyle.background,
+            border: pendingPermissions > 0
+              ? '1px solid color-mix(in srgb, var(--dsw-alias-state-warning, #d5a64c) 38%, transparent)'
+              : resourcePanelStyle.border,
+            marginTop: '12px',
+          }}>
+          <div style={{ alignItems: 'center', display: 'flex', gap: '8px' }}>
+            <strong style={{ fontSize: '12px' }}>启动权限</strong>
+            <span style={{ fontSize: '10px', marginLeft: 'auto', opacity: .55 }}>
+              {launchPreflight.loading ? '检查中…' : launchPreflight.error !== undefined ? '预检暂不可用'
+                : pendingHosts.length > 0 ? `${pendingHosts.length} 个来源待确认` : '已准备'}
+            </span>
+          </div>
+          {pendingHosts.length > 0 && <>
+            <div title={pendingHosts.join('\n')} style={{ fontSize: '10px', marginTop: '6px', opacity: .58, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pendingHosts.join('、')}</div>
+            <div role="radiogroup" aria-label="启动权限方式" style={{
+              display: 'grid', gap: '6px', gridTemplateColumns: `repeat(${mode === 'character' ? 3 : 2}, minmax(0, 1fr))`, marginTop: '8px',
+            }}>
+              {([['session', '仅本次'], ['remember', '记住'], ...(mode === 'character' ? [['trust', '信任界面']] as const : [])] as const)
+                .map(([value, label]) => <button key={value} type="button" role="radio" aria-checked={permissionDuration === value}
+                  data-agent-rp-permission-duration={value} onClick={() => { setPermissionDuration(value) }} style={{
+                    background: permissionDuration === value ? `color-mix(in srgb, ${color} 14%, transparent)` : 'transparent',
+                    border: permissionDuration === value ? `1px solid color-mix(in srgb, ${color} 42%, transparent)` : '1px solid var(--dsw-alias-border-l2, #444)',
+                    borderRadius: '7px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '11px', padding: '7px 5px', whiteSpace: 'nowrap',
+                  }}>{label}</button>)}
+            </div>
+          </>}
+          {launchPreflight.error !== undefined && <div style={{ fontSize: '10px', lineHeight: 1.5, marginTop: '6px', opacity: .55 }}>
+            {launchPreflight.error}；无法解析的脚本会保持关闭
+          </div>}
+        </section>}
+        {error !== undefined && <p role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.5, margin: '14px 1px 0' }}>{error}</p>}
+        <p style={{ fontSize: '10px', lineHeight: 1.6, margin: '16px 1px 0', opacity: .4 }}>本次选择只写入新会话，不修改资源中心里的原文件</p>
+      </div>
+      <footer style={{
+        alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '10px',
+        padding: narrow ? '12px 14px max(12px, env(safe-area-inset-bottom))' : '13px 20px',
+      }}>
+        {!narrow && <button type="button" disabled={busy} onClick={onClose} style={{ ...secondaryButtonStyle, marginRight: 'auto' }}>返回</button>}
+        <span style={{ fontSize: '10px', marginRight: narrow ? 0 : 'auto', opacity: .45 }}>
+          {mode === 'character' ? '角色模式' : '场景模式'}
+        </span>
+        <button type="button" data-agent-rp-start-readiness={launchPhase} disabled={!ready || busy || launchPhase === 'checking'}
+          onClick={start} style={{
+            ...primaryButtonStyle, minHeight: narrow ? '44px' : undefined, opacity: !ready || launchPhase === 'checking' ? .45 : 1,
+            width: narrow ? 'min(58vw, 220px)' : undefined, whiteSpace: 'nowrap',
+          }}>
+          {starting || launchPreflight.approving ? '正在开始…' : launchPhase === 'checking' ? '准备中…' : '开始游玩'}
+        </button>
+      </footer>
+    </section>
   </div>
 }
 
