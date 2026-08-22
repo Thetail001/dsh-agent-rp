@@ -149,6 +149,7 @@ import {
   type AgentRpRuntimeDiagnosticSource,
 } from './runtime-diagnostic.ts'
 import { installAgentRpNativeBack } from './native-back.ts'
+import { installAgentRpNativeShare } from './native-share.ts'
 import {
   classifySillyTavernJsonFile,
   selectSillyTavernDraft,
@@ -11448,6 +11449,7 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => installAgentRpRuntimeDiagnostic(window, runtimeDiagnostics))
   ctx.effect(() => installAgentRpBrowserCompatibilityDiagnostic(window, document, runtimeDiagnostics))
   ctx.effect(() => installAgentRpNativeBack(window, document))
+  ctx.effect(() => installAgentRpNativeShare(window, document))
   ctx.effect(() => {
     const style = document.createElement('style')
     style.dataset.agentRpResponsive = ''
