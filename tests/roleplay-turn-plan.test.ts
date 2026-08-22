@@ -26,7 +26,10 @@ import {
   roleplayVisibleTranscript,
 } from '../src/prompt.ts'
 import { assembleSillyTavernPreset } from '../src/preset-prompt.ts'
-import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
+import {
+  prepareRoleplayTurn,
+  resolveRoleplayPrepareModuleOutcomes,
+} from '../src/roleplay-turn-plan.ts'
 import { resolveSessionRoleplayRuntime } from '../src/session-roleplay-runtime.ts'
 import {
   appendTavernHelperState,
@@ -203,6 +206,35 @@ test('plans the minimal deployment character without changing its native prompt'
     && module.outcome === 'applied' && module.contributions === 1))
 })
 
+test('requires one explicit outcome from every active prepare module', () => {
+  const session = Session.create(SessionId('turn-plan-module-contract'))
+  const runtime = resolveSessionRoleplayRuntime({ session, deployment }).snapshot
+  const prompt = { moduleId: 'roleplay:prompt', outcome: 'applied', contributions: 1 } as const
+  const memory = { moduleId: 'roleplay:memory', outcome: 'idle', contributions: 0 } as const
+
+  assert.deepEqual(resolveRoleplayPrepareModuleOutcomes(runtime, [memory, prompt]), [prompt, memory])
+  assert.throws(
+    () => resolveRoleplayPrepareModuleOutcomes(runtime, [prompt]),
+    /roleplay:memory did not declare/u,
+  )
+  assert.throws(
+    () => resolveRoleplayPrepareModuleOutcomes(runtime, [prompt, memory, memory]),
+    /declared more than once/u,
+  )
+  assert.throws(
+    () => resolveRoleplayPrepareModuleOutcomes(runtime, [prompt, memory, {
+      moduleId: 'adapter:missing', outcome: 'idle', contributions: 0,
+    }]),
+    /inactive module adapter:missing/u,
+  )
+  assert.throws(
+    () => resolveRoleplayPrepareModuleOutcomes(runtime, [prompt, {
+      moduleId: 'roleplay:memory', outcome: 'idle', contributions: -1,
+    }]),
+    /invalid contribution count/u,
+  )
+})
+
 test('freezes exact durable memory reads and context into prepare', () => {
   const session = Session.create(SessionId('turn-plan-memory'), [{
     type: 'agent-rp/memory-seed',
@@ -252,6 +284,46 @@ test('keeps a standalone World Info launch actor-free and explains its activatio
   assert.match(plan.prompt.systemPromptText, /本会话由独立世界书启动/u)
   assert.match(plan.prompt.systemPromptText, /星港仍在运转/u)
   assert.doesNotMatch(plan.prompt.systemPromptText, /\{\{/u)
+})
+
+test('distinguishes idle and degraded EJS prepare participation', async () => {
+  const engine = await EjsTemplateEngine.create()
+  const plainSession = Session.create(SessionId('turn-plan-ejs-idle'))
+  const plainResolved = resolveSessionRoleplayRuntime({
+    session: plainSession,
+    deployment,
+    templateEngineAvailable: true,
+  })
+  const idle = prepareRoleplayTurn({
+    session: plainSession,
+    deployment,
+    resolved: plainResolved,
+    templateEngine: engine,
+  })
+  assert.deepEqual(idle.prepare.modules.find(module => module.moduleId === 'adapter:ejs'), {
+    moduleId: 'adapter:ejs', outcome: 'idle', contributions: 0,
+  })
+
+  const seed = createWorldInfoLibrarySessionSeed(worldAsset(
+    'world-info-00000000000000000000000000000004',
+    '故障模板',
+    '<%= missingRuntimeFunction() %>',
+  ))
+  const session = Session.create(SessionId('turn-plan-world-template-failure'), seed)
+  const resolved = resolveSessionRoleplayRuntime({
+    session,
+    deployment,
+    templateEngineAvailable: true,
+  })
+  const plan = prepareRoleplayTurn({ session, deployment, resolved, templateEngine: engine })
+
+  assert.equal(plan.world.resources[0]?.entries[0]?.reason, 'template-error')
+  assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'roleplay:world'), {
+    moduleId: 'roleplay:world', outcome: 'idle', contributions: 0,
+  })
+  assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'adapter:ejs'), {
+    moduleId: 'adapter:ejs', outcome: 'degraded', contributions: 1,
+  })
 })
 
 test('continues an imported chat identity without falling back to the deployment actor', () => {
@@ -477,6 +549,19 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
   assert.deepEqual(plan.input.pendingMessageIds, [String(pending.id)])
   assert.equal(plan.runtime.participant?.id, persona.id)
   assert.equal(plan.runtime.memory.write, true)
-  assert.ok(plan.prepare.modules.some(module => module.moduleId === 'adapter:prompt-modules'
-    && module.outcome === 'applied'))
+  assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'adapter:prompt-modules'), {
+    moduleId: 'adapter:prompt-modules', outcome: 'applied', contributions: direct.enabledPromptCount,
+  })
+  assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'adapter:mvu'), {
+    moduleId: 'adapter:mvu', outcome: 'applied', contributions: 1,
+  })
+  assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'adapter:tavern-helper'), {
+    moduleId: 'adapter:tavern-helper', outcome: 'applied', contributions: 2,
+  })
+  assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'adapter:ejs'), {
+    moduleId: 'adapter:ejs', outcome: 'applied',
+    contributions: direct.templateRenderCount + direct.templateFailureCount
+      + plan.world.resources.flatMap(resource => resource.entries)
+        .filter(entry => entry.template !== undefined).length,
+  })
 })

@@ -9,6 +9,7 @@ import {
 } from './ejs-template.ts'
 import type { LorebookActivationReason } from './import/lorebook.ts'
 import { readAgentRpMemoryHistory } from './memory.ts'
+import { MVU_ROLEPLAY_MODULE_ID } from './mvu.ts'
 import {
   renderActiveMemoryContext,
   renderCharacterPrompt,
@@ -23,16 +24,22 @@ import {
   assembleSillyTavernPreset,
   type RoleplayProviderPromptPlan,
 } from './preset-prompt.ts'
-import type {
-  RoleplayRuntimeSnapshot,
-  RoleplayStateBinding,
-  RoleplayWorldBinding,
+import {
+  ROLEPLAY_EJS_ADAPTER_MODULE_ID,
+  ROLEPLAY_MEMORY_MODULE_ID,
+  ROLEPLAY_PROMPT_ADAPTER_MODULE_ID,
+  ROLEPLAY_PROMPT_MODULE_ID,
+  ROLEPLAY_WORLD_MODULE_ID,
+  type RoleplayRuntimeSnapshot,
+  type RoleplayStateBinding,
+  type RoleplayWorldBinding,
 } from './roleplay-runtime.ts'
 import type { ResolvedSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 import { renderRoleplayStateContext, ROLEPLAY_STATE_MODULE_ID } from './roleplay-state.ts'
 import {
   tavernInjectedInChatPrompts,
   tavernInjectedScanText,
+  TAVERN_HELPER_ROLEPLAY_MODULE_ID,
   type TavernHelperState,
 } from './tavern-helper.ts'
 import {
@@ -215,36 +222,32 @@ function worldPlan(
   }
 }
 
-function preparationOutcomes(
+/** Validate one explicit outcome from every module that declared prepare participation. */
+export function resolveRoleplayPrepareModuleOutcomes(
   runtime: RoleplayRuntimeSnapshot,
-  world: RoleplayWorldPlan,
-  prompt: RoleplayTurnPromptPlan,
-  nativeStateCount: number,
-  memory: RoleplayMemoryPlan,
+  declarations: readonly RoleplayPrepareModuleOutcome[],
 ): readonly RoleplayPrepareModuleOutcome[] {
-  const worldContributions = world.resources.reduce(
-    (count, resource) => count + resource.beforeActor.length + resource.afterActor.length,
-    0,
-  )
-  const promptContributions = prompt.beforeHistory.length + prompt.afterHistory.length + prompt.inChat.length
-    + (prompt.systemPromptText === '' ? 0 : 1)
-  return runtime.modules.filter(module => module.phases.includes('prepare')).map(module => {
-    let contributions = 0
-    if (module.id === 'roleplay:world') contributions = worldContributions
-    else if (module.id === 'roleplay:prompt' || module.id === 'adapter:prompt-modules') {
-      contributions = promptContributions
-    } else if (module.id === ROLEPLAY_STATE_MODULE_ID) contributions = nativeStateCount
-    else if (module.id === 'roleplay:memory') contributions = memory.reads.length + (memory.write ? 1 : 0)
-    else if (module.id === 'adapter:tavern-helper') contributions = prompt.inChat.length
-    const degraded = module.id === 'adapter:ejs' && prompt.diagnostics.templateFailures > 0
-    return {
-      moduleId: module.id,
-      outcome: degraded ? 'degraded'
-        : contributions === 0 && (module.id === 'roleplay:world' || module.id === 'roleplay:memory')
-          ? 'idle'
-          : 'applied',
-      contributions,
+  const active = runtime.modules.filter(module => module.phases.includes('prepare'))
+  const activeIds = new Set(active.map(module => module.id))
+  const declared = new Map<string, RoleplayPrepareModuleOutcome>()
+  for (const declaration of declarations) {
+    if (!activeIds.has(declaration.moduleId)) {
+      throw new Error(`Roleplay prepare declaration references inactive module ${declaration.moduleId}`)
     }
+    if (declared.has(declaration.moduleId)) {
+      throw new Error(`Roleplay prepare module ${declaration.moduleId} declared more than once`)
+    }
+    if (!Number.isSafeInteger(declaration.contributions) || declaration.contributions < 0) {
+      throw new Error(`Roleplay prepare module ${declaration.moduleId} has an invalid contribution count`)
+    }
+    declared.set(declaration.moduleId, declaration)
+  }
+  return active.map(module => {
+    const declaration = declared.get(module.id)
+    if (declaration === undefined) {
+      throw new Error(`Roleplay prepare module ${module.id} did not declare an outcome`)
+    }
+    return declaration
   })
 }
 
@@ -308,6 +311,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   let systemPromptText = ''
   let enabledModules = 0
   let unsupportedMacros = worldMacros.unsupportedCount
+  let templateRenders = 0
   let templateFailures = 0
 
   if (snapshot.prompt.strategy === 'modules' && resolved.preset !== undefined) {
@@ -328,6 +332,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     providerPrompt = assembled
     enabledModules = assembled.enabledPromptCount
     unsupportedMacros += assembled.unsupportedMacroCount
+    templateRenders = assembled.templateRenderCount
     templateFailures = assembled.templateFailureCount
   } else if (resolved.card !== undefined) {
     const cardMacros = new ReplayableRoleplayMacros(macroContext)
@@ -389,6 +394,61 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     })),
     contextText: renderActiveMemoryContext(memoryHistory.active, snapshot.memory.write),
   }
+  const worldContributions = world.resources.reduce(
+    (count, resource) => count + resource.beforeActor.length + resource.afterActor.length,
+    0,
+  )
+  const promptContributions = providerPrompt.beforeHistory.length + providerPrompt.afterHistory.length
+    + providerPrompt.inChat.length + (systemPromptText === '' ? 0 : 1)
+  const worldEntries = world.resources.flatMap(resource => resource.entries)
+  const worldTemplateAttempts = worldEntries.filter(entry => entry.template !== undefined).length
+  const worldTemplateFailures = worldEntries.filter(entry =>
+    entry.reason === 'template-error' || entry.reason === 'template-unsupported').length
+  const ejsContributions = templateRenders + templateFailures + worldTemplateAttempts
+  const ejsFailures = templateFailures + worldTemplateFailures
+  const prepareDeclarations: RoleplayPrepareModuleOutcome[] = [
+    {
+      moduleId: ROLEPLAY_PROMPT_MODULE_ID,
+      outcome: promptContributions === 0 ? 'idle' : 'applied',
+      contributions: promptContributions,
+    },
+    {
+      moduleId: ROLEPLAY_MEMORY_MODULE_ID,
+      outcome: memory.reads.length === 0 && !memory.write ? 'idle' : 'applied',
+      contributions: memory.reads.length + (memory.write ? 1 : 0),
+    },
+    ...(world.resources.length === 0 ? [] : [{
+      moduleId: ROLEPLAY_WORLD_MODULE_ID,
+      outcome: worldContributions === 0 ? 'idle' as const : 'applied' as const,
+      contributions: worldContributions,
+    }]),
+    ...(resolved.preset === undefined ? [] : [{
+      moduleId: ROLEPLAY_PROMPT_ADAPTER_MODULE_ID,
+      outcome: enabledModules === 0 ? 'idle' as const : 'applied' as const,
+      contributions: enabledModules,
+    }]),
+    ...(resolved.nativeStates.length === 0 ? [] : [{
+      moduleId: ROLEPLAY_STATE_MODULE_ID,
+      outcome: 'applied' as const,
+      contributions: resolved.nativeStates.length,
+    }]),
+    ...(resolved.mvu === undefined ? [] : [{
+      moduleId: MVU_ROLEPLAY_MODULE_ID,
+      outcome: 'applied' as const,
+      contributions: 1,
+    }]),
+    ...(tavern === undefined ? [] : [{
+      moduleId: TAVERN_HELPER_ROLEPLAY_MODULE_ID,
+      outcome: 'applied' as const,
+      contributions: injectedScanText.length + injectedPrompts.length,
+    }]),
+    ...(snapshot.modules.some(module => module.id === ROLEPLAY_EJS_ADAPTER_MODULE_ID) ? [{
+      moduleId: ROLEPLAY_EJS_ADAPTER_MODULE_ID,
+      outcome: input.templateEngine === undefined || ejsFailures > 0 ? 'degraded' as const
+        : ejsContributions === 0 ? 'idle' as const : 'applied' as const,
+      contributions: ejsContributions,
+    }] : []),
+  ]
   return {
     format: 0,
     input: {
@@ -402,6 +462,6 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     stateReads,
     memory,
     generation: { ...(resolved.preset?.preset.generation ?? {}) },
-    prepare: { modules: preparationOutcomes(snapshot, world, prompt, resolved.nativeStates.length, memory) },
+    prepare: { modules: resolveRoleplayPrepareModuleOutcomes(snapshot, prepareDeclarations) },
   }
 }

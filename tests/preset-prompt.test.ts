@@ -95,6 +95,7 @@ test('assembles markers and nested variables on the correct side of chat history
   }])
   assert.equal(assembled.enabledPromptCount, 13)
   assert.equal(assembled.unsupportedMacroCount, 0)
+  assert.equal(assembled.templateRenderCount, 0)
   assert.equal(assembled.templateFailureCount, 0)
 })
 
@@ -250,6 +251,7 @@ test('renders EJS in imported preset modules and drops only a failing module', a
   })
 
   assert.deepEqual(assembled.beforeHistory, [{ role: 'system', content: '&lt;白露&gt;回应<宝宝>' }])
+  assert.equal(assembled.templateRenderCount, 1)
   assert.equal(assembled.templateFailureCount, 1)
 })
 

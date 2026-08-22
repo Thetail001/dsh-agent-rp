@@ -51,6 +51,7 @@ export interface RoleplayAssembledPrompt {
   readonly continuation?: RoleplayContinuationPlan
   readonly enabledPromptCount: number
   readonly unsupportedMacroCount: number
+  readonly templateRenderCount: number
   readonly templateFailureCount: number
 }
 
@@ -96,7 +97,10 @@ function macroMessages(session: Session, pending: readonly UserMessage[]): reado
   })
 }
 
-interface PromptAssemblyDiagnostics { templateFailures: number }
+interface PromptAssemblyDiagnostics {
+  templateRenders: number
+  templateFailures: number
+}
 
 const RESOLVED_FORMAT_VALUE = '\u0000agent-rp-resolved-format-value\u0000'
 
@@ -173,6 +177,7 @@ function promptText(
     diagnostics.templateFailures += 1
     return undefined
   }
+  diagnostics.templateRenders += 1
   return rendered.text
 }
 
@@ -312,7 +317,7 @@ export function assembleSillyTavernPreset(
     ]),
     stableEntropy: String(inputs.session.id),
   })
-  const diagnostics: PromptAssemblyDiagnostics = { templateFailures: 0 }
+  const diagnostics: PromptAssemblyDiagnostics = { templateRenders: 0, templateFailures: 0 }
   const before: RoleplayOrderedPrompt[] = []
   const after: RoleplayOrderedPrompt[] = []
   const inChat: RoleplayInChatPrompt[] = []
@@ -359,6 +364,7 @@ export function assembleSillyTavernPreset(
     ...(continuation === undefined ? {} : { continuation }),
     enabledPromptCount,
     unsupportedMacroCount: macros.unsupportedCount,
+    templateRenderCount: diagnostics.templateRenders,
     templateFailureCount: diagnostics.templateFailures,
   }
 }

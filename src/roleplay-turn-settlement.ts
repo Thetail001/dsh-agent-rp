@@ -2,10 +2,11 @@
 
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { readAgentRpMemoryHistory } from './memory.ts'
-import type {
-  RoleplayRuntimeSnapshot,
-  RoleplayStateBinding,
-  RoleplayTurnSettlementContribution,
+import {
+  ROLEPLAY_MEMORY_MODULE_ID,
+  type RoleplayRuntimeSnapshot,
+  type RoleplayStateBinding,
+  type RoleplayTurnSettlementContribution,
 } from './roleplay-runtime.ts'
 import type { RoleplayTurnInputKey, RoleplayTurnPlan } from './roleplay-turn-plan.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
@@ -254,7 +255,7 @@ function settleModules(
       const related = stateFor(id)
       return related === undefined ? [] : [related]
     })
-    const changes = moduleId === 'roleplay:memory'
+    const changes = moduleId === ROLEPLAY_MEMORY_MODULE_ID
       ? memory.createdIds.length + memory.supersededIds.length
       : relatedStates.filter(related => related.outcome === 'created' || related.outcome === 'updated'
         || related.outcome === 'removed').length

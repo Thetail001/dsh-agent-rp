@@ -31,7 +31,12 @@ import {
 } from './world-info-configuration-core.ts'
 import { readActiveSessionLorebookSourcesFromEvents } from './world-info-configuration.ts'
 import {
+  ROLEPLAY_EJS_ADAPTER_MODULE_ID,
+  ROLEPLAY_MEMORY_MODULE_ID,
+  ROLEPLAY_PROMPT_ADAPTER_MODULE_ID,
+  ROLEPLAY_PROMPT_MODULE_ID,
   ROLEPLAY_TURN_PHASES,
+  ROLEPLAY_WORLD_MODULE_ID,
   type RoleplayModuleBinding,
   type RoleplayResourceRef,
   type RoleplayRuntimeSnapshot,
@@ -186,8 +191,8 @@ export function resolveSessionRoleplayRuntime(input: {
     throw new Error('Roleplay state namespaces must be unique across native state and adapters')
   }
   const modules: RoleplayModuleBinding[] = [
-    runtimeModule('roleplay:prompt', 'native', ['prepare']),
-    runtimeModule('roleplay:memory', 'native', ['prepare', 'generate', 'settle']),
+    runtimeModule(ROLEPLAY_PROMPT_MODULE_ID, 'native', ['prepare']),
+    runtimeModule(ROLEPLAY_MEMORY_MODULE_ID, 'native', ['prepare', 'generate', 'settle']),
     runtimeModule('roleplay:reply-versions', 'native', ['present']),
     ...(nativeStates.length === 0 ? [] : [runtimeModule(
       ROLEPLAY_STATE_MODULE_ID,
@@ -195,8 +200,8 @@ export function resolveSessionRoleplayRuntime(input: {
       ['prepare', 'settle', 'present'],
       nativeStates.map(nativeState => nativeState.id),
     )]),
-    ...(lorebooks.length === 0 ? [] : [runtimeModule('roleplay:world', 'native', ['prepare'])]),
-    ...(preset === undefined ? [] : [runtimeModule('adapter:prompt-modules', 'adapter', ['prepare'])]),
+    ...(lorebooks.length === 0 ? [] : [runtimeModule(ROLEPLAY_WORLD_MODULE_ID, 'native', ['prepare'])]),
+    ...(preset === undefined ? [] : [runtimeModule(ROLEPLAY_PROMPT_ADAPTER_MODULE_ID, 'adapter', ['prepare'])]),
     ...(mvu === undefined ? [] : [runtimeModule(
       MVU_ROLEPLAY_MODULE_ID, 'adapter', ['prepare', 'settle'], [MVU_ROLEPLAY_STATE_ID],
     )]),
@@ -206,7 +211,9 @@ export function resolveSessionRoleplayRuntime(input: {
       ROLEPLAY_TURN_PHASES,
       [TAVERN_HELPER_ROLEPLAY_STATE_ID],
     )]),
-    ...(input.templateEngineAvailable === true ? [runtimeModule('adapter:ejs', 'adapter', ['prepare'])] : []),
+    ...(input.templateEngineAvailable === true
+      ? [runtimeModule(ROLEPLAY_EJS_ADAPTER_MODULE_ID, 'adapter', ['prepare'])]
+      : []),
   ]
   const tokenBudget = worldInfoTokenBudget(worldConfiguration)
   const snapshot: RoleplayRuntimeSnapshot = {
