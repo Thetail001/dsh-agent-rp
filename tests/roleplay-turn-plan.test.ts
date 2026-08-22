@@ -21,6 +21,7 @@ import {
   renderCharacterPrompt,
   renderImportedChatPrompt,
   renderImportedCharacterPrompt,
+  renderMemoryContext,
   roleplayVisibleDialogue,
   roleplayVisibleTranscript,
 } from '../src/prompt.ts'
@@ -192,7 +193,44 @@ test('plans the minimal deployment character without changing its native prompt'
   assert.deepEqual(plan.prompt.inChat, [])
   assert.equal(plan.prompt.includeHistory, true)
   assert.deepEqual(plan.world.resources, [])
-  assert.deepEqual(plan.memory, { read: true, write: true })
+  assert.deepEqual(plan.memory, {
+    read: true,
+    write: true,
+    reads: [],
+    contextText: renderMemoryContext(session.events, true),
+  })
+  assert.ok(plan.prepare.modules.some(module => module.moduleId === 'roleplay:memory'
+    && module.outcome === 'applied' && module.contributions === 1))
+})
+
+test('freezes exact durable memory reads and context into prepare', () => {
+  const session = Session.create(SessionId('turn-plan-memory'), [{
+    type: 'agent-rp/memory-seed',
+    seq: 0,
+    time: 1,
+    data: {
+      format: 0,
+      sourceSessionId: 'older-roleplay-session',
+      memories: [{ kind: 'preference', subject: '饮品', text: '用户喝咖啡时不加糖' }],
+    },
+    ignorable: true,
+  }])
+  const resolved = resolveSessionRoleplayRuntime({ session, deployment })
+  const plan = prepareRoleplayTurn({ session, deployment, resolved })
+
+  assert.deepEqual(plan.memory.reads, [{ id: 'memory-seed-0-0', sourceEventSeq: 0 }])
+  assert.equal(plan.memory.contextText, renderMemoryContext(session.events))
+  assert.match(plan.memory.contextText, /用户喝咖啡时不加糖/u)
+  assert.ok(plan.prepare.modules.some(module => module.moduleId === 'roleplay:memory'
+    && module.outcome === 'applied' && module.contributions === 1))
+
+  session.append('agent-rp/memory-seed', {
+    format: 0,
+    sourceSessionId: 'later-roleplay-session',
+    memories: [{ kind: 'fact', subject: '住处', text: '用户暂住海城' }],
+  })
+  assert.match(renderMemoryContext(session.events), /用户暂住海城/u)
+  assert.doesNotMatch(plan.memory.contextText, /用户暂住海城/u)
 })
 
 test('keeps a standalone World Info launch actor-free and explains its activation', () => {

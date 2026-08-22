@@ -8,7 +8,9 @@ import {
   type EjsTemplateContext,
 } from './ejs-template.ts'
 import type { LorebookActivationReason } from './import/lorebook.ts'
+import { readAgentRpMemoryHistory } from './memory.ts'
 import {
+  renderActiveMemoryContext,
   renderCharacterPrompt,
   renderImportedChatPrompt,
   renderImportedCharacterPrompt,
@@ -112,6 +114,18 @@ export interface RoleplayStateRead extends RoleplayStateBinding {
   readonly value?: JsonValue
 }
 
+/** One durable memory record consulted while preparing this turn. */
+export interface RoleplayMemoryRead {
+  readonly id: string
+  readonly sourceEventSeq: number
+}
+
+/** Exact memory policy, references, and model-visible context compiled for this turn. */
+export type RoleplayMemoryPlan = RoleplayRuntimeSnapshot['memory'] & {
+  readonly reads: readonly RoleplayMemoryRead[]
+  readonly contextText: string
+}
+
 /** Immutable result of the prepare phase, with no renderer or source-format object in its public contract. */
 export interface RoleplayTurnPlan {
   readonly format: 0
@@ -120,7 +134,7 @@ export interface RoleplayTurnPlan {
   readonly world: RoleplayWorldPlan
   readonly prompt: RoleplayTurnPromptPlan
   readonly stateReads: readonly RoleplayStateRead[]
-  readonly memory: RoleplayRuntimeSnapshot['memory']
+  readonly memory: RoleplayMemoryPlan
   readonly generation: RoleplayGenerationPolicy
   readonly prepare: {
     readonly modules: readonly RoleplayPrepareModuleOutcome[]
@@ -202,6 +216,7 @@ function preparationOutcomes(
   world: RoleplayWorldPlan,
   prompt: RoleplayTurnPromptPlan,
   nativeStateCount: number,
+  memory: RoleplayMemoryPlan,
 ): readonly RoleplayPrepareModuleOutcome[] {
   const worldContributions = world.resources.reduce(
     (count, resource) => count + resource.beforeActor.length + resource.afterActor.length,
@@ -210,15 +225,20 @@ function preparationOutcomes(
   const promptContributions = prompt.beforeHistory.length + prompt.afterHistory.length + prompt.inChat.length
     + (prompt.systemPromptText === '' ? 0 : 1)
   return runtime.modules.filter(module => module.phases.includes('prepare')).map(module => {
-    const contributions = module.id === 'roleplay:world' ? worldContributions
-      : module.id === 'roleplay:prompt' || module.id === 'adapter:prompt-modules' ? promptContributions
-        : module.id === ROLEPLAY_STATE_MODULE_ID ? nativeStateCount
-        : module.id === 'adapter:tavern-helper' ? prompt.inChat.length
-          : 0
+    let contributions = 0
+    if (module.id === 'roleplay:world') contributions = worldContributions
+    else if (module.id === 'roleplay:prompt' || module.id === 'adapter:prompt-modules') {
+      contributions = promptContributions
+    } else if (module.id === ROLEPLAY_STATE_MODULE_ID) contributions = nativeStateCount
+    else if (module.id === 'roleplay:memory') contributions = memory.reads.length + (memory.write ? 1 : 0)
+    else if (module.id === 'adapter:tavern-helper') contributions = prompt.inChat.length
     const degraded = module.id === 'adapter:ejs' && prompt.diagnostics.templateFailures > 0
     return {
       moduleId: module.id,
-      outcome: degraded ? 'degraded' : contributions === 0 && module.id === 'roleplay:world' ? 'idle' : 'applied',
+      outcome: degraded ? 'degraded'
+        : contributions === 0 && (module.id === 'roleplay:world' || module.id === 'roleplay:memory')
+          ? 'idle'
+          : 'applied',
       contributions,
     }
   })
@@ -331,6 +351,15 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
       value: nativeState.value,
     }
   })
+  const memoryHistory = readAgentRpMemoryHistory(input.session.events)
+  const memory: RoleplayMemoryPlan = {
+    ...snapshot.memory,
+    reads: memoryHistory.active.map(record => ({
+      id: String(record.id),
+      sourceEventSeq: record.sourceEventSeq,
+    })),
+    contextText: renderActiveMemoryContext(memoryHistory.active, snapshot.memory.write),
+  }
   return {
     format: 0,
     input: {
@@ -342,8 +371,8 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     world,
     prompt,
     stateReads,
-    memory: snapshot.memory,
+    memory,
     generation: { ...(resolved.preset?.preset.generation ?? {}) },
-    prepare: { modules: preparationOutcomes(snapshot, world, prompt, resolved.nativeStates.length) },
+    prepare: { modules: preparationOutcomes(snapshot, world, prompt, resolved.nativeStates.length, memory) },
   }
 }

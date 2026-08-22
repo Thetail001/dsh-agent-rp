@@ -76,7 +76,7 @@ function plan(session: Session, state: RoleplayRuntimeSnapshot['state'] = []): R
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
     stateReads: snapshot.state,
-    memory: snapshot.memory,
+    memory: { ...snapshot.memory, reads: [], contextText: '' },
     generation: {},
     prepare: { modules: [] },
   }

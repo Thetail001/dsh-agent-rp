@@ -69,7 +69,6 @@ import {
 } from './import/session-preset.ts'
 import {
   renderCharacterPrompt,
-  renderMemoryContext,
   substituteCardMacros,
 } from './prompt.ts'
 import { EjsTemplateEngine } from './ejs-template.ts'
@@ -826,10 +825,7 @@ export function installAgentRp(
     text: ({ scope }) => {
       if (scope === undefined) return ''
       const agent = agentsByScope.get(scope)
-      return agent === undefined ? '' : renderMemoryContext(
-        agent.session.events,
-        rememberIntentByAgent.get(agent) === true,
-      )
+      return agent === undefined ? '' : turnCoordinator.current(agent)?.memory.contextText ?? ''
     },
   })
   ctx.on('agent/request', async ({ agent, turn, step }, next) => {

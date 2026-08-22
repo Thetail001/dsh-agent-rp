@@ -28,7 +28,7 @@ function plan(label: string, sessionSeq = 0): RoleplayTurnPlan {
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
     stateReads: [],
-    memory: runtime.memory,
+    memory: { ...runtime.memory, reads: [], contextText: '' },
     generation: {},
     prepare: { modules: [] },
   }

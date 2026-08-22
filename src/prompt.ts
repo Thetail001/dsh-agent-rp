@@ -5,7 +5,7 @@ import type { ResolvedConfig } from './config.ts'
 import { activateLorebook, type LorebookActivationOptions } from './import/lorebook.ts'
 import type { ImportedCharacterCard, ImportedLorebook } from './import/types.ts'
 import type { ImportedWorldInfo } from './import/types.ts'
-import { readAgentRpMemoryHistory } from './memory.ts'
+import { readAgentRpMemoryHistory, type AgentRpMemoryRecord } from './memory.ts'
 import { substituteMvuMacros } from './mvu.ts'
 import type { EjsTemplateMessage } from './ejs-template.ts'
 import { PROMPT_REGEX_SOURCE_MARKER, readPromptRegexSourceMarker } from './frontend-regex.ts'
@@ -308,11 +308,13 @@ export function renderImportedLorebook(
 
 /**
  * Render the complete active-memory snapshot for the next model request.
- * @param events - current Session event history.
+ * @param active - validated memory records selected by this turn's prepare phase.
  * @returns model-visible dynamic context with ids needed for later correction.
  */
-export function renderMemoryContext(events: readonly SessionEvent[], writeAvailable = false): string {
-  const { active } = readAgentRpMemoryHistory(events)
+export function renderActiveMemoryContext(
+  active: readonly AgentRpMemoryRecord[],
+  writeAvailable = false,
+): string {
   if (active.length === 0 && !writeAvailable) return ''
   return finalizeRoleplayPrompt([
     ...(active.length === 0 ? [] : ['角色已知的持久背景如下。这不是本轮要逐条提及的清单；方括号内仅是更新记忆所需的内部索引：']),
@@ -321,4 +323,9 @@ export function renderMemoryContext(events: readonly SessionEvent[], writeAvaila
       ? '用户本轮明确表达了跨轮保留意图。只在内容确实稳定且现有记录未覆盖时调用 remember；同一主题发生变化时用 supersedes 更新原记录。'
       : '本轮持久记忆只读，不要发起任何写入；当前剧情继续由会话历史承载。',
   ].join('\n'))
+}
+
+/** Render the current active-memory snapshot directly from a Session log. */
+export function renderMemoryContext(events: readonly SessionEvent[], writeAvailable = false): string {
+  return renderActiveMemoryContext(readAgentRpMemoryHistory(events).active, writeAvailable)
 }

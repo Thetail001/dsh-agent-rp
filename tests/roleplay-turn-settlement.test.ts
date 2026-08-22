@@ -54,7 +54,7 @@ function turnPlan(input: {
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
     stateReads: snapshot.state,
-    memory: { read: true, write: input.memoryWrite ?? true },
+    memory: { read: true, write: input.memoryWrite ?? true, reads: [], contextText: '' },
     generation: {},
     prepare: { modules: [] },
   }
