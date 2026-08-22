@@ -152,7 +152,7 @@ export function resolveSessionRoleplayRuntime(input: {
   ]
   const modules: RoleplayModuleBinding[] = [
     runtimeModule('roleplay:prompt', 'native', ['prepare']),
-    runtimeModule('roleplay:memory', 'native', ['prepare', 'generate']),
+    runtimeModule('roleplay:memory', 'native', ['prepare', 'generate', 'settle']),
     runtimeModule('roleplay:reply-versions', 'native', ['present']),
     ...(lorebooks.length === 0 ? [] : [runtimeModule('roleplay:world', 'native', ['prepare'])]),
     ...(preset === undefined ? [] : [runtimeModule('adapter:prompt-modules', 'adapter', ['prepare'])]),

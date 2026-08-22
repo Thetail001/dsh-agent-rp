@@ -125,6 +125,11 @@ import {
 } from './worldbook-character-context.ts'
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 import { prepareRoleplayTurn, type RoleplayTurnPlan } from './roleplay-turn-plan.ts'
+import {
+  appendRoleplayTurnSettlement,
+  compileRoleplayTurnSettlement,
+  type BoundRoleplayTurnPlan,
+} from './roleplay-turn-settlement.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -466,6 +471,11 @@ export function installAgentRp(
   const rememberRestrictions = new Map<Agent, () => void>()
   const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
   const turnPlanByAgent = new WeakMap<Agent, RoleplayTurnPlan>()
+  const turnPlansByAgent = new WeakMap<Agent, Map<number, Map<number, RoleplayTurnPlan>>>()
+  let settlementRuntimeActive = true
+  ctx.effect(() => () => {
+    settlementRuntimeActive = false
+  }, 'agent-rp: turn settlement lifetime')
   const gateway = ctx.get('apiProxy') as PromptAttachmentGateway | undefined
   const commands = (ctx as Context & { commands: HumanCommandGateway }).commands
   const setRememberAvailable = (agent: Agent, available: boolean): void => {
@@ -751,6 +761,7 @@ export function installAgentRp(
     rememberRestrictions.delete(agent)
     pendingMessagesByAgent.delete(agent)
     turnPlanByAgent.delete(agent)
+    turnPlansByAgent.delete(agent)
     for (const dispose of worldbookCharacterDisposers.get(agent) ?? []) dispose()
     worldbookCharacterDisposers.delete(agent)
   })
@@ -765,7 +776,11 @@ export function installAgentRp(
     sessionId => agentsBySession.get(sessionId),
     agent => turnPlanByAgent.get(agent)?.prompt,
   )
-  installMvuStreamCompletion(ctx, sessionId => agentsBySession.get(sessionId))
+  installMvuStreamCompletion(
+    ctx,
+    sessionId => agentsBySession.get(sessionId),
+    agent => turnPlanByAgent.get(agent),
+  )
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {
     if (agentsByScope.get(agent) !== agent) return
     setRememberAvailable(agent, requestsPersistentMemory(message))
@@ -785,10 +800,24 @@ export function installAgentRp(
       )
     },
   })
-  ctx.on('agent/request', async ({ agent }, next) => {
+  ctx.on('agent/request', async ({ agent, turn, step }, next) => {
+    const activePlan = agentsByScope.get(agent) === agent ? turnPlanByAgent.get(agent) : undefined
+    if (activePlan !== undefined) {
+      let turns = turnPlansByAgent.get(agent)
+      if (turns === undefined) {
+        turns = new Map()
+        turnPlansByAgent.set(agent, turns)
+      }
+      let steps = turns.get(turn)
+      if (steps === undefined) {
+        steps = new Map()
+        turns.set(turn, steps)
+      }
+      if (!steps.has(step)) steps.set(step, activePlan)
+    }
     const config = await next()
     if (agentsByScope.get(agent) !== agent) return config
-    const generation = turnPlanByAgent.get(agent)?.generation
+    const generation = activePlan?.generation
       ?? readActiveSessionPreset(agent.session.events)?.preset.generation
     if (generation === undefined) return config
     const requestedEffort = generation.reasoningEffort
@@ -806,6 +835,56 @@ export function installAgentRp(
         : { maxTokens: Math.min(generation.maxTokens, config.maxTokens ?? generation.maxTokens) },
       ...supportedEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(supportedEffort) },
     }
+  })
+  ctx.on('session/event', (session, event) => {
+    if (event.type !== 'turn/end') return
+    const agent = agentsBySession.get(String(session.id))
+    if (agent === undefined || agentsByScope.get(agent) !== agent) return
+    const turns = turnPlansByAgent.get(agent)
+    const steps = turns?.get(event.data.turn)
+    if (steps === undefined || steps.size === 0) return
+    turns?.delete(event.data.turn)
+    if (turns?.size === 0) turnPlansByAgent.delete(agent)
+    turnPlanByAgent.delete(agent)
+    const plans: readonly BoundRoleplayTurnPlan[] = [...steps]
+      .map(([step, plan]) => ({ step, plan }))
+      .sort((left, right) => left.step - right.step)
+    const result = event.data.reason.kind
+    const turn = event.data.turn
+    queueMicrotask(() => {
+      if (!settlementRuntimeActive || session.events.some(candidate =>
+        candidate.type === 'agent-rp/turn-settlement' && candidate.data.turn === turn)) return
+      try {
+        const resolved = resolveSessionRoleplayRuntime({
+          session,
+          deployment: config,
+          memoryWriteAvailable: plans.some(({ plan }) => plan.memory.write),
+          templateEngineAvailable: options.ejsTemplateEngine !== undefined,
+        })
+        const firstSeq = plans[0]?.plan.input.sessionSeq ?? 0
+        const visible = new Set(session.surface.nodes)
+        const mvuFailedThisTurn = resolved.mvu?.lastError !== undefined && session.events.some(candidate =>
+          candidate.seq >= firstSeq && candidate.type === 'assistant/message'
+          && candidate.data.turn === turn && visible.has(candidate.seq)
+          && /<UpdateVariable(?:variable)?>/iu.test(candidate.data.message.content
+            .flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')))
+        const settlement = compileRoleplayTurnSettlement({
+          sessionId: String(session.id),
+          turn,
+          result,
+          plans,
+          events: session.events,
+          after: resolved.snapshot,
+          ...(mvuFailedThisTurn ? { stateFailures: { 'state:mvu': resolved.mvu!.lastError! } } : {}),
+          ...(resolved.snapshot.modules.some(module => module.id === 'adapter:tavern-helper'
+            && module.phases.includes('settle'))
+            ? { deferredModules: ['adapter:tavern-helper'] } : {}),
+        })
+        appendRoleplayTurnSettlement(session, settlement)
+      } catch (error: unknown) {
+        ctx.logger.warn(`agent-rp: turn settlement failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    })
   })
   ctx.systemPrompt.context({ name: 'sandbox:policy', order: 0, text: '' })
   ctx.systemPrompt.context({ name: 'approval:policy', order: 0, text: '' })

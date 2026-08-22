@@ -19,6 +19,14 @@ import {
   renderChoiceInstructions,
   renderMvuUpdateInstructions,
 } from './mvu.ts'
+import type { RoleplayTurnPlan } from './roleplay-turn-plan.ts'
+
+/** A prepared turn explicitly opts MVU into settlement only through its runtime modules and state reads. */
+export function roleplayMvuSettlementEnabled(plan: RoleplayTurnPlan | undefined): boolean {
+  if (plan === undefined) return true
+  return plan.runtime.modules.some(module => module.id === 'adapter:mvu' && module.phases.includes('settle'))
+    && plan.stateReads.some(state => state.id === 'state:mvu')
+}
 
 function textFromChunks(chunks: readonly StreamChunk[]): string {
   return chunks.flatMap(chunk => chunk.type === 'text-delta' ? [chunk.text] : []).join('')
@@ -96,10 +104,12 @@ async function requestSupplement(
 export function installMvuStreamCompletion(
   ctx: Context,
   agentForSession: (sessionId: string) => Agent | undefined,
+  planForAgent: (agent: Agent) => RoleplayTurnPlan | undefined = () => undefined,
 ): void {
   ctx.on('llm/stream', (options, next) => {
     const agent = options.sessionId === undefined ? undefined : agentForSession(String(options.sessionId))
     if (agent === undefined) return next()
+    if (!roleplayMvuSettlementEnabled(planForAgent(agent))) return next()
     const active = readActiveSessionCharacter(agent.session.events)
     if (active === undefined) return next()
     const card = cardFromImportMeta(active.meta)
