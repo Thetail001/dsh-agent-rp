@@ -28,6 +28,7 @@ export interface PresetPromptInputs {
   readonly pendingMessages?: readonly UserMessage[]
   /** Prepared turn context shared with native card and world adapters. */
   readonly macroContext?: RoleplayMacroContext
+  readonly worldInfoMacrosResolved?: boolean
   readonly mvuEnabled?: boolean
   readonly renderTemplate?: (template: string) => EjsTemplateResult
 }
@@ -97,9 +98,19 @@ function macroMessages(session: Session, pending: readonly UserMessage[]): reado
 
 interface PromptAssemblyDiagnostics { templateFailures: number }
 
-function applyFormat(format: string, variable: string, value: string, macros: ReplayableRoleplayMacros): string {
+const RESOLVED_FORMAT_VALUE = '\u0000agent-rp-resolved-format-value\u0000'
+
+function applyFormat(
+  format: string,
+  variable: string,
+  value: string,
+  macros: ReplayableRoleplayMacros,
+  valueResolved = false,
+): string {
   if (value.trim() === '') return ''
-  return macros.expand(format.replaceAll(`{{${variable}}}`, value).replaceAll('{0}', value))
+  const inserted = valueResolved ? RESOLVED_FORMAT_VALUE : value
+  const expanded = macros.expand(format.replaceAll(`{{${variable}}}`, inserted).replaceAll('{0}', inserted))
+  return valueResolved ? expanded.replaceAll(RESOLVED_FORMAT_VALUE, value) : expanded
 }
 
 function markerText(
@@ -111,9 +122,13 @@ function markerText(
   const card = inputs.card
   switch (prompt.identifier) {
     case 'worldInfoBefore':
-      return inputs.worldInfoBefore.map(value => applyFormat(preset.formats.worldInfo, 'worldInfo', value, macros)).filter(Boolean).join('\n\n')
+      return inputs.worldInfoBefore.map(value => applyFormat(
+        preset.formats.worldInfo, 'worldInfo', value, macros, inputs.worldInfoMacrosResolved,
+      )).filter(Boolean).join('\n\n')
     case 'worldInfoAfter':
-      return inputs.worldInfoAfter.map(value => applyFormat(preset.formats.worldInfo, 'worldInfo', value, macros)).filter(Boolean).join('\n\n')
+      return inputs.worldInfoAfter.map(value => applyFormat(
+        preset.formats.worldInfo, 'worldInfo', value, macros, inputs.worldInfoMacrosResolved,
+      )).filter(Boolean).join('\n\n')
     case 'charDescription': return card?.description ?? ''
     case 'charPersonality':
       return card === undefined ? '' : applyFormat(

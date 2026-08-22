@@ -237,7 +237,7 @@ test('keeps a standalone World Info launch actor-free and explains its activatio
   const seed = createWorldInfoLibrarySessionSeed(worldAsset(
     'world-info-00000000000000000000000000000001',
     '天琴座',
-    '星港仍在运转。',
+    '星港仍在运转。守望者：{{group}}；路线：{{pick::东港::西港}}。',
   ))
   const session = Session.create(SessionId('turn-plan-scene'), seed)
   const resolved = resolveSessionRoleplayRuntime({ session, deployment })
@@ -245,12 +245,13 @@ test('keeps a standalone World Info launch actor-free and explains its activatio
 
   assert.equal(plan.runtime.experience.mode, 'scene')
   assert.equal(plan.runtime.actor, undefined)
-  assert.deepEqual(plan.world.experienceBeforeActor, ['星港仍在运转。'])
+  assert.match(plan.world.experienceBeforeActor[0] ?? '', /^星港仍在运转。守望者：天琴座；路线：(东港|西港)。$/u)
   assert.deepEqual(plan.world.actorBefore, [])
   assert.equal(plan.world.resources[0]?.entries[0]?.entryId, '0')
   assert.equal(plan.world.resources[0]?.entries[0]?.reason, 'active-constant')
   assert.match(plan.prompt.systemPromptText, /本会话由独立世界书启动/u)
   assert.match(plan.prompt.systemPromptText, /星港仍在运转/u)
+  assert.doesNotMatch(plan.prompt.systemPromptText, /\{\{/u)
 })
 
 test('continues an imported chat identity without falling back to the deployment actor', () => {

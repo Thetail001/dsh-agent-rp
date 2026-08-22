@@ -284,6 +284,57 @@ test('activates lorebook entries from the current message before it enters Sessi
   })
 })
 
+test('budgets resolved MVU content in the legacy embedded-lore renderer', () => {
+  const card = parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v3',
+    spec_version: '3.0',
+    data: {
+      name: '白露',
+      description: '',
+      personality: '',
+      scenario: '',
+      first_mes: '你好。',
+      mes_example: '',
+      creator_notes: '',
+      system_prompt: '',
+      post_history_instructions: '',
+      alternate_greetings: [],
+      tags: [],
+      creator: 'fixture',
+      character_version: '1',
+      extensions: {},
+      character_book: {
+        name: '状态预算',
+        token_budget: 12,
+        recursive_scanning: false,
+        extensions: {},
+        entries: [
+          {
+            keys: [], secondary_keys: [], content: '{{format_message_variable::stat_data}}', enabled: true,
+            insertion_order: 100, constant: true, selective: false, position: 'before_char',
+            name: '完整状态', use_regex: false, extensions: {},
+          },
+          {
+            keys: [], secondary_keys: [], content: '短', enabled: true,
+            insertion_order: 10, constant: true, selective: false, position: 'before_char',
+            name: '保底', use_regex: false, extensions: {},
+          },
+        ],
+      },
+    },
+  }))
+
+  assert.deepEqual(renderImportedLorebook(
+    card,
+    Session.create(SessionId('legacy-lore-resolved-budget')),
+    [],
+    { description: '这是一段展开后明显超过预算的状态文本' },
+  ), {
+    beforeCharacter: ['短'],
+    afterCharacter: [],
+  })
+})
+
 test('combines active entries from independent World Info books', () => {
   const first = parseWorldInfoJson(JSON.stringify({ entries: { 1: {
     key: [], keysecondary: [], content: '海城终年多雾。', constant: true, order: 1, position: 0,

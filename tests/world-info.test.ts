@@ -5,6 +5,7 @@ import { activateLorebook, inspectLorebook, inspectLorebooks } from '../src/impo
 import { parseWorldInfoJson, parseWorldInfoJsonBytes } from '../src/import/world-info.ts'
 import { summarizeWorldEngineFailures, worldEngineFailureTotal } from '../src/world-engine-diagnostic.ts'
 import { createNativeWorldEngine, summarizeWorldEngineResult } from '../src/world-engine.ts'
+import { ReplayableRoleplayMacros } from '../src/roleplay-macro.ts'
 
 function world(entries: object): string {
   return JSON.stringify({ name: '海城', entries, extensions: { 'fixture/unknown': true } })
@@ -262,6 +263,28 @@ test('shares one final token budget across books using entry priority', () => {
   assert.equal(inspected.approximateTokens, 1)
   assert.equal(inspected.books[0]?.inspected.entries[0]?.reason, 'session-budget-excluded')
   assert.equal(inspected.books[1]?.inspected.entries[0]?.reason, 'active-constant')
+})
+
+test('budgets the replay-safe macro result instead of its short source placeholder', () => {
+  const source = parseWorldInfoJson(world({
+    expanded: { key: [], content: '{{persona}}', constant: true, order: 100, position: 0 },
+    compact: { key: [], content: '短', constant: true, order: 10, position: 0 },
+  }))
+  const macros = new ReplayableRoleplayMacros({
+    userPersona: '很长的身份信息',
+    entropy: 'world-budget-turn',
+    stableEntropy: 'world-budget-session',
+  })
+  const result = createNativeWorldEngine({ renderMacro: value => macros.expand(value) }).evaluate({
+    format: 0,
+    books: [{ id: 'macro-world', lorebook: { ...source.lorebook, tokenBudget: 4 } }],
+    messages: [],
+  })
+
+  assert.deepEqual(result.beforeCharacter, ['短'])
+  assert.equal(result.books[0]?.inspected.entries[0]?.reason, 'budget-excluded')
+  assert.equal(result.books[0]?.inspected.entries[0]?.approximateTokens, 7)
+  assert.equal(result.books[0]?.inspected.entries[1]?.reason, 'active-constant')
 })
 
 test('keeps every matched book entry when no player-selected aggregate cap exists', () => {

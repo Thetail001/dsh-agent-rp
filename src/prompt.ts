@@ -34,6 +34,19 @@ function renderCardTemplate(value: string, options: LorebookActivationOptions): 
   return rendered?.ok === true ? rendered.text : ''
 }
 
+function withResolvedLorebookMacros(
+  options: LorebookActivationOptions,
+  statData: import('@deepseek-ai/dsh-session').JsonValue | undefined,
+): LorebookActivationOptions {
+  return {
+    ...options,
+    renderMacro: (content, target) => {
+      const expanded = substituteMvuMacros(content, statData)
+      return options.renderMacro?.(expanded, target) ?? expanded
+    },
+  }
+}
+
 /**
  * Render the stable character contract installed as the Agent-scoped persona.
  * @param config - normalized character identity and opening state.
@@ -127,26 +140,13 @@ export function renderSessionLorebooks(input: {
   readonly tokenBudget?: number
 }) {
   const scanText = input.scanText ?? []
-  const inspected = createNativeWorldEngine(input.templateOptions).evaluate({
+  const templateOptions = input.templateOptions ?? {}
+  return createNativeWorldEngine(withResolvedLorebookMacros(templateOptions, input.statData)).evaluate({
     format: 0,
     books: input.books,
     messages: [...visibleDialogue(input.session, input.pendingMessages ?? []), ...scanText],
     ...(input.tokenBudget === undefined ? {} : { tokenBudget: input.tokenBudget }),
   })
-  const render = (values: readonly string[]) => values.map(value => substituteMvuMacros(value, input.statData))
-  return {
-    ...inspected,
-    beforeCharacter: render(inspected.beforeCharacter),
-    afterCharacter: render(inspected.afterCharacter),
-    books: inspected.books.map(book => ({
-      ...book,
-      inspected: {
-        ...book.inspected,
-        beforeCharacter: render(book.inspected.beforeCharacter),
-        afterCharacter: render(book.inspected.afterCharacter),
-      },
-    })),
-  }
 }
 
 /**
@@ -181,6 +181,7 @@ export function renderImportedCharacterPrompt(
   userPersona?: string,
   templateOptions: LorebookActivationOptions = {},
   macros?: ReplayableRoleplayMacros,
+  loreMacrosResolved = false,
 ): string {
   const name = card.nickname?.trim() || card.name
   const original = `你是${name}。直接以${name}的身份与用户相处和交谈。`
@@ -195,13 +196,13 @@ export function renderImportedCharacterPrompt(
   }
   const parts = [
     system,
-    ...loreBefore.map(expand),
+    ...loreBefore.map(value => loreMacrosResolved ? value : expand(value)),
     ...labeledField('角色描述', card.description),
     ...labeledField('性格', card.personality),
     ...labeledField('当前场景', card.scenario),
     ...(userPersona?.trim() ? [`与角色对话的人：${userPersona.trim()}`] : []),
     ...(card.messageExample.trim().length === 0 ? [] : [`对话示例：\n${renderCardTemplate(expand(card.messageExample), templateOptions)}`]),
-    ...loreAfter.map(expand),
+    ...loreAfter.map(value => loreMacrosResolved ? value : expand(value)),
     CHARACTER_BEHAVIOR,
     MEMORY_BEHAVIOR,
     IMPORT_BEHAVIOR,
@@ -300,13 +301,11 @@ export function renderImportedLorebook(
   scanText: readonly string[] = [],
   templateOptions: LorebookActivationOptions = {},
 ) {
+  const resolvedOptions = withResolvedLorebookMacros(templateOptions, statData)
   const active = card.lorebook === undefined
     ? { beforeCharacter: [], afterCharacter: [] }
-    : activateLorebook(card.lorebook, [...visibleDialogue(session, pendingMessages), ...scanText], templateOptions)
-  return {
-    beforeCharacter: active.beforeCharacter.map(value => substituteMvuMacros(value, statData)),
-    afterCharacter: active.afterCharacter.map(value => substituteMvuMacros(value, statData)),
-  }
+    : activateLorebook(card.lorebook, [...visibleDialogue(session, pendingMessages), ...scanText], resolvedOptions)
+  return active
 }
 
 /**

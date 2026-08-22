@@ -289,13 +289,14 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     ...(resolved.mvu === undefined ? {} : { statData: resolved.mvu.statData }),
     worldInfoBooks: createEjsWorldInfoBooks(books),
   })
+  const worldMacros = new ReplayableRoleplayMacros(macroContext)
   const world = worldPlan(resolved, renderSessionLorebooks({
     books,
     session: input.session,
     pendingMessages,
     scanText: injectedScanText,
     ...(resolved.mvu === undefined ? {} : { statData: resolved.mvu.statData }),
-    templateOptions: options,
+    templateOptions: { ...options, renderMacro: value => worldMacros.expand(value) },
     ...(snapshot.world.tokenBudget === undefined ? {} : { tokenBudget: snapshot.world.tokenBudget }),
   }))
   const experienceBefore = world.experienceBeforeActor
@@ -306,7 +307,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   let providerPrompt = nativeProviderPrompt()
   let systemPromptText = ''
   let enabledModules = 0
-  let unsupportedMacros = 0
+  let unsupportedMacros = worldMacros.unsupportedCount
   let templateFailures = 0
 
   if (snapshot.prompt.strategy === 'modules' && resolved.preset !== undefined) {
@@ -320,12 +321,13 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
       session: input.session,
       pendingMessages,
       macroContext,
+      worldInfoMacrosResolved: true,
       mvuEnabled: resolved.mvu !== undefined,
       ...(options.renderTemplate === undefined ? {} : { renderTemplate: options.renderTemplate }),
     })
     providerPrompt = assembled
     enabledModules = assembled.enabledPromptCount
-    unsupportedMacros = assembled.unsupportedMacroCount
+    unsupportedMacros += assembled.unsupportedMacroCount
     templateFailures = assembled.templateFailureCount
   } else if (resolved.card !== undefined) {
     const cardMacros = new ReplayableRoleplayMacros(macroContext)
@@ -338,8 +340,9 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
       snapshot.participant?.description,
       options,
       cardMacros,
+      true,
     )
-    unsupportedMacros = cardMacros.unsupportedCount
+    unsupportedMacros += cardMacros.unsupportedCount
   } else if (resolved.importedChat !== undefined) {
     systemPromptText = [
       ...experienceBefore,

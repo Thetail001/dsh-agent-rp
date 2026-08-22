@@ -50,6 +50,8 @@ export interface InspectedLorebook extends ActiveLorebook {
 /** Optional isolated renderer used to admit executable EJS content. */
 export interface LorebookActivationOptions {
   readonly renderTemplate?: (template: string, target?: EjsTemplateTarget) => EjsTemplateResult
+  /** Replay-safe substitution applied after EJS and before every token budget. */
+  readonly renderMacro?: (content: string, target?: EjsTemplateTarget) => string
   readonly worldInfoBookId?: string
   /** Isolated regular-expression runtime created once for each inspection pass. */
   readonly regexEngine?: LorebookRegexEngine
@@ -251,25 +253,33 @@ function candidate(
       }
     }
   }
-  if (!activation.candidate || !hasExecutableTemplate(entry.content)) return activation
-  if (options.renderTemplate === undefined) return { ...activation, candidate: false, reason: 'template-unsupported' }
-  const rendered = options.renderTemplate(entry.content, {
+  if (!activation.candidate) return activation
+  const target = {
     ...(options.worldInfoBookId === undefined ? {} : { worldInfoBookId: options.worldInfoBookId }),
-  })
-  if (!rendered.ok) return {
-    ...activation,
-    candidate: false,
-    reason: 'template-error',
-    template: rendered.kind,
   }
-  if (rendered.text.trim().length === 0) return {
+  let content = activation.content
+  let template: LorebookEntryActivation['template']
+  if (hasExecutableTemplate(entry.content)) {
+    if (options.renderTemplate === undefined) return { ...activation, candidate: false, reason: 'template-unsupported' }
+    const rendered = options.renderTemplate(entry.content, target)
+    if (!rendered.ok) return {
+      ...activation,
+      candidate: false,
+      reason: 'template-error',
+      template: rendered.kind,
+    }
+    content = rendered.text
+    template = 'rendered'
+  }
+  content = options.renderMacro?.(content, target) ?? content
+  if (content.trim().length === 0) return {
     ...activation,
     candidate: false,
     reason: 'empty-content',
-    content: rendered.text,
-    template: 'rendered',
+    content,
+    ...(template === undefined ? {} : { template }),
   }
-  return { ...activation, content: rendered.text, template: 'rendered' }
+  return { ...activation, content, ...(template === undefined ? {} : { template }) }
 }
 
 function approximateTokens(text: string): number {
