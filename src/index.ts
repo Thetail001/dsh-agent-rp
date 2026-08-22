@@ -142,6 +142,18 @@ import {
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
 export { Config }
+export {
+  appendRoleplayState,
+  parseRoleplayStateRecord,
+  readRoleplayStates,
+  renderRoleplayStateContext,
+  ROLEPLAY_STATE_MODULE_ID,
+} from './roleplay-state.ts'
+export type {
+  RoleplayStateRecord,
+  RoleplayStateSnapshot,
+  WriteRoleplayStateInput,
+} from './roleplay-state.ts'
 export { AGENT_RP_EMBEDDED_IDENTITY_CHANNEL } from './embedded-identity-protocol.ts'
 export type {
   EmbeddedNativeIdentityFailure,

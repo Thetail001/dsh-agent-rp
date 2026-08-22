@@ -36,6 +36,11 @@ import {
   type RoleplayResourceRef,
   type RoleplayRuntimeSnapshot,
 } from './roleplay-runtime.ts'
+import {
+  readRoleplayStates,
+  ROLEPLAY_STATE_MODULE_ID,
+  type RoleplayStateSnapshot,
+} from './roleplay-state.ts'
 
 /** One source plus the Session overlay that will be evaluated for this turn. */
 export interface ConfiguredRoleplayLorebook {
@@ -46,6 +51,7 @@ export interface ConfiguredRoleplayLorebook {
 /** Adapter-private values retained while existing renderers migrate onto the runtime contract. */
 export interface ResolvedSessionRoleplayRuntime {
   readonly snapshot: RoleplayRuntimeSnapshot
+  readonly nativeStates: readonly RoleplayStateSnapshot[]
   readonly card?: ImportedCharacterCard
   readonly importedChat?: SillyTavernChatIdentity
   readonly worldScenario?: WorldInfoLibrarySeedRecord
@@ -91,6 +97,7 @@ export function resolveSessionRoleplayRuntime(input: {
   const worldScenario = readWorldInfoLibrarySessionSeed(events)
   const preset = readActiveSessionPreset(events)
   const tavern = readTavernHelperState(events)
+  const nativeStates = readRoleplayStates(events)
   const worldConfiguration = readWorldInfoConfiguration(events)
   const lorebooks = readActiveSessionLorebookSourcesFromEvents(events).map(source => ({
     source,
@@ -157,6 +164,11 @@ export function resolveSessionRoleplayRuntime(input: {
         'sillytavern:chat-completion-preset',
       )
   const state = [
+    ...nativeStates.map(nativeState => ({
+      id: nativeState.id,
+      owner: 'session' as const,
+      revision: nativeState.revision,
+    })),
     ...(mvu === undefined ? [] : [{
       id: MVU_ROLEPLAY_STATE_ID,
       owner: 'session' as const,
@@ -170,10 +182,19 @@ export function resolveSessionRoleplayRuntime(input: {
       revision: tavern.revision,
     }]),
   ]
+  if (new Set(state.map(binding => binding.id)).size !== state.length) {
+    throw new Error('Roleplay state namespaces must be unique across native state and adapters')
+  }
   const modules: RoleplayModuleBinding[] = [
     runtimeModule('roleplay:prompt', 'native', ['prepare']),
     runtimeModule('roleplay:memory', 'native', ['prepare', 'generate', 'settle']),
     runtimeModule('roleplay:reply-versions', 'native', ['present']),
+    ...(nativeStates.length === 0 ? [] : [runtimeModule(
+      ROLEPLAY_STATE_MODULE_ID,
+      'native',
+      ['prepare', 'settle', 'present'],
+      nativeStates.map(nativeState => nativeState.id),
+    )]),
     ...(lorebooks.length === 0 ? [] : [runtimeModule('roleplay:world', 'native', ['prepare'])]),
     ...(preset === undefined ? [] : [runtimeModule('adapter:prompt-modules', 'adapter', ['prepare'])]),
     ...(mvu === undefined ? [] : [runtimeModule(
@@ -214,6 +235,7 @@ export function resolveSessionRoleplayRuntime(input: {
   }
   return {
     snapshot,
+    nativeStates,
     ...(card === undefined ? {} : { card }),
     ...(importedChat === undefined ? {} : { importedChat }),
     ...(worldScenario === undefined ? {} : { worldScenario }),

@@ -1,6 +1,6 @@
 /** Pure, provider-neutral plan compiled for one Roleplay turn. */
 
-import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
+import type { JsonValue, Session, UserMessage } from '@deepseek-ai/dsh-session'
 import type { ResolvedConfig } from './config.ts'
 import {
   createEjsWorldInfoBooks,
@@ -27,6 +27,7 @@ import type {
   RoleplayWorldBinding,
 } from './roleplay-runtime.ts'
 import type { ResolvedSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
+import { renderRoleplayStateContext, ROLEPLAY_STATE_MODULE_ID } from './roleplay-state.ts'
 import {
   tavernInjectedInChatPrompts,
   tavernInjectedScanText,
@@ -104,6 +105,13 @@ export interface RoleplayTurnPromptPlan extends RoleplayProviderPromptPlan {
   }
 }
 
+/** Exact state value and log boundary consumed while preparing this turn. */
+export interface RoleplayStateRead extends RoleplayStateBinding {
+  readonly eventSeq?: number
+  readonly writerModuleId?: string
+  readonly value?: JsonValue
+}
+
 /** Immutable result of the prepare phase, with no renderer or source-format object in its public contract. */
 export interface RoleplayTurnPlan {
   readonly format: 0
@@ -111,7 +119,7 @@ export interface RoleplayTurnPlan {
   readonly runtime: RoleplayRuntimeSnapshot
   readonly world: RoleplayWorldPlan
   readonly prompt: RoleplayTurnPromptPlan
-  readonly stateReads: readonly RoleplayStateBinding[]
+  readonly stateReads: readonly RoleplayStateRead[]
   readonly memory: RoleplayRuntimeSnapshot['memory']
   readonly generation: RoleplayGenerationPolicy
   readonly prepare: {
@@ -193,6 +201,7 @@ function preparationOutcomes(
   runtime: RoleplayRuntimeSnapshot,
   world: RoleplayWorldPlan,
   prompt: RoleplayTurnPromptPlan,
+  nativeStateCount: number,
 ): readonly RoleplayPrepareModuleOutcome[] {
   const worldContributions = world.resources.reduce(
     (count, resource) => count + resource.beforeActor.length + resource.afterActor.length,
@@ -203,6 +212,7 @@ function preparationOutcomes(
   return runtime.modules.filter(module => module.phases.includes('prepare')).map(module => {
     const contributions = module.id === 'roleplay:world' ? worldContributions
       : module.id === 'roleplay:prompt' || module.id === 'adapter:prompt-modules' ? promptContributions
+        : module.id === ROLEPLAY_STATE_MODULE_ID ? nativeStateCount
         : module.id === 'adapter:tavern-helper' ? prompt.inChat.length
           : 0
     const degraded = module.id === 'adapter:ejs' && prompt.diagnostics.templateFailures > 0
@@ -307,9 +317,20 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   const prompt: RoleplayTurnPromptPlan = {
     ...providerPrompt,
     inChat: [...providerPrompt.inChat, ...injectedPrompts],
-    systemPromptText,
+    systemPromptText: [systemPromptText, renderRoleplayStateContext(resolved.nativeStates)]
+      .filter(text => text !== '').join('\n\n'),
     diagnostics: { enabledModules, unsupportedMacros, templateFailures },
   }
+  const nativeStatesById = new Map(resolved.nativeStates.map(state => [state.id, state]))
+  const stateReads: RoleplayStateRead[] = snapshot.state.map((binding) => {
+    const nativeState = nativeStatesById.get(binding.id)
+    return nativeState === undefined ? binding : {
+      ...binding,
+      eventSeq: nativeState.eventSeq,
+      writerModuleId: nativeState.writerModuleId,
+      value: nativeState.value,
+    }
+  })
   return {
     format: 0,
     input: {
@@ -320,9 +341,9 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     runtime: snapshot,
     world,
     prompt,
-    stateReads: snapshot.state,
+    stateReads,
     memory: snapshot.memory,
     generation: { ...(resolved.preset?.preset.generation ?? {}) },
-    prepare: { modules: preparationOutcomes(snapshot, world, prompt) },
+    prepare: { modules: preparationOutcomes(snapshot, world, prompt, resolved.nativeStates.length) },
   }
 }
