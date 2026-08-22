@@ -1,39 +1,45 @@
 # DSH Agent RP
 
-把 SillyTavern 角色卡、预设和聊天记录带进 DSH，在原生会话里继续一段角色对话。
+DSH Agent RP 是运行在 DSH 上的原生角色扮演 Runtime。角色会直接作为顶层 Agent 行动；Persona、世界、提示策略、状态和记忆都是可以独立选择、复用与组合的一等资源，而不是某张角色卡的附属设置。
 
-这是一个面向下一代 Agent RP 的公开预览版。现在已经可以从角色库选择角色，设置开场和 Persona，并在 DSH 会话中使用角色卡、世界书、预设、轻前端与持久记忆。欢迎带着自己有权使用的卡片来体验，也欢迎一起补全不同卡片生态的兼容性。
+Character Card、Chat Completion 预设、World Info、MVU、EJS 和 Tavern Helper 是目前优先接入的内容格式。它们让已有创作可以进入这套 Runtime，但不会反过来定义它的能力边界。
 
 ## 现在可以体验什么
 
-- 导入 Character Card V1/V2/V3：PNG、JSON 与 CHARX。
-- 保存角色到可视化角色库，收起或恢复角色，不影响已有对话。
-- 选择默认或备选开场，并为玩家选择可复用 Persona。
-- 导入 SillyTavern JSONL 聊天记录，或与对应角色卡一起迁移。
-- 使用角色世界书，并在开聊表单直接导入社区推荐的 SillyTavern Chat Completion 预设；独立 World Info 也可导入会话。世界书正则关键词在受限 QuickJS 运行时中匹配，不会交给 Host JavaScript 执行。
-- 在隔离的 QuickJS 环境中运行世界书、角色提示和预设里的同步 EJS 模板；单条模板或正则失败不会中断会话。
-- 在隔离脚本环境中运行兼容的 Tavern Helper 脚本、显示正则、轻量 HTML 界面与 MVU 状态。
-- 重新生成、续写和切换回复版本，并保留明确的长期记忆。重新生成会保留旧版本供切换，但在请求开始前把它从模型上下文和世界书扫描中排除；修改用户输入则从该轮创建新分支。
-- 在沉浸视图与调试视图之间切换，检查实际生效的提示内容。
+- 从统一的「开始游玩」入口选择角色对话或世界场景，再组合 Persona、世界、提示策略与开场；已知的外部资源权限会在启动前一次处理。
+- 导入 PNG、JSON、CHARX 角色卡，以及 World Info、Chat Completion 预设和 SillyTavern JSONL 聊天记录；角色、Persona、世界与预设可以分别保存和复用。
+- 连续游玩一段可回溯的故事：重新生成、续写、切换回复版本、修改输入并创建分支，同时保存明确状态与长期记忆。
+- 运行更复杂的社区内容：MVU、同步 EJS、世界书正则、显示正则、轻量 HTML 前端及一部分 Tavern Helper 脚本会进入各自受限的兼容环境，单项失败不会拖垮整段会话。
+- 在沉浸视图与调试视图之间切换，查看实际生效的提示、世界召回、状态和运行诊断。
 
 角色本身就是顶层 Agent。这里没有额外的旁白、协调器或 Character 子代理，角色对话直接发生在普通会话中。
 
 ## 安装
 
-需要已经公开发布的 DSH，以及 Node.js 和 pnpm。无需克隆仓库，直接从公开仓库安装：
+需要 Node.js 22.19+ 或 24+，以及 pnpm 11。没有 pnpm 时可以先运行 `npm install --global pnpm@11`。无需克隆仓库，桌面端统一使用 pnpm 安装与启动：
 
 ```powershell
-npx -p @deepseek-ai/dsh@latest dsh plugin --profile web add github:hewzhew/dsh-agent-rp#main
-npx -p @deepseek-ai/dsh@latest dsh --profile web
+pnpm dlx --reporter append-only '@deepseek-ai/dsh@latest' plugin --profile web add 'github:hewzhew/dsh-agent-rp#main'
+pnpm dlx --reporter append-only '@deepseek-ai/dsh@latest' --profile web
 ```
 
 以后更新插件时运行：
 
 ```powershell
-npx -p @deepseek-ai/dsh@latest dsh plugin --profile web update @dsh-external/dsh-agent-rp
+pnpm dlx --reporter append-only '@deepseek-ai/dsh@latest' plugin --profile web update '@dsh-external/dsh-agent-rp'
 ```
 
-这种安装方式不会依赖某个长期留在原位的本地克隆目录。贡献者需要修改源码时，才应克隆仓库并在仓库根目录运行 `pnpm install`、`pnpm run build` 与 `dsh plugin --profile web add .`。
+`--reporter append-only` 会持续保留下载与安装阶段，不会只剩一个难以判断的旋转符号。这种安装方式也不会依赖某个长期留在原位的本地克隆目录。贡献者需要修改源码时，才应克隆仓库并在仓库根目录运行 `pnpm install`、`pnpm run build` 与 `dsh plugin --profile web add .`。
+
+Windows 也提供带环境检查、阶段提示、安装后验证和重复更新判断的安装器。它会保留 `~\.dsh` 中已有的角色与会话，不会静默安装全局工具：
+
+```powershell
+$installerPath = Join-Path $env:TEMP 'install-dsh-agent-rp.ps1'
+Invoke-WebRequest 'https://raw.githubusercontent.com/hewzhew/dsh-agent-rp/main/scripts/install-windows.ps1' -OutFile $installerPath
+powershell -NoProfile -ExecutionPolicy Bypass -File $installerPath -Start
+```
+
+国内 npm registry 较慢时，可在最后一行加 `-ChinaMirror`。这个选项只改变本次安装使用的 npm registry；如果进度已经进入「安装 Agent RP」后卡住，访问的是 GitHub，切换 npm 镜像并不能解决那一段网络问题。
 
 早期安装器写入的版本不会自动迁移。若启动错误中出现 `.dsh\plugins\dsh-agent-rp`，请先把该目录移出 `plugins` 目录作备份，确认 DSH 能启动后，再按上面的 profile 命令安装。不要删除整个 `.dsh`，会话数据与旧插件目录不是一回事。
 
@@ -61,12 +67,12 @@ dsh-agent-rp --port 3080
 ## 第一次开聊
 
 1. 在 DSH 中新建空白会话。
-2. 点击输入框下方的「选择角色」。
-3. 选择已有角色，或导入 PNG、JSON、CHARX 角色卡。
-4. 选择开场与 Persona，然后点击「开始对话」。
-5. 进入会话后，可在标题栏打开角色信息、角色库、预设、世界书或调试视图。
+2. 打开 Agent RP，选择「开始游玩」。
+3. 选择「角色对话」或「世界场景」。
+4. 组合角色或场景、Persona、世界与提示策略；角色模式还可以选择开场白。
+5. 启动前检查已知权限，然后进入游玩。会话中仍可打开资源库、设置与调试视图。
 
-导入后的预设可在角色库开聊表单或会话的“预设库”中改名。开始对话后，“会话设置 → 预设”可以调整提示模块与预设正则的开关；修改只属于当前会话。
+导入后的角色、Persona、世界和预设会分别进入资源库。开始游玩后，“会话设置 → 预设”可以调整提示模块与预设正则的开关；修改只属于当前会话。
 
 无需预先选择某个 Agent 预设；从空白的标准会话选择角色时，插件会自动进入角色会话。已经有聊天内容的普通会话不会被修改。
 
@@ -74,7 +80,9 @@ dsh-agent-rp --port 3080
 
 ## 目前的范围
 
-这个里程碑聚焦单角色 RP、SillyTavern 迁移与轻前端卡片。群聊、多人互动和重前端/独立前端尚未纳入当前兼容范围。需要脚本或远程 HTML 的应用型开场不会在角色库预览里后台启动；开聊表单会先静态检查轻前端直接声明的脚本、样式、字体、图片、媒体、嵌入页与数据连接，以及选中角色卡和预设的 Tavern Helper 模块、图片、样式表与嵌入页来源。检查期间开始按钮保持关闭；检查结束后可以在同一个按钮中一次授权并开聊，不会进入会话后再为已知启动资源打断加载。玩家可以选择“仅这段对话”，把精确许可保存在当前浏览器标签并只交给新建 Session；也可以选择“记住这张卡”，按角色卡、预设、脚本和来源持久保存。外部样式或脚本加载后才动态声明的二级资源仍按相同类别继续确认；样式表加载后才显现的字体来源独立授权，只扩展对应沙箱的 `font-src`。兼容测试模式可为受信角色卡一次性放行沙箱内的 HTTPS 资源。身份、外部窗口、模型与外部 API 等交互请求仍在实际触发时单独确认，并与阻止脚本启动的资源许可分开显示。许可不会被另一张卡继承；预设、角色卡与全局树中的同名脚本也按各自作用域隔离运行状态和持久变量。Localforage 数据按脚本安装身份隔离，`extension_settings` 只在同一角色卡/预设脚本树中共享，不再成为跨卡片的浏览器全局通道。可执行卡片 HTML 会在没有同源权限的沙箱 iframe 中运行；Tavern Helper 执行文档使用 opaque-origin `data:` 导航，不能访问 Host 页面、浏览器存储、文件或进程。玩家按脚本批准的 HTTPS 子 iframe 保留其远端来源、存储与表单能力，但不会因此获得 DSH 来源或 Host DOM。Tavern Helper 模块仍只能来自内置或玩家明确批准的 HTTPS 来源；EJS 与世界书正则在独立 QuickJS/WASM 运行时中执行，不会获得 Host 的文件、网络、进程或模块接口。
+这个里程碑优先完成可靠的单角色与世界场景闭环，而不是按功能数量追赶另一套前端。群聊、多人互动、多 Agent 编排和重前端/独立前端还没有完成。
+
+需要脚本或远程 HTML 的内容会在启动前检查已知的脚本、样式、字体、图片、媒体、嵌入页与数据连接，并把许可限制在对应角色、预设、脚本和来源；动态出现的新能力仍会在实际触发时确认。可执行 HTML、Tavern Helper、EJS 与世界书正则运行在不同的受限环境中，不会获得 DSH Host 的文件、进程、凭据或页面 DOM。兼容层仍在依据真实内容补全，但新增能力会优先沉淀为可复用接口，不按单张卡片堆特例。
 
 需要 OAuth 或其他回执的外部登录不会给角色卡 iframe 增加弹窗、同源或顶层导航权限。轻前端或 Tavern Helper 脚本发起绝对 HTTPS 窗口请求后，DSH 会展示目标站点；玩家确认后通过独立中转窗口打开登录页，只把有界的登录回执送回发起请求的隔离运行时。中转界面会区分“回执通过安全检查”和“请求运行时已确认接收”，成功后只提供关闭操作，不会继续诱导重复登录。要求 Discord 身份、论坛会员或角色组资格的服务必须继续使用原有第三方 OAuth 与服务端授权判断；DSH 不会以本机身份替代、增加第二登录方式或自动回退。
 
