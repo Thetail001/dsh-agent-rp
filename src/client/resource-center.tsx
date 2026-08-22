@@ -11,6 +11,12 @@ import type { PersonaLibraryEntry, PersonaLibrarySaveRequest } from '../persona-
 import type { PresetLibrarySummary } from '../preset-library-http-protocol.ts'
 import type { WorldInfoLibraryUpload } from '../world-info-library-protocol.ts'
 import { classifySillyTavernJsonFile } from './import-hint.ts'
+import {
+  prepareSillyTavernMigration,
+  type SillyTavernMigrationAsset,
+  type SillyTavernMigrationAssetKind,
+  type SillyTavernMigrationScan,
+} from './sillytavern-library-migration.ts'
 
 type ResourceSection = 'characters' | 'world-info' | 'presets' | 'personas'
 
@@ -56,6 +62,287 @@ function sectionName(section: ResourceSection): string {
   return '身份'
 }
 
+function migrationKindName(kind: SillyTavernMigrationAssetKind): string {
+  if (kind === 'character') return '角色卡'
+  if (kind === 'world-info') return '世界书'
+  return '预设'
+}
+
+function migrationSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KiB`
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MiB`
+}
+
+interface MigrationImportReport {
+  readonly handled: number
+  readonly existing: number
+  readonly restored: number
+  readonly failures: readonly { readonly name: string; readonly message: string }[]
+}
+
+function SillyTavernLibraryMigrationDialog({
+  accent,
+  narrow,
+  characters,
+  worldInfos,
+  importCharacterFile,
+  importWorldInfoFile,
+  importPresetFile,
+  onImported,
+  onClose,
+}: {
+  readonly accent: string
+  readonly narrow: boolean
+  readonly characters: readonly CharacterLibrarySummary[]
+  readonly worldInfos: readonly WorldInfoLibraryUpload[]
+  readonly importCharacterFile: (file: File) => Promise<CharacterLibraryImportResult>
+  readonly importWorldInfoFile: (file: File) => Promise<WorldInfoLibraryUpload>
+  readonly importPresetFile: (file: File) => Promise<PresetLibrarySummary>
+  readonly onImported: (report: MigrationImportReport) => Promise<void>
+  readonly onClose: () => void
+}) {
+  const [scan, setScan] = useState<SillyTavernMigrationScan>()
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  const [working, setWorking] = useState<'scan' | 'import'>()
+  const [progress, setProgress] = useState(0)
+  const [report, setReport] = useState<MigrationImportReport>()
+  const [error, setError] = useState<string>()
+  const zipInputRef = useRef<HTMLInputElement | null>(null)
+  const folderInputRef = useRef<HTMLInputElement | null>(null)
+  const filesInputRef = useRef<HTMLInputElement | null>(null)
+
+  const beginScan = (files: readonly File[]): void => {
+    setWorking('scan')
+    setError(undefined)
+    setReport(undefined)
+    void prepareSillyTavernMigration(files, {
+      characters: characters.map(entry => ({ id: entry.id, archived: entry.archived })),
+      worldInfoIds: worldInfos.map(entry => entry.id),
+    }).then(result => {
+      setScan(result)
+      setSelected(new Set(result.assets.filter(asset => asset.selectedByDefault).map(asset => asset.id)))
+    }).catch(reason => { setError(message(reason)) }).finally(() => { setWorking(undefined) })
+  }
+  const readInput = (input: HTMLInputElement): void => {
+    const files = [...(input.files ?? [])]
+    input.value = ''
+    if (files.length > 0) beginScan(files)
+  }
+  const kinds: readonly SillyTavernMigrationAssetKind[] = ['character', 'world-info', 'preset']
+  const ready = scan?.assets.filter(asset => asset.state === 'ready') ?? []
+  const selectedAssets = ready.filter(asset => selected.has(asset.id))
+  const setKindSelected = (kind: SillyTavernMigrationAssetKind, enabled: boolean): void => {
+    setSelected(current => {
+      const next = new Set(current)
+      for (const asset of ready) {
+        if (asset.kind !== kind) continue
+        if (enabled) next.add(asset.id)
+        else next.delete(asset.id)
+      }
+      return next
+    })
+  }
+  const importSelected = (): void => {
+    if (selectedAssets.length === 0) return
+    const assets = [...selectedAssets]
+    setWorking('import')
+    setError(undefined)
+    setProgress(0)
+    const failures: { name: string; message: string }[] = []
+    let existing = 0
+    let restored = 0
+    let handled = 0
+    let cursor = 0
+    const importOne = async (asset: SillyTavernMigrationAsset): Promise<void> => {
+      try {
+        if (asset.kind === 'character') {
+          const result = await importCharacterFile(asset.file)
+          if (result.outcome === 'existing') existing += 1
+          else if (result.outcome === 'restored') restored += 1
+        } else if (asset.kind === 'world-info') {
+          await importWorldInfoFile(asset.file)
+        } else {
+          await importPresetFile(asset.file)
+        }
+        handled += 1
+      } catch (reason: unknown) {
+        failures.push({ name: asset.name, message: message(reason) })
+      } finally {
+        setProgress(value => value + 1)
+      }
+    }
+    const worker = async (): Promise<void> => {
+      while (cursor < assets.length) {
+        const index = cursor
+        cursor += 1
+        const asset = assets[index]
+        if (asset !== undefined) await importOne(asset)
+      }
+    }
+    void Promise.all(Array.from({ length: Math.min(3, assets.length) }, worker)).then(async () => {
+      const nextReport = { handled, existing, restored, failures }
+      await onImported(nextReport)
+      setReport(nextReport)
+    }).catch(reason => { setError(message(reason)) }).finally(() => { setWorking(undefined) })
+  }
+
+  const chats = scan?.deferred.filter(entry => entry.kind === 'chat') ?? []
+  const groupChats = scan?.deferred.filter(entry => entry.kind === 'group-chat') ?? []
+  const personas = scan?.deferred.filter(entry => entry.kind === 'persona') ?? []
+  const chatGroups = [...new Set(chats.map(entry => entry.characterName ?? '未识别角色'))]
+    .map(name => ({ name, count: chats.filter(entry => (entry.characterName ?? '未识别角色') === name).length }))
+    .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name))
+  const panelStyle = {
+    background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+    borderRadius: '11px', padding: '12px',
+  } as const
+  const choiceButtonStyle = {
+    ...secondaryButtonStyle, cursor: working === undefined ? 'pointer' : 'default', fontSize: '12px', padding: '10px 12px',
+  } as const
+
+  return <div data-agent-rp-dialog data-agent-rp-surface="sillytavern-library-migration" role="dialog" aria-modal="true"
+    aria-label="从 SillyTavern 迁移" style={{
+      alignItems: 'center', background: 'rgba(0,0,0,.68)', display: 'flex', inset: 0, justifyContent: 'center',
+      padding: narrow ? '8px' : '24px', position: 'fixed', zIndex: 1003,
+    }} onMouseDown={event => { if (event.target === event.currentTarget && working === undefined) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+      borderRadius: '16px', boxShadow: '0 22px 80px rgba(0,0,0,.45)', display: 'flex', flexDirection: 'column',
+      maxHeight: narrow ? 'calc(100vh - 16px)' : 'min(760px, calc(100vh - 48px))', maxWidth: '680px',
+      overflow: 'hidden', width: narrow ? 'calc(100vw - 16px)' : 'min(680px, calc(100vw - 48px))',
+    }}>
+      <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '10px', padding: narrow ? '13px 14px' : '17px 18px' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h2 style={{ fontSize: '17px', margin: 0 }}>从 SillyTavern 迁移</h2>
+          <p style={{ fontSize: '11px', lineHeight: 1.45, margin: '4px 0 0', opacity: .5 }}>先扫描预览，确认后才写入资源中心</p>
+        </div>
+        <button type="button" aria-label="关闭迁移" disabled={working !== undefined} onClick={onClose} style={{
+          background: 'transparent', border: 0, color: 'inherit', cursor: working === undefined ? 'pointer' : 'default', fontSize: '23px', padding: '2px 5px',
+        }}>×</button>
+      </header>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: narrow ? '14px' : '18px' }}>
+        {scan === undefined && report === undefined && <>
+          <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '0 0 14px', opacity: .72 }}>
+            可以选择整个用户数据目录、压缩后的 ZIP，或一次选择多份导出文件。角色卡、世界书和预设会自动分类。
+          </p>
+          <div style={{ display: 'grid', gap: '9px', gridTemplateColumns: narrow ? 'minmax(0, 1fr)' : 'repeat(3, minmax(0, 1fr))' }}>
+            <button type="button" disabled={working !== undefined} onClick={() => { zipInputRef.current?.click() }} style={choiceButtonStyle}>
+              <strong style={{ display: 'block', fontSize: '13px' }}>数据 ZIP</strong>
+              <span style={{ display: 'block', marginTop: '4px', opacity: .52 }}>手机推荐</span>
+            </button>
+            <button type="button" disabled={working !== undefined} onClick={() => { folderInputRef.current?.click() }} style={choiceButtonStyle}>
+              <strong style={{ display: 'block', fontSize: '13px' }}>数据目录</strong>
+              <span style={{ display: 'block', marginTop: '4px', opacity: .52 }}>电脑版推荐</span>
+            </button>
+            <button type="button" disabled={working !== undefined} onClick={() => { filesInputRef.current?.click() }} style={choiceButtonStyle}>
+              <strong style={{ display: 'block', fontSize: '13px' }}>多份文件</strong>
+              <span style={{ display: 'block', marginTop: '4px', opacity: .52 }}>只迁移选中内容</span>
+            </button>
+          </div>
+          <input ref={zipInputRef} type="file" accept=".zip,application/zip" hidden onChange={event => { readInput(event.currentTarget) }} />
+          <input ref={element => {
+            folderInputRef.current = element
+            element?.setAttribute('webkitdirectory', '')
+            element?.setAttribute('directory', '')
+          }} type="file" multiple hidden onChange={event => { readInput(event.currentTarget) }} />
+          <input ref={filesInputRef} type="file" multiple accept=".png,.json,.jsonl,.charx,image/png,application/json,application/zip" hidden onChange={event => { readInput(event.currentTarget) }} />
+          <div style={{ ...panelStyle, fontSize: '11px', lineHeight: 1.6, marginTop: '14px', opacity: .62 }}>
+            不会读取或导入 API Key、账号凭据、酒馆界面设置、插件缓存。聊天记录只统计并按角色整理，本轮不会自动创建大量会话。
+          </div>
+          {working === 'scan' && <p role="status" style={{ fontSize: '12px', margin: '14px 2px 0', opacity: .62 }}>正在扫描并识别资源…</p>}
+        </>}
+        {scan !== undefined && report === undefined && <>
+          <div style={{ display: 'grid', gap: '8px', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
+            {[
+              ['角色', scan.assets.filter(asset => asset.kind === 'character').length],
+              ['世界书', scan.assets.filter(asset => asset.kind === 'world-info').length],
+              ['预设', scan.assets.filter(asset => asset.kind === 'preset').length],
+              ['聊天', chats.length],
+            ].map(([label, count]) => <div key={String(label)} style={{ ...panelStyle, padding: narrow ? '9px 6px' : '10px', textAlign: 'center' }}>
+              <strong style={{ display: 'block', fontSize: '16px' }}>{count}</strong>
+              <span style={{ display: 'block', fontSize: '10px', marginTop: '2px', opacity: .5 }}>{label}</span>
+            </div>)}
+          </div>
+          <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '10px 2px 14px', opacity: .52 }}>
+            共查看 {scan.totalFiles} 个文件；{scan.ignoredCount} 个无关文件未读取
+          </p>
+          <div style={{ display: 'grid', gap: '9px' }}>
+            {kinds.map(kind => {
+              const entries = scan.assets.filter(asset => asset.kind === kind)
+              if (entries.length === 0) return null
+              const selectable = entries.filter(asset => asset.state === 'ready')
+              const checked = selectable.length > 0 && selectable.every(asset => selected.has(asset.id))
+              return <section key={kind} style={panelStyle}>
+                <label style={{ alignItems: 'center', cursor: selectable.length > 0 ? 'pointer' : 'default', display: 'flex', gap: '9px' }}>
+                  <input type="checkbox" checked={checked} disabled={working !== undefined || selectable.length === 0}
+                    onChange={event => { setKindSelected(kind, event.target.checked) }} />
+                  <strong style={{ flex: 1, fontSize: '13px' }}>{migrationKindName(kind)}</strong>
+                  <span style={{ fontSize: '10px', opacity: .48 }}>{selectable.length} 可迁移 / {entries.length} 识别</span>
+                </label>
+                <div style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', marginTop: '9px', paddingTop: '7px' }}>
+                  {entries.slice(0, 6).map(asset => <div key={asset.id} style={{ alignItems: 'baseline', display: 'flex', fontSize: '11px', gap: '8px', lineHeight: 1.55 }}>
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{asset.name}</span>
+                    <span style={{ opacity: .42, whiteSpace: 'nowrap' }}>{migrationSize(asset.bytes)}</span>
+                    {asset.note !== undefined && <span style={{ color: asset.state === 'ready' ? 'var(--dsw-alias-state-success, #4fba83)' : 'inherit', maxWidth: '45%', opacity: asset.state === 'ready' ? .78 : .5 }}>{asset.note}</span>}
+                  </div>)}
+                  {entries.length > 6 && <div style={{ fontSize: '10px', marginTop: '5px', opacity: .42 }}>另有 {entries.length - 6} 项</div>}
+                </div>
+              </section>
+            })}
+          </div>
+          {chats.length > 0 && <section style={{ ...panelStyle, marginTop: '9px' }}>
+            <strong style={{ display: 'block', fontSize: '13px' }}>聊天记录已整理</strong>
+            <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '5px 0 8px', opacity: .55 }}>不会立即创建会话；后续可按角色选择需要继续的记录。</p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+              {chatGroups.slice(0, 8).map(group => <span key={group.name} style={{
+                background: 'color-mix(in srgb, currentColor 6%, transparent)', borderRadius: '999px', fontSize: '10px', padding: '4px 8px',
+              }}>{group.name} · {group.count}</span>)}
+              {chatGroups.length > 8 && <span style={{ fontSize: '10px', opacity: .45, padding: '4px 2px' }}>另有 {chatGroups.length - 8} 个角色</span>}
+            </div>
+          </section>}
+          {(personas.length > 0 || groupChats.length > 0) && <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '10px 2px 0', opacity: .52 }}>
+            {personas.length > 0 ? `发现 ${personas.length} 张 Persona 图片；身份描述需要与 settings.json 安全配对，暂不导入。` : ''}
+            {personas.length > 0 && groupChats.length > 0 ? ' ' : ''}
+            {groupChats.length > 0 ? `发现 ${groupChats.length} 段群聊；当前单角色阶段暂不导入。` : ''}
+          </p>}
+          {scan.issues.length > 0 && <details style={{ ...panelStyle, marginTop: '9px' }}>
+            <summary style={{ cursor: 'pointer', fontSize: '11px' }}>{scan.issues.length} 项未能识别</summary>
+            <div style={{ display: 'grid', fontSize: '10px', gap: '5px', marginTop: '8px', opacity: .58 }}>
+              {scan.issues.slice(0, 20).map((issue, index) => <div key={`${issue.path}:${index}`}><strong>{issue.path}</strong> · {issue.message}</div>)}
+              {scan.issues.length > 20 && <div>另有 {scan.issues.length - 20} 项</div>}
+            </div>
+          </details>}
+          {working === 'import' && <div role="status" style={{ ...panelStyle, fontSize: '12px', marginTop: '10px' }}>
+            正在迁移 {progress}/{selectedAssets.length}…
+          </div>}
+        </>}
+        {report !== undefined && <div style={{ textAlign: 'center' }}>
+          <div aria-hidden="true" style={{ color: 'var(--dsw-alias-state-success, #4fba83)', fontSize: '30px', margin: '6px 0 8px' }}>✓</div>
+          <h3 style={{ fontSize: '17px', margin: 0 }}>迁移完成</h3>
+          <p style={{ fontSize: '12px', lineHeight: 1.65, margin: '8px 0 0', opacity: .65 }}>
+            已处理 {report.handled} 项{report.existing > 0 ? `，其中 ${report.existing} 项原本已存在` : ''}{report.restored > 0 ? `，恢复 ${report.restored} 个角色` : ''}
+          </p>
+          {report.failures.length > 0 && <div style={{ ...panelStyle, marginTop: '14px', textAlign: 'left' }}>
+            <strong style={{ display: 'block', fontSize: '12px', marginBottom: '7px' }}>{report.failures.length} 项没有导入</strong>
+            {report.failures.slice(0, 20).map((failure, index) => <div key={`${failure.name}:${index}`} style={{ fontSize: '10px', lineHeight: 1.55, opacity: .62 }}>
+              {failure.name} · {failure.message}
+            </div>)}
+          </div>}
+        </div>}
+        {error !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #e88989)', fontSize: '11px', lineHeight: 1.55, margin: '12px 2px 0' }}>{error}</p>}
+      </div>
+      <footer style={{ alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '8px', justifyContent: 'flex-end', padding: narrow ? '11px 14px' : '13px 18px' }}>
+        {scan !== undefined && report === undefined && <button type="button" disabled={working !== undefined} onClick={() => { setScan(undefined); setError(undefined) }} style={secondaryButtonStyle}>重新选择</button>}
+        {scan !== undefined && report === undefined && <button type="button" disabled={working !== undefined || selectedAssets.length === 0} onClick={importSelected} style={{
+          ...secondaryButtonStyle, background: accent, borderColor: accent, color: '#fff', cursor: working === undefined && selectedAssets.length > 0 ? 'pointer' : 'default', opacity: selectedAssets.length > 0 ? 1 : .46,
+        }}>{working === 'import' ? `迁移中 ${progress}/${selectedAssets.length}` : `迁移 ${selectedAssets.length} 项`}</button>}
+        {report !== undefined && <button type="button" onClick={onClose} style={{ ...secondaryButtonStyle, background: accent, borderColor: accent, color: '#fff', cursor: 'pointer' }}>完成</button>}
+      </footer>
+    </section>
+  </div>
+}
+
 /** Manage reusable resources without tying them to one Character Card or Session. */
 export function RoleplayResourceCenter({
   accent, narrow, initialSection = 'characters',
@@ -79,6 +366,7 @@ export function RoleplayResourceCenter({
   const [personaDraft, setPersonaDraft] = useState<{ readonly id?: string; readonly name: string; readonly description: string }>()
   const [presetDraft, setPresetDraft] = useState<{ readonly id: string; readonly name: string }>()
   const [confirmingPersonaId, setConfirmingPersonaId] = useState<string>()
+  const [migrationOpen, setMigrationOpen] = useState(false)
   const characterInputRef = useRef<HTMLInputElement | null>(null)
   const worldInfoInputRef = useRef<HTMLInputElement | null>(null)
   const presetInputRef = useRef<HTMLInputElement | null>(null)
@@ -281,6 +569,11 @@ export function RoleplayResourceCenter({
               gap: '8px', justifyContent: narrow ? 'center' : 'space-between', padding: narrow ? '7px 4px' : '9px 10px', textAlign: 'left',
             }}><span>{sectionName(value)}</span><span style={{ fontSize: '10px', opacity: .46 }}>{counts[value] ?? '…'}</span></button>)}
         </div>
+        <button type="button" data-agent-rp-action="open-sillytavern-library-migration" disabled={busy !== undefined}
+          onClick={() => { setMigrationOpen(true); setError(undefined); setNotice(undefined) }} style={{
+            ...secondaryButtonStyle, alignItems: 'center', cursor: busy === undefined ? 'pointer' : 'default', display: 'flex',
+            fontSize: '11px', gap: '7px', justifyContent: 'center', marginTop: narrow ? '8px' : '14px', padding: '8px 9px', width: '100%',
+          }}><span aria-hidden="true">↗</span><span>从 SillyTavern 迁移</span></button>
       </aside>
       <main role="tabpanel" aria-label={`${sectionName(section)}资源`} style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '10px', padding: narrow ? '12px' : '17px 18px' }}>
@@ -396,6 +689,26 @@ export function RoleplayResourceCenter({
           </div>}
         </div>
       </main>
+      {migrationOpen && <SillyTavernLibraryMigrationDialog
+        accent={accent}
+        narrow={narrow}
+        characters={characters ?? []}
+        worldInfos={worldInfos ?? []}
+        importCharacterFile={importCharacterFile}
+        importWorldInfoFile={importWorldInfoFile}
+        importPresetFile={importPresetFile}
+        onImported={async report => {
+          const [active, archived, nextWorldInfos, nextPresets] = await Promise.all([
+            listCharacters('active'), listCharacters('archived'), listWorldInfos(), listPresets(),
+          ])
+          setCharacters([...active, ...archived])
+          setWorldInfos(nextWorldInfos)
+          setPresets(nextPresets)
+          setNotice(report.failures.length === 0
+            ? `迁移已完成，共处理 ${report.handled} 项`
+            : `已处理 ${report.handled} 项，${report.failures.length} 项需要查看原因`)
+        }}
+        onClose={() => { setMigrationOpen(false) }} />}
     </section>
   </div>
 }
