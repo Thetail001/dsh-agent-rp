@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createMessage, createUserMessage, type Message } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createMessage, createUserMessage, type Message } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ImportedSillyTavernPreset } from '../src/import/sillytavern-preset.ts'
 import type { ImportedCharacterCard } from '../src/import/types.ts'
@@ -151,6 +151,74 @@ test('preserves extension-owned macros while resolving nested built-ins and addi
     { role: 'system', content: '{{压缩相邻消息::自然流畅::5}}' },
   ])
   assert.equal(assembled.unsupportedMacroCount, 1)
+})
+
+test('replays random macros from the exact Session input boundary', () => {
+  const prompts: ImportedSillyTavernPreset['prompts'] = [{
+    identifier: 'random', name: '随机', role: 'system',
+    content: '{{random::甲::乙::丙::丁}}/{{random::一::二::三::四}}',
+    marker: false, systemPrompt: true, forbidOverrides: false,
+  }]
+  const randomPreset: ImportedSillyTavernPreset = {
+    format: 0, name: '可重放随机预设', prompts,
+    order: [{ identifier: 'random', enabled: true }],
+    generation: {}, formats: { worldInfo: '{0}', scenario: '{0}', personality: '{0}' },
+    regexScripts: [], extensionSummary: { regexScriptCount: 0, hasSPreset: false, hasTavernHelper: false },
+  }
+  const session = Session.create(SessionId('replayable-random-macros'))
+
+  const first = assembleSillyTavernPreset(randomPreset, {
+    card, worldInfoBefore: [], worldInfoAfter: [], session,
+  })
+  const replay = assembleSillyTavernPreset(randomPreset, {
+    card, worldInfoBefore: [], worldInfoAfter: [], session,
+  })
+
+  assert.deepEqual(replay.beforeHistory, first.beforeHistory)
+  assert.deepEqual(first.beforeHistory, [{ role: 'system', content: '乙/二' }])
+})
+
+test('resolves replay-safe card, persona, dialogue, and utility macros in preset modules', () => {
+  const prompts: ImportedSillyTavernPreset['prompts'] = [{
+    identifier: 'compat', name: '兼容宏', role: 'system', marker: false,
+    systemPrompt: true, forbidOverrides: false,
+    content: [
+      '{{group}}|{{persona}}|{{charDescription}}|{{charPersonality}}|{{charScenario}}|{{mesExamplesRaw}}',
+      '{{charVersion}}|{{charPrompt}}|{{charInstruction}}|{{greeting::1}}',
+      '{{input}}|{{lastMessage}}|{{lastUserMessage}}|{{lastCharMessage}}|{{lastMessageId}}',
+      '{{pick::甲::乙::丙}}|{{roll::1d6+2}}|甲{{newline::2}}乙|{{noop}}',
+    ].join('\n'),
+  }]
+  const compatPreset: ImportedSillyTavernPreset = {
+    format: 0, name: '兼容宏预设', prompts,
+    order: [{ identifier: 'compat', enabled: true }],
+    generation: {}, formats: { worldInfo: '{0}', scenario: '{0}', personality: '{0}' },
+    regexScripts: [], extensionSummary: { regexScriptCount: 0, hasSPreset: false, hasTavernHelper: false },
+  }
+  const session = Session.create(SessionId('replay-safe-context-macros'))
+  session.append('assistant/message', {
+    turn: 0, step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: '旧回答' }],
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  const pending = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '新问题' }] })
+
+  const assembled = assembleSillyTavernPreset(compatPreset, {
+    card: {
+      ...card, systemPrompt: '系统 {{char}}', postHistoryInstructions: '结尾 {{user}}',
+      alternateGreetings: ['早安，{{user}}。'], raw: { data: { character_version: 'Beta 2.8' } },
+    },
+    userName: '宝宝', userPersona: '怕冷。', worldInfoBefore: [], worldInfoAfter: [], session,
+    pendingMessages: [pending],
+  })
+  const text = assembled.beforeHistory[0]?.content ?? ''
+
+  assert.match(text, /^白露\|怕冷。\|白露在修表。\|安静但敏锐。\|宝宝刚刚推门进来。/u)
+  assert.match(text, /Beta 2\.8\|系统 白露\|结尾 宝宝\|早安，宝宝。/u)
+  assert.match(text, /新问题\|新问题\|新问题\|旧回答\|1/u)
+  assert.match(text, /[甲乙丙]\|[3-8]\|甲\n\n乙\|$/u)
+  assert.equal(assembled.unsupportedMacroCount, 0)
 })
 
 test('renders EJS in imported preset modules and drops only a failing module', async () => {

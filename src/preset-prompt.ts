@@ -78,20 +78,44 @@ export type SillyTavernInChatPrompt = RoleplayInChatPrompt
 
 interface MacroState {
   readonly variables: Map<string, string>
+  readonly card?: ImportedCharacterCard
   readonly userName: string
+  readonly userPersona?: string
+  readonly messages: readonly MacroMessage[]
+  readonly pendingInput: string
   readonly lastUserMessage: string
+  readonly entropy: string
+  readonly stableEntropy: string
+  randomOrdinal: number
   unsupported: number
   templateFailures: number
 }
 
+interface MacroMessage {
+  readonly role: 'user' | 'assistant'
+  readonly content: string
+}
+
 const LAST_CHAT_MESSAGE_MACRO = '{{lastChatMessage}}'
 
-function lastUserMessage(session: Session, pending: readonly UserMessage[]): string {
-  const messages = [...session.deriveMessages(), ...pending]
+function macroMessageText(message: ReturnType<Session['deriveMessages']>[number] | UserMessage): string {
+  return message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+}
+
+function macroMessages(session: Session, pending: readonly UserMessage[]): readonly MacroMessage[] {
+  const history = session.deriveMessages()
+  const historyIds = new Set(history.map(message => message.id))
+  return [...history, ...pending.filter(message => !historyIds.has(message.id))].flatMap((message) => {
+    if ((message.role !== 'user' && message.role !== 'assistant')
+      || (message.source.kind !== 'user' && message.source.kind !== 'model')) return []
+    return [{ role: message.role, content: macroMessageText(message) }]
+  })
+}
+
+function lastRoleMessage(messages: readonly MacroMessage[], role?: MacroMessage['role']): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
-    if (message?.source.kind !== 'user') continue
-    return message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+    if (message !== undefined && (role === undefined || message.role === role)) return message.content
   }
   return ''
 }
@@ -153,6 +177,60 @@ function addVariable(current: string | undefined, addition: string): string {
     : String(numericPrevious + increment)
 }
 
+function hashText(value: string): number {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+function deterministicChoice(choices: readonly string[], state: MacroState, stable: boolean): string {
+  const ordinal = state.randomOrdinal
+  state.randomOrdinal += 1
+  if (choices.length === 0) return ''
+  const entropy = stable ? state.stableEntropy : state.entropy
+  const hash = hashText(`${entropy}\u0000${ordinal}\u0000${choices.join('\u0000')}`)
+  return choices[hash % choices.length] ?? ''
+}
+
+function deterministicRoll(source: string, state: MacroState): string {
+  const ordinal = state.randomOrdinal
+  state.randomOrdinal += 1
+  const integer = /^\d+$/u.exec(source)
+  const dice = /^(\d*)d(\d+)((?:[+-]\d+)*)$/iu.exec(source)
+  const count = integer !== null ? 1 : dice?.[1] === '' ? 1 : Number(dice?.[1])
+  const sides = Number(integer?.[0] ?? dice?.[2])
+  if (!Number.isSafeInteger(count) || count < 1 || count > 1_000
+    || !Number.isSafeInteger(sides) || sides < 1 || sides > 1_000_000) return ''
+  let total = 0
+  let seed = hashText(`${state.entropy}\u0000${ordinal}\u0000roll\u0000${source}`)
+  for (let index = 0; index < count; index += 1) {
+    seed = hashText(`${seed}\u0000${index}`)
+    total += seed % sides + 1
+  }
+  for (const modifier of dice?.[3]?.matchAll(/([+-])(\d+)/gu) ?? []) {
+    const value = Number(modifier[2])
+    if (!Number.isSafeInteger(value)) return ''
+    total += modifier[1] === '+' ? value : -value
+  }
+  return String(total)
+}
+
+function cardMacro(state: MacroState, value: string | undefined): string {
+  return state.card === undefined || value === undefined
+    ? '' : substituteCardMacros(value, state.card, state.userName)
+}
+
+function characterVersion(card: ImportedCharacterCard | undefined): string {
+  if (card === undefined || typeof card.raw !== 'object' || card.raw === null || Array.isArray(card.raw)) return ''
+  const root = card.raw as Record<string, unknown>
+  const data = typeof root.data === 'object' && root.data !== null && !Array.isArray(root.data)
+    ? root.data as Record<string, unknown> : root
+  return typeof data.character_version === 'string' ? data.character_version : ''
+}
+
 function evaluateMacro(source: string, state: MacroState): string {
   const parts = macroParts(source)
   const name = parts.shift()?.trim().toLowerCase() ?? ''
@@ -170,14 +248,39 @@ function evaluateMacro(source: string, state: MacroState): string {
     return ''
   }
   if (name === 'getvar') return state.variables.get(parts.join('::').trim()) ?? ''
-  if (name === 'random') {
+  if (name === 'random' || name === 'pick') {
     const choices = parts.map(value => expandMacros(value, state).trim())
-    return choices.length === 0 ? '' : choices[Math.floor(Math.random() * choices.length)] ?? ''
+    return deterministicChoice(choices, state, name === 'pick')
   }
+  if (name === 'roll') return deterministicRoll(parts.join('::').trim(), state)
+  if (name === 'group') return state.card?.nickname?.trim() || state.card?.name || ''
+  if (name === 'persona') return state.userPersona ?? ''
+  if (name === 'description' || name === 'chardescription') return cardMacro(state, state.card?.description)
+  if (name === 'personality' || name === 'charpersonality') return cardMacro(state, state.card?.personality)
+  if (name === 'scenario' || name === 'charscenario') return cardMacro(state, state.card?.scenario)
+  if (name === 'mesexamples' || name === 'mesexamplesraw') return cardMacro(state, state.card?.messageExample)
+  if (name === 'greeting' || name === 'charfirstmessage') {
+    const index = Number(parts.join('::').trim() || '0')
+    if (!Number.isSafeInteger(index) || index < 0) return ''
+    return cardMacro(state, index === 0 ? state.card?.firstMessage : state.card?.alternateGreetings[index - 1])
+  }
+  if (name === 'version' || name === 'charversion' || name === 'char_version') {
+    return characterVersion(state.card)
+  }
+  if (name === 'charprompt') return cardMacro(state, state.card?.systemPrompt)
+  if (name === 'charinstruction') return cardMacro(state, state.card?.postHistoryInstructions)
+  if (name === 'input') return state.pendingInput
+  if (name === 'lastmessage') return lastRoleMessage(state.messages)
   if (name === 'lastusermessage') return state.lastUserMessage
+  if (name === 'lastcharmessage') return lastRoleMessage(state.messages, 'assistant')
+  if (name === 'lastmessageid') return state.messages.length === 0 ? '' : String(state.messages.length - 1)
   if (name === 'lastchatmessage') return LAST_CHAT_MESSAGE_MACRO
   if (name === 'user') return state.userName
-  if (name === 'trim') return ''
+  if (name === 'newline') {
+    const count = Number(parts.join('::').trim() || '1')
+    return '\n'.repeat(Number.isSafeInteger(count) && count > 0 ? Math.min(count, 100) : 1)
+  }
+  if (name === 'noop' || name === 'trim') return ''
   state.unsupported += 1
   // SillyTavern deliberately preserves unknown macros so extensions can own a
   // later generation phase. Resolve only nested built-ins before handing off.
@@ -405,10 +508,22 @@ export function assembleSillyTavernPreset(
   inputs: PresetPromptInputs,
 ): RoleplayAssembledPrompt {
   const byId = new Map(preset.prompts.map(prompt => [prompt.identifier, prompt]))
+  const messages = macroMessages(inputs.session, inputs.pendingMessages ?? [])
   const state: MacroState = {
     variables: new Map(),
+    ...(inputs.card === undefined ? {} : { card: inputs.card }),
     userName: inputs.userName?.trim() || '用户',
-    lastUserMessage: lastUserMessage(inputs.session, inputs.pendingMessages ?? []),
+    ...(inputs.userPersona === undefined ? {} : { userPersona: inputs.userPersona }),
+    messages,
+    pendingInput: (inputs.pendingMessages ?? []).map(macroMessageText).filter(Boolean).join('\n'),
+    lastUserMessage: lastRoleMessage(messages, 'user'),
+    entropy: JSON.stringify([
+      String(inputs.session.id),
+      inputs.session.seq,
+      ...(inputs.pendingMessages ?? []).map(message => String(message.id)),
+    ]),
+    stableEntropy: String(inputs.session.id),
+    randomOrdinal: 0,
     unsupported: 0,
     templateFailures: 0,
   }
