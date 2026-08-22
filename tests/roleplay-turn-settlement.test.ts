@@ -208,7 +208,63 @@ test('compares native memory history across the exact first-plan boundary', () =
 test('keeps each tool-loop step plan and the final visible reply', () => {
   const session = Session.create(SessionId('settlement-multi-step'))
   session.append('turn/start', { turn: 3 })
-  const first = turnPlan({ sessionId: String(session.id), sessionSeq: session.seq })
+  const firstBase = turnPlan({ sessionId: String(session.id), sessionSeq: session.seq })
+  const worldBinding = {
+    id: 'world:test', name: '测试世界', owner: 'session', placement: 'experience',
+  } as const
+  const first: RoleplayTurnPlan = {
+    ...firstBase,
+    runtime: {
+      ...firstBase.runtime,
+      actor: { id: 'actor:card', name: '测试角色卡', owner: 'session' },
+      participant: { id: 'persona:test', name: '测试玩家', owner: 'session' },
+      world: { bindings: [worldBinding], tokenBudget: 512 },
+      prompt: {
+        strategy: 'modules',
+        resource: { id: 'prompt:test', name: '测试提示策略', owner: 'session' },
+      },
+      state: [{ id: 'state:test', owner: 'session', revision: 2 }],
+      modules: [
+        ...firstBase.runtime.modules,
+        { id: 'roleplay:world', source: 'native', phases: ['prepare'] },
+        { id: 'roleplay:state', source: 'native', phases: ['prepare'] },
+      ],
+    },
+    world: {
+      engine: 'native-v0',
+      resources: [{
+        resource: worldBinding,
+        beforeActor: ['世界贡献'],
+        afterActor: [],
+        entries: [{
+          entryId: 'entry:test', index: 0, active: true, reason: 'active-constant',
+          matchedKeys: [], matchedSecondaryKeys: [], approximateTokens: 4,
+        }],
+      }],
+      experienceBeforeActor: ['世界贡献'],
+      actorBefore: [],
+      actorAfter: [],
+      experienceAfterActor: [],
+      approximateTokens: 4,
+      tokenBudget: 512,
+    },
+    prompt: {
+      ...firstBase.prompt,
+      diagnostics: { enabledModules: 2, unsupportedMacros: 1, templateFailures: 0 },
+    },
+    stateReads: [{
+      id: 'state:test', owner: 'session', revision: 2, eventSeq: 0,
+      writerModuleId: 'roleplay:state', value: { weather: '雾' },
+    }],
+    memory: {
+      ...firstBase.memory,
+      reads: [{ id: 'memory:test', sourceEventSeq: 0 }],
+    },
+    generation: { temperature: 0.7, maxTokens: 2048 },
+    prepare: {
+      modules: [{ moduleId: 'roleplay:memory', outcome: 'applied', contributions: 1 }],
+    },
+  }
   appendReply(session, 3, 1, '先检查一下。')
   const second = turnPlan({ sessionId: String(session.id), sessionSeq: session.seq })
   const finalReply = appendReply(session, 3, 2, '已经完成。')
@@ -221,6 +277,29 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
   })
   assert.deepEqual(settlement.plans.map(reference => reference.step), [1, 2])
   assert.equal(settlement.plans[0]?.input.sessionSeq, first.input.sessionSeq)
+  assert.deepEqual(settlement.plans[0]?.receipt, {
+    runtime: {
+      experienceId: 'actor:test',
+      actorId: 'actor:card',
+      participantId: 'persona:test',
+      worldIds: ['world:test'],
+      promptId: 'prompt:test',
+      stateIds: ['state:test'],
+      moduleIds: ['roleplay:memory', 'roleplay:world', 'roleplay:state'],
+    },
+    world: {
+      activeEntries: [{ resourceId: 'world:test', entryIds: ['entry:test'] }],
+      approximateTokens: 4,
+      tokenBudget: 512,
+    },
+    promptDiagnostics: { enabledModules: 2, unsupportedMacros: 1, templateFailures: 0 },
+    stateReads: [{ id: 'state:test', revision: 2, eventSeq: 0 }],
+    memoryReads: [{ id: 'memory:test', sourceEventSeq: 0 }],
+    generation: { temperature: 0.7, maxTokens: 2048 },
+    prepare: {
+      modules: [{ moduleId: 'roleplay:memory', outcome: 'applied', contributions: 1 }],
+    },
+  })
   assert.deepEqual(settlement.reply, { eventSeq: finalReply.seq, messageId: String(finalReply.data.message.id) })
   assert.equal(settlement.result, 'max-tokens')
 })

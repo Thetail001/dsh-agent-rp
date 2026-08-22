@@ -14,6 +14,35 @@ import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 export interface RoleplayTurnPlanReference {
   readonly step: number
   readonly input: RoleplayTurnInputKey
+  /** Content-free receipt for replaying and diagnosing the exact prepared plan. */
+  readonly receipt?: RoleplayTurnPlanReceipt
+}
+
+/** Durable resource and decision references retained without duplicating model-visible prose. */
+export interface RoleplayTurnPlanReceipt {
+  readonly runtime: {
+    readonly experienceId: string
+    readonly actorId?: string
+    readonly participantId?: string
+    readonly worldIds: readonly string[]
+    readonly promptId?: string
+    readonly stateIds: readonly string[]
+    readonly moduleIds: readonly string[]
+  }
+  readonly world: {
+    readonly activeEntries: readonly { readonly resourceId: string; readonly entryIds: readonly string[] }[]
+    readonly approximateTokens: number
+    readonly tokenBudget?: number
+  }
+  readonly promptDiagnostics: RoleplayTurnPlan['prompt']['diagnostics']
+  readonly stateReads: readonly {
+    readonly id: string
+    readonly revision?: number
+    readonly eventSeq?: number
+  }[]
+  readonly memoryReads: RoleplayTurnPlan['memory']['reads']
+  readonly generation: RoleplayTurnPlan['generation']
+  readonly prepare: RoleplayTurnPlan['prepare']
 }
 
 /** Revision change observed at the turn boundary for one runtime state namespace. */
@@ -126,6 +155,37 @@ function latestTurnReply(
   return reply?.type === 'assistant/message'
     ? { eventSeq: reply.seq, messageId: String(reply.data.message.id) }
     : undefined
+}
+
+function planReceipt(plan: RoleplayTurnPlan): RoleplayTurnPlanReceipt {
+  return {
+    runtime: {
+      experienceId: plan.runtime.experience.id,
+      ...(plan.runtime.actor === undefined ? {} : { actorId: plan.runtime.actor.id }),
+      ...(plan.runtime.participant === undefined ? {} : { participantId: plan.runtime.participant.id }),
+      worldIds: plan.runtime.world.bindings.map(binding => binding.id),
+      ...(plan.runtime.prompt.resource === undefined ? {} : { promptId: plan.runtime.prompt.resource.id }),
+      stateIds: plan.runtime.state.map(binding => binding.id),
+      moduleIds: plan.runtime.modules.map(module => module.id),
+    },
+    world: {
+      activeEntries: plan.world.resources.map(resource => ({
+        resourceId: resource.resource.id,
+        entryIds: resource.entries.filter(entry => entry.active).map(entry => entry.entryId),
+      })),
+      approximateTokens: plan.world.approximateTokens,
+      ...(plan.world.tokenBudget === undefined ? {} : { tokenBudget: plan.world.tokenBudget }),
+    },
+    promptDiagnostics: { ...plan.prompt.diagnostics },
+    stateReads: plan.stateReads.map(read => ({
+      id: read.id,
+      ...(read.revision === undefined ? {} : { revision: read.revision }),
+      ...(read.eventSeq === undefined ? {} : { eventSeq: read.eventSeq }),
+    })),
+    memoryReads: plan.memory.reads.map(read => ({ ...read })),
+    generation: { ...plan.generation },
+    prepare: { modules: plan.prepare.modules.map(module => ({ ...module })) },
+  }
 }
 
 interface SettleModuleContract {
@@ -265,7 +325,7 @@ export function compileRoleplayTurnSettlement(
     sessionId: input.sessionId,
     turn: input.turn,
     result: input.result,
-    plans: plans.map(({ step, plan }) => ({ step, input: plan.input })),
+    plans: plans.map(({ step, plan }) => ({ step, input: plan.input, receipt: planReceipt(plan) })),
     ...(reply === undefined ? {} : { reply }),
     state,
     memory,
