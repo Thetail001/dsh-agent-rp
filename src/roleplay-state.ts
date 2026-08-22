@@ -6,6 +6,7 @@ import {
   type Session,
   type SessionEvent,
 } from '@deepseek-ai/dsh-session'
+import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 
 /** Native lifecycle module that owns all source-neutral Roleplay state namespaces. */
 export const ROLEPLAY_STATE_MODULE_ID = 'roleplay:state'
@@ -248,7 +249,7 @@ export function appendRoleplayState(
     writerModuleId,
     value: stateValue(input.value),
   }
-  const event = session.append('agent-rp/state', record)
+  const event = appendAgentRpSessionEvent(session, 'agent-rp/state', record)
   return { ...event.data, ownerModuleId, eventSeq: event.seq }
 }
 
@@ -284,7 +285,7 @@ export function appendUserRoleplayState(
     sourceEventSeq,
     value: stateValue(request.value),
   }
-  const event = session.append('agent-rp/state', record)
+  const event = appendAgentRpSessionEvent(session, 'agent-rp/state', record)
   return { ...event.data, ownerModuleId: record.ownerModuleId!, eventSeq: event.seq }
 }
 

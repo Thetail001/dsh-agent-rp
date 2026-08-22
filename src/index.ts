@@ -139,6 +139,7 @@ import {
   compileSessionRoleplayTurnPresentationUpdate,
 } from './session-roleplay-turn-presentation.ts'
 import { executeRoleplayStateCommand } from './roleplay-state-command.ts'
+import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -874,6 +875,7 @@ export function installAgentRp(
     if (agent === undefined || agentsByScope.get(agent) !== agent) return
     const plans = turnCoordinator.completeTurn(agent, event.data.turn)
     if (plans.length === 0) return
+    if (!supportsAgentRpSessionEvents(session)) return
     const result = event.data.reason.kind
     const turn = event.data.turn
     queueMicrotask(() => {

@@ -11,6 +11,9 @@ import {
   compileRoleplayTurnSettlement,
   readRoleplayTurnSettlements,
 } from '../src/roleplay-turn-settlement.ts'
+import { installIgnorableSessionEventFixture } from './session-event-fixture.ts'
+
+installIgnorableSessionEventFixture()
 
 function runtime(
   state: RoleplayRuntimeSnapshot['state'] = [],

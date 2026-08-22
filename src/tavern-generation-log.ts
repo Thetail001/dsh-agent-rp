@@ -1,7 +1,8 @@
 /** Durable audit records for auxiliary model calls made by isolated Tavern scripts. */
 
 import type { Message } from '@deepseek-ai/dsh-llm'
-import type { JsonValue, Session, SessionEvent, SessionEventMap } from '@deepseek-ai/dsh-session'
+import type { JsonValue, Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 
 /** Exact dispatchable request recorded before a Host-routed auxiliary model call. */
 export interface TavernHostGenerationDispatch {
@@ -60,10 +61,6 @@ declare module '@deepseek-ai/dsh-session' {
   }
 }
 
-type TavernGenerationEventType =
-  | 'agent-rp/tavern-generation-request'
-  | 'agent-rp/tavern-generation-result'
-
 /** Content-free replay summary for auxiliary Tavern model calls. */
 export interface TavernAuxiliaryGenerationSummary {
   readonly requests: number
@@ -90,26 +87,12 @@ export const EMPTY_TAVERN_AUXILIARY_GENERATION_REPLAY: TavernAuxiliaryGeneration
   malformed: 0,
 }
 
-interface IgnorableSession extends Session {
-  appendIgnorable<T extends TavernGenerationEventType>(
-    type: T,
-    data: SessionEventMap[T],
-  ): SessionEvent<T> & { readonly ignorable: true }
-}
-
-function externalAppender(session: Session): IgnorableSession {
-  if (typeof (session as Partial<IgnorableSession>).appendIgnorable !== 'function') {
-    throw new Error('当前 DSH Host 不支持可审计的酒馆脚本模型调用，请升级 Host')
-  }
-  return session as IgnorableSession
-}
-
 /** Append one exact credential-free request before model dispatch. */
 export function appendTavernAuxiliaryGenerationRequest(
   session: Session,
   record: TavernAuxiliaryGenerationRequestRecord,
 ): SessionEvent<'agent-rp/tavern-generation-request'> & { readonly ignorable: true } {
-  return externalAppender(session).appendIgnorable('agent-rp/tavern-generation-request', record)
+  return appendAgentRpSessionEvent(session, 'agent-rp/tavern-generation-request', record)
 }
 
 /** Append one bounded settlement linked to its exact request event. */
@@ -117,7 +100,7 @@ export function appendTavernAuxiliaryGenerationResult(
   session: Session,
   record: TavernAuxiliaryGenerationResultRecord,
 ): SessionEvent<'agent-rp/tavern-generation-result'> & { readonly ignorable: true } {
-  return externalAppender(session).appendIgnorable('agent-rp/tavern-generation-result', record)
+  return appendAgentRpSessionEvent(session, 'agent-rp/tavern-generation-result', record)
 }
 
 /** Classify one auxiliary failure without retaining remote response text. */

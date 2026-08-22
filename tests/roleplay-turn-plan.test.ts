@@ -33,6 +33,9 @@ import {
   initializeTavernHelperState,
   tavernInjectedScanText,
 } from '../src/tavern-helper.ts'
+import { installIgnorableSessionEventFixture } from './session-event-fixture.ts'
+
+installIgnorableSessionEventFixture()
 
 const deployment = resolveConfig({ characterName: '岚' })
 

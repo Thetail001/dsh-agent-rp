@@ -4612,6 +4612,7 @@ function characterDegradationLabel(value: CharacterLibraryDetail['degradations']
     case 'future-card-version': return '未来版本字段'
     case 'group-greetings': return '群聊开场'
     case 'lorebook-decorators': return '世界书装饰器'
+    case 'lorebook-position': return '世界书特殊插入位置'
     case 'lorebook-regex': return '世界书正则'
     case 'lorebook-recursion': return '世界书递归'
     case 'remote-assets': return '远程资源'

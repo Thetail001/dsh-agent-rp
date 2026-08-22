@@ -8,7 +8,7 @@ function isHostExternal(id: string): boolean {
 }
 
 const host: UserConfig = {
-  entry: ['src/index.ts'],
+  entry: { index: 'src/index.ts', 'repair-session': 'src/session-repair-cli.ts' },
   outDir: 'lib',
   format: ['esm'],
   platform: 'node',

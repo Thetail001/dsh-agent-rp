@@ -20,6 +20,9 @@ import {
 } from '../src/roleplay-turn-settlement.ts'
 import { resolveSessionRoleplayRuntime } from '../src/session-roleplay-runtime.ts'
 import { compileInitialSessionRoleplayTurnPresentation } from '../src/session-roleplay-turn-presentation.ts'
+import { installIgnorableSessionEventFixture } from './session-event-fixture.ts'
+
+installIgnorableSessionEventFixture()
 
 const deployment = resolveConfig({ characterName: '岚' })
 
@@ -44,6 +47,8 @@ test('writes conflict-checked state revisions and reconstructs them after reopen
 
   assert.equal(first.revision, 1)
   assert.equal(second.revision, 2)
+  assert.equal(session.events[0]?.ignorable, true)
+  assert.equal(session.events[1]?.ignorable, true)
   assert.deepEqual(first.value, { scene: { weather: '雨', hour: 21 }, flags: ['arrived'] })
   assert.throws(() => appendRoleplayState(session, {
     id: 'state:scene',

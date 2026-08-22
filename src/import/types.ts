@@ -11,6 +11,7 @@ export const CHARACTER_IMPORT_DEGRADATIONS = [
   'future-card-version',
   'group-greetings',
   'lorebook-decorators',
+  'lorebook-position',
   'lorebook-regex',
   'lorebook-recursion',
   'remote-assets',

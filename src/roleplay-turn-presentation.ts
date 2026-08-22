@@ -2,6 +2,7 @@
 
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { BoundRoleplayTurnPlan } from './roleplay-turn-settlement.ts'
+import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import {
   normalizeRoleplayTurnPresentation as importedNormalizePresentation,
 } from './roleplay-turn-presentation-state.ts'
@@ -291,12 +292,5 @@ export function appendRoleplayTurnPresentation(
     && event.data.trigger.kind === presentation.trigger.kind
     && event.data.trigger.eventSeq === presentation.trigger.eventSeq)
   if (existing?.type === 'agent-rp/turn-presentation') return existing
-  const appendIgnorable = (session as Session & {
-    appendIgnorable?: (type: 'agent-rp/turn-presentation', data: RoleplayTurnPresentation) =>
-      SessionEvent<'agent-rp/turn-presentation'>
-  }).appendIgnorable
-  if (typeof appendIgnorable === 'function') {
-    return appendIgnorable.call(session, 'agent-rp/turn-presentation', presentation)
-  }
-  return session.append('agent-rp/turn-presentation', presentation)
+  return appendAgentRpSessionEvent(session, 'agent-rp/turn-presentation', presentation)
 }

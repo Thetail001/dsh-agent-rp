@@ -118,6 +118,10 @@ function optionalString(value: JsonValue | undefined, path: string): string | un
   return requiredString(value, path)
 }
 
+function lenientOptionalString(value: JsonValue | undefined): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
 function optionalBoolean(value: JsonValue | undefined, path: string): boolean | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'boolean') throw new Error(`${path} must be a boolean`)
@@ -186,6 +190,16 @@ function hasDecorator(content: string): boolean {
   return /(?:^|\n)@@@?[a-z_]+(?:\s|$)/imu.test(content)
 }
 
+function lorebookPosition(
+  value: JsonValue | undefined,
+): { readonly position: ImportedLorebookEntry['position']; readonly unsupported: boolean } {
+  if (value === undefined || value === null || value === 'after_char' || value === 1) {
+    return { position: 'after_char', unsupported: false }
+  }
+  if (value === 'before_char' || value === 0) return { position: 'before_char', unsupported: false }
+  return { position: 'after_char', unsupported: true }
+}
+
 function parseLorebookEntry(value: JsonValue, index: number, version: CharacterCardVersion): ImportedLorebookEntry {
   const path = `data.character_book.entries[${index}]`
   const entry = object(value, path)
@@ -197,10 +211,8 @@ function parseLorebookEntry(value: JsonValue, index: number, version: CharacterC
   const priority = optionalFiniteNumber(entry.priority, `${path}.priority`)
   const useRegex = optionalBoolean(entry.use_regex, `${path}.use_regex`) ?? false
   if (version === 3 && entry.use_regex === undefined) throw new Error(`${path}.use_regex must be a boolean`)
-  const position = optionalString(entry.position, `${path}.position`) ?? 'after_char'
-  if (position !== 'before_char' && position !== 'after_char') {
-    throw new Error(`${path}.position must be before_char or after_char`)
-  }
+  const extensionPosition = extensions.position
+  const normalizedPosition = lorebookPosition(extensionPosition ?? entry.position)
   const content = requiredString(entry.content, `${path}.content`)
   const sourceIdValue = entry.id
   if (sourceIdValue !== undefined && sourceIdValue !== null
@@ -223,10 +235,13 @@ function parseLorebookEntry(value: JsonValue, index: number, version: CharacterC
     caseSensitive: optionalBoolean(entry.case_sensitive, `${path}.case_sensitive`) ?? false,
     matchWholeWords: optionalBoolean(entry.match_whole_words, `${path}.match_whole_words`) ?? false,
     secondaryLogic: 'and-any',
-    position,
+    position: normalizedPosition.position,
     ...(priority === undefined ? {} : { priority }),
     useRegex,
     hasDecorators: hasDecorator(content),
+    ...(normalizedPosition.unsupported
+      ? { compatibilityBlockers: ['entry-unsupported-position' as const] }
+      : {}),
     ignoreBudget: optionalBoolean(extensions.ignore_budget, `${path}.extensions.ignore_budget`) ?? false,
   }
 }
@@ -298,6 +313,9 @@ function degradationSet(
   if ((stringArray(data.group_only_greetings, 'data.group_only_greetings')).length > 0) result.add('group-greetings')
   if (lorebook?.recursiveScanning === true) result.add('lorebook-recursion')
   if (lorebook?.entries.some(entry => entry.hasDecorators) === true) result.add('lorebook-decorators')
+  if (lorebook?.entries.some(entry => entry.compatibilityBlockers?.includes('entry-unsupported-position')) === true) {
+    result.add('lorebook-position')
+  }
   return [...result].sort()
 }
 
@@ -334,7 +352,9 @@ function normalizeCharacterCardValue(raw: JsonValue): ImportedCharacterCard {
   const { version, specVersion, data } = cardVersion(root)
   validateVersionFields(data, version)
   const lorebook = parseLorebook(data.character_book, version)
-  const nickname = optionalString(data.nickname, 'data.nickname')
+  // Nickname is optional display metadata. Several otherwise valid exporters
+  // emit null or another placeholder here, so it must never veto the card.
+  const nickname = lenientOptionalString(data.nickname)
   const alternateGreetings = stringArray(data.alternate_greetings, 'data.alternate_greetings')
   const systemPrompt = optionalString(data.system_prompt, 'data.system_prompt') ?? ''
   const postHistoryInstructions = optionalString(data.post_history_instructions, 'data.post_history_instructions') ?? ''

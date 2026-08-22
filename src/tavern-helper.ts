@@ -4,6 +4,7 @@ import { snapshotJsonValue, type JsonValue, type Session, type SessionEvent } fr
 import type { ImportedCharacterFrontend, ImportedTavernHelperScript } from './import/types.ts'
 import { AGENT_RP_CAPABILITIES } from './extension-capability.ts'
 import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
+import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import {
   parseTavernScriptIdentity,
   tavernScriptIdentity,
@@ -1134,7 +1135,7 @@ function stateFromEvent(event: SessionEvent): TavernHelperState | undefined {
 
 /** Append an explicit state selection used by reply regeneration and swipe changes. */
 export function appendTavernHelperState(session: Session, state: TavernHelperState): TavernHelperStateSnapshot {
-  const event = session.append('agent-rp/tavern-state', state)
+  const event = appendAgentRpSessionEvent(session, 'agent-rp/tavern-state', state)
   return { eventSeq: event.seq, state }
 }
 
@@ -1145,7 +1146,11 @@ export function appendTavernHelperStateAttachment(
   cause: TavernMutationCause,
   active: boolean,
 ): TavernHelperStateSnapshot {
-  const event = session.append('agent-rp/tavern-state-attachment', { format: 0, cause, active, state })
+  const event = appendAgentRpSessionEvent(
+    session,
+    'agent-rp/tavern-state-attachment',
+    { format: 0, cause, active, state },
+  )
   return { eventSeq: event.seq, state }
 }
 

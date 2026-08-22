@@ -15,7 +15,7 @@ function packageName(specifier) {
   return specifier.split('/')[0]
 }
 
-for (const file of ['../lib/index.js', '../lib/client.js']) {
+for (const file of ['../lib/index.js', '../lib/repair-session.js', '../lib/client.js']) {
   const source = readFileSync(new URL(file, import.meta.url), 'utf8')
   const specifiers = [
     ...source.matchAll(/\bfrom\s+["']([^"']+)["']/gu),

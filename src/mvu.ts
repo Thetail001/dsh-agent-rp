@@ -3,6 +3,7 @@
 import { snapshotJsonValue, type JsonValue, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { ImportedCharacterCard } from './import/types.ts'
+import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
 import { decodeTavernHelperState } from './tavern-helper.ts'
 
@@ -133,7 +134,7 @@ export function readCurrentMvuState(
 
 /** Append an exact MVU state selection after a reply-version surface change. */
 export function appendMvuState(session: Session, state: MvuStateSnapshot): void {
-  session.append('agent-rp/mvu-state', state)
+  appendAgentRpSessionEvent(session, 'agent-rp/mvu-state', state)
 }
 
 /** Fold MVU updates from the current model-visible Session surface plus durable script mutations. */

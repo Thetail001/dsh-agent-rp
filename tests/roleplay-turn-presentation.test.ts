@@ -35,6 +35,9 @@ import {
   readTavernHelperState,
 } from '../src/tavern-helper.ts'
 import { validateTavernMutationCause } from '../src/tavern-helper-command.ts'
+import { installIgnorableSessionEventFixture } from './session-event-fixture.ts'
+
+installIgnorableSessionEventFixture()
 
 const modules = [
   { id: 'roleplay:reply-versions', source: 'native', phases: ['present'] },

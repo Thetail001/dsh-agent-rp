@@ -8,6 +8,7 @@ import type {
   RoleplayTurnSettlementContribution,
 } from './roleplay-runtime.ts'
 import type { RoleplayTurnInputKey, RoleplayTurnPlan } from './roleplay-turn-plan.ts'
+import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 
 /** Exact prepared input consumed by one model step in the settled turn. */
 export interface RoleplayTurnPlanReference {
@@ -274,7 +275,7 @@ export function compileRoleplayTurnSettlement(
   }
 }
 
-/** Append an informational settlement, using the newer skippable-event API when available. */
+/** Append an informational settlement through the Host's replay-safe plugin-event seam. */
 export function appendRoleplayTurnSettlement(
   session: Session,
   settlement: RoleplayTurnSettlement,
@@ -282,12 +283,7 @@ export function appendRoleplayTurnSettlement(
   const existing = session.events.find(event => event.type === 'agent-rp/turn-settlement'
     && event.data.turn === settlement.turn)
   if (existing?.type === 'agent-rp/turn-settlement') return existing
-  const appendIgnorable = (session as Session & {
-    appendIgnorable?: (type: 'agent-rp/turn-settlement', data: RoleplayTurnSettlement) =>
-      SessionEvent<'agent-rp/turn-settlement'>
-  }).appendIgnorable
-  if (typeof appendIgnorable === 'function') return appendIgnorable.call(session, 'agent-rp/turn-settlement', settlement)
-  return session.append('agent-rp/turn-settlement', settlement)
+  return appendAgentRpSessionEvent(session, 'agent-rp/turn-settlement', settlement)
 }
 
 /** Fold previously written settlement records in chronological order. */
