@@ -8,10 +8,12 @@ import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { CommandId } from '@deepseek-ai/dsh-commands'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { resolveConfig } from '../src/config.ts'
 import { decodeGenerationState, encodeGenerationState, executeGenerationCommand } from '../src/generation.ts'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import { readCurrentSessionMvuState } from '../src/mvu.ts'
+import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
 import {
   applyTavernHelperMutation,
   encodeTavernHelperState,
@@ -26,6 +28,11 @@ import {
   supportsAgentRpSessionEvents,
 } from '../src/session-event-compat.ts'
 import { LEGACY_AGENT_RP_EVENT_TYPES } from '../src/session-repair.ts'
+import { resolveSessionRoleplayRuntime } from '../src/session-roleplay-runtime.ts'
+import {
+  appendSessionRoleplayTurnPlan,
+  replaySessionRoleplayTurnPlan,
+} from '../src/session-roleplay-turn-plan.ts'
 import { readRoleplayStates } from '../src/roleplay-state.ts'
 import { executeRoleplayStateCommand } from '../src/roleplay-state-command.ts'
 
@@ -319,7 +326,7 @@ test('rejects unsafe Tavern regeneration before changing a published-host Sessio
   assert.deepEqual(session.surface.nodes, beforeSurface)
 })
 
-test('writes and replays an ignorable event with a local newer DSH Host', async (t) => {
+test('writes and exactly replays a prepared turn with a local newer DSH Host', async (t) => {
   const dshRoot = process.env['DSH_SOURCE_DIR'] ?? resolve(process.cwd(), '..', 'dsh')
   const entry = resolve(dshRoot, 'packages', 'core', 'session', 'lib', 'index.js')
   if (!existsSync(entry)) {
@@ -341,4 +348,47 @@ test('writes and replays an ignorable event with a local newer DSH Host', async 
     structuredClone(session.events),
   )
   assert.deepEqual(reopened.events[0], written)
+
+  const turnSession = local.Session.create(local.SessionId('agent-rp-new-host-turn')) as Session
+  turnSession.append('turn/start', { turn: 1 })
+  const message = createUserMessage({
+    content: [{ type: 'text', text: '这段正文只用于准备计划，不应进入收据。' }],
+    source: { kind: 'user' },
+  })
+  const deployment = resolveConfig({ characterName: '候选 Host 兼容角色' })
+  const resolved = resolveSessionRoleplayRuntime({
+    session: turnSession,
+    deployment,
+    memoryWriteAvailable: true,
+  })
+  const plan = prepareRoleplayTurn({
+    session: turnSession,
+    pendingMessages: [message],
+    deployment,
+    resolved,
+  })
+  turnSession.append('step/start', { turn: 1, step: 1 })
+  turnSession.append('user/message', message, { surfaceOp: 'append' })
+  const receipt = appendSessionRoleplayTurnPlan(turnSession, 1, 1, plan)
+  assert.equal(receipt.ignorable, true)
+  assert.equal(receipt.type, 'agent-rp/turn-plan')
+  assert.doesNotMatch(JSON.stringify(receipt), /这段正文|候选 Host 兼容角色/u)
+
+  const turnReopened = local.Session.create(
+    local.SessionId('agent-rp-new-host-turn'),
+    structuredClone(turnSession.events),
+  ) as Session
+  const reopenedReceipt = turnReopened.events[receipt.seq]
+  assert.equal(reopenedReceipt?.type, 'agent-rp/turn-plan')
+  if (reopenedReceipt?.type !== 'agent-rp/turn-plan') throw new Error('turn receipt was not replayed')
+  assert.deepEqual(replaySessionRoleplayTurnPlan({
+    session: turnReopened,
+    record: reopenedReceipt,
+    deployment,
+  }), plan)
+  assert.throws(() => replaySessionRoleplayTurnPlan({
+    session: turnReopened,
+    record: reopenedReceipt,
+    deployment: resolveConfig({ characterName: '漂移后的候选角色' }),
+  }), /content digest/u)
 })
