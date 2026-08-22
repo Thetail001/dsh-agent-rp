@@ -55,6 +55,10 @@ import {
 import type {
   RoleplayTurnPresentation,
 } from './roleplay-turn-presentation-types.ts'
+import {
+  applyRoleplayStateEvent,
+  type RoleplayStateSnapshot,
+} from './roleplay-state.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -85,6 +89,8 @@ const projectionSchema = {
       || (record.avatarLibraryId !== undefined && typeof record.avatarLibraryId !== 'string')
       || typeof record.importedMessageCount !== 'number' || !Number.isSafeInteger(record.importedMessageCount)
       || record.importedMessageCount < 0
+      || !Array.isArray(record.nativeStates)
+      || !validNativeStates(record.nativeStates)
       || (record.auxiliaryGenerations !== undefined && !validAuxiliaryGenerationSummary(record.auxiliaryGenerations))
       || typeof record.worldInfoCount !== 'number' || !Number.isSafeInteger(record.worldInfoCount)
       || record.worldInfoCount < 0
@@ -100,6 +106,19 @@ const projectionSchema = {
   },
 }
 
+function validNativeStates(value: readonly unknown[]): boolean {
+  return value.every((state) => {
+    if (typeof state !== 'object' || state === null || Array.isArray(state)) return false
+    const record = state as Record<string, unknown>
+    return typeof record.id === 'string'
+      && typeof record.ownerModuleId === 'string'
+      && typeof record.writerModuleId === 'string'
+      && typeof record.revision === 'number' && Number.isSafeInteger(record.revision) && record.revision > 0
+      && typeof record.eventSeq === 'number' && Number.isSafeInteger(record.eventSeq) && record.eventSeq >= 0
+      && Object.prototype.hasOwnProperty.call(record, 'value')
+  })
+}
+
 function validAuxiliaryGenerationSummary(value: unknown): boolean {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
@@ -113,7 +132,7 @@ type ImportCall = 'character-card' | 'world-info' | 'preset'
 
 interface AgentRpProjectionState {
   readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'worldInfo' | 'presetLibrary' | 'lastRequest'
-  | 'generations' | 'auxiliaryGenerations' | 'presentation'>
+  | 'generations' | 'auxiliaryGenerations' | 'presentation' | 'nativeStates'>
   readonly cardWorldInfoCount: number
   readonly cardLorebook?: SessionLorebookSource
   readonly standaloneWorldInfos: Readonly<Record<string, SessionLorebookSource>>
@@ -126,6 +145,7 @@ interface AgentRpProjectionState {
   }[]
   readonly calls: Readonly<Record<string, ImportCall>>
   readonly personaCommands: Readonly<Record<string, number>>
+  readonly nativeStates: readonly RoleplayStateSnapshot[]
   readonly mvu?: AgentRpProjection['mvu']
   readonly preset?: AgentRpProjection['preset']
   readonly presetState?: ActiveSessionPreset
@@ -163,6 +183,7 @@ const projectionStateSchema = {
       || typeof record.calls !== 'object' || record.calls === null || Array.isArray(record.calls)
       || typeof record.personaCommands !== 'object' || record.personaCommands === null
       || Array.isArray(record.personaCommands)
+      || !Array.isArray(record.nativeStates) || !validNativeStates(record.nativeStates)
       || !Array.isArray(record.presetLibrary)
       || typeof record.generations !== 'object' || record.generations === null || Array.isArray(record.generations)
       || (record.presentation !== undefined && (typeof record.presentation !== 'object'
@@ -665,6 +686,7 @@ export function createAgentRpProjectionDefinition(
     surface: [],
     calls: {},
     personaCommands: {},
+    nativeStates: [],
     presetLibrary: [],
     generations: {},
     auxiliaryGenerations: EMPTY_TAVERN_AUXILIARY_GENERATION_REPLAY,
@@ -676,6 +698,9 @@ export function createAgentRpProjectionDefinition(
       ? state
       : { ...state, surface, auxiliaryGenerations }
     if (event.type === 'agent-rp/mvu-state') return { ...withSurface, mvu: event.data }
+    if (event.type === 'agent-rp/state') {
+      return { ...withSurface, nativeStates: applyRoleplayStateEvent(withSurface.nativeStates, event) }
+    }
     if (event.type === 'agent-rp/turn-presentation') {
       const presentation = normalizeRoleplayTurnPresentation(event.data)
       return presentation.current ? { ...withSurface, presentation } : withSurface
@@ -1112,6 +1137,14 @@ export function createAgentRpProjectionDefinition(
     const hiddenTavernMessages = state.tavern?.hiddenPrefix ?? []
     return {
       ...state.character,
+      nativeStates: state.nativeStates.map(stateValue => ({
+        id: stateValue.id,
+        revision: stateValue.revision,
+        ownerModuleId: stateValue.ownerModuleId,
+        writerModuleId: stateValue.writerModuleId,
+        eventSeq: stateValue.eventSeq,
+        value: stateValue.value,
+      })),
       ...(auxiliaryGenerations.requests === 0 && auxiliaryGenerations.malformed === 0
         ? {}
         : { auxiliaryGenerations }),
@@ -1143,7 +1176,7 @@ export function createAgentRpProjectionDefinition(
     }
   },
   },
-  stateVersion: 13,
+  stateVersion: 14,
   }
   return {
     ...definition,

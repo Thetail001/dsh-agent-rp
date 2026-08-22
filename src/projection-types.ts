@@ -28,6 +28,15 @@ export interface AgentRpProjection {
   readonly avatarAttachmentId?: string
   readonly avatarLibraryId?: string
   readonly importedMessageCount: number
+  /** Native structured state currently active in this Session. */
+  readonly nativeStates: readonly {
+    readonly id: string
+    readonly revision: number
+    readonly ownerModuleId: string
+    readonly writerModuleId: string
+    readonly eventSeq: number
+    readonly value: JsonValue
+  }[]
   /** Content-free counts for audited auxiliary Tavern model requests. */
   readonly auxiliaryGenerations?: {
     readonly requests: number

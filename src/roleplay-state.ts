@@ -10,18 +10,26 @@ import {
 /** Native lifecycle module that owns all source-neutral Roleplay state namespaces. */
 export const ROLEPLAY_STATE_MODULE_ID = 'roleplay:state'
 
+/** Durable writer identity reserved for explicit player commands. */
+export const ROLEPLAY_STATE_USER_WRITER_ID = 'roleplay:user'
+
 /** One authoritative state revision written to the Session log. */
 export interface RoleplayStateRecord {
   readonly format: 0
   readonly id: string
   readonly revision: number
+  /** Stable module authority; absent only on records written before ownership was introduced. */
+  readonly ownerModuleId?: string
   /** Module or explicit host action that produced this revision. */
   readonly writerModuleId: string
+  /** Exact `rp-state` command/run event for an explicit player edit. */
+  readonly sourceEventSeq?: number
   readonly value: JsonValue
 }
 
 /** Current state plus the exact required event that established it. */
 export interface RoleplayStateSnapshot extends RoleplayStateRecord {
+  readonly ownerModuleId: string
   readonly eventSeq: number
 }
 
@@ -31,6 +39,15 @@ export interface WriteRoleplayStateInput {
   /** Zero creates a new namespace; later writes must match the current revision. */
   readonly expectedRevision: number
   readonly writerModuleId: string
+  readonly value: JsonValue
+}
+
+/** Private browser request for one explicit player state edit. */
+export interface RoleplayStateCommandRequest {
+  readonly format: 0
+  readonly operation: 'set'
+  readonly id: string
+  readonly expectedRevision: number
   readonly value: JsonValue
 }
 
@@ -64,6 +81,39 @@ function stateValue(value: JsonValue): JsonValue {
   return snapshot
 }
 
+function eventSeq(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error('Roleplay state source event is invalid')
+  }
+  return value as number
+}
+
+/** Parse one private player request without accepting implicit authority fields. */
+export function parseRoleplayStateCommandRequest(source: string): RoleplayStateCommandRequest {
+  let value: unknown
+  try {
+    value = JSON.parse(source)
+  } catch (error: unknown) {
+    throw new Error('状态操作请求不是有效 JSON', { cause: error })
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('状态操作请求必须是对象')
+  }
+  const record = value as Record<string, unknown>
+  if (record.format !== 0 || record.operation !== 'set'
+    || Object.keys(record).some(key => !['format', 'operation', 'id', 'expectedRevision', 'value'].includes(key))
+    || !Object.prototype.hasOwnProperty.call(record, 'value')) {
+    throw new Error('状态操作请求字段无效')
+  }
+  return {
+    format: 0,
+    operation: 'set',
+    id: identifier(record.id, 'state id', STATE_ID_PATTERN),
+    expectedRevision: revision(record.expectedRevision, true),
+    value: stateValue(record.value as JsonValue),
+  }
+}
+
 /** Validate a borrowed durable record and detach its JSON value. */
 export function parseRoleplayStateRecord(value: unknown): RoleplayStateRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -71,16 +121,88 @@ export function parseRoleplayStateRecord(value: unknown): RoleplayStateRecord {
   }
   const record = value as Record<string, unknown>
   if (record.format !== 0
-    || Object.keys(record).some(key => !['format', 'id', 'revision', 'writerModuleId', 'value'].includes(key))
+    || Object.keys(record).some(key => ![
+      'format', 'id', 'revision', 'ownerModuleId', 'writerModuleId', 'sourceEventSeq', 'value',
+    ].includes(key))
     || !Object.prototype.hasOwnProperty.call(record, 'value')) {
     throw new Error('Roleplay state record fields are invalid')
+  }
+  const ownerModuleId = record.ownerModuleId === undefined
+    ? undefined
+    : identifier(record.ownerModuleId, 'state owner module id', MODULE_ID_PATTERN)
+  const writerModuleId = identifier(record.writerModuleId, 'state writer module id', MODULE_ID_PATTERN)
+  const sourceEventSeq = record.sourceEventSeq === undefined ? undefined : eventSeq(record.sourceEventSeq)
+  if (ownerModuleId === undefined && writerModuleId === ROLEPLAY_STATE_USER_WRITER_ID) {
+    throw new Error('Roleplay player state write cannot use the legacy ownership format')
+  }
+  if (ownerModuleId !== undefined && writerModuleId !== ownerModuleId
+    && writerModuleId !== ROLEPLAY_STATE_USER_WRITER_ID) {
+    throw new Error(`Roleplay state ${String(record.id)} cannot be written by ${writerModuleId}`)
+  }
+  if (ownerModuleId !== undefined && writerModuleId === ROLEPLAY_STATE_USER_WRITER_ID
+    ? sourceEventSeq === undefined
+    : sourceEventSeq !== undefined) {
+    throw new Error('Roleplay state writer attribution is invalid')
   }
   return {
     format: 0,
     id: identifier(record.id, 'state id', STATE_ID_PATTERN),
     revision: revision(record.revision, false),
-    writerModuleId: identifier(record.writerModuleId, 'state writer module id', MODULE_ID_PATTERN),
+    ...(ownerModuleId === undefined ? {} : { ownerModuleId }),
+    writerModuleId,
+    ...(sourceEventSeq === undefined ? {} : { sourceEventSeq }),
     value: stateValue(record.value as JsonValue),
+  }
+}
+
+function applyRoleplayStateRecord(
+  states: readonly RoleplayStateSnapshot[],
+  record: RoleplayStateRecord,
+  writtenAt: number,
+): readonly RoleplayStateSnapshot[] {
+  const previous = states.find(state => state.id === record.id)
+  const previousRevision = previous?.revision ?? 0
+  if (record.revision !== previousRevision + 1) {
+    throw new Error(
+      `Roleplay state ${record.id} revision is discontinuous: expected ${String(previousRevision + 1)}, received ${String(record.revision)}`,
+    )
+  }
+  const ownerModuleId = record.ownerModuleId ?? previous?.ownerModuleId ?? record.writerModuleId
+  if (record.ownerModuleId !== undefined && previous !== undefined
+    && record.ownerModuleId !== previous.ownerModuleId) {
+    throw new Error(`Roleplay state ${record.id} owner cannot change`)
+  }
+  const snapshot: RoleplayStateSnapshot = { ...record, ownerModuleId, eventSeq: writtenAt }
+  return previous === undefined
+    ? [...states, snapshot]
+    : states.map(state => state.id === record.id ? snapshot : state)
+}
+
+/** Incrementally apply one required state event to a replay projection. */
+export function applyRoleplayStateEvent(
+  states: readonly RoleplayStateSnapshot[],
+  event: SessionEvent<'agent-rp/state'>,
+): readonly RoleplayStateSnapshot[] {
+  return applyRoleplayStateRecord(states, parseRoleplayStateRecord(event.data), event.seq)
+}
+
+function verifyUserWrite(
+  events: readonly SessionEvent[],
+  event: SessionEvent<'agent-rp/state'>,
+  record: RoleplayStateRecord,
+): void {
+  if (record.writerModuleId !== ROLEPLAY_STATE_USER_WRITER_ID || record.ownerModuleId === undefined) return
+  const source = record.sourceEventSeq === undefined
+    ? undefined
+    : events.find(candidate => candidate.seq === record.sourceEventSeq)
+  if (source?.type !== 'command/run' || source.seq >= event.seq || source.data.name !== 'rp-state'
+    || source.data.source.kind !== 'user' || typeof source.data.args !== 'string') {
+    throw new Error('Roleplay player state write has no matching command source')
+  }
+  const request = parseRoleplayStateCommandRequest(source.data.args)
+  if (request.id !== record.id || request.expectedRevision + 1 !== record.revision
+    || JSON.stringify(request.value) !== JSON.stringify(record.value)) {
+    throw new Error('Roleplay player state write does not match its command source')
   }
 }
 
@@ -89,19 +211,14 @@ export function readRoleplayStates(
   events: readonly SessionEvent[],
   beforeSeq = Number.POSITIVE_INFINITY,
 ): readonly RoleplayStateSnapshot[] {
-  const current = new Map<string, RoleplayStateSnapshot>()
+  let current: readonly RoleplayStateSnapshot[] = []
   for (const event of events) {
     if (event.seq >= beforeSeq || event.type !== 'agent-rp/state') continue
     const record = parseRoleplayStateRecord(event.data)
-    const previousRevision = current.get(record.id)?.revision ?? 0
-    if (record.revision !== previousRevision + 1) {
-      throw new Error(
-        `Roleplay state ${record.id} revision is discontinuous: expected ${String(previousRevision + 1)}, received ${String(record.revision)}`,
-      )
-    }
-    current.set(record.id, { ...record, eventSeq: event.seq })
+    verifyUserWrite(events, event, record)
+    current = applyRoleplayStateRecord(current, record, event.seq)
   }
-  return [...current.values()]
+  return current
 }
 
 /** Append one conflict-checked state revision as required Session history. */
@@ -119,15 +236,56 @@ export function appendRoleplayState(
       `Roleplay state ${id} revision conflict: expected ${String(expectedRevision)}, current ${String(currentRevision)}`,
     )
   }
+  const ownerModuleId = current?.ownerModuleId ?? writerModuleId
+  if (writerModuleId !== ownerModuleId) {
+    throw new Error(`Roleplay state ${id} is owned by ${ownerModuleId}, not ${writerModuleId}`)
+  }
   const record: RoleplayStateRecord = {
     format: 0,
     id,
     revision: currentRevision + 1,
+    ownerModuleId,
     writerModuleId,
     value: stateValue(input.value),
   }
   const event = session.append('agent-rp/state', record)
-  return { ...event.data, eventSeq: event.seq }
+  return { ...event.data, ownerModuleId, eventSeq: event.seq }
+}
+
+/** Append a player-authorized edit that remains causally tied to its private command. */
+export function appendUserRoleplayState(
+  session: Session,
+  request: RoleplayStateCommandRequest,
+  sourceEventSeq: number,
+): RoleplayStateSnapshot {
+  const source = session.events[sourceEventSeq]
+  if (source?.type !== 'command/run' || source.data.name !== 'rp-state' || source.seq !== session.seq - 1
+    || typeof source.data.args !== 'string') {
+    throw new Error('状态操作命令不是当前 Session 事件')
+  }
+  const sourceRequest = parseRoleplayStateCommandRequest(source.data.args)
+  if (sourceRequest.id !== request.id || sourceRequest.expectedRevision !== request.expectedRevision
+    || JSON.stringify(sourceRequest.value) !== JSON.stringify(request.value)) {
+    throw new Error('状态操作请求与当前 Session 命令不一致')
+  }
+  const current = readRoleplayStates(session.events).find(state => state.id === request.id)
+  const currentRevision = current?.revision ?? 0
+  if (request.expectedRevision !== currentRevision) {
+    throw new Error(
+      `状态“${request.id}”已经变化：界面版本 ${String(request.expectedRevision)}，当前版本 ${String(currentRevision)}`,
+    )
+  }
+  const record: RoleplayStateRecord = {
+    format: 0,
+    id: request.id,
+    revision: currentRevision + 1,
+    ownerModuleId: current?.ownerModuleId ?? ROLEPLAY_STATE_USER_WRITER_ID,
+    writerModuleId: ROLEPLAY_STATE_USER_WRITER_ID,
+    sourceEventSeq,
+    value: stateValue(request.value),
+  }
+  const event = session.append('agent-rp/state', record)
+  return { ...event.data, ownerModuleId: record.ownerModuleId!, eventSeq: event.seq }
 }
 
 /** Provider-neutral, read-only state context for one exact prepared turn. */

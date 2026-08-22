@@ -265,6 +265,7 @@ import {
   type AgentRpMemoryResponse,
   type AgentRpMemoryView,
 } from '../memory-protocol.ts'
+import type { RoleplayStateCommandRequest } from '../roleplay-state.ts'
 import {
   AGENT_RP_SESSION_PATH,
   type AgentRpSessionLaunchRequest,
@@ -502,6 +503,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly exportChat: (sessionId: SessionId) => Promise<void>
   readonly listMemory: (sessionId: SessionId) => Promise<readonly AgentRpMemoryView[]>
   readonly manageMemory: (sessionId: SessionId, request: AgentRpMemoryCommandRequest) => Promise<void>
+  readonly manageState: (sessionId: SessionId, request: RoleplayStateCommandRequest) => Promise<void>
   readonly startCharacterSession: (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -1134,13 +1136,19 @@ function roleplaySummary(
   projection: AgentRpProjection | undefined,
 ): AgentRpProjection | undefined {
   if (summary?.agentPreset !== 'agent-rp') return undefined
-  if (projection !== undefined) return projection
+  if (projection !== undefined) {
+    // Client HMR can briefly pair a newer UI with the previous Host projection.
+    // Keep that rolling upgrade usable until the Host process is restarted.
+    const nativeStates = (projection as Partial<AgentRpProjection>).nativeStates
+    return Array.isArray(nativeStates) ? projection : { ...projection, nativeStates: [] }
+  }
   return {
     characterName: summary.displayTitle,
     description: '',
     personality: '',
     scenario: '',
     importedMessageCount: 0,
+    nativeStates: [],
     worldInfoCount: 0,
     worldInfo: {
       revision: 0,
@@ -3443,7 +3451,7 @@ function RoleplayHeader({
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, listWorldInfos,
   prepareChatMigration, prepareRpDistributionChatMigration, launchPreparedChatMigration,
   startCharacterSession, exportChat,
-  listMemory, manageMemory,
+  listMemory, manageMemory, manageState,
   listPresets, listPersonas, savePersona, deletePersona, applyPersona, loadModelCapabilities, runtimeDiagnostics,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
@@ -3457,6 +3465,7 @@ function RoleplayHeader({
   const [migrationOpen, setMigrationOpen] = useState(false)
   const [personaOpen, setPersonaOpen] = useState(false)
   const [memoryOpen, setMemoryOpen] = useState(false)
+  const [stateOpen, setStateOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string>()
@@ -3613,6 +3622,9 @@ function RoleplayHeader({
             }).finally(() => { setExporting(false) })
           }} style={headerMenuItemStyle}>{exporting ? '正在导出…' : '导出聊天'}</button>
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setMemoryOpen(true) }} style={headerMenuItemStyle}>记忆</button>
+          <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setStateOpen(true) }} style={headerMenuItemStyle}>
+            状态数据{projection.nativeStates.length === 0 ? '' : ` · ${projection.nativeStates.length}`}
+          </button>
           <button type="button" role="menuitem" data-agent-rp-action="open-preset-manager"
             onClick={() => { setSettingsOpen(false); setPresetOpen(true) }} style={headerMenuItemStyle}>预设</button>
           <button type="button" role="menuitem" data-agent-rp-action="open-world-info-manager"
@@ -3653,6 +3665,11 @@ function RoleplayHeader({
       onClose={() => { setMemoryOpen(false) }}
       load={() => listMemory(sessionId)}
       onManage={request => manageMemory(sessionId, request)}
+    />}
+    {stateOpen && <RoleplayStateManagerDialog
+      states={projection.nativeStates}
+      onClose={() => { setStateOpen(false) }}
+      onManage={request => manageState(sessionId, request)}
     />}
     {open && <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label={`${displayName}的角色信息`} style={{
       alignItems: 'stretch', background: 'rgba(0,0,0,.48)', display: 'flex', inset: 0,
@@ -3811,6 +3828,153 @@ function RoleplayHeader({
       onSave={request => configureWorldInfo(sessionId, request)}
     />}
   </>
+}
+
+type NativeRoleplayStateView = AgentRpProjection['nativeStates'][number]
+
+function RoleplayStateManagerDialog({ states, onManage, onClose }: {
+  readonly states: readonly NativeRoleplayStateView[]
+  readonly onManage: (request: RoleplayStateCommandRequest) => Promise<void>
+  readonly onClose: () => void
+}) {
+  const [editing, setEditing] = useState<NativeRoleplayStateView>()
+  const [creating, setCreating] = useState(false)
+  const [id, setId] = useState('state:scene')
+  const [value, setValue] = useState('{}')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+  const beginEdit = (state: NativeRoleplayStateView): void => {
+    setCreating(false)
+    setEditing(state)
+    setId(state.id)
+    setValue(JSON.stringify(state.value, undefined, 2))
+    setError(undefined)
+  }
+  const beginCreate = (): void => {
+    setCreating(true)
+    setEditing(undefined)
+    setId('state:scene')
+    setValue('{}')
+    setError(undefined)
+  }
+  const cancelEdit = (): void => {
+    setCreating(false)
+    setEditing(undefined)
+    setError(undefined)
+  }
+  const save = (): void => {
+    let parsed: JsonValue
+    try {
+      parsed = JSON.parse(value) as JsonValue
+    } catch (reason: unknown) {
+      setError(`状态内容不是有效 JSON：${reason instanceof Error ? reason.message : String(reason)}`)
+      return
+    }
+    setBusy(true)
+    setError(undefined)
+    void onManage({
+      format: 0,
+      operation: 'set',
+      id: id.trim(),
+      expectedRevision: editing?.revision ?? 0,
+      value: parsed,
+    }).then(() => {
+      setCreating(false)
+      setEditing(undefined)
+    }).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => { setBusy(false) })
+  }
+  const formVisible = creating || editing !== undefined
+  const validId = /^state:[^\s]+$/u.test(id.trim())
+  return <div data-agent-rp-dialog data-agent-rp-native-state-manager role="dialog" aria-modal="true" aria-label="状态数据" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.62)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: '14px', position: 'fixed', zIndex: 1200,
+  }} onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #3e3e43)',
+      borderRadius: '14px', boxShadow: '0 18px 58px rgba(0,0,0,.42)', boxSizing: 'border-box',
+      maxHeight: 'min(760px, 88vh)', maxWidth: '720px', overflowY: 'auto', padding: '20px', width: '100%',
+    }}>
+      <header style={{ alignItems: 'start', display: 'flex', flexWrap: 'wrap', gap: '12px', justifyContent: 'space-between' }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ alignItems: 'center', display: 'flex', gap: '8px' }}>
+            <h2 style={{ fontSize: '17px', margin: 0 }}>状态数据</h2>
+            <span style={{ fontSize: '11px', opacity: .45 }}>{states.length} 项</span>
+          </div>
+          <p style={{ fontSize: '12px', lineHeight: 1.55, margin: '5px 0 0', maxWidth: '520px', opacity: .58 }}>
+            这是下一轮会读取的结构化事实。修改会保留在会话历史中；角色不会因此获得自行修改状态的权限
+          </p>
+        </div>
+        <div style={{ alignItems: 'center', display: 'flex', gap: '8px' }}>
+          <button type="button" disabled={busy} onClick={() => { if (creating) cancelEdit(); else beginCreate() }} style={{
+            ...headerMenuItemStyle, color,
+          }}>{creating ? '取消新增' : '新增状态'}</button>
+          <button type="button" disabled={busy} onClick={onClose} style={{
+            background: 'transparent', border: 0, color: 'inherit', cursor: busy ? 'default' : 'pointer',
+            font: 'inherit', fontSize: '18px', opacity: .6, padding: '0 3px',
+          }} aria-label="关闭状态数据">×</button>
+        </div>
+      </header>
+      {formVisible && <div style={{
+        background: 'var(--dsw-alias-bg-layer-1, #222226)', border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
+        borderRadius: '11px', display: 'grid', gap: '10px', marginTop: '18px', padding: '13px',
+      }}>
+        <label style={{ display: 'grid', fontSize: '11px', gap: '6px', opacity: .78 }}>
+          状态标识
+          <input value={id} disabled={editing !== undefined || busy} maxLength={134} placeholder="state:scene"
+            onChange={event => { setId(event.target.value) }} style={settingsFieldStyle} />
+        </label>
+        <label style={{ display: 'grid', fontSize: '11px', gap: '6px', opacity: .78 }}>
+          JSON 内容
+          <textarea value={value} disabled={busy} rows={10} spellCheck={false}
+            onChange={event => { setValue(event.target.value) }} style={{
+              ...settingsFieldStyle, boxSizing: 'border-box', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+              fontSize: '12px', lineHeight: 1.55, resize: 'vertical', width: '100%',
+            }} />
+        </label>
+        <div style={{ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'flex-end' }}>
+          <button type="button" disabled={busy} onClick={cancelEdit} style={headerMenuItemStyle}>返回</button>
+          <button type="button" disabled={busy || !validId} onClick={save} style={{
+            background: color, border: 0, borderRadius: '8px', color: '#fff', cursor: busy || !validId ? 'default' : 'pointer',
+            font: 'inherit', fontSize: '12px', opacity: validId ? 1 : .45, padding: '7px 12px',
+          }}>{busy ? '正在保存…' : editing === undefined ? '创建状态' : '保存修改'}</button>
+        </div>
+      </div>}
+      {states.length === 0 && !formVisible && <div style={{
+        background: 'var(--dsw-alias-bg-layer-1, #222226)', borderRadius: '10px', marginTop: '18px', padding: '22px', textAlign: 'center',
+      }}>
+        <strong style={{ display: 'block', fontSize: '13px' }}>当前没有原生状态</strong>
+        <span style={{ display: 'block', fontSize: '12px', marginTop: '6px', opacity: .52 }}>普通对话不会额外创建状态；需要时再添加即可</span>
+      </div>}
+      {states.length > 0 && <div style={{ display: 'grid', gap: '10px', marginTop: '18px' }}>
+        {states.map(state => <article key={state.id} style={{
+          background: 'var(--dsw-alias-bg-layer-1, #222226)', border: '1px solid var(--dsw-alias-border-l2, #3e3e43)',
+          borderRadius: '11px', padding: '13px',
+        }}>
+          <div style={{ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
+            <strong style={{ fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: '12px' }}>{state.id}</strong>
+            <span style={{ background: `color-mix(in srgb, ${color} 13%, transparent)`, borderRadius: '999px', fontSize: '10px', padding: '2px 7px' }}>
+              v{state.revision}
+            </span>
+            <span style={{ fontSize: '10px', opacity: .46 }}>
+              {state.ownerModuleId === 'roleplay:user' ? '由你管理' : `由 ${state.ownerModuleId} 管理`}
+            </span>
+            {state.writerModuleId === 'roleplay:user' && state.ownerModuleId !== 'roleplay:user'
+              && <span style={{ fontSize: '10px', opacity: .46 }}>· 上次由你纠正</span>}
+            <button type="button" disabled={busy} onClick={() => { beginEdit(state) }} style={{ ...headerMenuItemStyle, marginLeft: 'auto' }}>编辑</button>
+          </div>
+          <pre style={{
+            fontSize: '11px', lineHeight: 1.55, margin: '10px 0 0', maxHeight: '180px', opacity: .7,
+            overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          }}>{JSON.stringify(state.value, undefined, 2)}</pre>
+        </article>)}
+      </div>}
+      {error !== undefined && <p role="alert" style={{
+        color: 'var(--dsw-alias-state-danger, #e06470)', fontSize: '12px', lineHeight: 1.5, margin: '14px 0 0',
+      }}>{error}</p>}
+    </section>
+  </div>
 }
 
 const memoryKindLabels: Record<AgentRpMemoryView['kind'], string> = {
@@ -10860,6 +11024,14 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok) throw new Error(response.error.message)
     if (!response.value.matched) throw new Error('当前 Host 未启用记忆管理')
   }
+  const manageState = async (sessionId: SessionId, request: RoleplayStateCommandRequest): Promise<void> => {
+    const scope = ctx.sessions.scope(sessionId)
+    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
+    if (session === undefined) throw new Error('当前角色会话不可用')
+    const response = await session.command(`/rp-state ${JSON.stringify(request)}`)
+    if (!response.ok) throw new Error(response.error.message)
+    if (!response.value.matched) throw new Error('当前 Host 未启用状态管理')
+  }
   const listCharacters = async (collection: CharacterLibraryCollection = 'active'): Promise<readonly CharacterLibrarySummary[]> => {
     const query = collection === 'active' ? '' : '?collection=archived'
     const value = await characterLibraryJson<{ readonly format: 0; readonly entries: readonly CharacterLibrarySummary[] }>(query)
@@ -11410,7 +11582,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} runtimeDiagnostics={runtimeDiagnostics} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listWorldInfos={listWorldInfos} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} prepareChatMigration={prepareChatMigration} prepareRpDistributionChatMigration={prepareRpDistributionChatMigration} launchPreparedChatMigration={launchPreparedChatMigration} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
+  }, props => <RoleplayHeader {...props} runtimeDiagnostics={runtimeDiagnostics} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listWorldInfos={listWorldInfos} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} prepareChatMigration={prepareChatMigration} prepareRpDistributionChatMigration={prepareRpDistributionChatMigration} launchPreparedChatMigration={launchPreparedChatMigration} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} manageState={manageState} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -11460,6 +11632,9 @@ export function apply(ctx: ClientContext): void {
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-memory',
+  }, () => null))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-state',
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',

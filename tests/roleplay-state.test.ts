@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { CommandId } from '@deepseek-ai/dsh-commands'
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
 import { renderCharacterPrompt } from '../src/prompt.ts'
+import { agentRpProjectionDefinition } from '../src/projection.ts'
 import {
   appendRoleplayState,
   readRoleplayStates,
   ROLEPLAY_STATE_MODULE_ID,
 } from '../src/roleplay-state.ts'
+import { executeRoleplayStateCommand } from '../src/roleplay-state-command.ts'
 import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
 import {
   appendRoleplayTurnSettlement,
@@ -53,10 +57,112 @@ test('writes conflict-checked state revisions and reconstructs them after reopen
     format: 0,
     id: 'state:scene',
     revision: 2,
+    ownerModuleId: 'roleplay:fixture',
     writerModuleId: 'roleplay:fixture',
     value: { scene: { weather: '雨', hour: 22 }, flags: ['arrived'] },
     eventSeq: second.eventSeq,
   }])
+})
+
+test('keeps module ownership stable while allowing a causally recorded player correction', () => {
+  const agent = { session: Session.create(SessionId('native-state-authority')) } as Agent
+  appendRoleplayState(agent.session, {
+    id: 'state:clock', expectedRevision: 0, writerModuleId: 'roleplay:clock', value: { hour: 21 },
+  })
+  assert.throws(() => appendRoleplayState(agent.session, {
+    id: 'state:clock', expectedRevision: 1, writerModuleId: 'roleplay:weather', value: { hour: 22 },
+  }), /owned by roleplay:clock, not roleplay:weather/u)
+
+  const request = {
+    format: 0 as const,
+    operation: 'set' as const,
+    id: 'state:clock',
+    expectedRevision: 1,
+    value: { hour: 22 },
+  }
+  const rawInput = JSON.stringify(request)
+  const commandId = CommandId('state-player-correction')
+  agent.session.append('command/run', {
+    commandId, name: 'rp-state', args: rawInput, source: { kind: 'user' },
+  })
+  const result = executeRoleplayStateCommand({ commandId, agent, rawInput })
+  agent.session.append('command/done', { commandId, ...result })
+
+  assert.deepEqual(readRoleplayStates(agent.session.events), [{
+    format: 0,
+    id: 'state:clock',
+    revision: 2,
+    ownerModuleId: 'roleplay:clock',
+    writerModuleId: 'roleplay:user',
+    sourceEventSeq: 1,
+    value: { hour: 22 },
+    eventSeq: 2,
+  }])
+  const resumed = Session.create(SessionId('native-state-authority-resumed'), agent.session.events)
+  assert.equal(readRoleplayStates(resumed.events)[0]?.ownerModuleId, 'roleplay:clock')
+
+  let projected = agentRpProjectionDefinition.init()
+  for (const event of agent.session.events) projected = agentRpProjectionDefinition.apply(projected, event)
+  assert.deepEqual(agentRpProjectionDefinition.wire.view(projected).nativeStates, [{
+    id: 'state:clock',
+    revision: 2,
+    ownerModuleId: 'roleplay:clock',
+    writerModuleId: 'roleplay:user',
+    eventSeq: 2,
+    value: { hour: 22 },
+  }])
+
+  const moduleUpdate = appendRoleplayState(agent.session, {
+    id: 'state:clock', expectedRevision: 2, writerModuleId: 'roleplay:clock', value: { hour: 23 },
+  })
+  assert.equal(moduleUpdate.revision, 3)
+  assert.equal(moduleUpdate.ownerModuleId, 'roleplay:clock')
+})
+
+test('rejects a player state event whose value does not match its cited command', () => {
+  const session = Session.create(SessionId('native-state-false-attribution'))
+  const request = JSON.stringify({
+    format: 0, operation: 'set', id: 'state:scene', expectedRevision: 0, value: { weather: '雨' },
+  })
+  const source = session.append('command/run', {
+    commandId: CommandId('state-false-attribution'), name: 'rp-state', args: request, source: { kind: 'user' },
+  })
+  session.append('agent-rp/state', {
+    format: 0,
+    id: 'state:scene',
+    revision: 1,
+    ownerModuleId: 'roleplay:user',
+    writerModuleId: 'roleplay:user',
+    sourceEventSeq: source.seq,
+    value: { weather: '晴' },
+  })
+
+  assert.throws(() => readRoleplayStates(session.events), /does not match its command source/u)
+})
+
+test('migrates actual legacy module state without accepting a forged legacy player write', () => {
+  const session = Session.create(SessionId('native-state-legacy-owner'))
+  session.append('agent-rp/state', {
+    format: 0,
+    id: 'state:legacy',
+    revision: 1,
+    writerModuleId: 'roleplay:legacy',
+    value: { ready: true },
+  })
+  assert.equal(readRoleplayStates(session.events)[0]?.ownerModuleId, 'roleplay:legacy')
+  assert.equal(appendRoleplayState(session, {
+    id: 'state:legacy', expectedRevision: 1, writerModuleId: 'roleplay:legacy', value: { ready: false },
+  }).revision, 2)
+
+  const forged = Session.create(SessionId('native-state-forged-legacy-player'))
+  forged.append('agent-rp/state', {
+    format: 0,
+    id: 'state:forged',
+    revision: 1,
+    writerModuleId: 'roleplay:user',
+    value: { accepted: false },
+  })
+  assert.throws(() => readRoleplayStates(forged.events), /cannot use the legacy ownership format/u)
 })
 
 test('rejects discontinuous durable state history instead of silently rebuilding the wrong value', () => {

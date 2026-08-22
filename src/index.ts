@@ -138,18 +138,24 @@ import {
   compileInitialSessionRoleplayTurnPresentation,
   compileSessionRoleplayTurnPresentationUpdate,
 } from './session-roleplay-turn-presentation.ts'
+import { executeRoleplayStateCommand } from './roleplay-state-command.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
 export { Config }
 export {
+  applyRoleplayStateEvent,
   appendRoleplayState,
+  appendUserRoleplayState,
   parseRoleplayStateRecord,
+  parseRoleplayStateCommandRequest,
   readRoleplayStates,
   renderRoleplayStateContext,
   ROLEPLAY_STATE_MODULE_ID,
+  ROLEPLAY_STATE_USER_WRITER_ID,
 } from './roleplay-state.ts'
 export type {
+  RoleplayStateCommandRequest,
   RoleplayStateRecord,
   RoleplayStateSnapshot,
   WriteRoleplayStateInput,
@@ -570,6 +576,13 @@ export function installAgentRp(
     recordInput: false,
     handler: executeAgentRpMemoryCommand,
   })
+  ctx.effect(() => commands.register({
+    name: 'rp-state',
+    description: 'explicitly edit durable native roleplay state',
+    input: { hint: '<private native state payload>' },
+    recordInput: false,
+    handler: executeRoleplayStateCommand,
+  }), 'agent-rp: native state player command')
   commands.register({
     name: 'rp-preset-configure',
     description: 'update this roleplay Session preset',
