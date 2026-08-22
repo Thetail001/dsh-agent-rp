@@ -8,9 +8,12 @@ import type {
   SillyTavernPresetContinuation,
   SillyTavernPresetPrompt,
 } from './import/sillytavern-preset.ts'
-import { substituteCardMacros } from './prompt.ts'
-import { substituteSillyTavernIdentityMacros } from './sillytavern-identity-macro.ts'
 import type { EjsTemplateResult } from './ejs-template.ts'
+import {
+  ReplayableRoleplayMacros,
+  type RoleplayMacroContext,
+  type RoleplayMacroMessage,
+} from './roleplay-macro.ts'
 
 /** Runtime values substituted into marker prompts and macros. */
 export interface PresetPromptInputs {
@@ -23,6 +26,8 @@ export interface PresetPromptInputs {
   readonly worldInfoAfter: readonly string[]
   readonly session: Session
   readonly pendingMessages?: readonly UserMessage[]
+  /** Prepared turn context shared with native card and world adapters. */
+  readonly macroContext?: RoleplayMacroContext
   readonly mvuEnabled?: boolean
   readonly renderTemplate?: (template: string) => EjsTemplateResult
 }
@@ -76,33 +81,11 @@ export type SillyTavernPromptPlan = RoleplayProviderPromptPlan
 export type SillyTavernContinuationPlan = RoleplayContinuationPlan
 export type SillyTavernInChatPrompt = RoleplayInChatPrompt
 
-interface MacroState {
-  readonly variables: Map<string, string>
-  readonly card?: ImportedCharacterCard
-  readonly userName: string
-  readonly userPersona?: string
-  readonly messages: readonly MacroMessage[]
-  readonly pendingInput: string
-  readonly lastUserMessage: string
-  readonly entropy: string
-  readonly stableEntropy: string
-  randomOrdinal: number
-  unsupported: number
-  templateFailures: number
-}
-
-interface MacroMessage {
-  readonly role: 'user' | 'assistant'
-  readonly content: string
-}
-
-const LAST_CHAT_MESSAGE_MACRO = '{{lastChatMessage}}'
-
 function macroMessageText(message: ReturnType<Session['deriveMessages']>[number] | UserMessage): string {
   return message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
 }
 
-function macroMessages(session: Session, pending: readonly UserMessage[]): readonly MacroMessage[] {
+function macroMessages(session: Session, pending: readonly UserMessage[]): readonly RoleplayMacroMessage[] {
   const history = session.deriveMessages()
   const historyIds = new Set(history.map(message => message.id))
   return [...history, ...pending.filter(message => !historyIds.has(message.id))].flatMap((message) => {
@@ -112,230 +95,36 @@ function macroMessages(session: Session, pending: readonly UserMessage[]): reado
   })
 }
 
-function lastRoleMessage(messages: readonly MacroMessage[], role?: MacroMessage['role']): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (message !== undefined && (role === undefined || message.role === role)) return message.content
-  }
-  return ''
-}
+interface PromptAssemblyDiagnostics { templateFailures: number }
 
-function macroClose(value: string, open: number): number | undefined {
-  let depth = 0
-  for (let index = open; index < value.length - 1; index += 1) {
-    const pair = value.slice(index, index + 2)
-    if (pair === '{{') {
-      depth += 1
-      index += 1
-      continue
-    }
-    if (pair !== '}}') continue
-    depth -= 1
-    index += 1
-    if (depth === 0) return index + 1
-  }
-  return undefined
-}
-
-function macroParts(source: string): string[] {
-  const parts: string[] = []
-  let depth = 0
-  let start = 0
-  for (let index = 0; index < source.length - 1; index += 1) {
-    const pair = source.slice(index, index + 2)
-    if (pair === '{{') {
-      depth += 1
-      index += 1
-      continue
-    }
-    if (pair === '}}') {
-      depth = Math.max(0, depth - 1)
-      index += 1
-      continue
-    }
-    if (pair !== '::' || depth !== 0) continue
-    parts.push(source.slice(start, index))
-    start = index + 2
-    index += 1
-  }
-  parts.push(source.slice(start))
-  return parts
-}
-
-function addVariable(current: string | undefined, addition: string): string {
-  const previous = current ?? '0'
-  try {
-    const parsed: unknown = JSON.parse(previous)
-    if (Array.isArray(parsed)) return JSON.stringify([...parsed, addition])
-  } catch {
-    // SillyTavern falls through to numeric addition or string concatenation.
-  }
-  const increment = Number(addition)
-  const numericPrevious = Number(previous)
-  return Number.isNaN(increment) || Number.isNaN(numericPrevious)
-    ? `${current ?? ''}${addition}`
-    : String(numericPrevious + increment)
-}
-
-function hashText(value: string): number {
-  let hash = 2166136261
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  return hash >>> 0
-}
-
-function deterministicChoice(choices: readonly string[], state: MacroState, stable: boolean): string {
-  const ordinal = state.randomOrdinal
-  state.randomOrdinal += 1
-  if (choices.length === 0) return ''
-  const entropy = stable ? state.stableEntropy : state.entropy
-  const hash = hashText(`${entropy}\u0000${ordinal}\u0000${choices.join('\u0000')}`)
-  return choices[hash % choices.length] ?? ''
-}
-
-function deterministicRoll(source: string, state: MacroState): string {
-  const ordinal = state.randomOrdinal
-  state.randomOrdinal += 1
-  const integer = /^\d+$/u.exec(source)
-  const dice = /^(\d*)d(\d+)((?:[+-]\d+)*)$/iu.exec(source)
-  const count = integer !== null ? 1 : dice?.[1] === '' ? 1 : Number(dice?.[1])
-  const sides = Number(integer?.[0] ?? dice?.[2])
-  if (!Number.isSafeInteger(count) || count < 1 || count > 1_000
-    || !Number.isSafeInteger(sides) || sides < 1 || sides > 1_000_000) return ''
-  let total = 0
-  let seed = hashText(`${state.entropy}\u0000${ordinal}\u0000roll\u0000${source}`)
-  for (let index = 0; index < count; index += 1) {
-    seed = hashText(`${seed}\u0000${index}`)
-    total += seed % sides + 1
-  }
-  for (const modifier of dice?.[3]?.matchAll(/([+-])(\d+)/gu) ?? []) {
-    const value = Number(modifier[2])
-    if (!Number.isSafeInteger(value)) return ''
-    total += modifier[1] === '+' ? value : -value
-  }
-  return String(total)
-}
-
-function cardMacro(state: MacroState, value: string | undefined): string {
-  return state.card === undefined || value === undefined
-    ? '' : substituteCardMacros(value, state.card, state.userName)
-}
-
-function characterVersion(card: ImportedCharacterCard | undefined): string {
-  if (card === undefined || typeof card.raw !== 'object' || card.raw === null || Array.isArray(card.raw)) return ''
-  const root = card.raw as Record<string, unknown>
-  const data = typeof root.data === 'object' && root.data !== null && !Array.isArray(root.data)
-    ? root.data as Record<string, unknown> : root
-  return typeof data.character_version === 'string' ? data.character_version : ''
-}
-
-function evaluateMacro(source: string, state: MacroState): string {
-  const parts = macroParts(source)
-  const name = parts.shift()?.trim().toLowerCase() ?? ''
-  if (name.startsWith('//')) return ''
-  if (name === 'setvar') {
-    const variable = parts.shift()?.trim() ?? ''
-    const value = expandMacros(parts.join('::'), state)
-    if (variable !== '') state.variables.set(variable, value)
-    return ''
-  }
-  if (name === 'addvar') {
-    const variable = parts.shift()?.trim() ?? ''
-    const value = expandMacros(parts.join('::'), state)
-    if (variable !== '') state.variables.set(variable, addVariable(state.variables.get(variable), value))
-    return ''
-  }
-  if (name === 'getvar') return state.variables.get(parts.join('::').trim()) ?? ''
-  if (name === 'random' || name === 'pick') {
-    const choices = parts.map(value => expandMacros(value, state).trim())
-    return deterministicChoice(choices, state, name === 'pick')
-  }
-  if (name === 'roll') return deterministicRoll(parts.join('::').trim(), state)
-  if (name === 'group') return state.card?.nickname?.trim() || state.card?.name || ''
-  if (name === 'persona') return state.userPersona ?? ''
-  if (name === 'description' || name === 'chardescription') return cardMacro(state, state.card?.description)
-  if (name === 'personality' || name === 'charpersonality') return cardMacro(state, state.card?.personality)
-  if (name === 'scenario' || name === 'charscenario') return cardMacro(state, state.card?.scenario)
-  if (name === 'mesexamples' || name === 'mesexamplesraw') return cardMacro(state, state.card?.messageExample)
-  if (name === 'greeting' || name === 'charfirstmessage') {
-    const index = Number(parts.join('::').trim() || '0')
-    if (!Number.isSafeInteger(index) || index < 0) return ''
-    return cardMacro(state, index === 0 ? state.card?.firstMessage : state.card?.alternateGreetings[index - 1])
-  }
-  if (name === 'version' || name === 'charversion' || name === 'char_version') {
-    return characterVersion(state.card)
-  }
-  if (name === 'charprompt') return cardMacro(state, state.card?.systemPrompt)
-  if (name === 'charinstruction') return cardMacro(state, state.card?.postHistoryInstructions)
-  if (name === 'input') return state.pendingInput
-  if (name === 'lastmessage') return lastRoleMessage(state.messages)
-  if (name === 'lastusermessage') return state.lastUserMessage
-  if (name === 'lastcharmessage') return lastRoleMessage(state.messages, 'assistant')
-  if (name === 'lastmessageid') return state.messages.length === 0 ? '' : String(state.messages.length - 1)
-  if (name === 'lastchatmessage') return LAST_CHAT_MESSAGE_MACRO
-  if (name === 'user') return state.userName
-  if (name === 'newline') {
-    const count = Number(parts.join('::').trim() || '1')
-    return '\n'.repeat(Number.isSafeInteger(count) && count > 0 ? Math.min(count, 100) : 1)
-  }
-  if (name === 'noop' || name === 'trim') return ''
-  state.unsupported += 1
-  // SillyTavern deliberately preserves unknown macros so extensions can own a
-  // later generation phase. Resolve only nested built-ins before handing off.
-  return `{{${expandMacros(source, state)}}}`
-}
-
-function expandMacros(value: string, state: MacroState): string {
-  let result = ''
-  let cursor = 0
-  while (cursor < value.length) {
-    const open = value.indexOf('{{', cursor)
-    if (open < 0) {
-      result += value.slice(cursor)
-      break
-    }
-    result += value.slice(cursor, open)
-    const close = macroClose(value, open)
-    if (close === undefined) {
-      result += value.slice(open)
-      break
-    }
-    result += evaluateMacro(value.slice(open + 2, close - 2), state)
-    cursor = close
-  }
-  return result.trim()
-}
-
-function applyFormat(format: string, variable: string, value: string, state: MacroState): string {
+function applyFormat(format: string, variable: string, value: string, macros: ReplayableRoleplayMacros): string {
   if (value.trim() === '') return ''
-  return expandMacros(format.replaceAll(`{{${variable}}}`, value).replaceAll('{0}', value), state)
+  return macros.expand(format.replaceAll(`{{${variable}}}`, value).replaceAll('{0}', value))
 }
 
 function markerText(
   prompt: SillyTavernPresetPrompt,
   preset: ImportedSillyTavernPreset,
   inputs: PresetPromptInputs,
-  state: MacroState,
+  macros: ReplayableRoleplayMacros,
 ): string | undefined {
   const card = inputs.card
   switch (prompt.identifier) {
     case 'worldInfoBefore':
-      return inputs.worldInfoBefore.map(value => applyFormat(preset.formats.worldInfo, 'worldInfo', value, state)).filter(Boolean).join('\n\n')
+      return inputs.worldInfoBefore.map(value => applyFormat(preset.formats.worldInfo, 'worldInfo', value, macros)).filter(Boolean).join('\n\n')
     case 'worldInfoAfter':
-      return inputs.worldInfoAfter.map(value => applyFormat(preset.formats.worldInfo, 'worldInfo', value, state)).filter(Boolean).join('\n\n')
-    case 'charDescription': return card === undefined ? '' : substituteCardMacros(card.description, card, inputs.userName)
+      return inputs.worldInfoAfter.map(value => applyFormat(preset.formats.worldInfo, 'worldInfo', value, macros)).filter(Boolean).join('\n\n')
+    case 'charDescription': return card?.description ?? ''
     case 'charPersonality':
       return card === undefined ? '' : applyFormat(
-        preset.formats.personality, 'personality', substituteCardMacros(card.personality, card, inputs.userName), state,
+        preset.formats.personality, 'personality', card.personality, macros,
       )
     case 'scenario':
       return card === undefined ? '' : applyFormat(
-        preset.formats.scenario, 'scenario', substituteCardMacros(card.scenario, card, inputs.userName), state,
+        preset.formats.scenario, 'scenario', card.scenario, macros,
       )
     case 'personaDescription': return inputs.userPersona ?? ''
-    case 'dialogueExamples': return card === undefined ? '' : substituteCardMacros(card.messageExample, card, inputs.userName)
+    case 'dialogueExamples': return card?.messageExample ?? ''
     case 'chatHistory': return undefined
     default: return prompt.content
   }
@@ -345,54 +134,39 @@ function promptText(
   prompt: SillyTavernPresetPrompt,
   preset: ImportedSillyTavernPreset,
   inputs: PresetPromptInputs,
-  state: MacroState,
+  macros: ReplayableRoleplayMacros,
+  diagnostics: PromptAssemblyDiagnostics,
 ): string | undefined {
-  const marker = prompt.marker ? markerText(prompt, preset, inputs, state) : prompt.content
+  const marker = prompt.marker ? markerText(prompt, preset, inputs, macros) : prompt.content
   if (marker === undefined) return undefined
   const card = inputs.card
   let value = marker
   if (prompt.identifier === 'main' && card !== undefined && card.systemPrompt.trim() !== '' && !prompt.forbidOverrides) {
-    value = substituteCardMacros(card.systemPrompt, card, inputs.userName).replaceAll('{{original}}', marker)
+    value = card.systemPrompt.replaceAll('{{original}}', marker)
   }
   if (prompt.identifier === 'jailbreak' && card !== undefined && card.postHistoryInstructions.trim() !== '' && !prompt.forbidOverrides) {
-    value = substituteCardMacros(card.postHistoryInstructions, card, inputs.userName).replaceAll('{{original}}', marker)
+    value = card.postHistoryInstructions.replaceAll('{{original}}', marker)
   }
-  const identity = promptIdentity(inputs)
-  const expanded = expandMacros(card === undefined
-    ? substituteSillyTavernIdentityMacros(value, identity)
-    : substituteCardMacros(value, card, inputs.userName), state)
+  const expanded = macros.expand(value)
   if (!/<%[=_-]?[\s\S]*?%>/imu.test(expanded)) return expanded
   if (inputs.renderTemplate === undefined) {
-    state.templateFailures += 1
+    diagnostics.templateFailures += 1
     return undefined
   }
   const rendered = inputs.renderTemplate(expanded)
   if (!rendered.ok) {
-    state.templateFailures += 1
+    diagnostics.templateFailures += 1
     return undefined
   }
   return rendered.text
 }
 
-function promptIdentity(inputs: PresetPromptInputs): { readonly characterName: string; readonly userName?: string } {
-  const card = inputs.card
-  return {
-    characterName: card?.nickname?.trim() || card?.name || inputs.characterName?.trim() || '角色',
-    ...(inputs.userName === undefined ? {} : { userName: inputs.userName }),
-  }
-}
-
 function continuationPlan(
   continuation: SillyTavernPresetContinuation | undefined,
-  inputs: PresetPromptInputs,
-  state: MacroState,
+  macros: ReplayableRoleplayMacros,
 ): RoleplayContinuationPlan | undefined {
   if (continuation === undefined) return undefined
-  const card = inputs.card
-  const source = card === undefined
-    ? substituteSillyTavernIdentityMacros(continuation.nudgePrompt, promptIdentity(inputs))
-    : substituteCardMacros(continuation.nudgePrompt, card, inputs.userName)
-  return { ...continuation, nudgePrompt: expandMacros(source, state) }
+  return { ...continuation, nudgePrompt: macros.expand(continuation.nudgePrompt) }
 }
 
 /** Insert expanded in-chat modules using SillyTavern's depth, priority, and role ordering. */
@@ -509,24 +283,21 @@ export function assembleSillyTavernPreset(
 ): RoleplayAssembledPrompt {
   const byId = new Map(preset.prompts.map(prompt => [prompt.identifier, prompt]))
   const messages = macroMessages(inputs.session, inputs.pendingMessages ?? [])
-  const state: MacroState = {
-    variables: new Map(),
+  const macros = new ReplayableRoleplayMacros(inputs.macroContext ?? {
     ...(inputs.card === undefined ? {} : { card: inputs.card }),
-    userName: inputs.userName?.trim() || '用户',
+    ...(inputs.characterName === undefined ? {} : { characterName: inputs.characterName }),
+    ...(inputs.userName === undefined ? {} : { userName: inputs.userName }),
     ...(inputs.userPersona === undefined ? {} : { userPersona: inputs.userPersona }),
     messages,
     pendingInput: (inputs.pendingMessages ?? []).map(macroMessageText).filter(Boolean).join('\n'),
-    lastUserMessage: lastRoleMessage(messages, 'user'),
     entropy: JSON.stringify([
       String(inputs.session.id),
       inputs.session.seq,
       ...(inputs.pendingMessages ?? []).map(message => String(message.id)),
     ]),
     stableEntropy: String(inputs.session.id),
-    randomOrdinal: 0,
-    unsupported: 0,
-    templateFailures: 0,
-  }
+  })
+  const diagnostics: PromptAssemblyDiagnostics = { templateFailures: 0 }
   const before: RoleplayOrderedPrompt[] = []
   const after: RoleplayOrderedPrompt[] = []
   const inChat: RoleplayInChatPrompt[] = []
@@ -543,7 +314,7 @@ export function assembleSillyTavernPreset(
       pastHistory = true
       continue
     }
-    const value = promptText(prompt, preset, inputs, state)
+    const value = promptText(prompt, preset, inputs, macros, diagnostics)
     if (value === undefined || value.trim() === '') continue
     if (prompt.injectionPosition === 1) {
       inChat.push({
@@ -564,7 +335,7 @@ export function assembleSillyTavernPreset(
       content: '每次回复都必须在正文末尾完整输出一个 <UpdateVariable><Analysis>…</Analysis><JSONPatch>[…]</JSONPatch></UpdateVariable>；没有变量变化时 JSONPatch 也输出空数组。',
     })
   }
-  const continuation = continuationPlan(preset.continuation, inputs, state)
+  const continuation = continuationPlan(preset.continuation, macros)
   return {
     beforeHistory: before,
     afterHistory: after,
@@ -572,7 +343,7 @@ export function assembleSillyTavernPreset(
     includeHistory,
     ...(continuation === undefined ? {} : { continuation }),
     enabledPromptCount,
-    unsupportedMacroCount: state.unsupported,
-    templateFailureCount: state.templateFailures,
+    unsupportedMacroCount: macros.unsupportedCount,
+    templateFailureCount: diagnostics.templateFailures,
   }
 }

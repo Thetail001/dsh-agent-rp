@@ -11,6 +11,7 @@ import type { EjsTemplateMessage } from './ejs-template.ts'
 import { PROMPT_REGEX_SOURCE_MARKER, readPromptRegexSourceMarker } from './frontend-regex.ts'
 import { substituteSillyTavernIdentityMacros } from './sillytavern-identity-macro.ts'
 import { createNativeWorldEngine } from './world-engine.ts'
+import { ReplayableRoleplayMacros } from './roleplay-macro.ts'
 
 type DerivedSessionMessage = ReturnType<Session['deriveMessages']>[number]
 
@@ -179,33 +180,35 @@ export function renderImportedCharacterPrompt(
   statData?: import('@deepseek-ai/dsh-session').JsonValue,
   userPersona?: string,
   templateOptions: LorebookActivationOptions = {},
+  macros?: ReplayableRoleplayMacros,
 ): string {
   const name = card.nickname?.trim() || card.name
   const original = `你是${name}。直接以${name}的身份与用户相处和交谈。`
+  const expand = (value: string): string => macros?.expand(value) ?? substituteCardMacros(value, card, userName)
   const systemSource = card.systemPrompt.trim().length === 0
     ? original
-    : substituteCardMacros(card.systemPrompt, card, userName).replaceAll('{{original}}', original)
+    : expand(card.systemPrompt.replaceAll('{{original}}', original))
   const system = renderCardTemplate(systemSource, templateOptions)
   const labeledField = (label: string, value: string): readonly string[] => {
-    const rendered = renderCardTemplate(substituteCardMacros(value, card, userName), templateOptions)
+    const rendered = renderCardTemplate(expand(value), templateOptions)
     return rendered.trim().length === 0 ? [] : [`${label}：${rendered}`]
   }
   const parts = [
     system,
-    ...loreBefore.map(value => substituteCardMacros(value, card, userName)),
+    ...loreBefore.map(expand),
     ...labeledField('角色描述', card.description),
     ...labeledField('性格', card.personality),
     ...labeledField('当前场景', card.scenario),
     ...(userPersona?.trim() ? [`与角色对话的人：${userPersona.trim()}`] : []),
-    ...(card.messageExample.trim().length === 0 ? [] : [`对话示例：\n${renderCardTemplate(substituteCardMacros(card.messageExample, card, userName), templateOptions)}`]),
-    ...loreAfter.map(value => substituteCardMacros(value, card, userName)),
+    ...(card.messageExample.trim().length === 0 ? [] : [`对话示例：\n${renderCardTemplate(expand(card.messageExample), templateOptions)}`]),
+    ...loreAfter.map(expand),
     CHARACTER_BEHAVIOR,
     MEMORY_BEHAVIOR,
     IMPORT_BEHAVIOR,
   ]
   if (card.postHistoryInstructions.trim().length > 0) {
     parts.push(renderCardTemplate(
-      substituteCardMacros(card.postHistoryInstructions, card, userName).replaceAll('{{original}}', ''),
+      expand(card.postHistoryInstructions.replaceAll('{{original}}', '')),
       templateOptions,
     ))
   }

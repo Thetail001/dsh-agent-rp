@@ -35,6 +35,10 @@ import {
   tavernInjectedScanText,
   type TavernHelperState,
 } from './tavern-helper.ts'
+import {
+  ReplayableRoleplayMacros,
+  type RoleplayMacroContext,
+} from './roleplay-macro.ts'
 
 /** Exact replay key for the Session surface and newly claimed messages used by preparation. */
 export interface RoleplayTurnInputKey {
@@ -258,11 +262,29 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   const characterName = resolved.card?.nickname?.trim() || resolved.card?.name
     || snapshot.actor?.name || snapshot.experience.name
   const userName = snapshot.participant?.name
+  const transcript = roleplayVisibleTranscript(input.session, pendingMessages)
+  const macroContext: RoleplayMacroContext = {
+    ...(resolved.card === undefined ? {} : { card: resolved.card }),
+    characterName,
+    ...(userName === undefined ? {} : { userName }),
+    ...(snapshot.participant?.description === undefined
+      ? {} : { userPersona: snapshot.participant.description }),
+    messages: transcript.flatMap(message => message.role === 'system'
+      ? [] : [{ role: message.role, content: message.content }]),
+    pendingInput: pendingMessages.flatMap(message => message.content
+      .flatMap(block => block.type === 'text' ? [block.text] : [])).join('\n'),
+    entropy: JSON.stringify([
+      String(input.session.id),
+      input.session.seq,
+      ...pendingMessages.map(message => String(message.id)),
+    ]),
+    stableEntropy: String(input.session.id),
+  }
   const options = templateOptions(input.templateEngine, {
     characterName,
     userName: userName ?? '用户',
     messages: [...roleplayVisibleDialogue(input.session, pendingMessages), ...injectedScanText],
-    transcript: roleplayVisibleTranscript(input.session, pendingMessages),
+    transcript,
     variableScopes: variableScopes(tavern),
     ...(resolved.mvu === undefined ? {} : { statData: resolved.mvu.statData }),
     worldInfoBooks: createEjsWorldInfoBooks(books),
@@ -297,6 +319,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
       worldInfoAfter: loreAfter,
       session: input.session,
       pendingMessages,
+      macroContext,
       mvuEnabled: resolved.mvu !== undefined,
       ...(options.renderTemplate === undefined ? {} : { renderTemplate: options.renderTemplate }),
     })
@@ -305,6 +328,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     unsupportedMacros = assembled.unsupportedMacroCount
     templateFailures = assembled.templateFailureCount
   } else if (resolved.card !== undefined) {
+    const cardMacros = new ReplayableRoleplayMacros(macroContext)
     systemPromptText = renderImportedCharacterPrompt(
       resolved.card,
       loreBefore,
@@ -313,7 +337,9 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
       resolved.mvu?.statData,
       snapshot.participant?.description,
       options,
+      cardMacros,
     )
+    unsupportedMacros = cardMacros.unsupportedCount
   } else if (resolved.importedChat !== undefined) {
     systemPromptText = [
       ...experienceBefore,

@@ -329,6 +329,48 @@ test('preserves native card prompt ordering across experience and actor worlds',
   ])
 })
 
+test('uses the shared replay-safe macro boundary for a native card turn', () => {
+  const source = cardFixture()
+  const raw = structuredClone(source.raw) as { data: Record<string, unknown> }
+  Object.assign(raw.data, {
+    description: '同行者：{{persona}}',
+    scenario: '路线：{{pick::钟楼::港口::旧街}}',
+    system_prompt: '{{char}}听见{{user}}说：{{input}} / {{lastUserMessage}}',
+    post_history_instructions: '角色版本：{{charVersion}}；骰点：{{roll::1d6}}；{{extension-owned}}',
+  })
+  const card = parseCharacterCardJson(JSON.stringify(raw))
+  const persona = {
+    id: 'persona-00000000-0000-4000-8000-000000000030',
+    name: '小满',
+    description: '刚到海城的旅人。',
+  }
+  const seed = createCharacterCardSessionSeed(
+    card,
+    attachment('turn-plan-native-macros', '白露.json'),
+    0,
+    card.firstMessage,
+    { transport: 'json' },
+    persona.name,
+    persona,
+  )
+  const session = Session.create(SessionId('turn-plan-native-macros'), seed)
+  const pending = createUserMessage({
+    source: { kind: 'user' }, content: [{ type: 'text', text: '今晚去哪里？' }],
+  })
+  const resolved = resolveSessionRoleplayRuntime({ session, deployment })
+
+  const first = prepareRoleplayTurn({ session, pendingMessages: [pending], deployment, resolved })
+  const replay = prepareRoleplayTurn({ session, pendingMessages: [pending], deployment, resolved })
+
+  assert.equal(replay.prompt.systemPromptText, first.prompt.systemPromptText)
+  assert.match(first.prompt.systemPromptText, /白露听见小满说：今晚去哪里？ \/ 今晚去哪里？/u)
+  assert.match(first.prompt.systemPromptText, /同行者：刚到海城的旅人。/u)
+  assert.match(first.prompt.systemPromptText, /路线：(钟楼|港口|旧街)/u)
+  assert.match(first.prompt.systemPromptText, /角色版本：1；骰点：[1-6]/u)
+  assert.doesNotMatch(first.prompt.systemPromptText, /\{\{/u)
+  assert.equal(first.prompt.diagnostics.unsupportedMacros, 1)
+})
+
 test('compiles modular prompts, EJS, MVU, generation, and script injections into one plan', async () => {
   const card = cardFixture()
   const persona = {
