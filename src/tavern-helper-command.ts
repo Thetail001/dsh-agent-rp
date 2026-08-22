@@ -1,18 +1,53 @@
 /** Host adapter for isolated Tavern Helper variable writes. */
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { RoleplayTurnPresentation } from './roleplay-turn-presentation-types.ts'
 import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
 import { readActiveSessionPreset } from './import/session-preset.ts'
 import { presetTavernHelperScripts } from './import/sillytavern-preset.ts'
 import { executeTavernChatMutation } from './tavern-chat.ts'
 import {
   applyTavernHelperMutation,
+  appendTavernHelperStateAttachment,
   encodeTavernHelperState,
   initializeTavernHelperPresetState,
   initializeTavernHelperState,
   parseTavernHelperMutationRequest,
   readTavernHelperState,
+  readTavernHelperStateSnapshotAt,
+  type TavernMutationCause,
 } from './tavern-helper.ts'
+
+function latestCausalPresentation(agent: Agent, replySeq: number): RoleplayTurnPresentation | undefined {
+  for (let index = agent.session.events.length - 1; index >= 0; index -= 1) {
+    const event = agent.session.events[index]
+    if (event?.type !== 'agent-rp/turn-presentation') continue
+    if (event.data.selectedReply?.sourceSeq === replySeq || event.data.selectedReply?.surfaceSeq === replySeq) {
+      return event.data
+    }
+  }
+  return undefined
+}
+
+function latestVisibleAssistantSeq(agent: Agent): number | undefined {
+  for (const seq of [...agent.session.surface.nodes].reverse()) {
+    const event = agent.session.events.find(candidate => candidate.seq === seq)
+    if (event?.type === 'assistant/message') return event.seq
+  }
+  return undefined
+}
+
+/** Reject forged or stale cross-Session mutation attribution before applying any write. */
+export function validateTavernMutationCause(agent: Agent, cause: TavernMutationCause | undefined): void {
+  if (cause === undefined) return
+  if (cause.sessionId !== String(agent.session.id)) {
+    throw new Error('Tavern Helper mutation cause belongs to another Session')
+  }
+  const reply = agent.session.events.find(event => event.seq === cause.replySeq)
+  if (reply?.type !== 'assistant/message') {
+    throw new Error('Tavern Helper mutation cause does not reference an assistant reply')
+  }
+}
 
 /** Rebuild the active card and preset script namespaces around an optional prior snapshot. */
 export function prepareTavernHelperState(agent: Agent, previous = readTavernHelperState(agent.session.events)) {
@@ -36,12 +71,28 @@ export function prepareTavernHelperState(agent: Agent, previous = readTavernHelp
 export function executeTavernHelperMutation(invocation: {
   readonly agent: Agent
   readonly rawInput: string
-}): { readonly kind: 'success'; readonly text: string } {
-  const initialized = prepareTavernHelperState(invocation.agent)
+}): { readonly kind: 'success'; readonly text?: string; readonly sourceEventSeq?: number } {
   const request = parseTavernHelperMutationRequest(invocation.rawInput)
-  const chat = 'operation' in request && (request.operation === 'set-chat-messages'
+  validateTavernMutationCause(invocation.agent, request.cause)
+  const presentation = request.cause === undefined
+    ? undefined
+    : latestCausalPresentation(invocation.agent, request.cause.replySeq)
+  const previous = presentation?.state.tavernStateSeq === undefined
+    ? readTavernHelperState(invocation.agent.session.events)
+    : readTavernHelperStateSnapshotAt(
+        invocation.agent.session.events,
+        presentation.state.tavernStateSeq,
+      ).state
+  const initialized = prepareTavernHelperState(invocation.agent, previous)
+  const active = request.cause === undefined || latestVisibleAssistantSeq(invocation.agent)
+    === (presentation?.selectedReply?.surfaceSeq ?? request.cause.replySeq)
+  const isChatMutation = 'operation' in request && (request.operation === 'set-chat-messages'
     || request.operation === 'create-chat-messages' || request.operation === 'delete-chat-messages'
     || request.operation === 'rotate-chat-messages' || request.operation === 'set-chat-hidden')
+  if (isChatMutation && request.cause !== undefined && !active) {
+    throw new Error('Tavern Helper chat mutation belongs to a reply that is no longer selected')
+  }
+  const chat = isChatMutation
     ? executeTavernChatMutation(invocation.agent, request, initialized.hiddenPrefix)
     : undefined
   const mutated = applyTavernHelperMutation(initialized, request)
@@ -51,6 +102,10 @@ export function executeTavernHelperMutation(invocation: {
     ...(chat.messageVariables === undefined
       ? {}
       : { scopes: { ...mutated.scopes, message: chat.messageVariables } }),
+  }
+  if (request.cause !== undefined) {
+    const attached = appendTavernHelperStateAttachment(invocation.agent.session, next, request.cause, active)
+    return { kind: 'success', sourceEventSeq: attached.eventSeq }
   }
   return { kind: 'success', text: encodeTavernHelperState(next) }
 }

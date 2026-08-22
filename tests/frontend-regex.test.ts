@@ -2545,6 +2545,7 @@ test('consumes only one-shot prompt injections after a completed generation even
   runInNewContext(source!, context)
   ;(context.dispatchHost as (data: Record<string, unknown>) => void)({
     action: 'event', eventType: 'generation_ended', args: [0],
+    mutationCause: { format: 0, sessionId: 'session-test', replySeq: 7 },
   })
   await new Promise(resolve => setTimeout(resolve, 0))
   const mutation = (context.posted as Record<string, unknown>[])
@@ -2552,6 +2553,9 @@ test('consumes only one-shot prompt injections after a completed generation even
   assert.deepEqual(JSON.parse(JSON.stringify(mutation?.prompts)), [
     { id: 'lasting', position: 'in_chat', depth: 0, role: 'system', content: '保留', shouldScan: true, once: false },
   ])
+  assert.deepEqual(JSON.parse(JSON.stringify(mutation?.cause)), {
+    format: 0, sessionId: 'session-test', replySeq: 7,
+  })
 })
 
 test('persists canonical MVU initialization listener changes', async () => {

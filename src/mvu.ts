@@ -88,10 +88,13 @@ export function readCurrentMvuState(
       lastError = event.data.lastError
       continue
     }
-    if (event.type === 'agent-rp/tavern-state' || (event.type === 'command/done' && event.data.kind === 'success')) {
+    if (event.type === 'agent-rp/tavern-state' || event.type === 'agent-rp/tavern-state-attachment'
+      || (event.type === 'command/done' && event.data.kind === 'success')) {
       const scriptState = event.type === 'agent-rp/tavern-state'
         ? event.data
-        : decodeTavernHelperState(event.data.text)
+        : event.type === 'agent-rp/tavern-state-attachment'
+          ? event.data.active ? event.data.state : undefined
+          : decodeTavernHelperState(event.data.text)
       const scope = scriptState?.lastMutation?.scope
       if (scriptState !== undefined && (scope === 'message' || scope === 'chat')) {
         const variables = scriptState.scopes[scope]

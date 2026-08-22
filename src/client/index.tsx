@@ -40,7 +40,13 @@ import { chatMigrationPermissionOwnerId } from './chat-migration.ts'
 import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/types.ts'
 import { parseTavernHelperScripts } from '../import/tavern-helper.ts'
 import { importTavernRegex } from '../tavern-regex.ts'
-import type { TavernHelperMutationRequest, TavernScriptTree, TavernScriptTreeScope, TavernWorldbookEntry } from '../tavern-helper.ts'
+import type {
+  TavernHelperMutationRequest,
+  TavernMutationCause,
+  TavernScriptTree,
+  TavernScriptTreeScope,
+  TavernWorldbookEntry,
+} from '../tavern-helper.ts'
 import {
   tavernExtensionSettingsIdentity,
   tavernScriptIdentity,
@@ -6978,6 +6984,14 @@ function RoleplayStatusDialog({ characterName, source, onClose }: {
 }
 
 type RunTavernMutation = (sessionId: SessionId, request: TavernHelperMutationRequest) => Promise<void>
+
+function tavernMutationCause(value: unknown, sessionId: SessionId): TavernMutationCause | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const cause = value as Record<string, unknown>
+  if (cause.format !== 0 || cause.sessionId !== String(sessionId)
+    || !Number.isSafeInteger(cause.replySeq) || Number(cause.replySeq) < 0) return undefined
+  return { format: 0, sessionId: String(sessionId), replySeq: Number(cause.replySeq) }
+}
 type RunTavernTrigger = (sessionId: SessionId) => Promise<void>
 type RunPresetConfiguration = (sessionId: SessionId, request: PresetConfigurationRequest) => Promise<void>
 type RunTavernGeneration = (
@@ -8167,7 +8181,12 @@ function TavernScriptRuntime({
         continue
       }
       broadcast({ action: 'event', eventType: 'message_received', args: [message.messageId, 'normal'] })
-      broadcast({ action: 'event', eventType: 'generation_ended', args: [message.messageId] })
+      broadcast({
+        action: 'event',
+        eventType: 'generation_ended',
+        args: [message.messageId],
+        mutationCause: { format: 0, sessionId: String(sessionId), replySeq: message.seq },
+      })
     }
   }, [projection.tavern?.messages, sessionId])
   useEffect(() => {
@@ -8211,6 +8230,7 @@ function TavernScriptRuntime({
         readonly markers?: unknown
         readonly payload?: unknown
         readonly startupMs?: unknown
+        readonly cause?: unknown
       }
       if (message.source === 'dsh-agent-rp-tavern-loader' && message.action === 'bootstrap-request') {
         const current = scriptStartupTimings.current.get(entry.key) ?? {}
@@ -8242,6 +8262,10 @@ function TavernScriptRuntime({
         return
       }
       if (message.source !== 'dsh-agent-rp-tavern-script') return
+      const cause = tavernMutationCause(message.cause, sessionId)
+      const requestCause: { readonly cause?: TavernMutationCause } = message.cause === undefined
+        ? {}
+        : { cause: cause ?? { format: 0, sessionId: '', replySeq: -1 } }
       if (message.action === 'startup-phase' && (message.value === 'runtime' || message.value === 'script')) {
         const phase = message.value
         const current = scriptStartupTimings.current.get(entry.key) ?? {}
@@ -8701,7 +8725,10 @@ function TavernScriptRuntime({
         return
       }
       if (message.action === 'event-emit' && typeof message.eventType === 'string' && Array.isArray(message.args)) {
-        broadcast({ action: 'event', eventType: message.eventType, args: message.args }, event.source as Window)
+        broadcast({
+          action: 'event', eventType: message.eventType, args: message.args,
+          ...(cause === undefined ? {} : { mutationCause: cause }),
+        }, event.source as Window)
         return
       }
       if (message.action === 'injections-replace' && typeof message.requestId === 'string'
@@ -8715,6 +8742,7 @@ function TavernScriptRuntime({
           prompts: message.prompts as Extract<TavernHelperMutationRequest, {
             operation: 'replace-script-injections'
           }>['prompts'],
+          ...requestCause,
         }
         mutationQueue.current = mutationQueue.current.then(() => runMutation(sessionId, request)).then(() => {
           target.postMessage({ source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: true }, '*')
@@ -8767,6 +8795,7 @@ function TavernScriptRuntime({
             start: Math.min(start, end),
             end: Math.max(start, end),
             hidden: visibility[1].toLowerCase() === 'hide',
+            ...requestCause,
           }
           mutationQueue.current = mutationQueue.current.then(() => runMutation(sessionId, request)).then(resolve, reject)
           return
@@ -8816,7 +8845,10 @@ function TavernScriptRuntime({
           }, '*')
           return
         }
-        const request = message.request as TavernHelperMutationRequest
+        const request = {
+          ...(message.request as TavernHelperMutationRequest),
+          ...requestCause,
+        } as TavernHelperMutationRequest
         mutationQueue.current = mutationQueue.current.then(() => runMutation(sessionId, request)).then(() => {
           target.postMessage({ source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: true }, '*')
         }).catch((reason: unknown) => {
@@ -8840,8 +8872,11 @@ function TavernScriptRuntime({
       const target = event.source as Window
       const variables = message.variables as Record<string, JsonValue>
       const request: TavernHelperMutationRequest = message.scope === 'script'
-        ? { format: 0, scope: 'script', scriptScope: entry.scope, scriptId: entry.script.id, variables }
-        : { format: 0, scope: message.scope, variables }
+        ? {
+            format: 0, scope: 'script', scriptScope: entry.scope, scriptId: entry.script.id, variables,
+            ...requestCause,
+          }
+        : { format: 0, scope: message.scope, variables, ...requestCause }
       mutationQueue.current = mutationQueue.current.then(() => runMutation(sessionId, request)).then(() => {
         target.postMessage({ source: 'dsh-agent-rp-host', action: 'variables-result', requestId: message.requestId, ok: true }, '*')
       }).catch((reason: unknown) => {

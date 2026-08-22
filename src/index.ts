@@ -130,6 +130,11 @@ import {
   compileRoleplayTurnSettlement,
   type BoundRoleplayTurnPlan,
 } from './roleplay-turn-settlement.ts'
+import {
+  appendRoleplayTurnPresentation,
+  compileInitialRoleplayTurnPresentation,
+  compileRoleplayTurnPresentationUpdate,
+} from './roleplay-turn-presentation.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -837,6 +842,18 @@ export function installAgentRp(
     }
   })
   ctx.on('session/event', (session, event) => {
+    if (event.type === 'agent-rp/tavern-state-attachment'
+      || (event.type === 'command/done' && event.data.kind === 'success')) {
+      queueMicrotask(() => {
+        if (!settlementRuntimeActive) return
+        try {
+          const presentation = compileRoleplayTurnPresentationUpdate(session, event)
+          if (presentation !== undefined) appendRoleplayTurnPresentation(session, presentation)
+        } catch (error: unknown) {
+          ctx.logger.warn(`agent-rp: presentation update failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      })
+    }
     if (event.type !== 'turn/end') return
     const agent = agentsBySession.get(String(session.id))
     if (agent === undefined || agentsByScope.get(agent) !== agent) return
@@ -880,7 +897,12 @@ export function installAgentRp(
             && module.phases.includes('settle'))
             ? { deferredModules: ['adapter:tavern-helper'] } : {}),
         })
-        appendRoleplayTurnSettlement(session, settlement)
+        const settlementEvent = appendRoleplayTurnSettlement(session, settlement)
+        appendRoleplayTurnPresentation(session, compileInitialRoleplayTurnPresentation({
+          session,
+          settlementEvent,
+          plans,
+        }))
       } catch (error: unknown) {
         ctx.logger.warn(`agent-rp: turn settlement failed: ${error instanceof Error ? error.message : String(error)}`)
       }

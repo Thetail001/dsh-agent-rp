@@ -49,6 +49,7 @@ import {
   summarizeTavernAuxiliaryGenerationReplay,
   type TavernAuxiliaryGenerationReplay,
 } from './tavern-generation-log.ts'
+import type { RoleplayTurnPresentation } from './roleplay-turn-presentation-types.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -70,6 +71,8 @@ const projectionSchema = {
       || !Array.isArray(record.generations)
       || (record.currentReplySeq !== undefined && (typeof record.currentReplySeq !== 'number'
         || !Number.isSafeInteger(record.currentReplySeq) || record.currentReplySeq < 0))
+      || (record.presentation !== undefined && (typeof record.presentation !== 'object'
+        || record.presentation === null || Array.isArray(record.presentation)))
       || !validCardVersion
       || (record.characterCardRaw !== undefined && (typeof record.characterCardRaw !== 'object'
         || record.characterCardRaw === null || Array.isArray(record.characterCardRaw)))
@@ -105,7 +108,7 @@ type ImportCall = 'character-card' | 'world-info' | 'preset'
 
 interface AgentRpProjectionState {
   readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'worldInfo' | 'presetLibrary' | 'lastRequest'
-  | 'generations' | 'auxiliaryGenerations'>
+  | 'generations' | 'auxiliaryGenerations' | 'presentation'>
   readonly cardWorldInfoCount: number
   readonly cardLorebook?: SessionLorebookSource
   readonly standaloneWorldInfos: Readonly<Record<string, SessionLorebookSource>>
@@ -126,6 +129,7 @@ interface AgentRpProjectionState {
   readonly promptRegex?: AgentRpProjection['promptRegex']
   readonly generations: Readonly<Record<string, GenerationStateRecord>>
   readonly currentReplySeq?: number
+  readonly presentation?: RoleplayTurnPresentation
   readonly tavern?: TavernHelperState
   readonly auxiliaryGenerations: TavernAuxiliaryGenerationReplay
 }
@@ -156,6 +160,8 @@ const projectionStateSchema = {
       || Array.isArray(record.personaCommands)
       || !Array.isArray(record.presetLibrary)
       || typeof record.generations !== 'object' || record.generations === null || Array.isArray(record.generations)
+      || (record.presentation !== undefined && (typeof record.presentation !== 'object'
+        || record.presentation === null || Array.isArray(record.presentation)))
       || typeof record.auxiliaryGenerations !== 'object' || record.auxiliaryGenerations === null
       || Array.isArray(record.auxiliaryGenerations)) {
       throw new Error('invalid agentRp projection state')
@@ -665,6 +671,9 @@ export function createAgentRpProjectionDefinition(
       ? state
       : { ...state, surface, auxiliaryGenerations }
     if (event.type === 'agent-rp/mvu-state') return { ...withSurface, mvu: event.data }
+    if (event.type === 'agent-rp/turn-presentation') {
+      return event.data.current ? { ...withSurface, presentation: event.data } : withSurface
+    }
     const trace = promptRegexTrace(event)
     if (trace !== undefined) return { ...withSurface, promptRegex: trace }
     if (event.type === 'command/run' && event.data.name === 'rp-persona') {
@@ -701,11 +710,14 @@ export function createAgentRpProjectionDefinition(
         }
       }
     }
-    if (event.type === 'agent-rp/tavern-state' || (event.type === 'command/done' && event.data.kind === 'success')) {
+    if (event.type === 'agent-rp/tavern-state' || event.type === 'agent-rp/tavern-state-attachment'
+      || (event.type === 'command/done' && event.data.kind === 'success')) {
       try {
         const tavern = event.type === 'agent-rp/tavern-state'
           ? event.data
-          : decodeTavernHelperState(event.data.text)
+          : event.type === 'agent-rp/tavern-state-attachment'
+            ? event.data.active ? event.data.state : undefined
+            : decodeTavernHelperState(event.data.text)
         if (tavern !== undefined) {
           const mvu = mvuAfterTavernMutation(withSurface.mvu, tavern)
           return {
@@ -1112,6 +1124,7 @@ export function createAgentRpProjectionDefinition(
         versions: group.versions,
       })),
       ...(state.currentReplySeq === undefined ? {} : { currentReplySeq: state.currentReplySeq }),
+      ...(state.presentation === undefined ? {} : { presentation: state.presentation }),
       ...(state.tavern === undefined ? {} : {
         tavern: {
           ...state.tavern,
@@ -1124,7 +1137,7 @@ export function createAgentRpProjectionDefinition(
     }
   },
   },
-  stateVersion: 11,
+  stateVersion: 12,
   }
   return {
     ...definition,

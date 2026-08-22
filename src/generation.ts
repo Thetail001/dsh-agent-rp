@@ -18,6 +18,7 @@ import {
   type TavernHelperState,
 } from './tavern-helper.ts'
 import { prepareTavernHelperState } from './tavern-helper-command.ts'
+import type { RoleplayTurnPresentation } from './roleplay-turn-presentation-types.ts'
 
 /** A complete reply-version group snapshot stored after every mutation. */
 export interface GenerationStateRecord {
@@ -304,6 +305,20 @@ function selectedTavernState(
     : readTavernHelperStateSnapshotAt(agent.session.events, eventSeq).state
 }
 
+function latestPresentationForReply(
+  events: readonly SessionEvent[],
+  replySeq: number,
+): RoleplayTurnPresentation | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event?.type !== 'agent-rp/turn-presentation') continue
+    if (event.data.selectedReply?.sourceSeq === replySeq || event.data.selectedReply?.surfaceSeq === replySeq) {
+      return event.data
+    }
+  }
+  return undefined
+}
+
 function restoreTavernState(agent: Agent, state: TavernHelperState | undefined): number | undefined {
   if (state === undefined) return undefined
   return appendTavernHelperState(agent.session, state).eventSeq
@@ -374,7 +389,7 @@ export async function executeGenerationCommand(invocation: {
   })
 
   if (request.operation === 'select') {
-    const selectedVersion = versions[request.versionIndex]
+    let selectedVersion = versions[request.versionIndex]
     if (selectedVersion === undefined) throw new Error('所选回复版本不存在')
     const selectedSeq = selectedVersion.seq
     if (selectedSeq === current.selectedSeq) {
@@ -383,10 +398,20 @@ export async function executeGenerationCommand(invocation: {
     }
     const selected = assistantEvent(events, selectedSeq)
     const surface = appendCurrentReplySurface(invocation.agent, current.surfaceSeq, selected)
+    const presented = latestPresentationForReply(invocation.agent.session.events, selectedSeq)
+    const presentedTavernStateSeq = presented?.state.tavernStateSeq
+    if (presentedTavernStateSeq !== undefined && presentedTavernStateSeq !== selectedVersion.tavernStateSeq) {
+      selectedVersion = { ...selectedVersion, tavernStateSeq: presentedTavernStateSeq }
+      versions[request.versionIndex] = selectedVersion
+    }
     const selectedVersionState = selectedTavernState(invocation.agent, selectedVersion.tavernStateSeq)
       ?? (currentTavern === undefined ? undefined : initialTavernState(invocation.agent))
     restoreTavernState(invocation.agent, selectedVersionState)
-    if (selectedVersion.mvu !== undefined) appendMvuState(invocation.agent.session, selectedVersion.mvu)
+    const mvuOwnedByPresentedTavern = presented?.state.mvuStateSeq !== undefined
+      && presented.state.mvuStateSeq === presented.state.tavernStateSeq
+    if (selectedVersion.mvu !== undefined && !mvuOwnedByPresentedTavern) {
+      appendMvuState(invocation.agent.session, selectedVersion.mvu)
+    }
     const state = appendState(invocation.agent, {
       groupId, operation: 'select', originSeq,
       anchorSeq: existing?.anchorSeq ?? originSeq,

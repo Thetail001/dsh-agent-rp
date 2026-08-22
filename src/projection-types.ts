@@ -6,6 +6,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
 import type { TavernHelperState } from './tavern-helper.ts'
 import type { PromptRegexTraceRecord } from './frontend-regex.ts'
+import type { RoleplayTurnPresentation } from './roleplay-turn-presentation-types.ts'
 
 /** Stable fallback identity used by resource-only roleplay Sessions. */
 export const DEFAULT_AGENT_RP_CHARACTER_NAME = '角色会话'
@@ -119,6 +120,8 @@ export interface AgentRpProjection {
   }[]
   /** Stable transcript anchor of the model-visible final Roleplay reply. */
   readonly currentReplySeq?: number
+  /** Unified present-phase selection behind the visible reply and its runtime state. */
+  readonly presentation?: RoleplayTurnPresentation
   readonly preset?: {
     readonly libraryId?: string
     readonly name: string
