@@ -286,8 +286,7 @@ export function prepareUserRoleplayState(
   sourceEventSeq: number,
 ): RoleplayStateRecord {
   const source = session.events[sourceEventSeq]
-  if (source?.type !== 'command/run' || source.data.name !== 'rp-state' || source.seq !== session.seq - 1
-    || typeof source.data.args !== 'string') {
+  if (source?.type !== 'command/run' || source.data.name !== 'rp-state' || typeof source.data.args !== 'string') {
     throw new Error('状态操作命令不是当前 Session 事件')
   }
   const sourceRequest = parseRoleplayStateCommandRequest(source.data.args)

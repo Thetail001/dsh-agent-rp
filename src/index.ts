@@ -29,6 +29,7 @@ import {
 } from './memory.ts'
 import { executeAgentRpMemoryCommand } from './memory-command.ts'
 import { installAgentRpMemoryHttp } from './memory-http.ts'
+import { installAgentRpCommandHttp } from './agent-rp-command-http.ts'
 import { parseCharacterCardJson, parseCharacterCardJsonBytes, parseCharacterCardValue } from './import/character-card.ts'
 import { parseCharx } from './import/charx.ts'
 import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
@@ -585,7 +586,6 @@ export function installAgentRp(
     name: 'rp-state',
     description: 'explicitly edit durable native roleplay state',
     input: { hint: '<private native state payload>' },
-    recordInput: false,
     handler: executeRoleplayStateCommand,
   }), 'agent-rp: native state player command')
   commands.register({
@@ -1207,6 +1207,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         installTavernExecutionHttp(webCtx, characterLibrary, presetLibrary, server, tavernExecutionPlans)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)
         installSillyTavernChatExportHttp(webCtx, ctx, server)
+        installAgentRpCommandHttp(webCtx, ctx, server)
         installAgentRpMemoryHttp(webCtx, ctx, server)
         installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, worldInfoLibrary, server)
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)

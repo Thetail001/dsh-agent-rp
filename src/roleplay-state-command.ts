@@ -17,7 +17,8 @@ export function executeRoleplayStateCommand(invocation: {
   readonly rawInput: string
 }): { readonly kind: 'success'; readonly text?: string; readonly sourceEventSeq?: number } {
   const request = parseRoleplayStateCommandRequest(invocation.rawInput)
-  const source = invocation.agent.session.events.at(-1)
+  const source = invocation.agent.session.events.findLast(event =>
+    event.type === 'command/run' && String(event.data.commandId) === String(invocation.commandId))
   if (source?.type !== 'command/run' || source.data.name !== 'rp-state'
     || source.data.source.kind !== 'user'
     || source.data.args !== invocation.rawInput

@@ -124,6 +124,27 @@ test('keeps module ownership stable while allowing a causally recorded player co
   assert.equal(moduleUpdate.ownerModuleId, 'roleplay:clock')
 })
 
+test('binds a player edit to its command id when another command has already entered the log', () => {
+  const agent = { session: Session.create(SessionId('native-state-interleaved-command')) } as Agent
+  const request = JSON.stringify({
+    format: 0, operation: 'set', id: 'state:scene', expectedRevision: 0, value: { phase: 'ready' },
+  })
+  const commandId = CommandId('state-interleaved-source')
+  const source = agent.session.append('command/run', {
+    commandId, name: 'rp-state', args: request, source: { kind: 'user' },
+  })
+  agent.session.append('command/run', {
+    commandId: CommandId('state-interleaved-other'), name: 'rp-memory', source: { kind: 'user' },
+  })
+
+  const result = executeRoleplayStateCommand({ commandId, agent, rawInput: request })
+  agent.session.append('command/done', { commandId, ...result })
+
+  const written = readRoleplayStates(agent.session.events)[0]
+  assert.equal(written?.sourceEventSeq, source.seq)
+  assert.deepEqual(written?.value, { phase: 'ready' })
+})
+
 test('rejects a player state event whose value does not match its cited command', () => {
   const session = Session.create(SessionId('native-state-false-attribution'))
   const request = JSON.stringify({

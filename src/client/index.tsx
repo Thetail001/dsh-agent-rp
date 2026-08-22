@@ -270,6 +270,7 @@ import {
   type AgentRpMemoryResponse,
   type AgentRpMemoryView,
 } from '../memory-protocol.ts'
+import { executeAgentRpCommand } from './agent-rp-command.ts'
 import type { RoleplayStateCommandRequest } from '../roleplay-state.ts'
 import {
   AGENT_RP_SESSION_PATH,
@@ -11529,20 +11530,12 @@ export function apply(ctx: ClientContext): void {
     return value.memories
   }
   const manageMemory = async (sessionId: SessionId, request: AgentRpMemoryCommandRequest): Promise<void> => {
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
-    const response = await session.command(`/rp-memory ${JSON.stringify(request)}`)
-    if (!response.ok) throw new Error(response.error.message)
-    if (!response.value.matched) throw new Error('当前 Host 未启用记忆管理')
+    const response = await executeAgentRpCommand(sessionId, `/rp-memory ${JSON.stringify(request)}`)
+    if (!response.matched) throw new Error('当前 Host 未启用记忆管理')
   }
   const manageState = async (sessionId: SessionId, request: RoleplayStateCommandRequest): Promise<void> => {
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
-    const response = await session.command(`/rp-state ${JSON.stringify(request)}`)
-    if (!response.ok) throw new Error(response.error.message)
-    if (!response.value.matched) throw new Error('当前 Host 未启用状态管理')
+    const response = await executeAgentRpCommand(sessionId, `/rp-state ${JSON.stringify(request)}`)
+    if (!response.matched) throw new Error('当前 Host 未启用状态管理')
   }
   const listCharacters = async (collection: CharacterLibraryCollection = 'active'): Promise<readonly CharacterLibrarySummary[]> => {
     const query = collection === 'active' ? '' : '?collection=archived'
@@ -11857,15 +11850,11 @@ export function apply(ctx: ClientContext): void {
     return value.entry
   }
   const applyPersona = async (sessionId: SessionId, persona?: SessionPersonaSnapshot): Promise<void> => {
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
-    const response = await session.command(`/rp-persona ${JSON.stringify({
+    const response = await executeAgentRpCommand(sessionId, `/rp-persona ${JSON.stringify({
       format: 0,
       ...(persona === undefined ? {} : { persona }),
     })}`)
-    if (!response.ok) throw new Error(response.error.message)
-    if (!response.value.matched) throw new Error('当前 Host 未启用身份管理')
+    if (!response.matched) throw new Error('当前 Host 未启用身份管理')
   }
   const importPresetFile = async (file: File): Promise<PresetLibrarySummary> => {
     if (!/\.json$/iu.test(file.name)) throw new Error('请选择 SillyTavern 预设 JSON 文件')
@@ -11886,28 +11875,16 @@ export function apply(ctx: ClientContext): void {
     await managePresetLibrary(sessionId, { operation: 'select', id: entry.id })
   }
   const configurePreset = async (sessionId: SessionId, request: PresetConfigurationRequest): Promise<void> => {
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
-    const response = await session.command(`/rp-preset-configure ${JSON.stringify(request)}`)
-    if (!response.ok) throw new Error(response.error.message)
-    if (!response.value.matched) throw new Error('当前 Host 未启用预设管理命令')
+    const response = await executeAgentRpCommand(sessionId, `/rp-preset-configure ${JSON.stringify(request)}`)
+    if (!response.matched) throw new Error('当前 Host 未启用预设管理命令')
   }
   const managePresetLibrary = async (sessionId: SessionId, request: PresetLibraryRequest): Promise<void> => {
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
-    const response = await session.command(`/rp-preset-library ${JSON.stringify(request)}`)
-    if (!response.ok) throw new Error(response.error.message)
-    if (!response.value.matched) throw new Error('当前 Host 未启用预设库')
+    const response = await executeAgentRpCommand(sessionId, `/rp-preset-library ${JSON.stringify(request)}`)
+    if (!response.matched) throw new Error('当前 Host 未启用预设库')
   }
   const configureWorldInfo = async (sessionId: SessionId, request: WorldInfoConfigurationRequest): Promise<void> => {
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
-    const response = await session.command(`/rp-world-info ${JSON.stringify(request)}`)
-    if (!response.ok) throw new Error(response.error.message)
-    if (!response.value.matched) throw new Error('当前 Host 未启用世界书管理')
+    const response = await executeAgentRpCommand(sessionId, `/rp-world-info ${JSON.stringify(request)}`)
+    if (!response.matched) throw new Error('当前 Host 未启用世界书管理')
   }
   const importWorldInfoFile = async (file: File): Promise<WorldInfoLibraryUpload> => {
     if (!/\.json$/iu.test(file.name)) throw new Error('请选择 SillyTavern World Info JSON 文件')
@@ -11932,55 +11909,35 @@ export function apply(ctx: ClientContext): void {
   }
   const importWorldInfo = async (sessionId: SessionId, file: File): Promise<void> => {
     const upload = await importWorldInfoFile(file)
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
     const request: WorldInfoLibraryLaunchRequest = { format: 0, importId: upload.id }
-    const result = await session.command(`/rp-world-info-import ${JSON.stringify(request)}`)
-    if (!result.ok) throw new Error(result.error.message)
-    if (!result.value.matched) throw new Error('当前 Host 未启用世界书导入')
+    const result = await executeAgentRpCommand(sessionId, `/rp-world-info-import ${JSON.stringify(request)}`)
+    if (!result.matched) throw new Error('当前 Host 未启用世界书导入')
   }
   const runGeneration = async (
     sessionId: SessionId,
     request: { readonly operation: 'regenerate' | 'continue'; readonly replySeq: number }
       | { readonly operation: 'select'; readonly replySeq: number; readonly versionIndex: number },
   ): Promise<void> => {
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
-    const response = await session.command(`/rp-generation ${JSON.stringify(request)}`)
-    if (!response.ok) throw new Error(response.error.message)
-    if (!response.value.matched) throw new Error('当前 Host 未启用回复版本控制')
+    const response = await executeAgentRpCommand(sessionId, `/rp-generation ${JSON.stringify(request)}`)
+    if (!response.matched) throw new Error('当前 Host 未启用回复版本控制')
   }
   const runImageGeneration: RunImageGeneration = (sessionId, request) => {
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
     const jobId = `image-${crypto.randomUUID()}`
     const payload: ImageGenerationRequest = { format: 0, jobId, ...request }
-    void session.command(`/rp-draw ${JSON.stringify(payload)}`).then(response => {
-      if (!response.ok) throw new Error(response.error.message)
-      if (!response.value.matched) throw new Error('当前 Host 未启用聊天绘图')
+    void executeAgentRpCommand(sessionId, `/rp-draw ${JSON.stringify(payload)}`).then(response => {
+      if (!response.matched) throw new Error('当前 Host 未启用聊天绘图')
     }).catch((reason: unknown) => {
       ctx.logger.warn(`agent-rp: image command ${JSON.stringify(jobId)} failed: ${String(reason)}`)
     })
     return jobId
   }
   const runTavernMutation: RunTavernMutation = async (sessionId, request) => {
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
-    const response = await session.command(`/rp-tavern-variables ${JSON.stringify(request)}`)
-    if (!response.ok) throw new Error(response.error.message)
-    if (!response.value.matched) throw new Error('当前 Host 未启用酒馆脚本变量桥')
+    const response = await executeAgentRpCommand(sessionId, `/rp-tavern-variables ${JSON.stringify(request)}`)
+    if (!response.matched) throw new Error('当前 Host 未启用酒馆脚本变量桥')
   }
   const runTavernTrigger: RunTavernTrigger = async sessionId => {
-    const scope = ctx.sessions.scope(sessionId)
-    const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-    if (session === undefined) throw new Error('当前角色会话不可用')
-    const response = await session.command('/rp-tavern-trigger')
-    if (!response.ok) throw new Error(response.error.message)
-    if (!response.value.matched) throw new Error('当前 Host 未启用酒馆脚本生成桥')
+    const response = await executeAgentRpCommand(sessionId, '/rp-tavern-trigger')
+    if (!response.matched) throw new Error('当前 Host 未启用酒馆脚本生成桥')
   }
   const runTavernGeneration: RunTavernGeneration = async (sessionId, request, signal) => {
     const response = await fetch(TAVERN_GENERATION_PATH, {

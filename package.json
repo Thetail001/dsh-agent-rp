@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-agent-rp",
-  "version": "0.0.0-rc.208",
+  "version": "0.0.0-rc.209",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -52,7 +52,7 @@
     "check:published-imports": "node scripts/check-published-imports.mjs",
     "prepack": "pnpm run check:tavern-vendor && pnpm run build && pnpm run check:published-imports",
     "test:external-window": "tsdown tests/external-window.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-external-window --clean && node --test .test-external-window/external-window.test.mjs",
-    "test:http": "tsdown tests/host-http.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-http --clean && node --test .test-http/host-http.test.mjs",
+    "test:http": "tsdown tests/host-http.test.ts tests/agent-rp-command-http.test.ts tests/agent-rp-command-client.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-http --clean && node --test .test-http/host-http.test.mjs .test-http/agent-rp-command-http.test.mjs .test-http/agent-rp-command-client.test.mjs",
     "test:smoke": "tsdown tests/client-avatar.test.ts tests/chat-migration.test.ts tests/compat-smoke.test.ts tests/browser-compat-diagnostic.test.ts tests/native-back.test.ts tests/native-share.test.ts tests/projection-contract.test.ts tests/runtime-diagnostic.test.ts tests/sidebar-slot-compat.test.ts tests/sidebar-workbench-motion.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-smoke --clean && node --test .test-smoke/client-avatar.test.mjs .test-smoke/chat-migration.test.mjs .test-smoke/compat-smoke.test.mjs .test-smoke/browser-compat-diagnostic.test.mjs .test-smoke/native-back.test.mjs .test-smoke/native-share.test.mjs .test-smoke/projection-contract.test.mjs .test-smoke/runtime-diagnostic.test.mjs .test-smoke/sidebar-slot-compat.test.mjs .test-smoke/sidebar-workbench-motion.test.mjs",
     "test:session-launch": "tsdown tests/session-launch.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-launch --clean && node --test .test-launch/session-launch.test.mjs",
     "test:turn-audit": "tsdown tests/roleplay-turn-audit.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-turn-audit --clean && node --test .test-turn-audit/roleplay-turn-audit.test.mjs",
