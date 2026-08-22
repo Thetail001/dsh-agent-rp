@@ -30,8 +30,11 @@ import { validateTavernMutationCause } from '../src/tavern-helper-command.ts'
 
 const modules = [
   { id: 'roleplay:reply-versions', source: 'native', phases: ['present'] },
-  { id: 'adapter:mvu', source: 'adapter', phases: ['prepare', 'settle'] },
-  { id: 'adapter:tavern-helper', source: 'adapter', phases: ROLEPLAY_TURN_PHASES },
+  { id: 'adapter:mvu', source: 'adapter', phases: ['prepare', 'settle'], stateIds: ['state:mvu'] },
+  {
+    id: 'adapter:tavern-helper', source: 'adapter', phases: ROLEPLAY_TURN_PHASES,
+    stateIds: ['state:tavern-helper'],
+  },
 ] as const
 
 function runtime(state: RoleplayRuntimeSnapshot['state'] = []): RoleplayRuntimeSnapshot {
@@ -93,7 +96,9 @@ function settle(session: Session, turnPlan: RoleplayTurnPlan, turn: number, defe
     plans: [{ step: 1, plan: turnPlan }],
     events: session.events,
     after: runtime(turnPlan.stateReads),
-    ...(deferred ? { deferredModules: ['adapter:tavern-helper'] } : {}),
+    ...(deferred ? {
+      contributions: [{ moduleId: 'adapter:tavern-helper', outcome: 'deferred' as const }],
+    } : {}),
   })
   return appendRoleplayTurnSettlement(session, settlement)
 }
@@ -142,7 +147,7 @@ test('records a blocked turn without inventing a selected reply', () => {
   const settlement = compileRoleplayTurnSettlement({
     sessionId: String(session.id), turn: 1, result: 'blocked',
     plans: [{ step: 1, plan: turnPlan }], events: session.events, after: runtime(),
-    deferredModules: ['adapter:tavern-helper'],
+    contributions: [{ moduleId: 'adapter:tavern-helper', outcome: 'deferred' }],
   })
   const settlementEvent = appendRoleplayTurnSettlement(session, settlement)
   const presentation = compileInitialRoleplayTurnPresentation({

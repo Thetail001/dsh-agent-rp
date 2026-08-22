@@ -3,7 +3,11 @@
 import { snapshotJsonValue, type JsonValue, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { ImportedCharacterCard } from './import/types.ts'
+import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
 import { decodeTavernHelperState } from './tavern-helper.ts'
+
+export const MVU_ROLEPLAY_MODULE_ID = 'adapter:mvu'
+export const MVU_ROLEPLAY_STATE_ID = 'state:mvu'
 
 interface JsonPatchOperation {
   readonly op: 'replace' | 'delta' | 'insert' | 'remove' | 'move'
@@ -140,6 +144,25 @@ export function readCurrentSessionMvuState(
   const surface = new Set(session.surface.nodes)
   return readCurrentMvuState(card, session.events.filter(event =>
     event.type !== 'assistant/message' || surface.has(event.seq)))
+}
+
+/** Report a visible MVU patch failure at the exact completed-turn boundary. */
+export function mvuTurnSettlementContribution(input: {
+  readonly session: Session
+  readonly turn: number
+  readonly firstSeq: number
+  readonly state?: MvuStateSnapshot
+}): RoleplayTurnSettlementContribution | undefined {
+  const error = input.state?.lastError
+  if (error === undefined) return undefined
+  const visible = new Set(input.session.surface.nodes)
+  const failedThisTurn = input.session.events.some(event => event.seq >= input.firstSeq
+    && event.type === 'assistant/message' && event.data.turn === input.turn && visible.has(event.seq)
+    && /<UpdateVariable(?:variable)?>/iu.test(event.data.message.content
+      .flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')))
+  return failedThisTurn
+    ? { moduleId: MVU_ROLEPLAY_MODULE_ID, outcome: 'failed', error }
+    : undefined
 }
 
 function pointerSegments(pointer: string): string[] {

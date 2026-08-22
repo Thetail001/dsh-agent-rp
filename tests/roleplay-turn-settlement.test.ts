@@ -98,8 +98,11 @@ test('settles state, memory, and deferred browser work from one prepared plan', 
   session.append('turn/start', { turn: 1 })
   const modules = [
     { id: 'roleplay:memory', source: 'native', phases: ['prepare', 'generate', 'settle'] },
-    { id: 'adapter:mvu', source: 'adapter', phases: ['prepare', 'settle'] },
-    { id: 'adapter:tavern-helper', source: 'adapter', phases: ROLEPLAY_TURN_PHASES },
+    { id: 'adapter:mvu', source: 'adapter', phases: ['prepare', 'settle'], stateIds: ['state:mvu'] },
+    {
+      id: 'adapter:tavern-helper', source: 'adapter', phases: ROLEPLAY_TURN_PHASES,
+      stateIds: ['state:tavern-helper'],
+    },
   ] as const
   const plan = turnPlan({
     sessionId: String(session.id),
@@ -123,7 +126,7 @@ test('settles state, memory, and deferred browser work from one prepared plan', 
       { id: 'state:mvu', owner: 'session', revision: 3 },
       { id: 'state:tavern-helper', owner: 'session', revision: 7 },
     ], modules),
-    deferredModules: ['adapter:tavern-helper'],
+    contributions: [{ moduleId: 'adapter:tavern-helper', outcome: 'deferred' }],
   })
 
   assert.deepEqual(settlement.state, [
@@ -140,7 +143,9 @@ test('settles state, memory, and deferred browser work from one prepared plan', 
 
 test('records failed and removed state without hiding boundary revisions', () => {
   const session = Session.create(SessionId('settlement-failed'))
-  const modules = [{ id: 'adapter:mvu', source: 'adapter', phases: ['settle'] }] as const
+  const modules = [{
+    id: 'adapter:mvu', source: 'adapter', phases: ['settle'], stateIds: ['state:mvu'],
+  }] as const
   const plan = turnPlan({
     sessionId: String(session.id), sessionSeq: 0,
     state: [{ id: 'state:mvu', owner: 'session', revision: 4 }], modules,
@@ -148,12 +153,14 @@ test('records failed and removed state without hiding boundary revisions', () =>
   const failed = compileRoleplayTurnSettlement({
     sessionId: String(session.id), turn: 2, result: 'error', plans: [{ step: 1, plan }], events: [],
     after: runtime([{ id: 'state:mvu', owner: 'session', revision: 4 }], modules),
-    stateFailures: { 'state:mvu': 'JSON Patch 无效' },
+    contributions: [{ moduleId: 'adapter:mvu', outcome: 'failed', error: 'JSON Patch 无效' }],
   })
   assert.deepEqual(failed.state, [{
     id: 'state:mvu', beforeRevision: 4, afterRevision: 4, outcome: 'failed', error: 'JSON Patch 无效',
   }])
-  assert.deepEqual(failed.settle.modules, [{ moduleId: 'adapter:mvu', outcome: 'failed', changes: 0 }])
+  assert.deepEqual(failed.settle.modules, [{
+    moduleId: 'adapter:mvu', outcome: 'failed', changes: 0, error: 'JSON Patch 无效',
+  }])
 
   const removed = compileRoleplayTurnSettlement({
     sessionId: String(session.id), turn: 2, result: 'aborted', plans: [{ step: 1, plan }], events: [],
@@ -236,7 +243,9 @@ test('gates MVU completion through the prepared settle module while preserving t
   const enabled = turnPlan({
     sessionId: 'mvu-enabled', sessionSeq: 0,
     state: [{ id: 'state:mvu', owner: 'session', revision: 0 }],
-    modules: [{ id: 'adapter:mvu', source: 'adapter', phases: ['prepare', 'settle'] }],
+    modules: [{
+      id: 'adapter:mvu', source: 'adapter', phases: ['prepare', 'settle'], stateIds: ['state:mvu'],
+    }],
   })
   assert.equal(roleplayMvuSettlementEnabled(enabled), true)
   assert.equal(roleplayMvuSettlementEnabled({ ...enabled, stateReads: [] }), false)
@@ -244,4 +253,52 @@ test('gates MVU completion through the prepared settle module while preserving t
     ...enabled,
     runtime: runtime(enabled.runtime.state, [{ id: 'adapter:mvu', source: 'adapter', phases: ['prepare'] }]),
   }), false)
+})
+
+test('attributes arbitrary runtime state through declared module ownership', () => {
+  const session = Session.create(SessionId('settlement-generic-state'))
+  const modules = [{
+    id: 'roleplay:clock', source: 'native', phases: ['settle'], stateIds: ['state:clock'],
+  }] as const
+  const prepared = turnPlan({
+    sessionId: String(session.id),
+    sessionSeq: 0,
+    state: [{ id: 'state:clock', owner: 'session', revision: 4 }],
+    modules,
+  })
+  const settlement = compileRoleplayTurnSettlement({
+    sessionId: String(session.id),
+    turn: 1,
+    result: 'completed',
+    plans: [{ step: 1, plan: prepared }],
+    events: session.events,
+    after: runtime([{ id: 'state:clock', owner: 'session', revision: 5 }], modules),
+  })
+
+  assert.deepEqual(settlement.state, [{
+    id: 'state:clock', beforeRevision: 4, afterRevision: 5, outcome: 'updated',
+  }])
+  assert.deepEqual(settlement.settle.modules, [{
+    moduleId: 'roleplay:clock', outcome: 'applied', changes: 1,
+  }])
+})
+
+test('rejects ambiguous state ownership and inactive module contributions', () => {
+  const session = Session.create(SessionId('settlement-invalid-contract'))
+  const shared = [
+    { id: 'module:left', source: 'native', phases: ['settle'], stateIds: ['state:shared'] },
+    { id: 'module:right', source: 'native', phases: ['settle'], stateIds: ['state:shared'] },
+  ] as const
+  const ambiguous = turnPlan({ sessionId: String(session.id), sessionSeq: 0, modules: shared })
+  assert.throws(() => compileRoleplayTurnSettlement({
+    sessionId: String(session.id), turn: 1, result: 'completed',
+    plans: [{ step: 1, plan: ambiguous }], events: session.events, after: runtime([], shared),
+  }), /owned by both/u)
+
+  const valid = turnPlan({ sessionId: String(session.id), sessionSeq: 0, modules: [] })
+  assert.throws(() => compileRoleplayTurnSettlement({
+    sessionId: String(session.id), turn: 1, result: 'completed',
+    plans: [{ step: 1, plan: valid }], events: session.events, after: runtime([], []),
+    contributions: [{ moduleId: 'adapter:missing', outcome: 'deferred' }],
+  }), /inactive module/u)
 })

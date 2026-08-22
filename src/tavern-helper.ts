@@ -3,11 +3,20 @@
 import { snapshotJsonValue, type JsonValue, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ImportedCharacterFrontend, ImportedTavernHelperScript } from './import/types.ts'
 import { AGENT_RP_CAPABILITIES } from './extension-capability.ts'
+import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
 import {
   parseTavernScriptIdentity,
   tavernScriptIdentity,
   type TavernScriptScope,
 } from './tavern-script-identity.ts'
+
+export const TAVERN_HELPER_ROLEPLAY_MODULE_ID = 'adapter:tavern-helper'
+export const TAVERN_HELPER_ROLEPLAY_STATE_ID = 'state:tavern-helper'
+
+/** Browser-owned script settlement may arrive after the Host turn boundary. */
+export function tavernHelperTurnSettlementContribution(): RoleplayTurnSettlementContribution {
+  return { moduleId: TAVERN_HELPER_ROLEPLAY_MODULE_ID, outcome: 'deferred' }
+}
 
 /** Tavern Helper variable namespaces supported by the isolated runtime. */
 export type TavernVariableScope = 'global' | 'preset' | 'character' | 'chat' | 'message' | 'script'

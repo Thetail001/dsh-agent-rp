@@ -126,6 +126,7 @@ import {
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 import { prepareRoleplayTurn } from './roleplay-turn-plan.ts'
 import { RoleplayTurnCoordinator } from './roleplay-turn-coordinator.ts'
+import { collectSessionRoleplaySettlementContributions } from './session-roleplay-turn-settlement.ts'
 import {
   appendRoleplayTurnSettlement,
   compileRoleplayTurnSettlement,
@@ -858,13 +859,6 @@ export function installAgentRp(
           memoryWriteAvailable: plans.some(({ plan }) => plan.memory.write),
           templateEngineAvailable: options.ejsTemplateEngine !== undefined,
         })
-        const firstSeq = plans[0]?.plan.input.sessionSeq ?? 0
-        const visible = new Set(session.surface.nodes)
-        const mvuFailedThisTurn = resolved.mvu?.lastError !== undefined && session.events.some(candidate =>
-          candidate.seq >= firstSeq && candidate.type === 'assistant/message'
-          && candidate.data.turn === turn && visible.has(candidate.seq)
-          && /<UpdateVariable(?:variable)?>/iu.test(candidate.data.message.content
-            .flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')))
         const settlement = compileRoleplayTurnSettlement({
           sessionId: String(session.id),
           turn,
@@ -872,10 +866,12 @@ export function installAgentRp(
           plans,
           events: session.events,
           after: resolved.snapshot,
-          ...(mvuFailedThisTurn ? { stateFailures: { 'state:mvu': resolved.mvu!.lastError! } } : {}),
-          ...(resolved.snapshot.modules.some(module => module.id === 'adapter:tavern-helper'
-            && module.phases.includes('settle'))
-            ? { deferredModules: ['adapter:tavern-helper'] } : {}),
+          contributions: collectSessionRoleplaySettlementContributions({
+            session,
+            turn,
+            plans,
+            ...(resolved.mvu === undefined ? {} : { mvu: resolved.mvu }),
+          }),
         })
         const settlementEvent = appendRoleplayTurnSettlement(session, settlement)
         appendRoleplayTurnPresentation(session, compileInitialRoleplayTurnPresentation({

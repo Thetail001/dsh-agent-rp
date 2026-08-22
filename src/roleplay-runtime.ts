@@ -48,6 +48,15 @@ export interface RoleplayModuleBinding {
   readonly id: string
   readonly source: 'native' | 'adapter'
   readonly phases: readonly RoleplayTurnPhase[]
+  /** Runtime state namespaces whose turn-boundary changes belong to this module. */
+  readonly stateIds?: readonly string[]
+}
+
+/** Exceptional settle-phase result reported by one runtime module. */
+export interface RoleplayTurnSettlementContribution {
+  readonly moduleId: string
+  readonly outcome: 'deferred' | 'failed'
+  readonly error?: string
 }
 
 /**

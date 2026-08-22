@@ -2,7 +2,11 @@
 
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { readAgentRpMemoryHistory } from './memory.ts'
-import type { RoleplayRuntimeSnapshot, RoleplayStateBinding } from './roleplay-runtime.ts'
+import type {
+  RoleplayRuntimeSnapshot,
+  RoleplayStateBinding,
+  RoleplayTurnSettlementContribution,
+} from './roleplay-runtime.ts'
 import type { RoleplayTurnInputKey, RoleplayTurnPlan } from './roleplay-turn-plan.ts'
 
 /** Exact prepared input consumed by one model step in the settled turn. */
@@ -25,6 +29,7 @@ export interface RoleplaySettleModuleOutcome {
   readonly moduleId: string
   readonly outcome: 'applied' | 'idle' | 'deferred' | 'failed'
   readonly changes: number
+  readonly error?: string
 }
 
 /** Replayable summary of state and memory after one complete Roleplay turn. */
@@ -71,9 +76,7 @@ export interface CompileRoleplayTurnSettlementInput {
   readonly plans: readonly BoundRoleplayTurnPlan[]
   readonly events: readonly SessionEvent[]
   readonly after: RoleplayRuntimeSnapshot
-  readonly stateFailures?: Readonly<Record<string, string>>
-  /** Modules whose browser-owned work may commit after the Host turn boundary. */
-  readonly deferredModules?: readonly string[]
+  readonly contributions?: readonly RoleplayTurnSettlementContribution[]
 }
 
 function stateById(bindings: readonly RoleplayStateBinding[]): ReadonlyMap<string, RoleplayStateBinding> {
@@ -124,32 +127,85 @@ function latestTurnReply(
     : undefined
 }
 
-function settleModules(
-  plans: readonly BoundRoleplayTurnPlan[],
-  state: readonly RoleplayStateSettlement[],
-  memory: RoleplayTurnSettlement['memory'],
-  deferredModules: ReadonlySet<string>,
-): readonly RoleplaySettleModuleOutcome[] {
-  const moduleIds = new Set<string>()
+interface SettleModuleContract {
+  readonly moduleId: string
+  readonly stateIds: ReadonlySet<string>
+}
+
+function settleModuleContracts(plans: readonly BoundRoleplayTurnPlan[]): readonly SettleModuleContract[] {
+  const contracts = new Map<string, Set<string>>()
+  const stateOwners = new Map<string, string>()
   for (const { plan } of plans) {
     for (const module of plan.runtime.modules) {
-      if (module.phases.includes('settle')) moduleIds.add(module.id)
+      if (!module.phases.includes('settle')) continue
+      let stateIds = contracts.get(module.id)
+      if (stateIds === undefined) {
+        stateIds = new Set()
+        contracts.set(module.id, stateIds)
+      }
+      for (const stateId of module.stateIds ?? []) {
+        const owner = stateOwners.get(stateId)
+        if (owner !== undefined && owner !== module.id) {
+          throw new Error(`Roleplay state ${stateId} is owned by both ${owner} and ${module.id}`)
+        }
+        stateOwners.set(stateId, module.id)
+        stateIds.add(stateId)
+      }
     }
   }
+  return [...contracts].map(([moduleId, stateIds]) => ({ moduleId, stateIds }))
+}
+
+function settlementContributions(
+  contracts: readonly SettleModuleContract[],
+  contributions: readonly RoleplayTurnSettlementContribution[],
+): ReadonlyMap<string, RoleplayTurnSettlementContribution> {
+  const moduleIds = new Set(contracts.map(contract => contract.moduleId))
+  const result = new Map<string, RoleplayTurnSettlementContribution>()
+  for (const contribution of contributions) {
+    if (!moduleIds.has(contribution.moduleId)) {
+      throw new Error(`Roleplay settlement contribution references inactive module ${contribution.moduleId}`)
+    }
+    if (result.has(contribution.moduleId)) {
+      throw new Error(`Roleplay settlement contains duplicate contribution for ${contribution.moduleId}`)
+    }
+    if (contribution.outcome === 'failed'
+      && (contribution.error === undefined || contribution.error.trim() === '')) {
+      throw new Error(`Roleplay failed contribution for ${contribution.moduleId} requires an error`)
+    }
+    if (contribution.outcome === 'deferred' && contribution.error !== undefined) {
+      throw new Error(`Roleplay deferred contribution for ${contribution.moduleId} cannot contain an error`)
+    }
+    result.set(contribution.moduleId, contribution)
+  }
+  return result
+}
+
+function settleModules(
+  contracts: readonly SettleModuleContract[],
+  state: readonly RoleplayStateSettlement[],
+  memory: RoleplayTurnSettlement['memory'],
+  contributions: ReadonlyMap<string, RoleplayTurnSettlementContribution>,
+): readonly RoleplaySettleModuleOutcome[] {
   const stateFor = (id: string) => state.find(item => item.id === id)
-  return [...moduleIds].map((moduleId): RoleplaySettleModuleOutcome => {
-    const relatedState = moduleId === 'adapter:mvu' ? stateFor('state:mvu')
-      : moduleId === 'adapter:tavern-helper' ? stateFor('state:tavern-helper')
-        : undefined
+  return contracts.map(({ moduleId, stateIds }): RoleplaySettleModuleOutcome => {
+    const relatedStates = [...stateIds].flatMap(id => {
+      const related = stateFor(id)
+      return related === undefined ? [] : [related]
+    })
     const changes = moduleId === 'roleplay:memory'
       ? memory.createdIds.length + memory.supersededIds.length
-      : relatedState?.outcome === 'created' || relatedState?.outcome === 'updated'
-        || relatedState?.outcome === 'removed' ? 1 : 0
-    const outcome = deferredModules.has(moduleId) ? 'deferred' as const
-      : relatedState?.outcome === 'failed' ? 'failed' as const
+      : relatedStates.filter(related => related.outcome === 'created' || related.outcome === 'updated'
+        || related.outcome === 'removed').length
+    const contribution = contributions.get(moduleId)
+    const outcome = contribution?.outcome === 'failed' || relatedStates.some(related => related.outcome === 'failed')
+      ? 'failed' as const
+      : contribution?.outcome === 'deferred' ? 'deferred' as const
         : changes > 0 ? 'applied' as const
           : 'idle' as const
-    return { moduleId, outcome, changes }
+    const error = contribution?.outcome === 'failed' ? contribution.error
+      : relatedStates.find(related => related.outcome === 'failed')?.error
+    return { moduleId, outcome, changes, ...(error === undefined ? {} : { error }) }
   })
 }
 
@@ -173,14 +229,22 @@ export function compileRoleplayTurnSettlement(
     }
   }
   const firstPlan = plans[0]!.plan
+  const contracts = settleModuleContracts(plans)
+  const contributions = settlementContributions(contracts, input.contributions ?? [])
+  const stateFailures = new Map<string, string>()
+  for (const contract of contracts) {
+    const contribution = contributions.get(contract.moduleId)
+    if (contribution?.outcome !== 'failed' || contribution.error === undefined) continue
+    for (const stateId of contract.stateIds) stateFailures.set(stateId, contribution.error)
+  }
   const beforeStates = stateById(firstPlan.stateReads)
   const afterStates = stateById(input.after.state)
-  const stateIds = new Set([...beforeStates.keys(), ...afterStates.keys(), ...Object.keys(input.stateFailures ?? {})])
+  const stateIds = new Set([...beforeStates.keys(), ...afterStates.keys(), ...stateFailures.keys()])
   const state = [...stateIds].map(id => stateSettlement(
     id,
     beforeStates.get(id),
     afterStates.get(id),
-    input.stateFailures?.[id],
+    stateFailures.get(id),
   ))
   const beforeMemory = readAgentRpMemoryHistory(input.events.slice(0, firstPlan.input.sessionSeq))
   const afterMemory = readAgentRpMemoryHistory(input.events)
@@ -205,7 +269,7 @@ export function compileRoleplayTurnSettlement(
     state,
     memory,
     settle: {
-      modules: settleModules(plans, state, memory, new Set(input.deferredModules ?? [])),
+      modules: settleModules(contracts, state, memory, contributions),
     },
   }
 }

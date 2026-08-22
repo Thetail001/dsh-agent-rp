@@ -10,9 +10,19 @@ import {
 } from './import/session-world-info.ts'
 import { readActiveSessionPreset, type ActiveSessionPreset } from './import/session-preset.ts'
 import type { ImportedCharacterCard } from './import/types.ts'
-import { readCurrentSessionMvuState, type MvuStateSnapshot } from './mvu.ts'
+import {
+  MVU_ROLEPLAY_MODULE_ID,
+  MVU_ROLEPLAY_STATE_ID,
+  readCurrentSessionMvuState,
+  type MvuStateSnapshot,
+} from './mvu.ts'
 import { resolveSessionPersonaIdentity } from './session-persona.ts'
-import { readTavernHelperState, type TavernHelperState } from './tavern-helper.ts'
+import {
+  readTavernHelperState,
+  TAVERN_HELPER_ROLEPLAY_MODULE_ID,
+  TAVERN_HELPER_ROLEPLAY_STATE_ID,
+  type TavernHelperState,
+} from './tavern-helper.ts'
 import {
   configuredLorebook,
   readWorldInfoConfiguration,
@@ -49,8 +59,18 @@ function sessionResource(id: string, name: string, adapter: string): RoleplayRes
   return { id, name, owner: 'session', adapter }
 }
 
-function runtimeModule(id: string, source: RoleplayModuleBinding['source'], phases: RoleplayModuleBinding['phases']) {
-  return { id, source, phases } satisfies RoleplayModuleBinding
+function runtimeModule(
+  id: string,
+  source: RoleplayModuleBinding['source'],
+  phases: RoleplayModuleBinding['phases'],
+  stateIds: readonly string[] = [],
+) {
+  return {
+    id,
+    source,
+    phases,
+    ...(stateIds.length === 0 ? {} : { stateIds }),
+  } satisfies RoleplayModuleBinding
 }
 
 /**
@@ -138,13 +158,13 @@ export function resolveSessionRoleplayRuntime(input: {
       )
   const state = [
     ...(mvu === undefined ? [] : [{
-      id: 'state:mvu',
+      id: MVU_ROLEPLAY_STATE_ID,
       owner: 'session' as const,
       adapter: 'sillytavern:mvu',
       revision: mvu.updateCount,
     }]),
     ...(tavern === undefined ? [] : [{
-      id: 'state:tavern-helper',
+      id: TAVERN_HELPER_ROLEPLAY_STATE_ID,
       owner: 'session' as const,
       adapter: 'sillytavern:tavern-helper',
       revision: tavern.revision,
@@ -156,8 +176,15 @@ export function resolveSessionRoleplayRuntime(input: {
     runtimeModule('roleplay:reply-versions', 'native', ['present']),
     ...(lorebooks.length === 0 ? [] : [runtimeModule('roleplay:world', 'native', ['prepare'])]),
     ...(preset === undefined ? [] : [runtimeModule('adapter:prompt-modules', 'adapter', ['prepare'])]),
-    ...(mvu === undefined ? [] : [runtimeModule('adapter:mvu', 'adapter', ['prepare', 'settle'])]),
-    ...(tavern === undefined ? [] : [runtimeModule('adapter:tavern-helper', 'adapter', ROLEPLAY_TURN_PHASES)]),
+    ...(mvu === undefined ? [] : [runtimeModule(
+      MVU_ROLEPLAY_MODULE_ID, 'adapter', ['prepare', 'settle'], [MVU_ROLEPLAY_STATE_ID],
+    )]),
+    ...(tavern === undefined ? [] : [runtimeModule(
+      TAVERN_HELPER_ROLEPLAY_MODULE_ID,
+      'adapter',
+      ROLEPLAY_TURN_PHASES,
+      [TAVERN_HELPER_ROLEPLAY_STATE_ID],
+    )]),
     ...(input.templateEngineAvailable === true ? [runtimeModule('adapter:ejs', 'adapter', ['prepare'])] : []),
   ]
   const tokenBudget = worldInfoTokenBudget(worldConfiguration)
