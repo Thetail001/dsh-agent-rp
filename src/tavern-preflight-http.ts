@@ -10,12 +10,16 @@ import {
   type AgentRpHttpServer,
 } from './host-http.ts'
 import { PresetLibrary } from './preset-library.ts'
-import type { RoleplayResourceCatalog, LocatedRoleplayResource } from './roleplay-resource-catalog.ts'
+import type { RoleplayResourceCatalog } from './roleplay-resource-catalog.ts'
 import {
   ROLEPLAY_RESOURCE_KINDS,
   type RoleplayResourceSelection,
 } from './roleplay-resource-catalog-protocol.ts'
 import { inspectTavernPreflight, TavernExecutionPlanCache } from './tavern-preflight.ts'
+import {
+  TavernResourcePreflightRegistry,
+  TavernResourcePreflightUnavailableError,
+} from './tavern-resource-preflight.ts'
 import {
   TAVERN_EXECUTION_PATH, TAVERN_PREFLIGHT_PATH, type TavernExecutionBatchRequest, type TavernExecutionRequest,
   type TavernPreflightRequest, type TavernPreflightScope, type TavernPreflightScriptApproval,
@@ -197,32 +201,6 @@ function parseRequest(value: unknown): TavernPreflightRequest {
   }
 }
 
-function selectedResource(
-  catalog: RoleplayResourceCatalog,
-  selection: RoleplayResourceSelection,
-): LocatedRoleplayResource {
-  let located: LocatedRoleplayResource | undefined
-  try {
-    located = catalog.locate(selection.kind, selection.id)
-  } catch (error: unknown) {
-    invalidRequest('体验资源引用无效', { cause: error })
-  }
-  if (located === undefined || located.descriptor.availability !== 'available') {
-    invalidRequest(`体验资源不可用：${selection.kind}`)
-  }
-  return located
-}
-
-function libraryResourceId(
-  located: LocatedRoleplayResource,
-  providerId: string,
-  prefix: string,
-): string | undefined {
-  if (located.providerId !== providerId || !located.descriptor.id.startsWith(prefix)
-    || located.descriptor.id.length === prefix.length) return undefined
-  return safeLibraryId(located.descriptor.id.slice(prefix.length), `${located.descriptor.kind} 资源 id`)
-}
-
 function parseExecutionRequest(value: unknown): TavernExecutionRequest {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) invalidRequest('脚本执行计划请求无效')
   const request = value as Record<string, unknown>
@@ -285,6 +263,7 @@ export function installTavernPreflightHttp(
   characters: CharacterLibrary,
   presets: PresetLibrary,
   resources: RoleplayResourceCatalog,
+  resourcePreflight: TavernResourcePreflightRegistry,
   server: AgentRpHttpServer,
   plans: TavernExecutionPlanCache,
 ): void {
@@ -303,48 +282,44 @@ export function installTavernPreflightHttp(
       }
       try {
         const input = parseRequest(await readJson(request))
-        let characterId: string | undefined
-        let presetId: string | undefined
+        let sources: readonly import('./tavern-preflight.ts').TavernPreflightSource[]
         if (input.format === 0) {
-          characterId = input.characterId
-          presetId = input.presetId
-        } else {
-          for (const selection of input.resources) {
-            const located = selectedResource(resources, selection)
-            if (selection.kind === 'actor') characterId = libraryResourceId(
-              located, 'agent-rp:character-library', 'character:library:',
-            )
-            if (selection.kind === 'prompt-policy') presetId = libraryResourceId(
-              located, 'agent-rp:preset-library', 'preset:library:',
-            )
+          let character: ReturnType<CharacterLibrary['resolve']> | undefined
+          if (input.characterId !== undefined) {
+            try {
+              character = characters.resolve(input.characterId)
+            } catch (error: unknown) {
+              invalidRequest('角色卡不可用', { cause: error })
+            }
           }
-        }
-        let character: ReturnType<CharacterLibrary['resolve']> | undefined
-        if (characterId !== undefined) {
-          try {
-            character = characters.resolve(characterId)
-          } catch (error: unknown) {
-            invalidRequest('角色卡不可用', { cause: error })
+          let preset: ReturnType<PresetLibrary['get']> | undefined
+          if (input.presetId !== undefined) {
+            try {
+              preset = presets.get(input.presetId)
+            } catch (error: unknown) {
+              invalidRequest('预设不可用', { cause: error })
+            }
           }
-        }
-        let preset: ReturnType<PresetLibrary['get']> | undefined
-        if (presetId !== undefined) {
-          try {
-            preset = presets.get(presetId)
-          } catch (error: unknown) {
-            invalidRequest('预设不可用', { cause: error })
-          }
-        }
-        const result = await inspectTavernPreflight([
-          {
-            scope: 'character', ownerId: characterId ?? '',
+          sources = [{
+            scope: 'character', ownerId: input.characterId ?? '',
             scripts: character?.card.frontend.tavernHelperScripts ?? [],
-          },
-          {
-            scope: 'preset', ownerId: presetId ?? '',
+          }, {
+            scope: 'preset', ownerId: input.presetId ?? '',
             scripts: preset?.preset.tavernHelperScripts ?? [],
-          },
-        ], input.scriptApprovals, AbortSignal.timeout(30_000), plans)
+          }]
+        } else {
+          try {
+            sources = resourcePreflight.resolve(resources, input.resources)
+          } catch (error: unknown) {
+            if (error instanceof TavernResourcePreflightUnavailableError) {
+              invalidRequest(`体验资源不可用：${error.selection.kind}`, { cause: error })
+            }
+            throw error
+          }
+        }
+        const result = await inspectTavernPreflight(
+          sources, input.scriptApprovals, AbortSignal.timeout(30_000), plans,
+        )
         json(response, 200, result)
       } catch (error: unknown) {
         if (response.destroyed) return

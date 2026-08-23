@@ -23,6 +23,11 @@ import {
 } from './roleplay-resource-catalog.ts'
 import { roleplayLibraryResourceProviders } from './roleplay-resource-library-providers.ts'
 import { installRoleplayResourceCatalogHttp } from './roleplay-resource-catalog-http.ts'
+import { tavernResourceLibraryPreflightContributors } from './tavern-resource-library-preflight.ts'
+import {
+  TAVERN_RESOURCE_PREFLIGHT_KEY,
+  TavernResourcePreflightRegistry,
+} from './tavern-resource-preflight.ts'
 import {
   Config,
   resolveConfig,
@@ -165,6 +170,15 @@ export type {
   RoleplayResourceMaterializationInput,
   RoleplayResourceProvider,
 } from './roleplay-resource-catalog.ts'
+export {
+  registerTavernResourcePreflightContributor,
+  TAVERN_RESOURCE_PREFLIGHT_KEY,
+  TavernResourcePreflightRegistry,
+} from './tavern-resource-preflight.ts'
+export type {
+  TavernResourcePreflightContributor,
+  TavernResourcePreflightResolveInput,
+} from './tavern-resource-preflight.ts'
 export {
   parseRoleplayResourceDetail,
   ROLEPLAY_RESOURCE_CATALOG_PATH,
@@ -1249,6 +1263,8 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
     const runtimeExtensions = new RoleplayRuntimeExtensionRegistry()
     ctx.provide(ROLEPLAY_RUNTIME_EXTENSIONS_KEY, runtimeExtensions)
     const resourceCatalog = new RoleplayResourceCatalog()
+    const tavernResourcePreflight = new TavernResourcePreflightRegistry()
+    ctx.provide(TAVERN_RESOURCE_PREFLIGHT_KEY, tavernResourcePreflight)
     const worldbookCharacters = createWorldbookCharacterContextRegistry()
     ctx.provide(WORLDBOOK_CHARACTER_CONTEXT_KEY as never, worldbookCharacters as never)
     installWorldbookSnapshotCoalescing(ctx)
@@ -1269,6 +1285,13 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
       () => resourceCatalog.register(provider),
       `agent-rp: built-in resource provider ${provider.id}`,
     )
+    for (const contributor of tavernResourceLibraryPreflightContributors({
+      characters: characterLibrary,
+      presets: presetLibrary,
+    })) ctx.effect(
+      () => tavernResourcePreflight.register(contributor),
+      `agent-rp: built-in Tavern preflight provider ${contributor.providerId}`,
+    )
     ctx.provide(ROLEPLAY_RESOURCE_CATALOG_KEY, resourceCatalog)
     let mountedServer: AgentRpHttpServer | undefined
     const mountHost = (serviceName: 'httpServer' | 'webServer'): void => {
@@ -1286,7 +1309,8 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
           persistentRoot: dshHomePath('agent-rp', 'cache', 'tavern-execution-plans'),
         })
         installTavernPreflightHttp(
-          webCtx, characterLibrary, presetLibrary, resourceCatalog, server, tavernExecutionPlans,
+          webCtx, characterLibrary, presetLibrary, resourceCatalog, tavernResourcePreflight,
+          server, tavernExecutionPlans,
         )
         installTavernExecutionHttp(webCtx, characterLibrary, presetLibrary, server, tavernExecutionPlans)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)

@@ -11,6 +11,8 @@ import type { AgentRpHttpServer } from '../src/host-http.ts'
 import type { ImportedTavernHelperScript } from '../src/import/types.ts'
 import type { PresetLibrary } from '../src/preset-library.ts'
 import { RoleplayResourceCatalog } from '../src/roleplay-resource-catalog.ts'
+import { tavernResourceLibraryPreflightContributors } from '../src/tavern-resource-library-preflight.ts'
+import { TavernResourcePreflightRegistry } from '../src/tavern-resource-preflight.ts'
 import { TavernExecutionPlanCache } from '../src/tavern-preflight.ts'
 import { installTavernExecutionHttp, installTavernPreflightHttp } from '../src/tavern-preflight-http.ts'
 import { TAVERN_EXECUTION_PATH, TAVERN_PREFLIGHT_PATH } from '../src/tavern-preflight-protocol.ts'
@@ -97,10 +99,19 @@ function testResourceCatalog(): RoleplayResourceCatalog {
   return catalog
 }
 
+function testResourcePreflight(
+  libraries: { readonly characters: CharacterLibrary; readonly presets: PresetLibrary },
+): TavernResourcePreflightRegistry {
+  const registry = new TavernResourcePreflightRegistry()
+  for (const contributor of tavernResourceLibraryPreflightContributors(libraries)) registry.register(contributor)
+  return registry
+}
+
 function registeredRoute(
   libraries: { readonly characters: CharacterLibrary; readonly presets: PresetLibrary } = testLibraries(),
   plans = new TavernExecutionPlanCache(),
   resources = testResourceCatalog(),
+  resourcePreflight = testResourcePreflight(libraries),
 ): RegisteredRoute {
   let route: RegisteredRoute | undefined
   const ctx = {
@@ -112,7 +123,9 @@ function registeredRoute(
       return () => {}
     },
   }
-  installTavernPreflightHttp(ctx, libraries.characters, libraries.presets, resources, server, plans)
+  installTavernPreflightHttp(
+    ctx, libraries.characters, libraries.presets, resources, resourcePreflight, server, plans,
+  )
   assert.ok(route)
   assert.equal(route.kind, 'exact')
   assert.equal(route.path, TAVERN_PREFLIGHT_PATH)
@@ -605,6 +618,87 @@ test('preflights one native experience through its complete source-neutral resou
       status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
     }],
   })
+})
+
+test('dispatches native preflight by resource provider ownership without inspecting opaque ids', async () => {
+  const catalog = new RoleplayResourceCatalog()
+  catalog.register({
+    id: 'community:actor-provider',
+    list: () => [{ kind: 'actor', id: 'opaque-community-actor', name: '社区角色', availability: 'available' }],
+  })
+  const registry = new TavernResourcePreflightRegistry()
+  registry.register({
+    providerId: 'community:actor-provider',
+    resolve: input => {
+      assert.equal(Object.isFrozen(input), true)
+      assert.deepEqual(input.selection, { kind: 'actor', id: 'opaque-community-actor', variant: 'opening:night' })
+      return { scope: 'character', ownerId: 'community-owner', scripts: [script('community-script')] }
+    },
+  })
+  const result = await invoke(registeredRoute(
+    testLibraries(), new TavernExecutionPlanCache(), catalog, registry,
+  ), {
+    body: experienceRequest({ resources: [{
+      kind: 'actor', id: 'opaque-community-actor', variant: 'opening:night',
+    }] }),
+  })
+  assert.equal(result.status, 200)
+  assert.deepEqual(result.json, {
+    format: 0,
+    scripts: 1,
+    ready: 1,
+    permissionRequired: 0,
+    failed: 0,
+    entries: [{
+      scope: 'character', scriptId: 'community-script', scriptName: 'script-community-script',
+      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+    }],
+  })
+})
+
+test('revokes provider adapters safely and rejects ambiguous Tavern scopes', () => {
+  const catalog = new RoleplayResourceCatalog()
+  catalog.register({
+    id: 'community:actor-provider',
+    list: () => [{ kind: 'actor', id: 'actor-a', name: '角色 A', availability: 'available' }],
+  })
+  catalog.register({
+    id: 'community:actor-provider-b',
+    list: () => [{ kind: 'actor', id: 'actor-b', name: '角色 B', availability: 'available' }],
+  })
+  catalog.register({
+    id: 'community:world-provider',
+    list: () => [{ kind: 'world', id: 'world-a', name: '世界 A', availability: 'available' }],
+  })
+  const registry = new TavernResourcePreflightRegistry()
+  const first = registry.register({
+    providerId: 'community:actor-provider',
+    resolve: () => ({ scope: 'character', ownerId: 'actor-owner', scripts: [] }),
+  })
+  assert.throws(() => registry.register({
+    providerId: 'community:actor-provider', resolve: () => undefined,
+  }), /already registered/u)
+  first()
+  registry.register({
+    providerId: 'community:actor-provider',
+    resolve: () => ({ scope: 'character', ownerId: 'actor-owner-next', scripts: [] }),
+  })
+  first()
+  assert.equal(registry.resolve(catalog, [{ kind: 'actor', id: 'actor-a' }])[0]?.ownerId, 'actor-owner-next')
+  registry.register({
+    providerId: 'community:actor-provider-b',
+    resolve: () => ({ scope: 'character', ownerId: 'actor-owner-b', scripts: [] }),
+  })
+  assert.throws(() => registry.resolve(catalog, [
+    { kind: 'actor', id: 'actor-a' }, { kind: 'actor', id: 'actor-b' },
+  ]), /More than one selected Roleplay resource contributes Tavern scope "character"/u)
+  registry.register({
+    providerId: 'community:world-provider',
+    resolve: () => ({ scope: 'preset', ownerId: 'world-owner', scripts: [] }),
+  })
+  assert.throws(() => registry.resolve(catalog, [
+    { kind: 'world', id: 'world-a' },
+  ]), /returned scope "preset" for "world"/u)
 })
 
 test('rejects malformed, duplicate, unavailable, and mismatched experience resources', async () => {

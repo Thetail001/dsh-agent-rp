@@ -15,6 +15,10 @@ import type {
 } from './roleplay-resource-catalog.ts'
 import type { RoleplayResourceDescriptor } from './roleplay-resource-catalog-protocol.ts'
 import {
+  CHARACTER_LIBRARY_ROLEPLAY_PROVIDER_ID,
+  PERSONA_LIBRARY_ROLEPLAY_PROVIDER_ID,
+  PRESET_LIBRARY_ROLEPLAY_PROVIDER_ID,
+  WORLD_INFO_LIBRARY_ROLEPLAY_PROVIDER_ID,
   characterLibraryRoleplayResourceId,
   presetLibraryRoleplayResourceId,
   worldInfoLibraryRoleplayResourceId,
@@ -95,7 +99,7 @@ export function roleplayLibraryResourceProviders(libraries: {
   readonly worldInfos: WorldInfoLibrary
 }): readonly RoleplayResourceProvider[] {
   return [{
-    id: 'agent-rp:character-library',
+    id: CHARACTER_LIBRARY_ROLEPLAY_PROVIDER_ID,
     list: () => [
       ...libraries.characters.list('active'),
       ...libraries.characters.list('archived'),
@@ -147,7 +151,7 @@ export function roleplayLibraryResourceProviders(libraries: {
       }
     },
   }, {
-    id: 'agent-rp:persona-library',
+    id: PERSONA_LIBRARY_ROLEPLAY_PROVIDER_ID,
     list: () => libraries.personas.list().map(entry => available({
       id: entry.id,
       kind: 'persona',
@@ -175,7 +179,7 @@ export function roleplayLibraryResourceProviders(libraries: {
       }
     },
   }, {
-    id: 'agent-rp:preset-library',
+    id: PRESET_LIBRARY_ROLEPLAY_PROVIDER_ID,
     list: () => libraries.presets.list().map(entry => available({
       id: presetLibraryRoleplayResourceId(entry.id),
       kind: 'prompt-policy',
@@ -198,7 +202,7 @@ export function roleplayLibraryResourceProviders(libraries: {
       }
     },
   }, {
-    id: 'agent-rp:world-info-library',
+    id: WORLD_INFO_LIBRARY_ROLEPLAY_PROVIDER_ID,
     list: () => libraries.worldInfos.list().map(entry => available({
       id: worldInfoLibraryRoleplayResourceId(entry.id),
       kind: 'world',
