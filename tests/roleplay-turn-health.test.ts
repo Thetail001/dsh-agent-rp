@@ -8,6 +8,7 @@ import {
   summarizeRoleplayTurnHealth,
 } from '../src/roleplay-turn-health.ts'
 import { readRoleplayTurnRecords, type RoleplayTurnRecord } from '../src/roleplay-turn-record.ts'
+import { ROLEPLAY_WORLD_MODULE_ID } from '../src/roleplay-runtime.ts'
 
 function record(input: {
   readonly turn: number
@@ -15,6 +16,7 @@ function record(input: {
   readonly planned?: boolean
   readonly settled?: boolean
   readonly presented?: boolean
+  readonly worldOutcome?: 'applied' | 'idle' | 'degraded'
 }): RoleplayTurnRecord {
   const planned = input.planned === true
   const plan = {
@@ -37,7 +39,15 @@ function record(input: {
     boundary: { startSeq: 1, ...(input.closed === true ? { endSeq: 5, result: 'private-result' } : {}) },
     plans: planned ? [plan] : [],
     prepare: { steps: planned ? [{ step: 1, eventSeq: 2, input: plan.reference.input, modules: [] }] : [] },
-    recall: { steps: planned ? [{ step: 1, eventSeq: 2, modules: [] }] : [] },
+    recall: { steps: planned ? [{
+      step: 1,
+      eventSeq: 2,
+      modules: input.worldOutcome === undefined ? [] : [{
+        moduleId: ROLEPLAY_WORLD_MODULE_ID,
+        outcome: input.worldOutcome,
+        contributions: input.worldOutcome === 'applied' ? 2 : 0,
+      }],
+    }] : [] },
     ...(input.settled === true ? {
       act: { steps: [{
         step: 1,
@@ -59,7 +69,9 @@ test('locates the next lifecycle phase without retaining record content', () => 
     record({ turn: 2, planned: true }),
     record({ turn: 3, planned: true, closed: true }),
     record({ turn: 4, planned: true, closed: true, settled: true }),
-    record({ turn: 5, planned: true, closed: true, settled: true, presented: true }),
+    record({
+      turn: 5, planned: true, closed: true, settled: true, presented: true, worldOutcome: 'applied',
+    }),
   ])
   assert.deepEqual(summary.statuses, {
     open: 2, awaitingSettlement: 1, awaitingPresentation: 1, complete: 1,
@@ -68,6 +80,11 @@ test('locates the next lifecycle phase without retaining record content', () => 
     turn: 5,
     status: 'complete',
     finalizableFromLog: true,
+    worldRecall: {
+      steps: 1,
+      outcomes: { applied: 1, idle: 0, degraded: 0 },
+      contributions: 2,
+    },
     phases: {
       plannedSteps: 1, preparedSteps: 1, recalledSteps: 1, actedSteps: 1,
       assistantMessages: 1, toolCalls: 1, toolResults: 1, settled: true, presented: true,
@@ -75,7 +92,7 @@ test('locates the next lifecycle phase without retaining record content', () => 
   })
   assert.doesNotMatch(
     JSON.stringify(summary),
-    /private-(?:session|message|reply|call|tool|result)/u,
+    /private-(?:session|message|reply|call|tool|result)|roleplay:world/u,
   )
 
   const phases = [
@@ -106,7 +123,7 @@ test('keeps a boundary-only open turn visible to prepare-phase diagnostics', () 
 
 test('wire parser strips every field outside the fixed diagnostic vocabulary', () => {
   const health = summarizeRoleplayTurnHealth([record({
-    turn: 1, planned: true, closed: true, settled: true, presented: true,
+    turn: 1, planned: true, closed: true, settled: true, presented: true, worldOutcome: 'applied',
   })])
   const parsed = parseAgentRpTurnHealthDiagnostic({
     format: 0,
@@ -128,4 +145,24 @@ test('wire parser strips every field outside the fixed diagnostic vocabulary', (
       ...health, statuses: { ...health.statuses, complete: health.statuses.complete + 1 },
     },
   }), /invalid Agent RP turn health totals/u)
+  assert.throws(() => parseAgentRpTurnHealthDiagnostic({
+    format: 0, status: 'ready', health: {
+      ...health,
+      latest: {
+        ...health.latest,
+        worldRecall: {
+          steps: 1, outcomes: { applied: 0, idle: 1, degraded: 0 }, contributions: 1,
+        },
+      },
+    },
+  }), /invalid Agent RP world recall totals/u)
+  assert.throws(() => parseAgentRpTurnHealthDiagnostic({
+    format: 0, status: 'ready', health: {
+      ...health,
+      latest: {
+        ...health.latest,
+        phases: { ...health.latest!.phases, recalledSteps: 0 },
+      },
+    },
+  }), /invalid Agent RP turn health lifecycle/u)
 })

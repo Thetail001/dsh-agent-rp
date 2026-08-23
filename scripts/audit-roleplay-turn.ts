@@ -460,6 +460,8 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
   const turnHealthRecovered = turnHealth.latest?.turn === turn
     && turnHealth.latest.status === 'complete'
     && turnHealth.latest.nextPhase === undefined
+    && (turnHealth.latest.worldRecall?.outcomes.applied ?? 0) > 0
+    && (turnHealth.latest.worldRecall?.contributions ?? 0) > 0
     && turnHealth.latest.phases.settled
     && turnHealth.latest.phases.presented
   const exactPlanRecovered = planRecord?.type === 'agent-rp/turn-plan' && equalJson(

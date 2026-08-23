@@ -182,6 +182,7 @@ export type {
   RoleplayTurnHealthStatus,
   RoleplayTurnHealthSummary,
   RoleplayTurnPhaseDiagnostic,
+  RoleplayWorldRecallDiagnostic,
 } from './roleplay-turn-health-protocol.ts'
 export { AGENT_RP_EMBEDDED_IDENTITY_CHANNEL } from './embedded-identity-protocol.ts'
 export type {

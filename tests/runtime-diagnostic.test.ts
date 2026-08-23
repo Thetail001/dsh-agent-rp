@@ -17,6 +17,9 @@ const sessionFacts: AgentRpRuntimeSessionFacts = {
       statuses: { open: 0, awaitingSettlement: 0, awaitingPresentation: 0, complete: 1 },
       latest: {
         turn: 1, status: 'complete', finalizableFromLog: true,
+        worldRecall: {
+          steps: 1, outcomes: { applied: 1, idle: 0, degraded: 0 }, contributions: 14,
+        },
         phases: {
           plannedSteps: 1, preparedSteps: 1, recalledSteps: 1, actedSteps: 1,
           assistantMessages: 1, toolCalls: 0, toolResults: 0, settled: true, presented: true,
@@ -119,6 +122,10 @@ test('assembles multiple Host publishers without serializing their scope or extr
   assert.equal(snapshot.session?.tavern?.blockedResources, 2)
   assert.equal(snapshot.session?.tavern?.blockedResourceOrigins, 1)
   assert.equal(snapshot.session?.turns?.status, 'ready')
+  assert.deepEqual(snapshot.session?.turns?.status === 'ready'
+    ? snapshot.session.turns.health.latest?.worldRecall : undefined, {
+    steps: 1, outcomes: { applied: 1, idle: 0, degraded: 0 }, contributions: 14,
+  })
   assert.deepEqual(snapshot.session?.tavern?.blockedResourceClasses, { style: 2 })
   assert.deepEqual(snapshot.session?.cardFrames, {
     total: 2, scriptEnabled: 1, inert: 1, registered: 2, resized: 1,

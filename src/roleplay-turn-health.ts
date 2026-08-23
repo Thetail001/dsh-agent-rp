@@ -7,6 +7,7 @@ import type {
   RoleplayTurnHealthSummary,
   RoleplayTurnPhaseDiagnostic,
 } from './roleplay-turn-health-protocol.ts'
+import { ROLEPLAY_WORLD_MODULE_ID } from './roleplay-runtime.ts'
 
 /** Whether a closed turn has enough content-free receipts to recreate settle and present. */
 export function roleplayTurnRecordFinalizable(record: RoleplayTurnRecord): boolean {
@@ -34,11 +35,23 @@ function entry(record: RoleplayTurnRecord): RoleplayTurnHealthEntry {
     : currentStatus === 'awaiting-settlement' ? 'settle'
       : currentStatus === 'awaiting-presentation' ? 'present' : undefined
   const actSteps = record.act?.steps ?? []
+  const worldOutcomes = record.recall.steps.flatMap(step =>
+    step.modules?.filter(module => module.moduleId === ROLEPLAY_WORLD_MODULE_ID) ?? [])
+  const worldRecall = worldOutcomes.length === 0 ? undefined : {
+    steps: worldOutcomes.length,
+    outcomes: {
+      applied: worldOutcomes.filter(module => module.outcome === 'applied').length,
+      idle: worldOutcomes.filter(module => module.outcome === 'idle').length,
+      degraded: worldOutcomes.filter(module => module.outcome === 'degraded').length,
+    },
+    contributions: worldOutcomes.reduce((total, module) => total + module.contributions, 0),
+  }
   return {
     turn: record.turn,
     status: currentStatus,
     ...(nextPhase === undefined ? {} : { nextPhase }),
     finalizableFromLog: roleplayTurnRecordFinalizable(record),
+    ...(worldRecall === undefined ? {} : { worldRecall }),
     phases: {
       plannedSteps,
       preparedSteps,

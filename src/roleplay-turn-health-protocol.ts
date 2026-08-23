@@ -10,12 +10,24 @@ export type RoleplayTurnHealthStatus =
   | 'awaiting-presentation'
   | 'complete'
 
+/** Fixed, content-free proof that the world module participated in actual model steps. */
+export interface RoleplayWorldRecallDiagnostic {
+  readonly steps: number
+  readonly outcomes: {
+    readonly applied: number
+    readonly idle: number
+    readonly degraded: number
+  }
+  readonly contributions: number
+}
+
 /** Counts only; never includes prompt text, messages, tool names, arguments, or results. */
 export interface RoleplayTurnHealthEntry {
   readonly turn: number
   readonly status: RoleplayTurnHealthStatus
   readonly nextPhase?: RoleplayTurnPhaseDiagnostic
   readonly finalizableFromLog: boolean
+  readonly worldRecall?: RoleplayWorldRecallDiagnostic
   readonly phases: {
     readonly plannedSteps: number
     readonly preparedSteps: number
@@ -82,11 +94,37 @@ function parseEntry(value: unknown): RoleplayTurnHealthEntry {
   if (typeof counts.settled !== 'boolean' || typeof counts.presented !== 'boolean') {
     throw new Error('invalid Agent RP turn health boundaries')
   }
+  let worldRecall: RoleplayWorldRecallDiagnostic | undefined
+  if (record.worldRecall !== undefined) {
+    if (typeof record.worldRecall !== 'object' || record.worldRecall === null
+      || Array.isArray(record.worldRecall)) {
+      throw new Error('invalid Agent RP world recall diagnostic')
+    }
+    const world = record.worldRecall as Record<string, unknown>
+    const outcomes = world.outcomes
+    if (typeof outcomes !== 'object' || outcomes === null || Array.isArray(outcomes)) {
+      throw new Error('invalid Agent RP world recall outcomes')
+    }
+    const values = outcomes as Record<string, unknown>
+    const steps = positive(world.steps, 'world recall steps')
+    const parsedOutcomes = {
+      applied: nonNegative(values.applied, 'world recall applied'),
+      idle: nonNegative(values.idle, 'world recall idle'),
+      degraded: nonNegative(values.degraded, 'world recall degraded'),
+    }
+    const contributions = nonNegative(world.contributions, 'world recall contributions')
+    if (Object.values(parsedOutcomes).reduce((total, count) => total + count, 0) !== steps
+      || (parsedOutcomes.applied === 0) !== (contributions === 0)) {
+      throw new Error('invalid Agent RP world recall totals')
+    }
+    worldRecall = { steps, outcomes: parsedOutcomes, contributions }
+  }
   return {
     turn: positive(record.turn, 'turn'),
     status: record.status,
     ...(phase === undefined ? {} : { nextPhase: phase }),
     finalizableFromLog: record.finalizableFromLog,
+    ...(worldRecall === undefined ? {} : { worldRecall }),
     phases: {
       plannedSteps: nonNegative(counts.plannedSteps, 'planned steps'),
       preparedSteps: nonNegative(counts.preparedSteps, 'prepared steps'),
@@ -137,7 +175,8 @@ function parseSummary(value: unknown): RoleplayTurnHealthSummary {
         : !latest.phases.settled && !latest.phases.presented
     if (!expectedPhase || !boundariesValid
       || latest.phases.preparedSteps > latest.phases.plannedSteps
-      || latest.phases.recalledSteps > latest.phases.plannedSteps) {
+      || latest.phases.recalledSteps > latest.phases.plannedSteps
+      || (latest.worldRecall?.steps ?? 0) > latest.phases.recalledSteps) {
       throw new Error('invalid Agent RP turn health lifecycle')
     }
   }
