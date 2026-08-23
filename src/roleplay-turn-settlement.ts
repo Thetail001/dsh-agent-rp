@@ -14,6 +14,7 @@ import {
 } from './roleplay-runtime.ts'
 import type { RoleplayTurnInputKey, RoleplayTurnPlan } from './roleplay-turn-plan.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import { readRoleplayStateActionIntent } from './roleplay-state-action.ts'
 
 /** Exact prepared input consumed by one model step in the settled turn. */
 export interface RoleplayTurnPlanReference {
@@ -54,11 +55,13 @@ export interface RoleplayTurnPlanReceipt {
   }
   readonly promptDiagnostics: RoleplayTurnPlan['prompt']['diagnostics']
   readonly act?: {
+    readonly strategy?: RoleplayTurnPlan['act']['strategy']
     readonly responseRepairs: readonly {
       readonly engine: RoleplayTurnPlan['act']['responseRepairs'][number]['engine']
       readonly moduleId: string
       readonly stateId: string
     }[]
+    readonly stateActions?: RoleplayTurnPlan['act']['stateActions']
   }
   readonly stateReads: readonly {
     readonly id: string
@@ -74,12 +77,13 @@ export interface RoleplayTurnPlanReceipt {
 
 /**
  * Published structural projections of the provider-neutral turn plan:
- * 0 predates prompt transforms, 1 adds transforms, and 2 adds prepared act programs.
+ * 0 predates prompt transforms, 1 adds transforms, 2 adds response repair programs,
+ * and 3 adds the independent turn strategy plus semantic state actions.
  */
-export type RoleplayTurnPlanSchema = 0 | 1 | 2
+export type RoleplayTurnPlanSchema = 0 | 1 | 2 | 3
 
 /** Current structural projection written into every new plan receipt. */
-export const CURRENT_ROLEPLAY_TURN_PLAN_SCHEMA: RoleplayTurnPlanSchema = 2
+export const CURRENT_ROLEPLAY_TURN_PLAN_SCHEMA: RoleplayTurnPlanSchema = 3
 
 function legacyPromptPreparation(plan: RoleplayTurnPlan): {
   readonly prompt: Omit<RoleplayTurnPlan['prompt'], 'transforms'>
@@ -118,9 +122,16 @@ function planWithoutPreparedAct(plan: RoleplayTurnPlan): Omit<RoleplayTurnPlan, 
   }
 }
 
+function planWithoutNativeActions(plan: RoleplayTurnPlan): Omit<RoleplayTurnPlan, 'act'> & {
+  readonly act: Pick<RoleplayTurnPlan['act'], 'responseRepairs'>
+} {
+  return { ...plan, act: { responseRepairs: plan.act.responseRepairs } }
+}
+
 /** Project a current plan into one historically published structural schema. */
 export function projectRoleplayTurnPlan(plan: RoleplayTurnPlan, schema: RoleplayTurnPlanSchema): unknown {
-  if (schema === 2) return plan
+  if (schema === 3) return plan
+  if (schema === 2) return planWithoutNativeActions(plan)
   const withoutAct = planWithoutPreparedAct(plan)
   if (schema === 1) return withoutAct
   const legacy = legacyPromptPreparation(plan)
@@ -153,8 +164,9 @@ export function matchRoleplayTurnPlanSchema(
   declaredSchema: unknown,
 ): RoleplayTurnPlanSchema | undefined {
   const schemas: readonly RoleplayTurnPlanSchema[] = declaredSchema === undefined
-    ? [2, 1, 0]
-    : declaredSchema === 0 || declaredSchema === 1 || declaredSchema === 2 ? [declaredSchema] : []
+    ? [3, 2, 1, 0]
+    : declaredSchema === 0 || declaredSchema === 1 || declaredSchema === 2 || declaredSchema === 3
+      ? [declaredSchema] : []
   return schemas.find(schema => roleplayTurnPlanSha256(plan, schema) === expectedDigest)
 }
 
@@ -314,7 +326,18 @@ function latestTurnReply(
       }
     }
   }
-  const reply = events.findLast(event => event.type === 'assistant/message'
+  const actionReplies = events.flatMap(event => {
+    if (event.type !== 'tool/result' || event.data.turn !== turn
+      || event.data.message.content[0]?.type !== 'tool-result'
+      || event.data.message.content[0].isError === true || event.data.error !== undefined) return []
+    const intent = readRoleplayStateActionIntent(event.data.meta)
+    if (intent === undefined || intent.turn !== turn) return []
+    const assistant = events[intent.assistantEventSeq]
+    if (assistant?.type !== 'assistant/message' || !surface.has(assistant.seq)) return []
+    const hasText = assistant.data.message.content.some(block => block.type === 'text' && block.text.trim() !== '')
+    return hasText ? [assistant] : []
+  })
+  const reply = actionReplies.at(-1) ?? events.findLast(event => event.type === 'assistant/message'
     && event.data.turn === turn && surface.has(event.seq))
   return reply?.type === 'assistant/message'
     ? { eventSeq: reply.seq, messageId: String(reply.data.message.id) }
@@ -578,7 +601,7 @@ function planReceipt(
   schema: RoleplayTurnPlanSchema = CURRENT_ROLEPLAY_TURN_PLAN_SCHEMA,
 ): RoleplayTurnPlanReceipt {
   const projected = projectRoleplayTurnPlan(plan, schema) as Omit<RoleplayTurnPlan, 'act'> & {
-    readonly act?: RoleplayTurnPlan['act']
+    readonly act?: Partial<RoleplayTurnPlan['act']> & Pick<RoleplayTurnPlan['act'], 'responseRepairs'>
   }
   return {
     preparedPlanSchema: schema,
@@ -609,11 +632,18 @@ function planReceipt(
     },
     promptDiagnostics: { ...plan.prompt.diagnostics },
     ...(projected.act === undefined ? {} : { act: {
+      ...(projected.act.strategy === undefined ? {} : { strategy: projected.act.strategy }),
       responseRepairs: projected.act.responseRepairs.map(program => ({
         engine: program.engine,
         moduleId: program.moduleId,
         stateId: program.stateId,
       })),
+      ...(projected.act.stateActions === undefined ? {} : {
+        stateActions: projected.act.stateActions.map(action => ({
+          ...action,
+          operations: [...action.operations],
+        })),
+      }),
     } }),
     stateReads: plan.stateReads.map(read => ({
       id: read.id,

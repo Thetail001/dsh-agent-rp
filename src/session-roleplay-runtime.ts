@@ -50,6 +50,7 @@ import {
   ROLEPLAY_STATE_MODULE_ID,
   type RoleplayStateSnapshot,
 } from './roleplay-state.ts'
+import { readRoleplayTurnMode, type RoleplayTurnMode } from './roleplay-turn-mode.ts'
 
 /** One source plus the Session overlay that will be evaluated for this turn. */
 export interface ConfiguredRoleplayLorebook {
@@ -60,6 +61,7 @@ export interface ConfiguredRoleplayLorebook {
 /** Adapter-private values retained while existing renderers migrate onto the runtime contract. */
 export interface ResolvedSessionRoleplayRuntime {
   readonly snapshot: RoleplayRuntimeSnapshot
+  readonly turnMode: RoleplayTurnMode
   readonly nativeStates: readonly RoleplayStateSnapshot[]
   readonly card?: ImportedCharacterCard
   readonly importedChat?: SillyTavernChatIdentity
@@ -111,6 +113,7 @@ export function resolveSessionRoleplayRuntime(input: {
   const worldScenario = readWorldInfoLibrarySessionSeed(events)
   const preset = readActiveSessionPreset(events)
   const tavern = readTavernHelperState(events)
+  const turnMode = readRoleplayTurnMode(events)
   const nativeStates = readRoleplayStates(events)
   const worldConfiguration = readWorldInfoConfiguration(events)
   const lorebooks = readActiveSessionLorebookSourcesFromEvents(events).map(source => ({
@@ -277,6 +280,7 @@ export function resolveSessionRoleplayRuntime(input: {
   }
   return {
     snapshot,
+    turnMode,
     nativeStates,
     ...(card === undefined ? {} : { card }),
     ...(importedChat === undefined ? {} : { importedChat }),

@@ -54,6 +54,12 @@ import {
   ReplayableRoleplayMacros,
   type RoleplayMacroContext,
 } from './roleplay-macro.ts'
+import {
+  ROLEPLAY_STATE_ACTION_TOOL,
+  renderRoleplayStateActionGuidance,
+  type RoleplayStateActionPlan,
+} from './roleplay-state-action.ts'
+import type { RoleplayTurnMode } from './roleplay-turn-mode.ts'
 
 /** Exact replay key for the Session surface and newly claimed messages used by preparation. */
 export interface RoleplayTurnInputKey {
@@ -177,7 +183,9 @@ export type RoleplayResponseRepairPlan = RoleplayMvuResponseRepairPlan
 
 /** Source-neutral act-phase programs frozen for one concrete model step. */
 export interface RoleplayTurnActPlan {
+  readonly strategy: RoleplayTurnMode
   readonly responseRepairs: readonly RoleplayResponseRepairPlan[]
+  readonly stateActions: readonly RoleplayStateActionPlan[]
 }
 
 /** Exact state value and log boundary consumed while preparing this turn. */
@@ -457,6 +465,21 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   let unsupportedMacros = worldMacros.unsupportedCount
   let templateRenders = 0
   let templateFailures = 0
+  const mvuUpdateInstructions = resolved.card === undefined || resolved.mvu === undefined
+    ? undefined : renderMvuUpdateInstructions(resolved.card, resolved.mvu.statData)
+  const choiceInstructions = resolved.card === undefined || resolved.mvu === undefined
+    ? undefined : renderChoiceInstructions(resolved.card)
+  const stateActionTarget: RoleplayStateActionPlan | undefined = resolved.turnMode !== 'agent'
+    || resolved.mvu === undefined || mvuUpdateInstructions === undefined
+    ? undefined
+    : {
+        engine: 'mvu-v0',
+        tool: ROLEPLAY_STATE_ACTION_TOOL,
+        moduleId: MVU_ROLEPLAY_MODULE_ID,
+        stateId: MVU_ROLEPLAY_STATE_ID,
+        expectedRevision: resolved.mvu.updateCount,
+        operations: ['replace', 'delta', 'insert', 'remove', 'move'],
+      }
 
   if (snapshot.prompt.strategy === 'modules' && resolved.preset !== undefined) {
     const assembled = assembleSillyTavernPreset(resolved.preset.preset, {
@@ -470,7 +493,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
       pendingMessages,
       macroContext,
       worldInfoMacrosResolved: true,
-      mvuEnabled: resolved.mvu !== undefined,
+      mvuEnabled: resolved.mvu !== undefined && resolved.turnMode === 'conversation',
       ...(options.renderTemplate === undefined ? {} : { renderTemplate: options.renderTemplate }),
     })
     providerPrompt = assembled
@@ -490,6 +513,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
       options,
       cardMacros,
       true,
+      resolved.turnMode === 'conversation',
     )
     unsupportedMacros += cardMacros.unsupportedCount
   } else if (resolved.importedChat !== undefined) {
@@ -512,6 +536,15 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     systemPromptText = renderCharacterPrompt(input.deployment, experienceBefore, experienceAfter)
   }
 
+  if (stateActionTarget !== undefined) {
+    const guidance = renderRoleplayStateActionGuidance(stateActionTarget, mvuUpdateInstructions!)
+    if (snapshot.prompt.strategy === 'modules') {
+      providerPrompt = { ...providerPrompt, afterHistory: [...providerPrompt.afterHistory, { role: 'system', content: guidance }] }
+    } else {
+      systemPromptText = [systemPromptText, guidance].filter(Boolean).join('\n\n')
+    }
+  }
+
   const transforms = promptTransforms(resolved, characterName, userName)
   const prompt: RoleplayTurnPromptPlan = {
     ...providerPrompt,
@@ -521,21 +554,20 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     transforms,
     diagnostics: { enabledModules, unsupportedMacros, templateFailures },
   }
-  const mvuUpdateInstructions = resolved.card === undefined || resolved.mvu === undefined
-    ? undefined : renderMvuUpdateInstructions(resolved.card, resolved.mvu.statData)
-  const choiceInstructions = resolved.card === undefined || resolved.mvu === undefined
-    ? undefined : renderChoiceInstructions(resolved.card)
   const act: RoleplayTurnActPlan = {
+    strategy: resolved.turnMode,
     responseRepairs: resolved.mvu === undefined
-      || (mvuUpdateInstructions === undefined && choiceInstructions === undefined)
+      || ((resolved.turnMode === 'agent' || mvuUpdateInstructions === undefined) && choiceInstructions === undefined)
       ? []
       : [{
           engine: 'mvu-v0',
           moduleId: MVU_ROLEPLAY_MODULE_ID,
           stateId: MVU_ROLEPLAY_STATE_ID,
-          ...(mvuUpdateInstructions === undefined ? {} : { updateInstructions: mvuUpdateInstructions }),
+          ...(resolved.turnMode === 'agent' || mvuUpdateInstructions === undefined
+            ? {} : { updateInstructions: mvuUpdateInstructions }),
           ...(choiceInstructions === undefined ? {} : { choiceInstructions }),
         }],
+    stateActions: stateActionTarget === undefined ? [] : [stateActionTarget],
   }
   const nativeStatesById = new Map(resolved.nativeStates.map(state => [state.id, state]))
   const stateReads: RoleplayStateRead[] = snapshot.state.map((binding) => {

@@ -11,7 +11,8 @@ import { decodeGenerationMvuCheckpoint } from './generation-command-result.ts'
 export const MVU_ROLEPLAY_MODULE_ID = 'adapter:mvu'
 export const MVU_ROLEPLAY_STATE_ID = 'state:mvu'
 
-interface JsonPatchOperation {
+/** Semantic state operation shared by legacy MVU blocks and native Agent actions. */
+export interface MvuStateOperation {
   readonly op: 'replace' | 'delta' | 'insert' | 'remove' | 'move'
   readonly path?: string
   readonly from?: string
@@ -24,6 +25,12 @@ export interface MvuStateSnapshot {
   readonly statData: JsonValue
   readonly updateCount: number
   readonly lastError?: string
+  /** Causal settlement record for a native Agent state action. */
+  readonly source?: {
+    readonly kind: 'agent-action'
+    readonly turn: number
+    readonly resultEventSeqs: readonly number[]
+  }
 }
 
 declare module '@deepseek-ai/dsh-session' {
@@ -83,15 +90,17 @@ export function readInitialMvuState(card: ImportedCharacterCard): JsonValue | un
 export function readCurrentMvuState(
   card: ImportedCharacterCard,
   events: readonly SessionEvent[],
-): { readonly statData: JsonValue; readonly updateCount: number; readonly lastError?: string } | undefined {
+): MvuStateSnapshot | undefined {
   let statData = readInitialMvuState(card)
   let updateCount = 0
   let lastError: string | undefined
+  let source: MvuStateSnapshot['source']
   for (const event of events) {
     if (event.type === 'agent-rp/mvu-state') {
       statData = event.data.statData
       updateCount = event.data.updateCount
       lastError = event.data.lastError
+      source = event.data.source
       continue
     }
     if (event.type === 'command/done' && event.data.kind === 'success') {
@@ -103,6 +112,7 @@ export function readCurrentMvuState(
         statData = checkpoint!.mvu.statData
         updateCount = checkpoint!.mvu.updateCount
         lastError = checkpoint!.mvu.lastError
+        source = undefined
         continue
       }
     }
@@ -122,6 +132,7 @@ export function readCurrentMvuState(
           statData = replacement
           if (!initializing) updateCount += 1
           lastError = undefined
+          source = undefined
         }
       }
       continue
@@ -131,6 +142,7 @@ export function readCurrentMvuState(
       .flatMap(block => block.type === 'text' ? [block.text] : [])
       .join('\n')
     if (!/<UpdateVariable(?:variable)?>/iu.test(text)) continue
+    source = undefined
     try {
       const update = applyMvuReply(statData, text)
       if (update === undefined) continue
@@ -142,12 +154,20 @@ export function readCurrentMvuState(
     }
   }
   if (statData === undefined) return undefined
-  return { statData, updateCount, ...(lastError === undefined ? {} : { lastError }) }
+  return {
+    statData,
+    updateCount,
+    ...(lastError === undefined ? {} : { lastError }),
+    ...(source === undefined ? {} : { source }),
+  }
 }
 
 /** Append an exact MVU state selection after a reply-version surface change. */
-export function appendMvuState(session: Session, state: MvuStateSnapshot): void {
-  appendAgentRpSessionEvent(session, 'agent-rp/mvu-state', state)
+export function appendMvuState(
+  session: Session,
+  state: MvuStateSnapshot,
+): SessionEvent<'agent-rp/mvu-state'> {
+  return appendAgentRpSessionEvent(session, 'agent-rp/mvu-state', state)
 }
 
 /** Fold MVU updates from the current model-visible Session surface plus durable script mutations. */
@@ -169,6 +189,9 @@ export function mvuTurnSettlementContribution(input: {
 }): RoleplayTurnSettlementContribution | undefined {
   const error = input.state?.lastError
   if (error === undefined) return undefined
+  if (input.state?.source?.kind === 'agent-action' && input.state.source.turn === input.turn) {
+    return { moduleId: MVU_ROLEPLAY_MODULE_ID, outcome: 'failed', error }
+  }
   const visible = new Set(input.session.surface.nodes)
   const failedThisTurn = input.session.events.some(event => event.seq >= input.firstSeq
     && event.type === 'assistant/message' && event.data.turn === input.turn && visible.has(event.seq)
@@ -251,7 +274,8 @@ function replaceAt(root: JsonValue, pointer: string, value: JsonValue): void {
   }
 }
 
-function operation(value: unknown): JsonPatchOperation {
+/** Normalize one untrusted semantic operation into a detached JSON value. */
+export function parseMvuStateOperation(value: unknown): MvuStateOperation {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('MVU patch entries must be objects')
   const record = value as Record<string, unknown>
   if (record.op !== 'replace' && record.op !== 'delta' && record.op !== 'insert'
@@ -264,7 +288,7 @@ function operation(value: unknown): JsonPatchOperation {
   return { op: record.op, ...(record.path === undefined ? {} : { path: record.path }), ...(record.from === undefined ? {} : { from: record.from }), ...(record.to === undefined ? {} : { to: record.to }), ...(snapshot === undefined ? {} : { value: snapshot }) }
 }
 
-function patchArrays(text: string): JsonPatchOperation[][] {
+function patchArrays(text: string): MvuStateOperation[][] {
   const blocks = [...text.matchAll(/<UpdateVariable(?:variable)?>\s*([\s\S]*?)\s*<\/UpdateVariable(?:variable)?>/giu)]
   return blocks.map(match => {
     const body = match[1] ?? ''
@@ -272,8 +296,43 @@ function patchArrays(text: string): JsonPatchOperation[][] {
     if (encoded === undefined) throw new Error('UpdateVariable is missing JSONPatch')
     const parsed: unknown = JSON.parse(encoded)
     if (!Array.isArray(parsed)) throw new Error('MVU JSONPatch must be an array')
-    return parsed.map(operation)
+    return parsed.map(parseMvuStateOperation)
   })
+}
+
+/** Apply semantic MVU operations atomically while the runtime computes final values. */
+export function applyMvuOperations(
+  current: JsonValue,
+  operations: readonly MvuStateOperation[],
+): { readonly statData: JsonValue; readonly appliedOperations: number } {
+  const cloned = snapshotJsonValue(current) as JsonValue | undefined
+  if (cloned === undefined) throw new Error('Current MVU state is not JSON-compatible')
+  let count = 0
+  for (const item of operations.map(parseMvuStateOperation)) {
+    const path = item.path
+    if (item.op === 'move') {
+      const from = item.from
+      const to = item.to ?? path
+      if (from === undefined || to === undefined) throw new Error('MVU move requires from and to')
+      insertAt(cloned, to, removeAt(cloned, from))
+    } else if (item.op === 'remove') {
+      if (path === undefined) throw new Error('MVU remove requires path')
+      removeAt(cloned, path)
+    } else if (item.op === 'insert') {
+      if (path === undefined || item.value === undefined) throw new Error('MVU insert requires path and value')
+      insertAt(cloned, path, item.value)
+    } else if (item.op === 'replace') {
+      if (path === undefined || item.value === undefined) throw new Error('MVU replace requires path and value')
+      replaceAt(cloned, path, item.value)
+    } else {
+      if (path === undefined || typeof item.value !== 'number') throw new Error('MVU delta requires path and numeric value')
+      const before = readAt(cloned, path)
+      if (typeof before !== 'number') throw new Error(`MVU delta path is not numeric: ${path}`)
+      replaceAt(cloned, path, before + item.value)
+    }
+    count += 1
+  }
+  return { statData: cloned, appliedOperations: count }
 }
 
 /** Apply every complete `<UpdateVariable>` JSON Patch block atomically. */
@@ -283,36 +342,15 @@ export function applyMvuReply(
 ): { readonly statData: JsonValue; readonly appliedOperations: number } | undefined {
   if (!/<UpdateVariable(?:variable)?>/iu.test(text)) return undefined
   const batches = patchArrays(text)
-  const cloned = snapshotJsonValue(current) as JsonValue | undefined
-  if (cloned === undefined) throw new Error('Current MVU state is not JSON-compatible')
-  let count = 0
+  let result = { statData: current, appliedOperations: 0 }
   for (const batch of batches) {
-    for (const item of batch) {
-      const path = item.path
-      if (item.op === 'move') {
-        const from = item.from
-        const to = item.to ?? path
-        if (from === undefined || to === undefined) throw new Error('MVU move requires from and to')
-        insertAt(cloned, to, removeAt(cloned, from))
-      } else if (item.op === 'remove') {
-        if (path === undefined) throw new Error('MVU remove requires path')
-        removeAt(cloned, path)
-      } else if (item.op === 'insert') {
-        if (path === undefined || item.value === undefined) throw new Error('MVU insert requires path and value')
-        insertAt(cloned, path, item.value)
-      } else if (item.op === 'replace') {
-        if (path === undefined || item.value === undefined) throw new Error('MVU replace requires path and value')
-        replaceAt(cloned, path, item.value)
-      } else {
-        if (path === undefined || typeof item.value !== 'number') throw new Error('MVU delta requires path and numeric value')
-        const before = readAt(cloned, path)
-        if (typeof before !== 'number') throw new Error(`MVU delta path is not numeric: ${path}`)
-        replaceAt(cloned, path, before + item.value)
-      }
-      count += 1
+    const applied = applyMvuOperations(result.statData, batch)
+    result = {
+      statData: applied.statData,
+      appliedOperations: result.appliedOperations + applied.appliedOperations,
     }
   }
-  return { statData: cloned, appliedOperations: count }
+  return result
 }
 
 /** Collect the inert card-authored rules needed by a dedicated MVU update call. */

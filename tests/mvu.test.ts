@@ -188,7 +188,7 @@ test('repairs a missing MVU block from only the frozen act plan in a cardless Se
       transforms: { actorName: '测试角色', operations: [] },
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
-    act: { responseRepairs: [{
+    act: { strategy: 'conversation', stateActions: [], responseRepairs: [{
       engine: 'mvu-v0', moduleId: 'adapter:mvu', stateId: 'state:mvu', updateInstructions: '只用冻结规则',
     }] },
     stateReads: [{

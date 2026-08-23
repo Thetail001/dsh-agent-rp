@@ -19,6 +19,7 @@ import {
   collectSessionRoleplaySettlementContributionsFromReferences,
 } from './session-roleplay-turn-settlement.ts'
 import { roleplayTurnRecordFinalizable } from './roleplay-turn-health.ts'
+import { settleSessionRoleplayStateActions } from './roleplay-state-action.ts'
 
 /** Content-free count of records restored from pre-dispatch receipts. */
 export interface SessionRoleplayTurnRecoveryResult {
@@ -82,8 +83,25 @@ export function recoverSessionRoleplayTurns(input: {
     if (settlement?.type !== 'agent-rp/turn-settlement') {
       const boundary = createSessionRoleplayTurnBoundary(input.session, closing)
       const memoryWriteAvailable = plans.some(plan => plan.receipt?.memoryWriteAvailable === true)
+      const firstInputSeq = Math.min(...plans.map(plan => plan.input.sessionSeq))
+      const base = Session.create(input.session.id, boundary.events.slice(0, firstInputSeq))
+      const baseRuntime = resolveSessionRoleplayRuntime({
+        session: base,
+        deployment: input.deployment,
+        memoryWriteAvailable,
+        ...(input.templateEngineAvailable === undefined
+          ? {} : { templateEngineAvailable: input.templateEngineAvailable }),
+        ...(input.extensions === undefined ? {} : { extensions: input.extensions }),
+      })
+      const actionSettlement = settleSessionRoleplayStateActions({
+        session: input.session,
+        boundary: boundary.events,
+        turn: closing.data.turn,
+        plans,
+        ...(baseRuntime.mvu === undefined ? {} : { base: baseRuntime.mvu }),
+      })
       const resolved = resolveSessionRoleplayRuntime({
-        session: boundary.session,
+        session: actionSettlement.session,
         deployment: input.deployment,
         memoryWriteAvailable,
         ...(input.templateEngineAvailable === undefined
@@ -98,7 +116,7 @@ export function recoverSessionRoleplayTurns(input: {
         events: boundary.events,
         after: resolved.snapshot,
         contributions: collectSessionRoleplaySettlementContributionsFromReferences({
-          session: boundary.session,
+          session: actionSettlement.session,
           turn: closing.data.turn,
           plans,
           ...(resolved.mvu === undefined ? {} : { mvu: resolved.mvu }),

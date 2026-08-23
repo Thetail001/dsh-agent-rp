@@ -647,10 +647,12 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
     ],
   })
   assert.deepEqual(plan.act, {
+    strategy: 'conversation',
     responseRepairs: [{
       engine: 'mvu-v0', moduleId: 'adapter:mvu', stateId: 'state:mvu',
       updateInstructions: '变量更新规则：回复末尾输出 <UpdateVariable>。',
     }],
+    stateActions: [],
   })
   assert.deepEqual(plan.stateReads.find(read => read.id === 'state:mvu'), {
     id: 'state:mvu', owner: 'session', adapter: 'sillytavern:mvu', revision: 2,

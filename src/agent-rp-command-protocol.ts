@@ -12,6 +12,7 @@ export const AGENT_RP_COMMAND_NAMES = Object.freeze([
   'rp-persona',
   'rp-memory',
   'rp-state',
+  'rp-turn-mode',
   'rp-preset-configure',
   'rp-preset-library',
   'rp-generation',

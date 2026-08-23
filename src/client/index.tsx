@@ -576,6 +576,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly listMemory: (sessionId: SessionId) => Promise<readonly AgentRpMemoryView[]>
   readonly manageMemory: (sessionId: SessionId, request: AgentRpMemoryCommandRequest) => Promise<void>
   readonly manageState: (sessionId: SessionId, request: RoleplayStateCommandRequest) => Promise<void>
+  readonly manageTurnMode: (sessionId: SessionId, mode: AgentRpProjection['turnMode']) => Promise<void>
   readonly startCharacterSession: (
     sessionId: SessionId,
     character: CharacterLibraryDetail,
@@ -1219,9 +1220,17 @@ function roleplaySummary(
     // Client HMR can briefly pair a newer UI with the previous Host projection.
     // Keep that rolling upgrade usable until the Host process is restarted.
     const nativeStates = (projection as Partial<AgentRpProjection>).nativeStates
-    return Array.isArray(nativeStates) ? projection : { ...projection, nativeStates: [] }
+    const turnMode = (projection as Partial<AgentRpProjection>).turnMode
+    return Array.isArray(nativeStates) && (turnMode === 'conversation' || turnMode === 'agent')
+      ? projection
+      : {
+          ...projection,
+          nativeStates: Array.isArray(nativeStates) ? nativeStates : [],
+          turnMode: turnMode === 'agent' ? 'agent' : 'conversation',
+        }
   }
   return {
+    turnMode: 'conversation',
     characterName: summary.displayTitle,
     description: '',
     personality: '',
@@ -3661,7 +3670,7 @@ function RoleplayHeader({
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, listWorldInfos,
   prepareChatMigration, prepareRpDistributionChatMigration, launchPreparedChatMigration,
   startCharacterSession, exportChat,
-  listMemory, manageMemory, manageState,
+  listMemory, manageMemory, manageState, manageTurnMode,
   listPresets, listPersonas, savePersona, deletePersona, applyPersona, loadModelCapabilities, runtimeDiagnostics,
 }: HeaderProps) {
   const summary = useSessions(state => state.byId[sessionId])
@@ -3679,6 +3688,8 @@ function RoleplayHeader({
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string>()
+  const [turnModeSaving, setTurnModeSaving] = useState(false)
+  const [turnModeError, setTurnModeError] = useState<string>()
   const [aliasDraft, setAliasDraft] = useState('')
   const [aliasError, setAliasError] = useState<string>()
   const [renaming, setRenaming] = useState(false)
@@ -3834,6 +3845,17 @@ function RoleplayHeader({
               setExportError(reason instanceof Error ? reason.message : String(reason))
             }).finally(() => { setExporting(false) })
           }} style={headerMenuItemStyle}>{exporting ? '正在导出…' : '导出聊天'}</button>
+          <button type="button" role="menuitem" disabled={turnModeSaving} aria-label="切换角色回合方式"
+            onClick={() => {
+              setTurnModeSaving(true)
+              setTurnModeError(undefined)
+              const next = projection.turnMode === 'agent' ? 'conversation' : 'agent'
+              void manageTurnMode(sessionId, next).then(() => { setSettingsOpen(false) }, reason => {
+                setTurnModeError(reason instanceof Error ? reason.message : String(reason))
+              }).finally(() => { setTurnModeSaving(false) })
+            }} style={headerMenuItemStyle}>
+            {turnModeSaving ? '正在切换…' : `回合方式 · ${projection.turnMode === 'agent' ? 'Agent' : '纯对话'}`}
+          </button>
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setMemoryOpen(true) }} style={headerMenuItemStyle}>记忆</button>
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setStateOpen(true) }} style={headerMenuItemStyle}>
             状态数据{projection.nativeStates.length === 0 ? '' : ` · ${projection.nativeStates.length}`}
@@ -3849,6 +3871,7 @@ function RoleplayHeader({
             setRoleplayViewMode(sessionId, viewMode === 'immersive' ? 'debug' : 'immersive')
           }} style={headerMenuItemStyle}>{viewMode === 'debug' ? '返回沉浸视图' : '打开调试视图'}</button>
           {exportError !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '11px', lineHeight: 1.45, margin: '4px 8px 3px', maxWidth: '240px' }}>{exportError}</p>}
+          {turnModeError !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '11px', lineHeight: 1.45, margin: '4px 8px 3px', maxWidth: '240px' }}>{turnModeError}</p>}
         </div>, document.body)}
       {statusSource !== undefined && <button className="agent-rp-header-primary-action" type="button" onClick={() => { setStatusOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
@@ -11970,6 +11993,13 @@ export function apply(ctx: ClientContext): void {
     const response = await executeAgentRpCommand(sessionId, `/rp-state ${JSON.stringify(request)}`)
     if (!response.matched) throw new Error('当前 Host 未启用状态管理')
   }
+  const manageTurnMode = async (
+    sessionId: SessionId,
+    mode: AgentRpProjection['turnMode'],
+  ): Promise<void> => {
+    const response = await executeAgentRpCommand(sessionId, `/rp-turn-mode ${JSON.stringify({ format: 0, mode })}`)
+    if (!response.matched) throw new Error('当前 Host 未启用回合方式切换')
+  }
   const listCharacters = async (collection: CharacterLibraryCollection = 'active'): Promise<readonly CharacterLibrarySummary[]> => {
     const query = collection === 'active' ? '' : '?collection=archived'
     const value = await characterLibraryJson<{ readonly format: 0; readonly entries: readonly CharacterLibrarySummary[] }>(query)
@@ -12515,7 +12545,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} runtimeDiagnostics={runtimeDiagnostics} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listWorldInfos={listWorldInfos} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} prepareChatMigration={prepareChatMigration} prepareRpDistributionChatMigration={prepareRpDistributionChatMigration} launchPreparedChatMigration={launchPreparedChatMigration} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} manageState={manageState} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
+  }, props => <RoleplayHeader {...props} runtimeDiagnostics={runtimeDiagnostics} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listWorldInfos={listWorldInfos} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} prepareChatMigration={prepareChatMigration} prepareRpDistributionChatMigration={prepareRpDistributionChatMigration} launchPreparedChatMigration={launchPreparedChatMigration} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} manageState={manageState} manageTurnMode={manageTurnMode} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -12569,6 +12599,9 @@ export function apply(ctx: ClientContext): void {
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-state',
+  }, () => null))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-turn-mode',
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-preset-configure',

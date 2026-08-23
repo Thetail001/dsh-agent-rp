@@ -187,8 +187,9 @@ export function replaySessionRoleplayTurnPlan(input: {
   if (schema === undefined) {
     const diagnosticSchema = reference.receipt.preparedPlanSchema === 0
       || reference.receipt.preparedPlanSchema === 1 || reference.receipt.preparedPlanSchema === 2
+      || reference.receipt.preparedPlanSchema === 3
       ? reference.receipt.preparedPlanSchema
-      : 2
+      : 3
     const actualSections = roleplayTurnPlanSectionSha256(replayed, diagnosticSchema)
     const sections = (Object.keys(actualSections) as (keyof RoleplayTurnPlan)[])
       .filter(key => actualSections[key] !== expectedSections[key])

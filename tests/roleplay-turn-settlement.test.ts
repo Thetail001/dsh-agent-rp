@@ -54,7 +54,7 @@ function turnPlan(input: {
       transforms: { actorName: snapshot.experience.name, operations: [] },
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
-    act: { responseRepairs: [] },
+    act: { strategy: 'conversation', responseRepairs: [], stateActions: [] },
     stateReads: snapshot.state,
     memory: { read: true, write: input.memoryWrite ?? true, reads: [], contextText: '' },
     generation: {},
@@ -322,7 +322,7 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
     'format', 'input', 'runtime', 'world', 'prompt', 'act', 'stateReads', 'memory', 'generation', 'prepare', 'recall',
   ])
   assert.deepEqual(firstReceipt, {
-    preparedPlanSchema: 2,
+    preparedPlanSchema: 3,
     runtime: {
       experienceId: 'actor:test',
       actorId: 'actor:card',
@@ -340,7 +340,7 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
       tokenBudget: 512,
     },
     promptDiagnostics: { enabledModules: 2, unsupportedMacros: 1, templateFailures: 0 },
-    act: { responseRepairs: [] },
+    act: { strategy: 'conversation', responseRepairs: [], stateActions: [] },
     stateReads: [{ id: 'state:test', revision: 2, eventSeq: 0 }],
     memoryReads: [{ id: 'memory:test', sourceEventSeq: 0 }],
     memoryWriteAvailable: true,
@@ -502,7 +502,7 @@ test('resolves MVU completion only from one prepared act program and its frozen 
   }
   const prepared = {
     ...enabled,
-    act: { responseRepairs: [repair] },
+    act: { strategy: 'conversation' as const, responseRepairs: [repair], stateActions: [] },
     stateReads: [{ ...enabled.stateReads[0]!, value: { score: 1 } }],
   }
   assert.deepEqual(preparedMvuResponseRepair(prepared), {

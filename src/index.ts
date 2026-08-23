@@ -9,8 +9,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { ScopeKey } from '@deepseek-ai/dsh-scope'
-import type { UserMessage } from '@deepseek-ai/dsh-session'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -154,6 +153,12 @@ import {
 } from './session-roleplay-turn-presentation.ts'
 import { executeRoleplayStateCommand } from './roleplay-state-command.ts'
 import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
+import { ensureDefaultRoleplayTurnMode } from './roleplay-turn-mode.ts'
+import { executeRoleplayTurnModeCommand } from './roleplay-turn-mode-command.ts'
+import {
+  installRoleplayStateActionTool,
+  ROLEPLAY_STATE_ACTION_TOOL,
+} from './roleplay-state-action.ts'
 import { readRoleplayExperienceSelection } from './roleplay-experience-selection.ts'
 import {
   installRoleplayActorRevisionCapability,
@@ -674,7 +679,9 @@ export function installAgentRp(
   const agentsBySession = new Map<string, Agent>()
   const rememberIntentByAgent = new WeakMap<Agent, boolean>()
   const rememberRestrictions = new Map<Agent, () => void>()
-  const pendingMessagesByAgent = new WeakMap<Agent, UserMessage[]>()
+  const stateActionRestrictions = new Map<Agent, () => void>()
+  const highRiskToolRestrictions = new Map<Agent, () => void>()
+  const pendingMessagesByAgent = new WeakMap<Agent, { turn: number; messages: UserMessage[] }>()
   const turnCoordinator = new RoleplayTurnCoordinator<Agent>()
   let settlementRuntimeActive = true
   ctx.effect(() => () => {
@@ -692,10 +699,23 @@ export function installAgentRp(
       rememberRestrictions.set(agent, agent.ctx.tools.restrict({ deny: ['remember'] }))
     }
   }
+  const setStateActionAvailable = (agent: Agent, available: boolean): void => {
+    const restricted = stateActionRestrictions.get(agent)
+    if (available) {
+      restricted?.()
+      stateActionRestrictions.delete(agent)
+    } else if (restricted === undefined) {
+      stateActionRestrictions.set(agent, agent.ctx.tools.restrict({ deny: [ROLEPLAY_STATE_ACTION_TOOL] }))
+    }
+  }
   ctx.effect(() => () => {
     for (const dispose of rememberRestrictions.values()) dispose()
     rememberRestrictions.clear()
-  }, 'agent-rp: remember intent gates')
+    for (const dispose of stateActionRestrictions.values()) dispose()
+    stateActionRestrictions.clear()
+    for (const dispose of highRiskToolRestrictions.values()) dispose()
+    highRiskToolRestrictions.clear()
+  }, 'agent-rp: capability gates')
   const presetLibrary = new PresetLibrary()
   const characterLibrary = new CharacterLibrary(options.characterLibraryRoot === undefined
     ? {}
@@ -741,6 +761,7 @@ export function installAgentRp(
     },
   })
   installRoleplayArtifactCapability(ctx, { toolGuidance: () => workspaceSettings.get().toolGuidance })
+  installRoleplayStateActionTool(ctx)
 
   commands.register({
     name: 'rp-tavern-variables',
@@ -789,6 +810,12 @@ export function installAgentRp(
     input: { hint: '<private native state payload>' },
     handler: executeRoleplayStateCommand,
   }), 'agent-rp: native state player command')
+  ctx.effect(() => commands.register({
+    name: 'rp-turn-mode',
+    description: 'select compatibility dialogue or native Agent turn settlement',
+    input: { hint: '<private roleplay turn-mode payload>' },
+    handler: executeRoleplayTurnModeCommand,
+  }), 'agent-rp: turn mode player command')
   commands.register({
     name: 'rp-preset-configure',
     description: 'update this roleplay Session preset',
@@ -950,25 +977,9 @@ export function installAgentRp(
     order: 0,
     text: ({ scope }) => {
       const agent = scope === undefined ? undefined : agentsByScope.get(scope)
-      const pendingMessages = agent === undefined ? [] : pendingMessagesByAgent.get(agent) ?? []
-      if (agent !== undefined) pendingMessagesByAgent.delete(agent)
       if (agent === undefined) return renderCharacterPrompt(config)
-      const resolved = resolveSessionRoleplayRuntime({
-        session: agent.session,
-        deployment: config,
-        memoryWriteAvailable: rememberIntentByAgent.get(agent) === true,
-        templateEngineAvailable: options.ejsTemplateEngine !== undefined,
-        ...(runtimeExtensions === undefined ? {} : { extensions: runtimeExtensions }),
-      })
-      const plan = prepareRoleplayTurn({
-        session: agent.session,
-        pendingMessages,
-        deployment: config,
-        resolved,
-        ...(options.ejsTemplateEngine === undefined ? {} : { templateEngine: options.ejsTemplateEngine }),
-      })
-      turnCoordinator.prepare(agent, plan)
-      return plan.prompt.systemPromptText
+      pendingMessagesByAgent.delete(agent)
+      return turnCoordinator.current(agent)?.prompt.systemPromptText ?? renderCharacterPrompt(config)
     },
     complete: true,
   })
@@ -976,6 +987,19 @@ export function installAgentRp(
     agentsByScope.set(agent, agent)
     agentsBySession.set(String(agent.session.id), agent)
     setRememberAvailable(agent, false)
+    setStateActionAvailable(agent, false)
+    const highRiskToolCandidates = [
+      'bash', 'pwsh', 'subagent',
+      'terminal_open', 'terminal_send', 'terminal_read', 'terminal_signal', 'terminal_close', 'terminal_list',
+      'read', 'write', 'edit', 'str_replace_editor', 'glob', 'grep',
+    ]
+    const getTool = agent.ctx.tools.get
+    const highRiskTools = typeof getTool === 'function'
+      ? highRiskToolCandidates.filter(name => getTool.call(agent.ctx.tools, name, agent) !== undefined)
+      : []
+    if (highRiskTools.length > 0) {
+      highRiskToolRestrictions.set(agent, agent.ctx.tools.restrict({ deny: highRiskTools }))
+    }
     const resolveCharacter = () => {
       const active = readActiveSessionCharacter(agent.session.events)
       if (active === undefined) return undefined
@@ -1008,11 +1032,21 @@ export function installAgentRp(
       })
     }
   })
+  ctx.on('agent/session-start', ({ agent, source }) => {
+    if (agentsByScope.get(agent) === agent && (source === 'startup' || source === 'clear')
+      && supportsAgentRpSessionEvents(agent.session)) {
+      ensureDefaultRoleplayTurnMode(agent.session, 'agent')
+    }
+  })
   ctx.on('agent/disposed', ({ agent }) => {
     agentsByScope.delete(agent)
     agentsBySession.delete(String(agent.session.id))
     rememberRestrictions.get(agent)?.()
     rememberRestrictions.delete(agent)
+    stateActionRestrictions.get(agent)?.()
+    stateActionRestrictions.delete(agent)
+    highRiskToolRestrictions.get(agent)?.()
+    highRiskToolRestrictions.delete(agent)
     pendingMessagesByAgent.delete(agent)
     turnCoordinator.release(agent)
     for (const dispose of worldbookCharacterDisposers.get(agent) ?? []) dispose()
@@ -1034,12 +1068,41 @@ export function installAgentRp(
     sessionId => agentsBySession.get(sessionId),
     agent => turnCoordinator.current(agent),
   )
-  ctx.on('agent/inbox/claimed', ({ agent, message }) => {
+  ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
     if (agentsByScope.get(agent) !== agent) return
-    setRememberAvailable(agent, requestsPersistentMemory(message))
-    const pending = pendingMessagesByAgent.get(agent)
-    if (pending === undefined) pendingMessagesByAgent.set(agent, [message])
-    else pending.push(message)
+    const existing = pendingMessagesByAgent.get(agent)
+    const pending = existing?.turn === turn
+      ? existing
+      : { turn, messages: [] }
+    pending.messages.push(message)
+    pendingMessagesByAgent.set(agent, pending)
+    setRememberAvailable(agent, pending.messages.some(requestsPersistentMemory))
+    const resolved = resolveSessionRoleplayRuntime({
+      session: agent.session,
+      deployment: config,
+      memoryWriteAvailable: rememberIntentByAgent.get(agent) === true,
+      templateEngineAvailable: options.ejsTemplateEngine !== undefined,
+      ...(runtimeExtensions === undefined ? {} : { extensions: runtimeExtensions }),
+    })
+    const plan = prepareRoleplayTurn({
+      session: agent.session,
+      pendingMessages: pending.messages,
+      deployment: config,
+      resolved,
+      ...(options.ejsTemplateEngine === undefined ? {} : { templateEngine: options.ejsTemplateEngine }),
+    })
+    turnCoordinator.prepare(agent, plan)
+    // Inbox claims are published synchronously before SystemPrompt assembly.
+    // The restriction must be settled here so the same assembly sees the tool schema.
+    setStateActionAvailable(agent, plan.act.strategy === 'agent' && plan.act.stateActions.length > 0)
+  })
+  ctx.on('agent/pre-step', async ({ agent }, next) => {
+    const decision = await next()
+    if (agentsByScope.get(agent) !== agent) return decision
+    if (decision.kind === 'reject') {
+      setStateActionAvailable(agent, false)
+    }
+    return decision
   })
   ctx.systemPrompt.context({
     name: 'agent-rp:memory',
@@ -1091,6 +1154,10 @@ export function installAgentRp(
     }
   })
   ctx.on('session/event', (session, event) => {
+    if (event.type === 'agent-rp/turn-mode') {
+      const agent = agentsBySession.get(String(session.id))
+      if (agent !== undefined) setStateActionAvailable(agent, false)
+    }
     if (event.type === 'agent-rp/tavern-state-attachment'
       || (event.type === 'command/done' && event.data.kind === 'success')) {
       queueMicrotask(() => {
@@ -1106,6 +1173,8 @@ export function installAgentRp(
     if (event.type !== 'turn/end') return
     const agent = agentsBySession.get(String(session.id))
     if (agent === undefined || agentsByScope.get(agent) !== agent) return
+    pendingMessagesByAgent.delete(agent)
+    setStateActionAvailable(agent, false)
     turnCoordinator.completeTurn(agent, event.data.turn)
     if (!supportsAgentRpSessionEvents(session)) return
     queueMicrotask(() => {

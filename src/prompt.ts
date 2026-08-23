@@ -182,6 +182,7 @@ export function renderImportedCharacterPrompt(
   templateOptions: LorebookActivationOptions = {},
   macros?: ReplayableRoleplayMacros,
   loreMacrosResolved = false,
+  mvuOutputEnabled = statData !== undefined,
 ): string {
   const name = card.nickname?.trim() || card.name
   const original = `你是${name}。直接以${name}的身份与用户相处和交谈。`
@@ -213,7 +214,7 @@ export function renderImportedCharacterPrompt(
       templateOptions,
     ))
   }
-  if (statData !== undefined) {
+  if (statData !== undefined && mvuOutputEnabled) {
     parts.push('每次回复都必须在正文末尾完整输出一个 <UpdateVariable><Analysis>…</Analysis><JSONPatch>[…]</JSONPatch></UpdateVariable>；没有变量变化时 JSONPatch 也输出空数组。')
   }
   return finalizeRoleplayPrompt(parts.join('\n\n'), statData)

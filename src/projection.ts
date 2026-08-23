@@ -59,6 +59,7 @@ import {
   applyRoleplayStateEvent,
   type RoleplayStateSnapshot,
 } from './roleplay-state.ts'
+import { parseRoleplayTurnModeRecord, type RoleplayTurnMode } from './roleplay-turn-mode.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -71,6 +72,7 @@ const projectionSchema = {
       || record?.source === 'sillytavern-chat' || record?.source === 'preset'
     if (record === null || typeof record !== 'object'
       || typeof record.characterName !== 'string'
+      || (record.turnMode !== 'conversation' && record.turnMode !== 'agent')
       || (record.originalCharacterName !== undefined && typeof record.originalCharacterName !== 'string')
       || typeof record.description !== 'string'
       || typeof record.personality !== 'string'
@@ -132,7 +134,8 @@ type ImportCall = 'character-card' | 'world-info' | 'preset'
 
 interface AgentRpProjectionState {
   readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'worldInfo' | 'presetLibrary' | 'lastRequest'
-  | 'generations' | 'auxiliaryGenerations' | 'presentation' | 'nativeStates'>
+  | 'generations' | 'auxiliaryGenerations' | 'presentation' | 'nativeStates' | 'turnMode'>
+  readonly turnMode: RoleplayTurnMode
   readonly cardWorldInfoCount: number
   readonly cardLorebook?: SessionLorebookSource
   readonly standaloneWorldInfos: Readonly<Record<string, SessionLorebookSource>>
@@ -173,6 +176,7 @@ const projectionStateSchema = {
     }
     const record = value as Partial<Record<keyof AgentRpProjectionState, unknown>>
     if (typeof record.character !== 'object' || record.character === null || Array.isArray(record.character)
+      || (record.turnMode !== 'conversation' && record.turnMode !== 'agent')
       || typeof record.cardWorldInfoCount !== 'number' || !Number.isSafeInteger(record.cardWorldInfoCount)
       || record.cardWorldInfoCount < 0
       || typeof record.standaloneWorldInfos !== 'object' || record.standaloneWorldInfos === null
@@ -680,6 +684,7 @@ export function createAgentRpProjectionDefinition(
   // must never serialize it for every conversation.
   init: () => ({
     character: INITIAL_CHARACTER,
+    turnMode: 'conversation',
     cardWorldInfoCount: 0,
     standaloneWorldInfos: {},
     worldInfoConfiguration: { format: 0, revision: 0, overrides: [] },
@@ -697,6 +702,9 @@ export function createAgentRpProjectionDefinition(
     const withSurface = surface === state.surface && auxiliaryGenerations === state.auxiliaryGenerations
       ? state
       : { ...state, surface, auxiliaryGenerations }
+    if (event.type === 'agent-rp/turn-mode') {
+      return { ...withSurface, turnMode: parseRoleplayTurnModeRecord(event.data).mode }
+    }
     if (event.type === 'agent-rp/mvu-state') return { ...withSurface, mvu: event.data }
     const nativeStates = applyRoleplayStateEvent(withSurface.nativeStates, event)
     if (nativeStates !== withSurface.nativeStates) return { ...withSurface, nativeStates }
@@ -1136,6 +1144,7 @@ export function createAgentRpProjectionDefinition(
     const hiddenTavernMessages = state.tavern?.hiddenPrefix ?? []
     return {
       ...state.character,
+      turnMode: state.turnMode,
       nativeStates: state.nativeStates.map(stateValue => ({
         id: stateValue.id,
         revision: stateValue.revision,
@@ -1175,7 +1184,7 @@ export function createAgentRpProjectionDefinition(
     }
   },
   },
-  stateVersion: 14,
+  stateVersion: 15,
   }
   return {
     ...definition,

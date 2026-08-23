@@ -13,6 +13,8 @@ export const DEFAULT_AGENT_RP_CHARACTER_NAME = '角色会话'
 
 /** Current character identity and migration summary for one Roleplay Session. */
 export interface AgentRpProjection {
+  /** Per-Session capability strategy, independent from imported prompt presets. */
+  readonly turnMode: 'conversation' | 'agent'
   /** Character name used by the prompt and card macros. */
   readonly characterName: string
   /** Lossless card title when the card supplies a shorter runtime nickname. */
