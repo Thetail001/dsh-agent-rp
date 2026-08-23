@@ -5,6 +5,7 @@ import {
   ROLEPLAY_TURN_PHASES,
 } from './roleplay-runtime.ts'
 import type {
+  RoleplayExternalContextRead,
   RoleplayPrepareModuleOutcome,
   RoleplayRecallModuleOutcome,
   RoleplayTurnInputKey,
@@ -41,6 +42,7 @@ export interface RoleplayTurnRecallStepRecord {
   readonly step: number
   readonly eventSeq?: number
   readonly modules?: readonly RoleplayRecallModuleOutcome[]
+  readonly contextReads?: readonly RoleplayExternalContextRead[]
 }
 
 /** Settle-phase evidence joined to the Session event that persisted it. */
@@ -140,6 +142,26 @@ function validatePlanReference(
   }
 }
 
+function validateExternalContextReads(
+  reference: RoleplayTurnPlanReference,
+  eventsBySeq: ReadonlyMap<number, SessionEvent>,
+  beforeSeq: number,
+): void {
+  const reads = reference.receipt?.recall?.contextReads ?? []
+  if (new Set(reads.map(read => read.eventSeq)).size !== reads.length
+    || new Set(reads.map(read => read.messageId)).size !== reads.length) {
+    throw new Error('Roleplay turn record contains duplicate external context references')
+  }
+  for (const read of reads) {
+    const event = eventsBySeq.get(read.eventSeq)
+    if (event?.type !== 'user/message' || event.data.source.kind !== 'plugin'
+      || String(event.data.id) !== read.messageId
+      || event.seq >= beforeSeq) {
+      throw new Error('Roleplay turn record references unavailable external plugin context')
+    }
+  }
+}
+
 function planEvidence(input: {
   readonly sessionId: string
   readonly turn: number
@@ -147,6 +169,7 @@ function planEvidence(input: {
   readonly settlement?: TurnSettlementEvent
   readonly start?: SessionEvent<'turn/start'>
   readonly end?: SessionEvent<'turn/end'>
+  readonly eventsBySeq: ReadonlyMap<number, SessionEvent>
 }): readonly RoleplayTurnPlanEvidence[] {
   const eventEvidence = [...input.planEvents].sort((left, right) =>
     left.data.reference.step - right.data.reference.step).map((event): RoleplayTurnPlanEvidence => {
@@ -154,6 +177,7 @@ function planEvidence(input: {
       throw new Error('Roleplay turn plan record belongs to another Session or format')
     }
     validatePlanReference(event.data.reference, input.sessionId)
+    validateExternalContextReads(event.data.reference, input.eventsBySeq, event.seq)
     if (input.start !== undefined && event.seq <= input.start.seq) {
       throw new Error('Roleplay turn plan precedes its turn boundary')
     }
@@ -170,7 +194,10 @@ function planEvidence(input: {
   }
 
   const settledReferences = input.settlement?.data.plans ?? []
-  for (const reference of settledReferences) validatePlanReference(reference, input.sessionId)
+  for (const reference of settledReferences) {
+    validatePlanReference(reference, input.sessionId)
+    validateExternalContextReads(reference, input.eventsBySeq, input.settlement?.seq ?? Number.POSITIVE_INFINITY)
+  }
   if (new Set(settledReferences.map(value => value.step)).size !== settledReferences.length) {
     throw new Error(`Roleplay turn ${String(input.turn)} settlement contains duplicate plan steps`)
   }
@@ -302,6 +329,7 @@ function readSelectedRoleplayTurnRecords(
       ...(settlement === undefined ? {} : { settlement }),
       ...(start === undefined ? {} : { start }),
       ...(end === undefined ? {} : { end }),
+      eventsBySeq,
     })
     const actEvents = start === undefined || end === undefined
       ? session.events
@@ -365,7 +393,12 @@ function readSelectedRoleplayTurnRecords(
           step: value.step,
           ...(value.eventSeq === undefined ? {} : { eventSeq: value.eventSeq }),
           ...(value.reference.receipt?.recall === undefined
-            ? {} : { modules: value.reference.receipt.recall.modules }),
+            ? {} : {
+              modules: value.reference.receipt.recall.modules,
+              ...(value.reference.receipt.recall.contextReads === undefined ? {} : {
+                contextReads: value.reference.receipt.recall.contextReads,
+              }),
+            }),
         })),
       },
       ...(act === undefined ? {} : { act }),

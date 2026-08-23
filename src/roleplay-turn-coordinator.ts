@@ -29,12 +29,14 @@ export class RoleplayTurnCoordinator<Owner extends object> {
   }
 
   /** Bind the current plan to one Agent-loop step, preserving the first binding on retries. */
-  bindStep(owner: Owner, turn: number, step: number): RoleplayTurnPlan | undefined {
+  bindStep(
+    owner: Owner,
+    turn: number,
+    step: number,
+    finalize: (plan: RoleplayTurnPlan) => RoleplayTurnPlan = plan => plan,
+  ): RoleplayTurnPlan | undefined {
     positiveInteger(turn, 'turn')
     positiveInteger(step, 'step')
-    const prepared = this.#prepared.get(owner)
-    if (prepared === undefined) return undefined
-
     let turns = this.#turns.get(owner)
     if (turns === undefined) {
       turns = new Map()
@@ -47,8 +49,12 @@ export class RoleplayTurnCoordinator<Owner extends object> {
     }
     const bound = steps.get(step)
     if (bound !== undefined) return bound
-    steps.set(step, prepared)
-    return prepared
+    const prepared = this.#prepared.get(owner)
+    if (prepared === undefined) return undefined
+    const finalized = finalize(prepared)
+    steps.set(step, finalized)
+    if (this.#prepared.get(owner) === prepared) this.#prepared.set(owner, finalized)
+    return finalized
   }
 
   /**

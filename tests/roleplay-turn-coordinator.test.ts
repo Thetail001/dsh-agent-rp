@@ -68,6 +68,28 @@ test('preserves the first plan when the same step is retried', () => {
   assert.equal(coordinator.current(owner), retry)
 })
 
+test('finalizes a prepared plan once before binding it to the model step', () => {
+  const coordinator = new RoleplayTurnCoordinator<object>()
+  const owner = {}
+  const prepared = plan('prepared')
+  let finalizations = 0
+
+  coordinator.prepare(owner, prepared)
+  const finalized = coordinator.bindStep(owner, 1, 1, value => {
+    finalizations++
+    return { ...value, generation: { temperature: 0.4 } }
+  })
+  const retry = coordinator.bindStep(owner, 1, 1, value => {
+    finalizations++
+    return value
+  })
+
+  assert.equal(finalizations, 1)
+  assert.equal(retry, finalized)
+  assert.equal(coordinator.current(owner), finalized)
+  assert.deepEqual(finalized?.generation, { temperature: 0.4 })
+})
+
 test('does not let a delayed turn end erase a newer unconsumed plan', () => {
   const coordinator = new RoleplayTurnCoordinator<object>()
   const owner = {}

@@ -4,6 +4,7 @@ import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
 import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
+import { bindRoleplayExternalContext } from '../src/roleplay-turn-context.ts'
 import {
   readCurrentRoleplayTurnPresentation,
   roleplayPresentedState,
@@ -72,17 +73,44 @@ function appendRecoverableTextTurn(session: Session, turn: number, text: string)
 test('persists one content-free plan receipt before dispatch and rejects retry drift', () => {
   const session = Session.create(SessionId('turn-plan-receipt'))
   session.append('turn/start', { turn: 1 })
+  const persistent = createUserMessage({
+    source: {
+      kind: 'plugin', plugin: 'dsh-worldbook', form: 'snapshot', channel: 'persistent',
+      sections: [{ name: 'persistent', text: '持续生效但不应复制的世界正文。' }],
+    },
+    content: [{ type: 'text', text: '持续生效但不应复制的世界正文。' }],
+  })
+  const persistentEvent = session.append('user/message', persistent, { surfaceOp: 'append' })
+  const stale = createUserMessage({
+    source: {
+      kind: 'plugin', plugin: 'dsh-worldbook', form: 'snapshot', channel: 'fixture',
+      sections: [{ name: 'fixture', text: '同频道旧世界正文。' }],
+    },
+    content: [{ type: 'text', text: '同频道旧世界正文。' }],
+  })
+  const staleEvent = session.append('user/message', stale, { surfaceOp: 'append' })
   const message = pending()
   const resolved = resolveSessionRoleplayRuntime({ session, deployment, memoryWriteAvailable: true })
   const plan = prepareRoleplayTurn({ session, pendingMessages: [message], deployment, resolved })
   session.append('step/start', { turn: 1, step: 1 })
   session.append('user/message', message, { surfaceOp: 'append' })
+  const external = createUserMessage({
+    source: {
+      kind: 'plugin', plugin: 'dsh-worldbook', form: 'snapshot', channel: 'fixture',
+      sections: [{ name: 'fixture', text: '不应复制进回合收据的世界正文。' }],
+    },
+    content: [{ type: 'text', text: '不应复制进回合收据的世界正文。' }],
+  })
+  const externalEvent = session.append('user/message', external, { surfaceOp: 'append' })
+  const dispatchedPlan = bindRoleplayExternalContext({
+    plan, events: session.events, visibleMessages: session.deriveMessages(), turn: 1, step: 1,
+  })
 
-  const first = appendSessionRoleplayTurnPlan(session, 1, 1, plan)
-  const duplicate = appendSessionRoleplayTurnPlan(session, 1, 1, plan)
+  const first = appendSessionRoleplayTurnPlan(session, 1, 1, dispatchedPlan)
+  const duplicate = appendSessionRoleplayTurnPlan(session, 1, 1, dispatchedPlan)
   assert.equal(duplicate.seq, first.seq)
   assert.throws(() => appendSessionRoleplayTurnPlan(session, 1, 1, {
-    ...plan,
+    ...dispatchedPlan,
     generation: { temperature: 0.91 },
   }), /changed after dispatch/u)
 
@@ -90,7 +118,22 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
   const records = readSessionRoleplayTurnPlans(reopened.events)
   assert.equal(records.length, 1)
   assert.equal(records[0]?.data.reference.receipt.memoryWriteAvailable, true)
-  assert.deepEqual(records[0]?.data.reference.receipt.recall, plan.recall)
+  assert.deepEqual(records[0]?.data.reference.receipt.recall, dispatchedPlan.recall)
+  const expectedContextReads = session.deriveMessages()
+    .filter(value => value.source.kind === 'plugin')
+    .map((value) => {
+      const event = session.events.find(candidate =>
+        candidate.type === 'user/message' && String(candidate.data.id) === String(value.id))
+      assert.equal(event?.type, 'user/message')
+      return { eventSeq: event!.seq, messageId: String(value.id) }
+    })
+  assert.deepEqual(records[0]?.data.reference.receipt.recall?.contextReads, expectedContextReads)
+  assert.deepEqual(readRoleplayTurnRecords(reopened)[0]?.recall.steps[0]?.contextReads, expectedContextReads)
+  assert.equal(expectedContextReads.some(read => read.eventSeq === persistentEvent.seq), true)
+  assert.equal(expectedContextReads.some(read => read.eventSeq === externalEvent.seq), true)
+  const supportsSnapshotChannels = (session.constructor as { readonly contextSnapshotChannels?: unknown })
+    .contextSnapshotChannels === 1
+  assert.equal(expectedContextReads.some(read => read.eventSeq === staleEvent.seq), !supportsSnapshotChannels)
   assert.deepEqual(records[0]?.data.reference.receipt.runtime.settleModules, [{
     moduleId: 'roleplay:memory', stateIds: [],
   }])
@@ -100,13 +143,16 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
     session: reopened,
     record,
     deployment,
-  }), plan)
+  }), dispatchedPlan)
   assert.throws(() => replaySessionRoleplayTurnPlan({
     session: reopened,
     record,
     deployment: resolveConfig({ characterName: '漂移后的恢复测试角色' }),
   }), /content digest/u)
-  assert.doesNotMatch(JSON.stringify(records), /恢复测试角色|继续测试/u)
+  assert.doesNotMatch(
+    JSON.stringify(records),
+    /恢复测试角色|继续测试|不应复制进回合收据的世界正文|持续生效但不应复制|同频道旧世界正文/u,
+  )
 })
 
 test('recovers a cold-closed turn and folds a late causal browser state into presentation', () => {

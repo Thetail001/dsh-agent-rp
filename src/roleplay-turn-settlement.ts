@@ -435,7 +435,12 @@ function planReceipt(plan: RoleplayTurnPlan): RoleplayTurnPlanReceipt {
     memoryWriteAvailable: plan.memory.write,
     generation: { ...plan.generation },
     prepare: { modules: plan.prepare.modules.map(module => ({ ...module })) },
-    recall: { modules: plan.recall.modules.map(module => ({ ...module })) },
+    recall: {
+      modules: plan.recall.modules.map(module => ({ ...module })),
+      ...(plan.recall.contextReads === undefined ? {} : {
+        contextReads: plan.recall.contextReads.map(read => ({ ...read })),
+      }),
+    },
   }
 }
 

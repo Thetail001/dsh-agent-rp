@@ -46,12 +46,18 @@ function entry(record: RoleplayTurnRecord): RoleplayTurnHealthEntry {
     },
     contributions: worldOutcomes.reduce((total, module) => total + module.contributions, 0),
   }
+  const externalSteps = record.recall.steps.filter(step => (step.contextReads?.length ?? 0) > 0)
+  const externalRecall = externalSteps.length === 0 ? undefined : {
+    steps: externalSteps.length,
+    messages: externalSteps.reduce((total, step) => total + (step.contextReads?.length ?? 0), 0),
+  }
   return {
     turn: record.turn,
     status: currentStatus,
     ...(nextPhase === undefined ? {} : { nextPhase }),
     finalizableFromLog: roleplayTurnRecordFinalizable(record),
     ...(worldRecall === undefined ? {} : { worldRecall }),
+    ...(externalRecall === undefined ? {} : { externalRecall }),
     phases: {
       plannedSteps,
       preparedSteps,

@@ -126,6 +126,7 @@ import {
 } from './worldbook-character-context.ts'
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 import { prepareRoleplayTurn } from './roleplay-turn-plan.ts'
+import { bindRoleplayExternalContext } from './roleplay-turn-context.ts'
 import { RoleplayTurnCoordinator } from './roleplay-turn-coordinator.ts'
 import { appendSessionRoleplayTurnPlan } from './session-roleplay-turn-plan.ts'
 import { recoverSessionRoleplayTurns } from './session-roleplay-turn-recovery.ts'
@@ -867,7 +868,13 @@ export function installAgentRp(
   })
   ctx.on('agent/request', async ({ agent, turn, step }, next) => {
     const activePlan = agentsByScope.get(agent) === agent
-      ? turnCoordinator.bindStep(agent, turn, step)
+      ? turnCoordinator.bindStep(agent, turn, step, plan => bindRoleplayExternalContext({
+        plan,
+        events: agent.session.events,
+        visibleMessages: agent.session.deriveMessages(),
+        turn,
+        step,
+      }))
       : undefined
     if (activePlan !== undefined && supportsAgentRpSessionEvents(agent.session)) {
       appendSessionRoleplayTurnPlan(agent.session, turn, step, activePlan)

@@ -17,6 +17,7 @@ function record(input: {
   readonly settled?: boolean
   readonly presented?: boolean
   readonly worldOutcome?: 'applied' | 'idle' | 'degraded'
+  readonly externalContexts?: number
 }): RoleplayTurnRecord {
   const planned = input.planned === true
   const plan = {
@@ -47,6 +48,11 @@ function record(input: {
         outcome: input.worldOutcome,
         contributions: input.worldOutcome === 'applied' ? 2 : 0,
       }],
+      ...(input.externalContexts === undefined ? {} : {
+        contextReads: Array.from({ length: input.externalContexts }, (_, index) => ({
+          eventSeq: 20 + index, messageId: `private-context-${String(index)}`,
+        })),
+      }),
     }] : [] },
     ...(input.settled === true ? {
       act: { steps: [{
@@ -70,7 +76,8 @@ test('locates the next lifecycle phase without retaining record content', () => 
     record({ turn: 3, planned: true, closed: true }),
     record({ turn: 4, planned: true, closed: true, settled: true }),
     record({
-      turn: 5, planned: true, closed: true, settled: true, presented: true, worldOutcome: 'applied',
+      turn: 5, planned: true, closed: true, settled: true, presented: true,
+      worldOutcome: 'applied', externalContexts: 2,
     }),
   ])
   assert.deepEqual(summary.statuses, {
@@ -85,6 +92,7 @@ test('locates the next lifecycle phase without retaining record content', () => 
       outcomes: { applied: 1, idle: 0, degraded: 0 },
       contributions: 2,
     },
+    externalRecall: { steps: 1, messages: 2 },
     phases: {
       plannedSteps: 1, preparedSteps: 1, recalledSteps: 1, actedSteps: 1,
       assistantMessages: 1, toolCalls: 1, toolResults: 1, settled: true, presented: true,
@@ -92,7 +100,7 @@ test('locates the next lifecycle phase without retaining record content', () => 
   })
   assert.doesNotMatch(
     JSON.stringify(summary),
-    /private-(?:session|message|reply|call|tool|result)|roleplay:world/u,
+    /private-(?:session|message|reply|call|tool|result|context)|roleplay:world/u,
   )
 
   const phases = [
@@ -123,7 +131,8 @@ test('keeps a boundary-only open turn visible to prepare-phase diagnostics', () 
 
 test('wire parser strips every field outside the fixed diagnostic vocabulary', () => {
   const health = summarizeRoleplayTurnHealth([record({
-    turn: 1, planned: true, closed: true, settled: true, presented: true, worldOutcome: 'applied',
+    turn: 1, planned: true, closed: true, settled: true, presented: true,
+    worldOutcome: 'applied', externalContexts: 2,
   })])
   const parsed = parseAgentRpTurnHealthDiagnostic({
     format: 0,
@@ -156,6 +165,12 @@ test('wire parser strips every field outside the fixed diagnostic vocabulary', (
       },
     },
   }), /invalid Agent RP world recall totals/u)
+  assert.throws(() => parseAgentRpTurnHealthDiagnostic({
+    format: 0, status: 'ready', health: {
+      ...health,
+      latest: { ...health.latest, externalRecall: { steps: 2, messages: 1 } },
+    },
+  }), /invalid Agent RP external recall totals/u)
   assert.throws(() => parseAgentRpTurnHealthDiagnostic({
     format: 0, status: 'ready', health: {
       ...health,

@@ -4,6 +4,7 @@ import { Session, type SessionEvent, type UserMessage } from '@deepseek-ai/dsh-s
 import type { ResolvedConfig } from './config.ts'
 import type { EjsTemplateEngine } from './ejs-template.ts'
 import { prepareRoleplayTurn, type RoleplayTurnPlan } from './roleplay-turn-plan.ts'
+import { bindRoleplayExternalContext } from './roleplay-turn-context.ts'
 import {
   createRoleplayTurnPlanReference,
   roleplayTurnPlanSha256,
@@ -12,6 +13,11 @@ import {
 } from './roleplay-turn-settlement.ts'
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+
+function replayBoundary(session: Session, events: readonly SessionEvent[]): Session {
+  const constructor = session.constructor as typeof Session
+  return constructor.create(session.id, events) as Session
+}
 
 /** Content-free prepared plan bound to the exact model step that will consume it. */
 export interface SessionRoleplayTurnPlanRecord {
@@ -126,20 +132,28 @@ export function replaySessionRoleplayTurnPlan(input: {
   if (expectedDigest === undefined || expectedSections === undefined) {
     throw new Error('Roleplay turn plan is too old for exact replay verification')
   }
-  const boundary = Session.create(session.id, session.events.slice(0, reference.input.sessionSeq))
+  const boundary = replayBoundary(session, session.events.slice(0, reference.input.sessionSeq))
   const resolved = resolveSessionRoleplayRuntime({
     session: boundary,
     deployment: input.deployment,
     memoryWriteAvailable: reference.receipt.memoryWriteAvailable === true,
     templateEngineAvailable: input.templateEngine !== undefined,
   })
-  const replayed = prepareRoleplayTurn({
+  const prepared = prepareRoleplayTurn({
     session: boundary,
     sessionBoundarySeq: reference.input.sessionSeq,
     pendingMessages: pendingMessagesForRecord(session.events, record),
     deployment: input.deployment,
     resolved,
     ...(input.templateEngine === undefined ? {} : { templateEngine: input.templateEngine }),
+  })
+  const replayed = bindRoleplayExternalContext({
+    plan: prepared,
+    events: session.events,
+    visibleMessages: replayBoundary(session, session.events.slice(0, record.seq)).deriveMessages(),
+    turn: record.data.turn,
+    step: reference.step,
+    beforeSeq: record.seq,
   })
   if (JSON.stringify(replayed.input) !== JSON.stringify(reference.input)) {
     const messageIdsMatch = JSON.stringify(replayed.input.pendingMessageIds)

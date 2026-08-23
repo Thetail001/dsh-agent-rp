@@ -113,6 +113,12 @@ export interface RoleplayPhaseModuleOutcome {
 export type RoleplayPrepareModuleOutcome = RoleplayPhaseModuleOutcome
 export type RoleplayRecallModuleOutcome = RoleplayPhaseModuleOutcome
 
+/** Logged plugin context that entered one concrete model step without duplicating its content. */
+export interface RoleplayExternalContextRead {
+  readonly eventSeq: number
+  readonly messageId: string
+}
+
 /** Final prompt plus adapter expansion diagnostics. */
 export interface RoleplayTurnPromptPlan extends RoleplayProviderPromptPlan {
   readonly systemPromptText: string
@@ -157,6 +163,7 @@ export interface RoleplayTurnPlan {
   }
   readonly recall: {
     readonly modules: readonly RoleplayRecallModuleOutcome[]
+    readonly contextReads?: readonly RoleplayExternalContextRead[]
   }
 }
 

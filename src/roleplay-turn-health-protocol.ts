@@ -21,6 +21,12 @@ export interface RoleplayWorldRecallDiagnostic {
   readonly contributions: number
 }
 
+/** Counts of logged third-party plugin messages consumed by concrete model steps. */
+export interface RoleplayExternalRecallDiagnostic {
+  readonly steps: number
+  readonly messages: number
+}
+
 /** Counts only; never includes prompt text, messages, tool names, arguments, or results. */
 export interface RoleplayTurnHealthEntry {
   readonly turn: number
@@ -28,6 +34,7 @@ export interface RoleplayTurnHealthEntry {
   readonly nextPhase?: RoleplayTurnPhaseDiagnostic
   readonly finalizableFromLog: boolean
   readonly worldRecall?: RoleplayWorldRecallDiagnostic
+  readonly externalRecall?: RoleplayExternalRecallDiagnostic
   readonly phases: {
     readonly plannedSteps: number
     readonly preparedSteps: number
@@ -119,12 +126,25 @@ function parseEntry(value: unknown): RoleplayTurnHealthEntry {
     }
     worldRecall = { steps, outcomes: parsedOutcomes, contributions }
   }
+  let externalRecall: RoleplayExternalRecallDiagnostic | undefined
+  if (record.externalRecall !== undefined) {
+    if (typeof record.externalRecall !== 'object' || record.externalRecall === null
+      || Array.isArray(record.externalRecall)) {
+      throw new Error('invalid Agent RP external recall diagnostic')
+    }
+    const external = record.externalRecall as Record<string, unknown>
+    const steps = positive(external.steps, 'external recall steps')
+    const messages = positive(external.messages, 'external recall messages')
+    if (messages < steps) throw new Error('invalid Agent RP external recall totals')
+    externalRecall = { steps, messages }
+  }
   return {
     turn: positive(record.turn, 'turn'),
     status: record.status,
     ...(phase === undefined ? {} : { nextPhase: phase }),
     finalizableFromLog: record.finalizableFromLog,
     ...(worldRecall === undefined ? {} : { worldRecall }),
+    ...(externalRecall === undefined ? {} : { externalRecall }),
     phases: {
       plannedSteps: nonNegative(counts.plannedSteps, 'planned steps'),
       preparedSteps: nonNegative(counts.preparedSteps, 'prepared steps'),
@@ -176,7 +196,8 @@ function parseSummary(value: unknown): RoleplayTurnHealthSummary {
     if (!expectedPhase || !boundariesValid
       || latest.phases.preparedSteps > latest.phases.plannedSteps
       || latest.phases.recalledSteps > latest.phases.plannedSteps
-      || (latest.worldRecall?.steps ?? 0) > latest.phases.recalledSteps) {
+      || (latest.worldRecall?.steps ?? 0) > latest.phases.recalledSteps
+      || (latest.externalRecall?.steps ?? 0) > latest.phases.recalledSteps) {
       throw new Error('invalid Agent RP turn health lifecycle')
     }
   }

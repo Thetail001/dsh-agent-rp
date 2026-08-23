@@ -14,6 +14,7 @@ import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import { readCurrentSessionMvuState } from '../src/mvu.ts'
 import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
+import { bindRoleplayExternalContext } from '../src/roleplay-turn-context.ts'
 import {
   applyTavernHelperMutation,
   encodeTavernHelperState,
@@ -367,12 +368,37 @@ test('writes and exactly replays a prepared turn with a local newer DSH Host', a
     deployment,
     resolved,
   })
+  const staleExternal = createUserMessage({
+    content: [{ type: 'text', text: '候选 Host 应覆盖的旧世界上下文。' }],
+    source: {
+      kind: 'plugin', plugin: 'dsh-worldbook', form: 'snapshot', channel: 'candidate-host',
+      sections: [{ name: 'candidate-host', text: '候选 Host 应覆盖的旧世界上下文。' }],
+    },
+  })
   turnSession.append('step/start', { turn: 1, step: 1 })
   turnSession.append('user/message', message, { surfaceOp: 'append' })
-  const receipt = appendSessionRoleplayTurnPlan(turnSession, 1, 1, plan)
+  const staleExternalEvent = turnSession.append('user/message', staleExternal, { surfaceOp: 'append' })
+  const external = createUserMessage({
+    content: [{ type: 'text', text: '候选 Host 外部世界上下文，不应进入收据。' }],
+    source: {
+      kind: 'plugin', plugin: 'dsh-worldbook', form: 'snapshot', channel: 'candidate-host',
+      sections: [{ name: 'candidate-host', text: '候选 Host 外部世界上下文，不应进入收据。' }],
+    },
+  })
+  const externalEvent = turnSession.append('user/message', external, { surfaceOp: 'append' })
+  const dispatchedPlan = bindRoleplayExternalContext({
+    plan, events: turnSession.events, visibleMessages: turnSession.deriveMessages(), turn: 1, step: 1,
+  })
+  const receipt = appendSessionRoleplayTurnPlan(turnSession, 1, 1, dispatchedPlan)
   assert.equal(receipt.ignorable, true)
   assert.equal(receipt.type, 'agent-rp/turn-plan')
-  assert.doesNotMatch(JSON.stringify(receipt), /这段正文|候选 Host 兼容角色/u)
+  const candidateContextReads = receipt.data.reference.receipt?.recall?.contextReads ?? []
+  assert.equal(candidateContextReads.some(read => read.eventSeq === externalEvent.seq), true)
+  const supportsSnapshotChannels = (turnSession.constructor as {
+    readonly contextSnapshotChannels?: unknown
+  }).contextSnapshotChannels === 1
+  assert.equal(candidateContextReads.some(read => read.eventSeq === staleExternalEvent.seq), !supportsSnapshotChannels)
+  assert.doesNotMatch(JSON.stringify(receipt), /这段正文|候选 Host 兼容角色|外部世界上下文/u)
 
   const turnReopened = local.Session.create(
     local.SessionId('agent-rp-new-host-turn'),
@@ -385,7 +411,7 @@ test('writes and exactly replays a prepared turn with a local newer DSH Host', a
     session: turnReopened,
     record: reopenedReceipt,
     deployment,
-  }), plan)
+  }), dispatchedPlan)
   assert.throws(() => replaySessionRoleplayTurnPlan({
     session: turnReopened,
     record: reopenedReceipt,
