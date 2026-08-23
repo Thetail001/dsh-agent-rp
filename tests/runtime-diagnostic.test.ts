@@ -9,6 +9,21 @@ import {
 } from '../src/client/runtime-diagnostic.ts'
 
 const sessionFacts: AgentRpRuntimeSessionFacts = {
+  turns: {
+    format: 0,
+    status: 'ready',
+    health: {
+      audit: 'agent-rp-turn-health-v0', turns: 1,
+      statuses: { open: 0, awaitingSettlement: 0, awaitingPresentation: 0, complete: 1 },
+      latest: {
+        turn: 1, status: 'complete', finalizableFromLog: true,
+        phases: {
+          plannedSteps: 1, preparedSteps: 1, recalledSteps: 1, actedSteps: 1,
+          assistantMessages: 1, toolCalls: 0, toolResults: 0, settled: true, presented: true,
+        },
+      },
+    },
+  },
   capabilities: {
     extensions: 4, requirements: 13, available: 13, approvals: 0,
     requiredUnavailable: 0, unsupported: 0, versionMismatch: 0, denied: 0,
@@ -40,7 +55,14 @@ test('assembles multiple Host publishers without serializing their scope or extr
 
   registry.publish(session, {
     kind: 'session', scope: 'private-session-id',
-    facts: { ...sessionFacts, privateCardText: 'must not appear' },
+    facts: {
+      ...sessionFacts,
+      turns: sessionFacts.turns?.status !== 'ready' ? sessionFacts.turns : {
+        ...sessionFacts.turns,
+        health: { ...sessionFacts.turns.health, privateTurnText: 'must not appear' },
+      },
+      privateCardText: 'must not appear',
+    },
   } as AgentRpRuntimeDiagnosticContribution)
   registry.publish(tavern, {
     kind: 'tavern', scope: 'private-session-id',
@@ -96,6 +118,7 @@ test('assembles multiple Host publishers without serializing their scope or extr
   assert.deepEqual(snapshot.session?.tavern?.scopes, { preset: 1, character: 1 })
   assert.equal(snapshot.session?.tavern?.blockedResources, 2)
   assert.equal(snapshot.session?.tavern?.blockedResourceOrigins, 1)
+  assert.equal(snapshot.session?.turns?.status, 'ready')
   assert.deepEqual(snapshot.session?.tavern?.blockedResourceClasses, { style: 2 })
   assert.deepEqual(snapshot.session?.cardFrames, {
     total: 2, scriptEnabled: 1, inert: 1, registered: 2, resized: 1,

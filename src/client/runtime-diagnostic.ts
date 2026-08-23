@@ -5,6 +5,10 @@ import { CARD_RUNTIME_PHASES, type CardRuntimePhase } from './card-capability.ts
 import type { ExternalWindowPhase } from './external-window.ts'
 import type { TavernScriptRuntimePhase } from './tavern-runtime.ts'
 import type { TavernScriptTreeScope } from '../tavern-helper.ts'
+import {
+  parseAgentRpTurnHealthDiagnostic,
+  type AgentRpTurnHealthDiagnostic,
+} from '../roleplay-turn-health-protocol.ts'
 
 type Counter = Readonly<Record<string, number>>
 
@@ -32,6 +36,8 @@ export interface AgentRpRuntimePreflightFacts {
 
 /** Stable facts owned by one mounted roleplay Session component. */
 export interface AgentRpRuntimeSessionFacts {
+  /** Host-derived lifecycle counts; optional while the same-origin request is in flight. */
+  readonly turns?: AgentRpTurnHealthDiagnostic
   readonly capabilities: {
     readonly extensions: number
     readonly requirements: number
@@ -267,7 +273,16 @@ function normalizePreflight(facts: AgentRpRuntimePreflightFacts): AgentRpRuntime
 }
 
 function normalizeSession(facts: AgentRpRuntimeSessionFacts): AgentRpRuntimeSessionFacts {
+  let turns: AgentRpTurnHealthDiagnostic | undefined
+  if (facts.turns !== undefined) {
+    try {
+      turns = parseAgentRpTurnHealthDiagnostic(facts.turns)
+    } catch {
+      turns = { format: 0, status: 'invalid' }
+    }
+  }
   return {
+    ...(turns === undefined ? {} : { turns }),
     capabilities: {
       extensions: count(facts.capabilities.extensions), requirements: count(facts.capabilities.requirements),
       available: count(facts.capabilities.available), approvals: count(facts.capabilities.approvals),
@@ -453,6 +468,7 @@ export class AgentRpRuntimeDiagnosticRegistry {
     const sessionExternalWindows = counter(session.externalWindowPhases, externalWindowPhases)
     const tavernExternalWindows = counter(tavern?.externalWindowPhases ?? [], externalWindowPhases)
     return {
+      ...(session.turns === undefined ? {} : { turns: session.turns }),
       capabilities: session.capabilities,
       auxiliaryGenerations: session.auxiliaryGenerations,
       externalWindows: { phases: addCounters(sessionExternalWindows, tavernExternalWindows) },

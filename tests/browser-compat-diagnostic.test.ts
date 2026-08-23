@@ -190,6 +190,7 @@ test('collects one content-free healthy browser snapshot with expected permissio
     preflightHealthy: true,
     tavernPermissionsConsistent: true,
     tavernRuntimeHealthy: true,
+    turnRecordHealthy: true,
     worldEngineHealthy: true,
   })
   assert.deepEqual(report.issues, [])
@@ -288,6 +289,7 @@ test('reports stable issue codes for expanded sandboxes and inconsistent lifecyc
     preflightHealthy: false,
     tavernPermissionsConsistent: true,
     tavernRuntimeHealthy: false,
+    turnRecordHealthy: true,
     worldEngineHealthy: true,
   })
   assert.deepEqual(report.issues, [
@@ -580,6 +582,7 @@ test('uses Host runtime facts while retaining DOM-owned sandbox checks', () => {
     kind: 'session',
     scope: 'private-session-id',
     facts: {
+      turns: { format: 0, status: 'invalid' },
       capabilities: {
         extensions: 1, requirements: 3, available: 3, approvals: 0,
         requiredUnavailable: 0, unsupported: 0, versionMismatch: 0, denied: 0,
@@ -628,7 +631,8 @@ test('uses Host runtime facts while retaining DOM-owned sandbox checks', () => {
     })],
   }), registry.snapshot())
 
-  assert.deepEqual(report.issues, ['iframe-sandbox-expanded'])
+  assert.deepEqual(report.issues, ['iframe-sandbox-expanded', 'turn-record-invalid'])
+  assert.equal(report.checks.turnRecordHealthy, false)
   assert.equal(report.runtime?.source, 'host')
   assert.equal(report.runtime?.revision, 2)
   assert.equal(report.session?.renderer.inlineFrontendSanitizer, 'ready')

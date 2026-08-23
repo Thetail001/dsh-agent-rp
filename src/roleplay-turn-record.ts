@@ -255,6 +255,9 @@ function readSelectedRoleplayTurnRecords(
     }
   }
   const evidenceTurns = new Set([...plans.keys(), ...settlements.keys()])
+  for (const turn of starts.keys()) {
+    if ((ends.get(turn)?.length ?? 0) === 0) evidenceTurns.add(turn)
+  }
   const presentationBySettlement = new Map<number, TurnPresentationEvent[]>()
   for (const event of presentations) {
     const settlement = eventsBySeq.get(event.data.settlementSeq)

@@ -29,6 +29,7 @@ test('audits a complete model-free turn and reopens it from the Session log', as
     recallReceiptRecovered: true,
     actReceiptRecovered: true,
     turnRecordRecovered: true,
+    turnHealthRecovered: true,
     exactPlanRecovered: true,
     coldSettlementRecovered: true,
     resourceReferencesMatch: true,

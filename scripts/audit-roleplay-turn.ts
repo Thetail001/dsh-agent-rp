@@ -58,6 +58,7 @@ import {
   readRoleplayTurnSettlements,
 } from '../src/roleplay-turn-settlement.ts'
 import { readRoleplayTurnRecords } from '../src/roleplay-turn-record.ts'
+import { summarizeRoleplayTurnHealth } from '../src/roleplay-turn-health.ts'
 import { resolveSessionRoleplayRuntime } from '../src/session-roleplay-runtime.ts'
 import { recoverSessionRoleplayTurns } from '../src/session-roleplay-turn-recovery.ts'
 import {
@@ -139,6 +140,7 @@ export interface RoleplayTurnAuditResult {
     readonly recallReceiptRecovered: boolean
     readonly actReceiptRecovered: boolean
     readonly turnRecordRecovered: boolean
+    readonly turnHealthRecovered: boolean
     readonly exactPlanRecovered: boolean
     readonly coldSettlementRecovered: boolean
     readonly resourceReferencesMatch: boolean
@@ -454,6 +456,12 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
     && turnRecord.settle?.eventSeq === settlementEvent.seq
     && turnRecord.settle.reply?.eventSeq === reply.seq
     && turnRecord.present?.selectedReply?.sourceSeq === reply.seq
+  const turnHealth = summarizeRoleplayTurnHealth(readRoleplayTurnRecords(reopened))
+  const turnHealthRecovered = turnHealth.latest?.turn === turn
+    && turnHealth.latest.status === 'complete'
+    && turnHealth.latest.nextPhase === undefined
+    && turnHealth.latest.phases.settled
+    && turnHealth.latest.phases.presented
   const exactPlanRecovered = planRecord?.type === 'agent-rp/turn-plan' && equalJson(
     replaySessionRoleplayTurnPlan({ session: reopened, record: planRecord, deployment, templateEngine: engine }),
     plan,
@@ -519,6 +527,7 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
     || !equalStrings(runtimeResourceIds, receiptResourceIds)
     || !worldActivationMatches || !stateReferencesResolve || !memoryReferencesResolve
     || !preDispatchReceiptRecovered || !recallReceiptRecovered || !actReceiptRecovered || !turnRecordRecovered
+    || !turnHealthRecovered
     || !exactPlanRecovered || !coldSettlementRecovered
     || !currentReplyMatches || !nextPrepareContinues || !nextRecallContinues) {
     throw new Error('Roleplay turn audit replay invariant failed')
@@ -584,6 +593,7 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
       recallReceiptRecovered,
       actReceiptRecovered,
       turnRecordRecovered,
+      turnHealthRecovered,
       exactPlanRecovered,
       coldSettlementRecovered,
       resourceReferencesMatch: true,

@@ -150,6 +150,7 @@ function browserSnapshot(options: {
       preflightHealthy: preflight !== 'error',
       tavernPermissionsConsistent: true,
       tavernRuntimeHealthy: runtime !== 'failed',
+      turnRecordHealthy: true,
       worldEngineHealthy: true,
     },
     issues,

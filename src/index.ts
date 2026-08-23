@@ -129,6 +129,7 @@ import { prepareRoleplayTurn } from './roleplay-turn-plan.ts'
 import { RoleplayTurnCoordinator } from './roleplay-turn-coordinator.ts'
 import { appendSessionRoleplayTurnPlan } from './session-roleplay-turn-plan.ts'
 import { recoverSessionRoleplayTurns } from './session-roleplay-turn-recovery.ts'
+import { installRoleplayTurnHealthHttp } from './roleplay-turn-health-http.ts'
 import {
   appendRoleplayTurnPresentation,
 } from './roleplay-turn-presentation.ts'
@@ -171,6 +172,17 @@ export type {
   RoleplayTurnRecord,
   RoleplayTurnSettleRecord,
 } from './roleplay-turn-record.ts'
+export {
+  roleplayTurnRecordFinalizable,
+  summarizeRoleplayTurnHealth,
+} from './roleplay-turn-health.ts'
+export type {
+  AgentRpTurnHealthDiagnostic,
+  RoleplayTurnHealthEntry,
+  RoleplayTurnHealthStatus,
+  RoleplayTurnHealthSummary,
+  RoleplayTurnPhaseDiagnostic,
+} from './roleplay-turn-health-protocol.ts'
 export { AGENT_RP_EMBEDDED_IDENTITY_CHANNEL } from './embedded-identity-protocol.ts'
 export type {
   EmbeddedNativeIdentityFailure,
@@ -1184,6 +1196,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         installSillyTavernChatExportHttp(webCtx, ctx, server)
         installAgentRpCommandHttp(webCtx, ctx, server)
         installAgentRpMemoryHttp(webCtx, ctx, server)
+        installRoleplayTurnHealthHttp(webCtx, ctx, server)
         installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, worldInfoLibrary, server)
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)

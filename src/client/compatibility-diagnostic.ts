@@ -4,6 +4,7 @@ import type {
   AgentRpRuntimeDiagnosticRegistry,
   AgentRpRuntimeDiagnosticSnapshot,
 } from './runtime-diagnostic.ts'
+import type { AgentRpTurnHealthDiagnostic } from '../roleplay-turn-health-protocol.ts'
 
 type Counter = Readonly<Record<string, number>>
 
@@ -29,6 +30,7 @@ export type AgentRpBrowserCompatibilityIssue =
   | 'preflight-request-failed'
   | 'tavern-permission-count-mismatch'
   | 'tavern-runtime-failed'
+  | 'turn-record-invalid'
   | 'world-engine-degraded'
 
 /** Content-free Host runtime facts plus mounted DOM integrity and interaction checks. */
@@ -91,6 +93,7 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly tavernExecutionMaxMs?: number
   }
   readonly session?: {
+    readonly turns?: AgentRpTurnHealthDiagnostic
     readonly capabilities: {
       readonly extensions: number
       readonly requirements: number
@@ -206,6 +209,7 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     readonly preflightHealthy: boolean
     readonly tavernPermissionsConsistent: boolean
     readonly tavernRuntimeHealthy: boolean
+    readonly turnRecordHealthy: boolean
     readonly worldEngineHealthy: boolean
   }
   readonly issues: readonly AgentRpBrowserCompatibilityIssue[]
@@ -464,6 +468,7 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
 
   if (runtime?.session !== undefined) session = runtime.session
   if (session !== undefined) {
+    if (session.turns?.status === 'invalid') issues.add('turn-record-invalid')
     if (session.capabilities.requiredUnavailable > 0) issues.add('capability-required-unavailable')
     if ((session.externalWindows.phases['external-open-unconfirmed'] ?? 0) > 0) {
       issues.add('external-window-open-unconfirmed')
@@ -636,6 +641,7 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       preflightHealthy,
       tavernPermissionsConsistent,
       tavernRuntimeHealthy: session?.tavern === undefined || session.tavern.failed === 0,
+      turnRecordHealthy: session?.turns?.status !== 'invalid',
       worldEngineHealthy: session === undefined || !issues.has('world-engine-degraded'),
     },
     issues: [...issues].sort(),

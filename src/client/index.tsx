@@ -150,6 +150,8 @@ import {
 } from './runtime-diagnostic.ts'
 import { installAgentRpNativeBack } from './native-back.ts'
 import { installAgentRpNativeShare } from './native-share.ts'
+import { loadAgentRpTurnHealth } from './roleplay-turn-health.ts'
+import type { AgentRpTurnHealthDiagnostic } from '../roleplay-turn-health-protocol.ts'
 import {
   classifySillyTavernJsonFile,
   selectSillyTavernDraft,
@@ -10141,15 +10143,25 @@ function TavernScriptRuntime({
             }}>{entry.script.name || '未命名脚本'}</button>)}
           </div>
           <button type="button" aria-live="polite" title="复制不含角色名、正文、脚本源码和 URL 的兼容诊断" onClick={() => {
-            const report = JSON.stringify(collectAgentRpBrowserCompatibilitySnapshot(
-              document,
-              runtimeDiagnostics.snapshot(),
-            ), null, 2)
             if (navigator.clipboard === undefined) {
               setDiagnosticNotice('无法复制')
               return
             }
-            void navigator.clipboard.writeText(report).then(() => {
+            setDiagnosticNotice('正在收集…')
+            void loadAgentRpTurnHealth(String(sessionId)).catch(() => ({
+              format: 0, status: 'unavailable',
+            } as const)).then(turns => {
+              const snapshot = runtimeDiagnostics.snapshot()
+              const withTurns = snapshot.session === undefined ? snapshot : {
+                ...snapshot,
+                session: { ...snapshot.session, turns },
+              }
+              const report = JSON.stringify(collectAgentRpBrowserCompatibilitySnapshot(
+                document,
+                withTurns,
+              ), null, 2)
+              return navigator.clipboard.writeText(report)
+            }).then(() => {
               setDiagnosticNotice('诊断已复制')
             }, () => {
               setDiagnosticNotice('复制失败')
@@ -10287,6 +10299,7 @@ function roleplayComposerDockComponent(
   )
   const [cardExternalWindowPermissionOpen, setCardExternalWindowPermissionOpen] = useState(false)
   const [cardExternalWindowPhase, setCardExternalWindowPhase] = useState<ExternalWindowPhase>()
+  const [turnHealth, setTurnHealth] = useState<AgentRpTurnHealthDiagnostic>({ format: 0, status: 'loading' })
   const [approvedCardNativeIdentities, setApprovedCardNativeIdentities] = useState(readApprovedNativeIdentities)
   const [cardNativeIdentityRequests, setCardNativeIdentityRequests] = useState<ReadonlyMap<string, NativeIdentityRuntimeRequest>>(
     () => new Map(),
@@ -10306,6 +10319,22 @@ function roleplayComposerDockComponent(
     : withAgentRpSessionCardPermissions(storedCharacterDetail, sessionResourcePermissions),
   [sessionResourcePermissions, storedCharacterDetail])
   const roleplayExpected = summary?.agentPreset === 'agent-rp'
+  const turnHealthRevision = [
+    projection?.lastRequest?.eventSeq,
+    projection?.presentation?.settlementSeq,
+  ].map(value => value ?? -1).join(':')
+  useEffect(() => {
+    if (!roleplayExpected) {
+      setTurnHealth({ format: 0, status: 'unavailable' })
+      return
+    }
+    const controller = new AbortController()
+    setTurnHealth({ format: 0, status: 'loading' })
+    void loadAgentRpTurnHealth(String(sessionId), controller.signal).then(setTurnHealth, () => {
+      if (!controller.signal.aborted) setTurnHealth({ format: 0, status: 'unavailable' })
+    })
+    return () => { controller.abort() }
+  }, [roleplayExpected, sessionId, turnHealthRevision])
   const startupStartedAt = useMemo(() => performance.now(), [sessionId])
   const [startupTiming, setStartupTiming] = useState<{
     readonly sessionId: SessionId
@@ -11125,6 +11154,7 @@ function roleplayComposerDockComponent(
       kind: 'session',
       scope: String(sessionId),
       facts: {
+        turns: turnHealth,
         capabilities: {
           extensions: capabilityPlans.length,
           requirements: capabilitySummary.requirements,

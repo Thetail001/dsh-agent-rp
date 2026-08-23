@@ -8,7 +8,6 @@ import {
 import {
   appendRoleplayTurnSettlement,
   compileRoleplayTurnSettlementFromReferences,
-  type RoleplayTurnPlanReference,
 } from './roleplay-turn-settlement.ts'
 import { readRoleplayTurnRecord, readRoleplayTurnRecords } from './roleplay-turn-record.ts'
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
@@ -18,6 +17,7 @@ import {
 import {
   collectSessionRoleplaySettlementContributionsFromReferences,
 } from './session-roleplay-turn-settlement.ts'
+import { roleplayTurnRecordFinalizable } from './roleplay-turn-health.ts'
 
 /** Content-free count of records restored from pre-dispatch receipts. */
 export interface SessionRoleplayTurnRecoveryResult {
@@ -47,13 +47,6 @@ export function createSessionRoleplayTurnBoundary(
   return { session: boundary, events: boundary.events.slice(0, prefix.length) }
 }
 
-function referencesRecoverable(plans: readonly RoleplayTurnPlanReference[]): boolean {
-  return plans.length > 0 && plans.every(plan => plan.receipt !== undefined
-    && plan.receipt.memoryWriteAvailable !== undefined
-    && plan.receipt.runtime.settleModules !== undefined
-    && plan.receipt.runtime.presentModuleIds !== undefined)
-}
-
 /**
  * Restore missing settlement/presentation records for closed turns on both hot completion and cold restart.
  * Old logs without pre-dispatch receipts remain readable and are deliberately skipped.
@@ -77,7 +70,7 @@ export function recoverSessionRoleplayTurns(input: {
       throw new Error('Roleplay recovery record references a missing closing boundary')
     }
     const plans = record.plans.map(value => value.reference)
-    if (!referencesRecoverable(plans)) continue
+    if (!roleplayTurnRecordFinalizable(record)) continue
     let settlement = record.settle === undefined
       ? undefined
       : input.session.events[record.settle.eventSeq]
