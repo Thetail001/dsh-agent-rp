@@ -125,6 +125,10 @@ import {
   type WorldbookCharacterContextRegistry,
 } from './worldbook-character-context.ts'
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
+import {
+  ROLEPLAY_RUNTIME_EXTENSIONS_KEY,
+  RoleplayRuntimeExtensionRegistry,
+} from './roleplay-runtime-extension.ts'
 import { prepareRoleplayTurn } from './roleplay-turn-plan.ts'
 import { bindRoleplayExternalContext } from './roleplay-turn-context.ts'
 import { RoleplayTurnCoordinator } from './roleplay-turn-coordinator.ts'
@@ -143,6 +147,17 @@ import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
 export { Config }
+export {
+  registerRoleplayRuntimeExtension,
+  ROLEPLAY_RUNTIME_EXTENSIONS_KEY,
+  RoleplayRuntimeExtensionRegistry,
+} from './roleplay-runtime-extension.ts'
+export type {
+  ResolvedRoleplayRuntimeExtensions,
+  RoleplayRuntimeExtensionDefinition,
+  RoleplayRuntimeExtensionResolution,
+  RoleplayRuntimeExtensionResolveInput,
+} from './roleplay-runtime-extension.ts'
 export {
   applyRoleplayStateEvent,
   appendRoleplayState,
@@ -551,12 +566,19 @@ export function installAgentRp(
   const generatedImageLibrary = new GeneratedImageLibrary()
   const workspaceSettings = new WorkspaceSettingsStore()
   let worldbookCharacters: WorldbookCharacterContextRegistry | undefined
+  let runtimeExtensions: RoleplayRuntimeExtensionRegistry | undefined
   try {
     const candidate = ctx.get(WORLDBOOK_CHARACTER_CONTEXT_KEY as never) as WorldbookCharacterContextRegistry | undefined
     if (candidate !== undefined && typeof candidate.register === 'function'
       && typeof candidate.getCurrentCharacter === 'function') worldbookCharacters = candidate
   } catch {
     worldbookCharacters = undefined
+  }
+  try {
+    const candidate = ctx.get(ROLEPLAY_RUNTIME_EXTENSIONS_KEY)
+    if (candidate !== undefined && typeof candidate.resolve === 'function') runtimeExtensions = candidate
+  } catch {
+    runtimeExtensions = undefined
   }
   const worldbookCharacterDisposers = new Map<Agent, readonly (() => void)[]>()
 
@@ -776,6 +798,7 @@ export function installAgentRp(
         deployment: config,
         memoryWriteAvailable: rememberIntentByAgent.get(agent) === true,
         templateEngineAvailable: options.ejsTemplateEngine !== undefined,
+        ...(runtimeExtensions === undefined ? {} : { extensions: runtimeExtensions }),
       })
       const plan = prepareRoleplayTurn({
         session: agent.session,
@@ -817,6 +840,7 @@ export function installAgentRp(
             session: agent.session,
             deployment: config,
             templateEngineAvailable: options.ejsTemplateEngine !== undefined,
+            ...(runtimeExtensions === undefined ? {} : { extensions: runtimeExtensions }),
           })
         } catch (error: unknown) {
           ctx.logger.warn(`agent-rp: turn recovery failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -926,6 +950,7 @@ export function installAgentRp(
           deployment: config,
           turn: event.data.turn,
           templateEngineAvailable: options.ejsTemplateEngine !== undefined,
+          ...(runtimeExtensions === undefined ? {} : { extensions: runtimeExtensions }),
         })
       } catch (error: unknown) {
         ctx.logger.warn(`agent-rp: turn settlement failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -1172,6 +1197,8 @@ async function loadEjsTemplateEngine(ctx: Context): Promise<EjsTemplateEngine | 
 export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> {
   const resolved = resolveConfig(config)
   if (resolved.mode === 'host') {
+    const runtimeExtensions = new RoleplayRuntimeExtensionRegistry()
+    ctx.provide(ROLEPLAY_RUNTIME_EXTENSIONS_KEY, runtimeExtensions)
     const worldbookCharacters = createWorldbookCharacterContextRegistry()
     ctx.provide(WORLDBOOK_CHARACTER_CONTEXT_KEY as never, worldbookCharacters as never)
     installWorldbookSnapshotCoalescing(ctx)

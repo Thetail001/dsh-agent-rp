@@ -11,6 +11,7 @@ import {
 } from './roleplay-turn-settlement.ts'
 import { readRoleplayTurnRecord, readRoleplayTurnRecords } from './roleplay-turn-record.ts'
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
+import type { RoleplayRuntimeExtensionRegistry } from './roleplay-runtime-extension.ts'
 import {
   compileInitialSessionRoleplayTurnPresentation,
 } from './session-roleplay-turn-presentation.ts'
@@ -56,6 +57,7 @@ export function recoverSessionRoleplayTurns(input: {
   readonly deployment: ResolvedConfig
   readonly templateEngineAvailable?: boolean
   readonly turn?: number
+  readonly extensions?: RoleplayRuntimeExtensionRegistry
 }): SessionRoleplayTurnRecoveryResult {
   const records = input.turn === undefined
     ? readRoleplayTurnRecords(input.session)
@@ -86,6 +88,7 @@ export function recoverSessionRoleplayTurns(input: {
         memoryWriteAvailable,
         ...(input.templateEngineAvailable === undefined
           ? {} : { templateEngineAvailable: input.templateEngineAvailable }),
+        ...(input.extensions === undefined ? {} : { extensions: input.extensions }),
       })
       const value = compileRoleplayTurnSettlementFromReferences({
         sessionId: String(input.session.id),

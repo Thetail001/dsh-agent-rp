@@ -200,7 +200,7 @@ function worldPlan(
   rendered: ReturnType<typeof renderSessionLorebooks>,
 ): RoleplayWorldPlan {
   const resources = rendered.books.map((book, index): RoleplayWorldResourcePlan => {
-    const resource = resolved.snapshot.world.bindings[index]
+    const resource = resolved.snapshot.world.bindings.find(binding => binding.id === book.id)
     const configured = resolved.lorebooks[index]?.configured
     if (resource === undefined || configured === undefined || resource.id !== book.id) {
       throw new Error('Roleplay world bindings do not match the evaluated resources')
@@ -225,11 +225,16 @@ function worldPlan(
       }),
     }
   })
+  const renderedIds = new Set(resources.map(resource => resource.resource.id))
+  const externalResources = resolved.snapshot.world.bindings
+    .filter(resource => !renderedIds.has(resource.id))
+    .map(resource => ({ resource, beforeActor: [], afterActor: [], entries: [] }))
+  const allResources = [...resources, ...externalResources]
   const contributions = (placement: RoleplayWorldBinding['placement'], side: 'beforeActor' | 'afterActor') =>
-    resources.filter(item => item.resource.placement === placement).flatMap(item => item[side])
+    allResources.filter(item => item.resource.placement === placement).flatMap(item => item[side])
   return {
     engine: rendered.engine,
-    resources,
+    resources: allResources,
     inChat: rendered.inChat,
     experienceBeforeActor: contributions('experience', 'beforeActor'),
     actorBefore: contributions('actor', 'beforeActor'),
@@ -476,6 +481,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
         : templateRenders === 0 ? 'idle' as const : 'applied' as const,
       contributions: templateRenders + templateFailures,
     }] : []),
+    ...resolved.extensionOutcomes.prepare,
   ]
   const recallDeclarations: RoleplayRecallModuleOutcome[] = [
     {
@@ -483,7 +489,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
       outcome: memory.reads.length === 0 ? 'idle' : 'applied',
       contributions: memory.reads.length,
     },
-    ...(world.resources.length === 0 ? [] : [{
+    ...(!snapshot.modules.some(module => module.id === ROLEPLAY_WORLD_MODULE_ID) ? [] : [{
       moduleId: ROLEPLAY_WORLD_MODULE_ID,
       outcome: worldContributions === 0 ? 'idle' as const : 'applied' as const,
       contributions: worldContributions,
@@ -499,6 +505,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
         : worldTemplateAttempts === 0 ? 'idle' as const : 'applied' as const,
       contributions: worldTemplateAttempts,
     }] : []),
+    ...resolved.extensionOutcomes.recall,
   ]
   return {
     format: 0,

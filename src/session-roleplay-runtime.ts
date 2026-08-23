@@ -42,6 +42,8 @@ import {
   type RoleplayResourceRef,
   type RoleplayRuntimeSnapshot,
 } from './roleplay-runtime.ts'
+import type { RoleplayRuntimeExtensionRegistry } from './roleplay-runtime-extension.ts'
+import type { RoleplayPhaseModuleOutcome } from './roleplay-turn-plan.ts'
 import {
   readRoleplayStates,
   ROLEPLAY_STATE_MODULE_ID,
@@ -65,6 +67,10 @@ export interface ResolvedSessionRoleplayRuntime {
   readonly tavern?: TavernHelperState
   readonly mvu?: MvuStateSnapshot
   readonly lorebooks: readonly ConfiguredRoleplayLorebook[]
+  readonly extensionOutcomes: {
+    readonly prepare: readonly RoleplayPhaseModuleOutcome[]
+    readonly recall: readonly RoleplayPhaseModuleOutcome[]
+  }
 }
 
 function sessionResource(id: string, name: string, adapter: string): RoleplayResourceRef {
@@ -95,6 +101,7 @@ export function resolveSessionRoleplayRuntime(input: {
   readonly deployment: ResolvedConfig
   readonly memoryWriteAvailable?: boolean
   readonly templateEngineAvailable?: boolean
+  readonly extensions?: RoleplayRuntimeExtensionRegistry
 }): ResolvedSessionRoleplayRuntime {
   const events = input.session.events
   const activeCharacter = readActiveSessionCharacter(events)
@@ -124,6 +131,8 @@ export function resolveSessionRoleplayRuntime(input: {
     importedChat?.userName,
   )
   const mvu = card === undefined ? undefined : readCurrentSessionMvuState(card, input.session)
+  const extensions = input.extensions?.resolve(events)
+    ?? { modules: [], world: [], state: [], prepare: [], recall: [] }
 
   const deploymentActor: RoleplayResourceRef = {
     id: 'deployment:default-actor',
@@ -187,9 +196,10 @@ export function resolveSessionRoleplayRuntime(input: {
       adapter: 'sillytavern:tavern-helper',
       revision: tavern.revision,
     }]),
+    ...extensions.state,
   ]
   if (new Set(state.map(binding => binding.id)).size !== state.length) {
-    throw new Error('Roleplay state namespaces must be unique across native state and adapters')
+    throw new Error('Roleplay state namespaces must be unique across native runtime, adapters, and extensions')
   }
   const modules: RoleplayModuleBinding[] = [
     runtimeModule(ROLEPLAY_PROMPT_MODULE_ID, 'native', ['prepare']),
@@ -216,7 +226,33 @@ export function resolveSessionRoleplayRuntime(input: {
     ...(input.templateEngineAvailable === true
       ? [runtimeModule(ROLEPLAY_EJS_ADAPTER_MODULE_ID, 'adapter', ['prepare', 'recall'])]
       : []),
+    ...extensions.modules,
   ]
+  if (new Set(modules.map(module => module.id)).size !== modules.length) {
+    throw new Error('Roleplay runtime module ids must be unique across native runtime, adapters, and extensions')
+  }
+  const knownStateIds = new Set(state.map(binding => binding.id))
+  for (const module of modules) {
+    for (const stateId of module.stateIds ?? []) {
+      if (!knownStateIds.has(stateId)) {
+        throw new Error(`Roleplay runtime module ${JSON.stringify(module.id)} references unknown state ${JSON.stringify(stateId)}`)
+      }
+    }
+  }
+  const worldBindings = [
+    ...lorebooks.map(({ source }) => ({
+      ...sessionResource(
+        source.id,
+        source.name,
+        source.source === 'character' ? 'sillytavern:character-book' : 'sillytavern:world-info',
+      ),
+      placement: source.source === 'character' ? 'actor' as const : 'experience' as const,
+    })),
+    ...extensions.world,
+  ]
+  if (new Set(worldBindings.map(binding => binding.id)).size !== worldBindings.length) {
+    throw new Error('Roleplay world binding ids must be unique across native runtime, adapters, and extensions')
+  }
   const tokenBudget = worldInfoTokenBudget(worldConfiguration)
   const snapshot: RoleplayRuntimeSnapshot = {
     format: 0,
@@ -225,14 +261,7 @@ export function resolveSessionRoleplayRuntime(input: {
     ...(actor === undefined ? {} : { actor }),
     ...(participant === undefined ? {} : { participant }),
     world: {
-      bindings: lorebooks.map(({ source }) => ({
-        ...sessionResource(
-          source.id,
-          source.name,
-          source.source === 'character' ? 'sillytavern:character-book' : 'sillytavern:world-info',
-        ),
-        placement: source.source === 'character' ? 'actor' as const : 'experience' as const,
-      })),
+      bindings: worldBindings,
       ...(tokenBudget === undefined ? {} : { tokenBudget }),
     },
     prompt: promptResource === undefined
@@ -252,5 +281,6 @@ export function resolveSessionRoleplayRuntime(input: {
     ...(tavern === undefined ? {} : { tavern }),
     ...(mvu === undefined ? {} : { mvu }),
     lorebooks,
+    extensionOutcomes: { prepare: extensions.prepare, recall: extensions.recall },
   }
 }

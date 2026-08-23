@@ -12,6 +12,7 @@ import {
   type RoleplayTurnPlanReference,
 } from './roleplay-turn-settlement.ts'
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
+import type { RoleplayRuntimeExtensionRegistry } from './roleplay-runtime-extension.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 
 function replayBoundary(session: Session, events: readonly SessionEvent[]): Session {
@@ -113,6 +114,7 @@ export function replaySessionRoleplayTurnPlan(input: {
   readonly record: SessionEvent<'agent-rp/turn-plan'>
   readonly deployment: ResolvedConfig
   readonly templateEngine?: EjsTemplateEngine
+  readonly extensions?: RoleplayRuntimeExtensionRegistry
 }): RoleplayTurnPlan {
   const { session, record } = input
   const stored = session.events[record.seq]
@@ -138,6 +140,7 @@ export function replaySessionRoleplayTurnPlan(input: {
     deployment: input.deployment,
     memoryWriteAvailable: reference.receipt.memoryWriteAvailable === true,
     templateEngineAvailable: input.templateEngine !== undefined,
+    ...(input.extensions === undefined ? {} : { extensions: input.extensions }),
   })
   const prepared = prepareRoleplayTurn({
     session: boundary,
