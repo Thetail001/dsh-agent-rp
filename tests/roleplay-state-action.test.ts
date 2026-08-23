@@ -28,12 +28,17 @@ import {
   ROLEPLAY_STATE_ACTION_TOOL,
 } from '../src/roleplay-state-action.ts'
 import {
+  collectRoleplayStagedStateSettlement,
+  runRoleplayStagedStateSettlement,
+} from '../src/roleplay-staged-state-settlement.ts'
+import {
   ensureDefaultRoleplayTurnMode,
   readRoleplayTurnMode,
 } from '../src/roleplay-turn-mode.ts'
 import { executeRoleplayTurnModeCommand } from '../src/roleplay-turn-mode-command.ts'
 import { prepareRoleplayTurn, type RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
 import {
+  projectRoleplayTurnPlan,
   readRoleplayTurnSettlements,
   type RoleplayTurnPlanReference,
 } from '../src/roleplay-turn-settlement.ts'
@@ -194,7 +199,7 @@ async function executeAndAppend(
   return { event, result }
 }
 
-test('opens the Agent state tool before same-step prompt assembly and does not migrate resumed logs', async (context) => {
+test('keeps state arithmetic out of the actor step and does not migrate resumed logs', async (context) => {
   const root = new Context()
   await root.plugin(SystemPrompt)
   await root.plugin(ToolRegistry)
@@ -243,7 +248,7 @@ test('opens the Agent state tool before same-step prompt assembly and does not m
   })
   agentEvents(root, nativeAgent).emit('agent/inbox/claimed', { message: pending, turn: 1 })
   const sameStep = await root.systemPrompt.assemble({ scope: nativeAgent })
-  assert.equal(sameStep.tools.some(tool => tool.name === ROLEPLAY_STATE_ACTION_TOOL), true)
+  assert.equal(sameStep.tools.some(tool => tool.name === ROLEPLAY_STATE_ACTION_TOOL), false)
   assert.equal(sameStep.tools.some(tool => tool.name === 'bash'), false)
 
   const rawInput = JSON.stringify({ mode: 'conversation', format: 0 })
@@ -304,7 +309,10 @@ test('applies one semantic action after turn end and keeps its narrative message
   assert.equal(plan.act.strategy, 'agent')
   assert.deepEqual(plan.act.responseRepairs, [])
   assert.equal(plan.act.stateActions[0]?.tool, ROLEPLAY_STATE_ACTION_TOOL)
-  assert.match(plan.prompt.systemPromptText, /不要在正文中输出 <UpdateVariable>/u)
+  assert.match(plan.prompt.systemPromptText, /后台阶段独立结算/u)
+  const schema4 = projectRoleplayTurnPlan(plan, 4) as RoleplayTurnPlan
+  assert.match(schema4.prompt.systemPromptText, /再在正文之后调用 apply_roleplay_state/u)
+  assert.equal(schema4.act.stateActions[0]?.instructions, undefined)
   const args = {
     stateId: 'state:mvu',
     operations: [{ op: 'delta', path: '/角色/等级', value: 2 }],
@@ -364,4 +372,97 @@ test('applies one semantic action after turn end and keeps its narrative message
     turns: [],
   })
   assert.equal(restarted.events.filter(candidate => candidate.type === 'agent-rp/mvu-state').length, 1)
+})
+
+test('settles MVU after the visible reply through a replayable local-provider stage', async () => {
+  const { card, session } = cardSession('staged-state-success', 'agent')
+  const { plan, reference, record } = beginTurn(session)
+  session.append('request/header', {
+    reason: 'initial',
+    header: { config: { provider: 'fixture', model: 'fixture', maxTokens: 8192 } },
+  })
+  const narrative = session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' },
+      content: [{ type: 'text', text: '白露合上修行笔记，确认自己已经跨过两级门槛。' }],
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  session.append('step/end', { turn: 1, step: 1 })
+  let requestText = ''
+  let requestSystem = ''
+  let requestCount = 0
+  const fake = {
+    sessions: { flush: async () => true },
+    llm: {
+      stream(options: {
+        readonly messages: readonly { readonly content: readonly unknown[] }[]
+        readonly system?: string
+      }) {
+        requestCount += 1
+        requestText = JSON.stringify(options.messages)
+        requestSystem = options.system ?? ''
+        return (async function* () {
+          const text = '{"operations":[{"op":"delta","path":"/角色/等级","value":2}]}'
+          yield { type: 'block-start', index: 0, blockType: 'text' }
+          yield { type: 'text-delta', index: 0, text }
+          yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    },
+  } as unknown as Context
+  const agent = { id: session.id, session } as Agent
+  await runRoleplayStagedStateSettlement({
+    ctx: fake,
+    agent,
+    turn: 1,
+    plan: { step: 1, plan },
+    signal: new AbortController().signal,
+  })
+  await runRoleplayStagedStateSettlement({
+    ctx: fake,
+    agent,
+    turn: 1,
+    plan: { step: 1, plan },
+    signal: new AbortController().signal,
+  })
+  assert.equal(requestCount, 1)
+  assert.match(requestSystem, /只返回一个 JSON 对象/u)
+  assert.match(requestText, /白露合上修行笔记/u)
+  assert.match(requestText, /变量更新规则/u)
+  assert.equal(session.events.filter(event => event.type === 'assistant/message').length, 1)
+  const staged = collectRoleplayStagedStateSettlement({
+    events: session.events,
+    sessionId: String(session.id),
+    turn: 1,
+    plans: [reference],
+  })
+  assert.equal(staged?.outcome, 'success')
+  assert.deepEqual(staged?.operations, [{ op: 'delta', path: '/角色/等级', value: 2 }])
+  assert.equal(session.events[record.seq]?.type, 'agent-rp/turn-plan')
+
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  assert.deepEqual(recoverSessionRoleplayTurns({ session, deployment }), {
+    settlements: 1,
+    presentations: 1,
+    turns: [1],
+  })
+  assert.deepEqual(readCurrentSessionMvuState(card, session), {
+    statData: { 角色: { 等级: 3, 称号: '学徒' } },
+    updateCount: 1,
+    source: {
+      kind: 'agent-action',
+      turn: 1,
+      resultEventSeqs: [staged!.resultEventSeq],
+    },
+  })
+  assert.equal(readRoleplayTurnSettlements(session.events)[0]?.reply?.eventSeq, narrative.seq)
+  assert.equal(collectRoleplayStagedStateSettlement({
+    events: session.events,
+    sessionId: String(session.id),
+    turn: 2,
+    plans: [],
+  }), undefined)
 })

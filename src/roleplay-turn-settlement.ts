@@ -14,7 +14,11 @@ import {
 } from './roleplay-runtime.ts'
 import type { RoleplayTurnInputKey, RoleplayTurnPlan } from './roleplay-turn-plan.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
-import { readRoleplayStateActionIntent } from './roleplay-state-action.ts'
+import {
+  readRoleplayStateActionIntent,
+  renderLegacyRoleplayStateActionGuidance,
+  renderRoleplayStateActionGuidance,
+} from './roleplay-state-action.ts'
 
 /** Exact prepared input consumed by one model step in the settled turn. */
 export interface RoleplayTurnPlanReference {
@@ -78,13 +82,14 @@ export interface RoleplayTurnPlanReceipt {
 /**
  * Published structural projections of the provider-neutral turn plan:
  * 0 predates prompt transforms, 1 adds transforms, 2 adds response repair programs,
- * 3 adds the independent turn strategy plus semantic state actions, and 4 adds
- * the exact tool policy prepared for the model request and runtime gates.
+ * 3 adds the independent turn strategy plus semantic state actions, 4 adds
+ * the exact tool policy prepared for the model request and runtime gates, and
+ * 5 moves imported state rules into the post-narrative settlement program.
  */
-export type RoleplayTurnPlanSchema = 0 | 1 | 2 | 3 | 4
+export type RoleplayTurnPlanSchema = 0 | 1 | 2 | 3 | 4 | 5
 
 /** Current structural projection written into every new plan receipt. */
-export const CURRENT_ROLEPLAY_TURN_PLAN_SCHEMA: RoleplayTurnPlanSchema = 4
+export const CURRENT_ROLEPLAY_TURN_PLAN_SCHEMA: RoleplayTurnPlanSchema = 5
 
 function legacyPromptPreparation(plan: RoleplayTurnPlan): {
   readonly prompt: Omit<RoleplayTurnPlan['prompt'], 'transforms'>
@@ -136,14 +141,46 @@ function planWithoutToolPolicy<T extends { readonly tools: RoleplayTurnPlan['too
   return legacy
 }
 
+function planWithoutStagedStateInstructions(plan: RoleplayTurnPlan): RoleplayTurnPlan {
+  const replacements = plan.act.stateActions.flatMap((action) => action.instructions === undefined
+    ? []
+    : [{
+        current: renderRoleplayStateActionGuidance(action, action.instructions),
+        legacy: renderLegacyRoleplayStateActionGuidance(action, action.instructions),
+      }])
+  const legacyText = (text: string): string => replacements.reduce(
+    (value, replacement) => value.replace(replacement.current, replacement.legacy),
+    text,
+  )
+  return {
+    ...plan,
+    prompt: {
+      ...plan.prompt,
+      systemPromptText: legacyText(plan.prompt.systemPromptText),
+      beforeHistory: plan.prompt.beforeHistory.map(message => ({ ...message, content: legacyText(message.content) })),
+      afterHistory: plan.prompt.afterHistory.map(message => ({ ...message, content: legacyText(message.content) })),
+      inChat: plan.prompt.inChat.map(message => ({ ...message, content: legacyText(message.content) })),
+    },
+    act: {
+      ...plan.act,
+      stateActions: plan.act.stateActions.map((action) => {
+        const { instructions: _instructions, ...legacy } = action
+        return legacy
+      }),
+    },
+  }
+}
+
 /** Project a current plan into one historically published structural schema. */
 export function projectRoleplayTurnPlan(plan: RoleplayTurnPlan, schema: RoleplayTurnPlanSchema): unknown {
-  if (schema === 4) return plan
-  if (schema === 3) return planWithoutToolPolicy(plan)
-  if (schema === 2) return planWithoutToolPolicy(planWithoutNativeActions(plan))
-  const withoutAct = planWithoutToolPolicy(planWithoutPreparedAct(plan))
+  if (schema === 5) return plan
+  const beforeStagedSettlement = planWithoutStagedStateInstructions(plan)
+  if (schema === 4) return beforeStagedSettlement
+  if (schema === 3) return planWithoutToolPolicy(beforeStagedSettlement)
+  if (schema === 2) return planWithoutToolPolicy(planWithoutNativeActions(beforeStagedSettlement))
+  const withoutAct = planWithoutToolPolicy(planWithoutPreparedAct(beforeStagedSettlement))
   if (schema === 1) return withoutAct
-  const legacy = legacyPromptPreparation(plan)
+  const legacy = legacyPromptPreparation(beforeStagedSettlement)
   return { ...withoutAct, prompt: legacy.prompt, prepare: legacy.prepare }
 }
 
@@ -173,9 +210,9 @@ export function matchRoleplayTurnPlanSchema(
   declaredSchema: unknown,
 ): RoleplayTurnPlanSchema | undefined {
   const schemas: readonly RoleplayTurnPlanSchema[] = declaredSchema === undefined
-    ? [4, 3, 2, 1, 0]
+    ? [5, 4, 3, 2, 1, 0]
     : declaredSchema === 0 || declaredSchema === 1 || declaredSchema === 2
-      || declaredSchema === 3 || declaredSchema === 4
+      || declaredSchema === 3 || declaredSchema === 4 || declaredSchema === 5
       ? [declaredSchema] : []
   return schemas.find(schema => roleplayTurnPlanSha256(plan, schema) === expectedDigest)
 }
@@ -650,7 +687,11 @@ function planReceipt(
       })),
       ...(projected.act.stateActions === undefined ? {} : {
         stateActions: projected.act.stateActions.map(action => ({
-          ...action,
+          engine: action.engine,
+          tool: action.tool,
+          moduleId: action.moduleId,
+          stateId: action.stateId,
+          expectedRevision: action.expectedRevision,
           operations: [...action.operations],
         })),
       }),

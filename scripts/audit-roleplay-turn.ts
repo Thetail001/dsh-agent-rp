@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { basename, extname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import {
   CallId,
@@ -57,8 +59,13 @@ import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
 import {
   readRoleplayTurnSettlements,
 } from '../src/roleplay-turn-settlement.ts'
+import {
+  collectRoleplayStagedStateSettlement,
+  runRoleplayStagedStateSettlement,
+} from '../src/roleplay-staged-state-settlement.ts'
 import { readRoleplayTurnRecords } from '../src/roleplay-turn-record.ts'
 import { summarizeRoleplayTurnHealth } from '../src/roleplay-turn-health.ts'
+import { ensureDefaultRoleplayTurnMode } from '../src/roleplay-turn-mode.ts'
 import { resolveSessionRoleplayRuntime } from '../src/session-roleplay-runtime.ts'
 import { recoverSessionRoleplayTurns } from '../src/session-roleplay-turn-recovery.ts'
 import {
@@ -123,6 +130,7 @@ export interface RoleplayTurnAuditResult {
     readonly assistantActions: number
     readonly toolCalls: number
     readonly toolResults: number
+    readonly stagedState: boolean
     readonly moduleOutcomes: Counter
     readonly stateOutcomes: Counter
   }
@@ -139,6 +147,7 @@ export interface RoleplayTurnAuditResult {
     readonly preDispatchReceiptRecovered: boolean
     readonly recallReceiptRecovered: boolean
     readonly actReceiptRecovered: boolean
+    readonly stagedStateRecovered: boolean
     readonly turnRecordRecovered: boolean
     readonly turnHealthRecovered: boolean
     readonly exactPlanRecovered: boolean
@@ -282,15 +291,19 @@ function equalJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
-function appendSyntheticTurn(
+async function appendSyntheticTurn(
   session: Session,
   turn: number,
   pending: ReturnType<typeof createUserMessage>,
   plan: ReturnType<typeof prepareRoleplayTurn>,
-): Extract<SessionEvent, { type: 'assistant/message' }> {
+): Promise<Extract<SessionEvent, { type: 'assistant/message' }>> {
   session.append('step/start', { turn, step: 1 })
   session.append('user/message', pending, { surfaceOp: 'append' })
   appendSessionRoleplayTurnPlan(session, turn, 1, plan)
+  session.append('request/header', {
+    reason: 'initial',
+    header: { config: { provider: 'agent-rp-audit', model: 'local-fixture', maxTokens: 4096 } },
+  })
   const callId = CallId('agent-rp-model-free-audit-call')
   const reply = session.append('assistant/message', {
     turn,
@@ -320,6 +333,29 @@ function appendSyntheticTurn(
     }),
   }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
   session.append('step/end', { turn, step: 1 })
+  if (plan.act.stateActions.length > 0) {
+    const fakeContext = {
+      sessions: { flush: async () => true },
+      llm: {
+        stream() {
+          return (async function* () {
+            const text = '{"operations":[]}'
+            yield { type: 'block-start', index: 0, blockType: 'text' }
+            yield { type: 'text-delta', index: 0, text }
+            yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+            yield { type: 'finish', reason: { kind: 'stop' } }
+          })()
+        },
+      },
+    } as unknown as Context
+    await runRoleplayStagedStateSettlement({
+      ctx: fakeContext,
+      agent: { id: session.id, session } as Agent,
+      turn,
+      plan: { step: 1, plan },
+      signal: new AbortController().signal,
+    })
+  }
   session.append('turn/end', { turn, reason: { kind: 'completed' } })
   return reply
 }
@@ -373,6 +409,7 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
   }], 'agent-rp-local-audit-source')
 
   const session = Session.create(SessionId('agent-rp-roleplay-turn-audit'), seed)
+  ensureDefaultRoleplayTurnMode(session, 'agent')
   let tavern = initializeTavernHelperState(
     parsedCard.card.frontend,
     String(cardAttachment.attachmentId),
@@ -408,7 +445,7 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
     resolved: before,
     templateEngine: engine,
   })
-  const reply = appendSyntheticTurn(session, turn, pending, plan)
+  const reply = await appendSyntheticTurn(session, turn, pending, plan)
   const recovery = recoverSessionRoleplayTurns({
     session,
     deployment,
@@ -420,6 +457,12 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
     throw new Error('Roleplay turn audit settlement recovery failed')
   }
   const settlement = settlementEvent.data
+  const stagedState = collectRoleplayStagedStateSettlement({
+    events: session.events,
+    sessionId: String(session.id),
+    turn,
+    plans: settlement.plans,
+  })
   const presentation = readCurrentRoleplayTurnPresentation(session.events)
   if (presentation === undefined || presentation.settlementSeq !== settlementEvent.seq) {
     throw new Error('Roleplay turn audit presentation recovery failed')
@@ -448,6 +491,9 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
     && equalJson(recoveredSettlement.act, settlement.act)
     && recoveredSettlement.act.steps.some(step => step.assistantMessages.some(message =>
       message.eventSeq === reply.seq && message.messageId === String(reply.data.message.id)))
+  const stagedStateRecovered = plan.act.stateActions.length === 0
+    ? stagedState === undefined
+    : stagedState?.outcome === 'success'
   const turnRecord = readRoleplayTurnRecords(reopened).find(value => value.turn === turn)
   const turnRecordRecovered = turnRecord?.plans.length === 1
     && turnRecord.act?.steps.length === 1
@@ -528,7 +574,8 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
   if (receipt === undefined || !settlementRecovered || !presentationRecovered
     || !equalStrings(runtimeResourceIds, receiptResourceIds)
     || !worldActivationMatches || !stateReferencesResolve || !memoryReferencesResolve
-    || !preDispatchReceiptRecovered || !recallReceiptRecovered || !actReceiptRecovered || !turnRecordRecovered
+    || !preDispatchReceiptRecovered || !recallReceiptRecovered || !actReceiptRecovered
+    || !stagedStateRecovered || !turnRecordRecovered
     || !turnHealthRecovered
     || !exactPlanRecovered || !coldSettlementRecovered
     || !currentReplyMatches || !nextPrepareContinues || !nextRecallContinues) {
@@ -578,6 +625,7 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
         total + step.assistantMessages.length, 0) ?? 0,
       toolCalls: settlement.act?.steps.reduce((total, step) => total + step.toolCalls.length, 0) ?? 0,
       toolResults: settlement.act?.steps.reduce((total, step) => total + step.toolResults.length, 0) ?? 0,
+      stagedState: stagedState?.outcome === 'success',
       moduleOutcomes: counter(settlement.settle.modules.map(module => module.outcome)),
       stateOutcomes: counter(settlement.state.map(state => state.outcome)),
     },
@@ -594,6 +642,7 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
       preDispatchReceiptRecovered,
       recallReceiptRecovered,
       actReceiptRecovered,
+      stagedStateRecovered,
       turnRecordRecovered,
       turnHealthRecovered,
       exactPlanRecovered,

@@ -14,10 +14,11 @@ import {
   applyMvuOperations,
   MVU_ROLEPLAY_MODULE_ID,
   MVU_ROLEPLAY_STATE_ID,
-  parseMvuStateOperation,
   type MvuStateOperation,
   type MvuStateSnapshot,
 } from './mvu.ts'
+import { collectRoleplayStagedStateSettlement } from './roleplay-staged-state-settlement.ts'
+import { parseRoleplayStateOperations } from './roleplay-state-operations.ts'
 import type { RoleplayTurnPlanReference } from './roleplay-turn-settlement.ts'
 
 /** Model-facing tool that records semantic state work without mutating state mid-turn. */
@@ -34,6 +35,8 @@ export interface RoleplayStateActionPlan {
   readonly stateId: string
   readonly expectedRevision: number
   readonly operations: readonly MvuStateOperation['op'][]
+  /** Adapter rules consulted only by the post-narrative settlement stage. */
+  readonly instructions?: string
 }
 
 /** Causal action intent stored on one successful top-level tool result. */
@@ -103,19 +106,6 @@ function text(value: unknown, label: string): string {
   return value
 }
 
-function parseOperations(value: unknown): readonly MvuStateOperation[] {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 64) {
-    throw new Error('Roleplay state action requires between 1 and 64 operations')
-  }
-  return value.map((operation) => {
-    if (typeof operation !== 'object' || operation === null || Array.isArray(operation)
-      || Object.keys(operation).some(key => !['op', 'path', 'from', 'to', 'value'].includes(key))) {
-      throw new Error('Roleplay state action operation fields are invalid')
-    }
-    return parseMvuStateOperation(operation)
-  })
-}
-
 /** Parse one tool-result payload while declining unrelated metadata. */
 export function readRoleplayStateActionIntent(value: unknown): RoleplayStateActionIntent | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
@@ -138,7 +128,7 @@ export function readRoleplayStateActionIntent(value: unknown): RoleplayStateActi
     moduleId: text(record.moduleId, 'Roleplay state action module'),
     stateId: text(record.stateId, 'Roleplay state action state'),
     expectedRevision: integer(record.expectedRevision, 'Roleplay state action revision'),
-    operations: parseOperations(record.operations),
+    operations: parseRoleplayStateOperations(record.operations),
   }
 }
 
@@ -194,7 +184,7 @@ function sameArguments(raw: string, stateId: string, operations: readonly MvuSta
     const value = JSON.parse(raw) as Record<string, unknown>
     return value.stateId === stateId
       && Object.keys(value).every(key => key === 'stateId' || key === 'operations')
-      && JSON.stringify(parseOperations(value.operations)) === JSON.stringify(operations)
+      && JSON.stringify(parseRoleplayStateOperations(value.operations)) === JSON.stringify(operations)
   } catch {
     return false
   }
@@ -229,7 +219,7 @@ export function installRoleplayStateActionTool(ctx: Context): void {
     async execute(args, exec) {
       if (exec.agent === undefined) throw new Error('apply_roleplay_state requires an Agent Session')
       if (exec.parent !== undefined) throw new Error('apply_roleplay_state must be called directly by the roleplay Agent')
-      const operations = [...parseOperations(args.operations)]
+      const operations = [...parseRoleplayStateOperations(args.operations)]
       const stateId = text(args.stateId, 'Roleplay state action state')
       const { call, assistant, plan } = toolCallForExecution(exec.agent, String(exec.callId))
       if (!sameArguments(call.data.arguments, stateId, operations)) {
@@ -361,17 +351,37 @@ export function settleSessionRoleplayStateActions(input: {
     turn: input.turn,
     plans: input.plans,
   })
-  if (collected.length === 0) {
+  const staged = collectRoleplayStagedStateSettlement({
+    events: input.boundary,
+    sessionId: String(input.session.id),
+    turn: input.turn,
+    plans: input.plans,
+  })
+  if (collected.length > 0 && staged !== undefined) {
+    throw new Error('Roleplay turn contains both inline and staged state actions')
+  }
+  if (collected.length === 0 && staged === undefined) {
     return { session: sessionThrough(input.session, closing.seq), resultEventSeqs: [], outcome: 'idle' }
   }
-  const resultEventSeqs = collected.map(item => item.resultEventSeq)
+  const resultEventSeqs = staged === undefined
+    ? collected.map(item => item.resultEventSeq)
+    : [staged.resultEventSeq]
+  const operations = staged === undefined
+    ? collected.flatMap(item => item.intent.operations)
+    : staged.operations
+  const expectedRevisions = staged === undefined
+    ? new Set(collected.map(item => item.intent.expectedRevision))
+    : new Set([staged.target.expectedRevision])
+  if (staged?.outcome === 'success' && operations.length === 0) {
+    return { session: sessionThrough(input.session, closing.seq), resultEventSeqs, outcome: 'idle' }
+  }
   const existing = input.session.events.filter((event): event is SessionEvent<'agent-rp/mvu-state'> =>
     event.type === 'agent-rp/mvu-state' && event.data.source?.kind === 'agent-action'
       && event.data.source.turn === input.turn)
   if (existing.length > 1) throw new Error('Roleplay turn has multiple Agent action state snapshots')
   if (existing[0] !== undefined) {
     if (!sameNumbers(existing[0].data.source!.resultEventSeqs, resultEventSeqs)) {
-      throw new Error('Roleplay Agent action snapshot cites different tool results')
+      throw new Error('Roleplay Agent action snapshot cites different settlement results')
     }
     return {
       session: sessionThrough(input.session, existing[0].seq),
@@ -385,14 +395,14 @@ export function settleSessionRoleplayStateActions(input: {
   if (laterRequired) throw new Error('Roleplay state actions cannot be inserted after a later required Session event')
   const base = input.base
   if (base === undefined) throw new Error('Roleplay state action target is unavailable')
-  const expectedRevisions = new Set(collected.map(item => item.intent.expectedRevision))
   let next: JsonValue = snapshotJsonValue(base.statData) as JsonValue
-  let error: string | undefined
+  let error: string | undefined = staged?.error
   try {
+    if (error !== undefined) throw new Error(error)
     if (expectedRevisions.size !== 1 || !expectedRevisions.has(base.updateCount)) {
       throw new Error(`MVU state revision conflict: prepared ${[...expectedRevisions].join(', ')}, current ${String(base.updateCount)}`)
     }
-    for (const { intent } of collected) next = applyMvuOperations(next, intent.operations).statData
+    next = applyMvuOperations(next, operations).statData
   } catch (reason: unknown) {
     error = reason instanceof Error ? reason.message : String(reason)
     next = base.statData
@@ -413,6 +423,17 @@ export function settleSessionRoleplayStateActions(input: {
 
 /** Model-facing contract for one prepared MVU action target. */
 export function renderRoleplayStateActionGuidance(
+  _target: RoleplayStateActionPlan,
+  _updateRules: string,
+): string {
+  return [
+    '专注完成自然、连贯的角色扮演正文。状态与变量会在正文结束后由运行时的后台阶段独立结算。',
+    '不要计算或输出 <UpdateVariable>、<JSONPatch>、完整变量对象、状态更新说明，也不要在正文中调用状态结算工具。',
+  ].join('\n\n')
+}
+
+/** Reconstruct the schema-4 actor-owned state contract for old plan receipts. */
+export function renderLegacyRoleplayStateActionGuidance(
   target: RoleplayStateActionPlan,
   updateRules: string,
 ): string {

@@ -156,7 +156,7 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
   const reopened = Session.create(session.id, session.events)
   const records = readSessionRoleplayTurnPlans(reopened.events)
   assert.equal(records.length, 1)
-  assert.equal(records[0]?.data.reference.receipt.preparedPlanSchema, 4)
+  assert.equal(records[0]?.data.reference.receipt.preparedPlanSchema, 5)
   assert.deepEqual(records[0]?.data.toolGuidance, toolGuidance)
   assert.equal(records[0]?.data.reference.receipt.memoryWriteAvailable, true)
   assert.deepEqual(records[0]?.data.reference.receipt.recall, dispatchedPlan.recall)

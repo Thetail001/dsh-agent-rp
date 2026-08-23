@@ -57,6 +57,16 @@ export class RoleplayTurnCoordinator<Owner extends object> {
     return finalized
   }
 
+  /** Inspect the immutable plans already consumed by an open turn without settling them. */
+  plansForTurn(owner: Owner, turn: number): readonly BoundRoleplayTurnPlan[] {
+    positiveInteger(turn, 'turn')
+    const steps = this.#turns.get(owner)?.get(turn)
+    if (steps === undefined) return []
+    return [...steps]
+      .map(([step, plan]) => ({ step, plan }))
+      .sort((left, right) => left.step - right.step)
+  }
+
   /**
    * Consume every plan used by one completed turn in deterministic step order.
    * A newer unconsumed plan is retained if a delayed turn/end arrives afterwards.

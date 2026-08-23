@@ -748,10 +748,11 @@ interface RoleplayTurnPlanReceipt {
 /**
  * Published structural projections of the provider-neutral turn plan:
  * 0 predates prompt transforms, 1 adds transforms, 2 adds response repair programs,
- * 3 adds the independent turn strategy plus semantic state actions, and 4 adds
- * the exact tool policy prepared for the model request and runtime gates.
+ * 3 adds the independent turn strategy plus semantic state actions, 4 adds
+ * the exact tool policy prepared for the model request and runtime gates, and
+ * 5 moves imported state rules into the post-narrative settlement program.
  */
-type RoleplayTurnPlanSchema = 0 | 1 | 2 | 3 | 4;
+type RoleplayTurnPlanSchema = 0 | 1 | 2 | 3 | 4 | 5;
 /** Revision change observed at the turn boundary for one runtime state namespace. */
 interface RoleplayStateSettlement {
   readonly id: string;
@@ -850,6 +851,8 @@ interface RoleplayStateActionPlan {
   readonly stateId: string;
   readonly expectedRevision: number;
   readonly operations: readonly MvuStateOperation['op'][];
+  /** Adapter rules consulted only by the post-narrative settlement stage. */
+  readonly instructions?: string;
 }
 /** Provider-neutral Agent tool guidance retained across workspace settings and model turns. */
 /** Whether image tools must stay idle, may be chosen, or should be attempted each RP turn. */

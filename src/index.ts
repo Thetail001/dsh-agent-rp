@@ -157,9 +157,11 @@ import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
 import { ensureDefaultRoleplayTurnMode } from './roleplay-turn-mode.ts'
 import { executeRoleplayTurnModeCommand } from './roleplay-turn-mode-command.ts'
 import {
+  readRoleplayStateActionIntent,
   installRoleplayStateActionTool,
   ROLEPLAY_STATE_ACTION_TOOL,
 } from './roleplay-state-action.ts'
+import { runRoleplayStagedStateSettlement } from './roleplay-staged-state-settlement.ts'
 import { readRoleplayExperienceSelection } from './roleplay-experience-selection.ts'
 import {
   installRoleplayActorRevisionCapability,
@@ -1104,7 +1106,9 @@ export function installAgentRp(
     roleplayArtifactCapability.prepare(agent, plan.tools)
     // Inbox claims are published synchronously before SystemPrompt assembly.
     // The restriction must be settled here so the same assembly sees the tool schema.
-    setStateActionAvailable(agent, plan.act.strategy === 'agent' && plan.act.stateActions.length > 0)
+    // Agent mode settles state after the visible reply at turn-stopping; the
+    // actor step must not spend narrative attention on variable arithmetic.
+    setStateActionAvailable(agent, false)
   })
   ctx.on('agent/pre-step', async ({ agent }, next) => {
     const decision = await next()
@@ -1163,6 +1167,27 @@ export function installAgentRp(
         ? {}
         : { maxTokens: Math.min(generation.maxTokens, config.maxTokens ?? generation.maxTokens) },
       ...supportedEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(supportedEffort) },
+    }
+  })
+  ctx.on('agent/turn-stopping', async ({ agent, turn, signal }) => {
+    if (agentsByScope.get(agent) !== agent || !supportsAgentRpSessionEvents(agent.session)) return
+    const plans = turnCoordinator.plansForTurn(agent, turn)
+    const latest = plans.at(-1)
+    if (latest?.plan.act.strategy !== 'agent' || latest.plan.act.stateActions.length === 0) return
+    // A legacy or explicitly invoked inline action already owns this turn;
+    // never calculate and apply the same state transition twice.
+    const hasInlineStateAction = agent.session.events.some((event) => {
+      if (event.type !== 'tool/result' || event.data.turn !== turn || event.data.error !== undefined) return false
+      const block = event.data.message.content[0]
+      const intent = readRoleplayStateActionIntent(event.data.meta)
+      return block?.type === 'tool-result' && block.isError !== true
+        && intent?.turn === turn && intent.sessionId === String(agent.session.id)
+    })
+    if (hasInlineStateAction) return
+    try {
+      await runRoleplayStagedStateSettlement({ ctx, agent, turn, plan: latest, signal })
+    } catch (error: unknown) {
+      ctx.logger.warn(`agent-rp: staged state settlement skipped: ${error instanceof Error ? error.message : String(error)}`)
     }
   })
   ctx.on('session/event', (session, event) => {

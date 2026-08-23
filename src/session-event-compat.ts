@@ -17,6 +17,8 @@ export const AGENT_RP_SESSION_EVENT_TYPES = [
   'agent-rp/persona-seed',
   'agent-rp/sillytavern-chat-import',
   'agent-rp/sillytavern-preset-seed',
+  'agent-rp/staged-state-request',
+  'agent-rp/staged-state-result',
   'agent-rp/state',
   'agent-rp/tavern-generation-request',
   'agent-rp/tavern-generation-result',

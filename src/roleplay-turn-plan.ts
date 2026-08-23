@@ -489,6 +489,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
         stateId: MVU_ROLEPLAY_STATE_ID,
         expectedRevision: resolved.mvu.updateCount,
         operations: ['replace', 'delta', 'insert', 'remove', 'move'],
+        instructions: mvuUpdateInstructions,
       }
 
   if (snapshot.prompt.strategy === 'modules' && resolved.preset !== undefined) {
