@@ -1,4 +1,4 @@
-/** Cold recovery for Roleplay settlements whose volatile coordinator state was lost. */
+/** Session-log finalization for Roleplay turns whose settlement or presentation is missing. */
 
 import { Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ResolvedConfig } from './config.ts'
@@ -10,7 +10,7 @@ import {
   compileRoleplayTurnSettlementFromReferences,
   type RoleplayTurnPlanReference,
 } from './roleplay-turn-settlement.ts'
-import { readRoleplayTurnRecords } from './roleplay-turn-record.ts'
+import { readRoleplayTurnRecord, readRoleplayTurnRecords } from './roleplay-turn-record.ts'
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 import {
   compileInitialSessionRoleplayTurnPresentation,
@@ -55,15 +55,18 @@ function referencesRecoverable(plans: readonly RoleplayTurnPlanReference[]): boo
 }
 
 /**
- * Restore missing settlement/presentation records for closed turns.
+ * Restore missing settlement/presentation records for closed turns on both hot completion and cold restart.
  * Old logs without pre-dispatch receipts remain readable and are deliberately skipped.
  */
 export function recoverSessionRoleplayTurns(input: {
   readonly session: Session
   readonly deployment: ResolvedConfig
   readonly templateEngineAvailable?: boolean
+  readonly turn?: number
 }): SessionRoleplayTurnRecoveryResult {
-  const records = readRoleplayTurnRecords(input.session)
+  const records = input.turn === undefined
+    ? readRoleplayTurnRecords(input.session)
+    : [readRoleplayTurnRecord(input.session, input.turn)].filter(record => record !== undefined)
   const recoveredTurns: number[] = []
   let settlements = 0
   let presentations = 0

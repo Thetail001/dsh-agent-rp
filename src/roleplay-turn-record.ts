@@ -226,9 +226,13 @@ function validatePresentation(input: {
   return presentation
 }
 
-/** Derive every Roleplay turn from the canonical Session log and validate their causal joins. */
-export function readRoleplayTurnRecords(
+function selectedTurn(turns: ReadonlySet<number> | undefined, turn: number): boolean {
+  return turns === undefined || turns.has(turn)
+}
+
+function readSelectedRoleplayTurnRecords(
   session: Pick<Session, 'id' | 'events'>,
+  selectedTurns?: ReadonlySet<number>,
 ): readonly RoleplayTurnRecord[] {
   const sessionId = String(session.id)
   const eventsBySeq = eventMap(session.events)
@@ -238,11 +242,17 @@ export function readRoleplayTurnRecords(
   const settlements = new Map<number, TurnSettlementEvent[]>()
   const presentations: TurnPresentationEvent[] = []
   for (const event of session.events) {
-    if (event.type === 'turn/start') appendGrouped(starts, event.data.turn, event)
-    else if (event.type === 'turn/end') appendGrouped(ends, event.data.turn, event)
-    else if (event.type === 'agent-rp/turn-plan') appendGrouped(plans, event.data.turn, event)
-    else if (event.type === 'agent-rp/turn-settlement') appendGrouped(settlements, event.data.turn, event)
-    else if (event.type === 'agent-rp/turn-presentation') presentations.push(event)
+    if (event.type === 'turn/start' && selectedTurn(selectedTurns, event.data.turn)) {
+      appendGrouped(starts, event.data.turn, event)
+    } else if (event.type === 'turn/end' && selectedTurn(selectedTurns, event.data.turn)) {
+      appendGrouped(ends, event.data.turn, event)
+    } else if (event.type === 'agent-rp/turn-plan' && selectedTurn(selectedTurns, event.data.turn)) {
+      appendGrouped(plans, event.data.turn, event)
+    } else if (event.type === 'agent-rp/turn-settlement' && selectedTurn(selectedTurns, event.data.turn)) {
+      appendGrouped(settlements, event.data.turn, event)
+    } else if (event.type === 'agent-rp/turn-presentation' && selectedTurn(selectedTurns, event.data.turn)) {
+      presentations.push(event)
+    }
   }
   const evidenceTurns = new Set([...plans.keys(), ...settlements.keys()])
   const presentationBySettlement = new Map<number, TurnPresentationEvent[]>()
@@ -250,6 +260,9 @@ export function readRoleplayTurnRecords(
     const settlement = eventsBySeq.get(event.data.settlementSeq)
     if (settlement?.type !== 'agent-rp/turn-settlement') {
       throw new Error('Roleplay presentation references a missing settlement event')
+    }
+    if (settlement.data.turn !== event.data.turn) {
+      throw new Error('Roleplay presentation references a settlement from another turn')
     }
     appendGrouped(presentationBySettlement, settlement.seq, event)
     evidenceTurns.add(settlement.data.turn)
@@ -357,6 +370,22 @@ export function readRoleplayTurnRecords(
       ...(present === undefined ? {} : { present }),
     }
   })
+}
+
+/** Derive every Roleplay turn from the canonical Session log and validate their causal joins. */
+export function readRoleplayTurnRecords(
+  session: Pick<Session, 'id' | 'events'>,
+): readonly RoleplayTurnRecord[] {
+  return readSelectedRoleplayTurnRecords(session)
+}
+
+/** Derive one requested Roleplay turn without validating unrelated historical turns. */
+export function readRoleplayTurnRecord(
+  session: Pick<Session, 'id' | 'events'>,
+  turn: number,
+): RoleplayTurnRecord | undefined {
+  if (!Number.isSafeInteger(turn) || turn < 1) throw new Error('Roleplay turn must be a positive integer')
+  return readSelectedRoleplayTurnRecords(session, new Set([turn]))[0]
 }
 
 /** Latest turn carrying any durable Roleplay phase evidence. */

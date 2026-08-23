@@ -45,15 +45,28 @@ function pending() {
   })
 }
 
-function reply(session: Session, turn: number, text: string) {
+function reply(session: Session, turn: number, text: string, step = 1) {
   return session.append('assistant/message', {
     turn,
-    step: 1,
+    step,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [{ type: 'text', text }],
     }),
   }, { surfaceOp: 'append', sourceEventSeqs: [] })
+}
+
+function appendRecoverableTextTurn(session: Session, turn: number, text: string): void {
+  session.append('turn/start', { turn })
+  const message = pending()
+  const resolved = resolveSessionRoleplayRuntime({ session, deployment, memoryWriteAvailable: true })
+  const plan = prepareRoleplayTurn({ session, pendingMessages: [message], deployment, resolved })
+  session.append('step/start', { turn, step: 1 })
+  session.append('user/message', message, { surfaceOp: 'append' })
+  appendSessionRoleplayTurnPlan(session, turn, 1, plan)
+  reply(session, turn, text)
+  session.append('step/end', { turn, step: 1 })
+  session.append('turn/end', { turn, reason: { kind: 'completed' } })
 }
 
 test('persists one content-free plan receipt before dispatch and rejects retry drift', () => {
@@ -201,6 +214,57 @@ test('leaves a pre-dispatch plan alone while its turn is still open', () => {
   })
   assert.equal(readRoleplayTurnRecords(session)[0]?.boundary.endSeq, undefined)
   assert.equal(readRoleplayTurnSettlements(session.events).length, 0)
+})
+
+test('finalizes every logged plan in a multi-step hot turn without coordinator state', () => {
+  const session = Session.create(SessionId('turn-hot-log-finalization'))
+  session.append('turn/start', { turn: 1 })
+  const message = pending()
+  const firstResolved = resolveSessionRoleplayRuntime({ session, deployment, memoryWriteAvailable: true })
+  const firstPlan = prepareRoleplayTurn({
+    session, pendingMessages: [message], deployment, resolved: firstResolved,
+  })
+  session.append('step/start', { turn: 1, step: 1 })
+  session.append('user/message', message, { surfaceOp: 'append' })
+  appendSessionRoleplayTurnPlan(session, 1, 1, firstPlan)
+  reply(session, 1, '先观察环境。')
+  session.append('step/end', { turn: 1, step: 1 })
+
+  const secondResolved = resolveSessionRoleplayRuntime({ session, deployment, memoryWriteAvailable: true })
+  const secondPlan = prepareRoleplayTurn({ session, deployment, resolved: secondResolved })
+  session.append('step/start', { turn: 1, step: 2 })
+  appendSessionRoleplayTurnPlan(session, 1, 2, secondPlan)
+  const finalReply = reply(session, 1, '观察完成，继续剧情。', 2)
+  session.append('step/end', { turn: 1, step: 2 })
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+
+  assert.deepEqual(recoverSessionRoleplayTurns({ session, deployment }), {
+    settlements: 1, presentations: 1, turns: [1],
+  })
+  const record = readRoleplayTurnRecords(session)[0]
+  assert.deepEqual(record?.plans.map(value => value.step), [1, 2])
+  assert.deepEqual(record?.act?.steps.map(value => value.step), [1, 2])
+  assert.equal(record?.settle?.reply?.eventSeq, finalReply.seq)
+  assert.equal(record?.present?.selectedReply?.sourceSeq, finalReply.seq)
+})
+
+test('hot finalization validates only the requested turn while startup recovery still scans all', () => {
+  const session = Session.create(SessionId('turn-targeted-finalization'))
+  appendRecoverableTextTurn(session, 1, '第一轮。')
+  appendRecoverableTextTurn(session, 2, '第二轮。')
+
+  assert.deepEqual(recoverSessionRoleplayTurns({ session, deployment, turn: 2 }), {
+    settlements: 1, presentations: 1, turns: [2],
+  })
+  let records = readRoleplayTurnRecords(session)
+  assert.equal(records.find(record => record.turn === 1)?.settle, undefined)
+  assert.notEqual(records.find(record => record.turn === 2)?.present, undefined)
+
+  assert.deepEqual(recoverSessionRoleplayTurns({ session, deployment }), {
+    settlements: 1, presentations: 1, turns: [1],
+  })
+  records = readRoleplayTurnRecords(session)
+  assert.equal(records.every(record => record.settle !== undefined && record.present !== undefined), true)
 })
 
 test('adds only presentation when a durable settlement already exists', () => {

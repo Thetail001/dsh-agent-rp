@@ -128,20 +128,11 @@ import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 import { prepareRoleplayTurn } from './roleplay-turn-plan.ts'
 import { RoleplayTurnCoordinator } from './roleplay-turn-coordinator.ts'
 import { appendSessionRoleplayTurnPlan } from './session-roleplay-turn-plan.ts'
-import {
-  createSessionRoleplayTurnBoundary,
-  recoverSessionRoleplayTurns,
-} from './session-roleplay-turn-recovery.ts'
-import { collectSessionRoleplaySettlementContributions } from './session-roleplay-turn-settlement.ts'
-import {
-  appendRoleplayTurnSettlement,
-  compileRoleplayTurnSettlement,
-} from './roleplay-turn-settlement.ts'
+import { recoverSessionRoleplayTurns } from './session-roleplay-turn-recovery.ts'
 import {
   appendRoleplayTurnPresentation,
 } from './roleplay-turn-presentation.ts'
 import {
-  compileInitialSessionRoleplayTurnPresentation,
   compileSessionRoleplayTurnPresentationUpdate,
 } from './session-roleplay-turn-presentation.ts'
 import { executeRoleplayStateCommand } from './roleplay-state-command.ts'
@@ -169,6 +160,7 @@ export type {
 } from './roleplay-state.ts'
 export {
   readLatestRoleplayTurnRecord,
+  readRoleplayTurnRecord,
   readRoleplayTurnRecords,
 } from './roleplay-turn-record.ts'
 export type {
@@ -904,49 +896,17 @@ export function installAgentRp(
     if (event.type !== 'turn/end') return
     const agent = agentsBySession.get(String(session.id))
     if (agent === undefined || agentsByScope.get(agent) !== agent) return
-    const plans = turnCoordinator.completeTurn(agent, event.data.turn)
+    turnCoordinator.completeTurn(agent, event.data.turn)
     if (!supportsAgentRpSessionEvents(session)) return
-    const result = event.data.reason.kind
-    const turn = event.data.turn
     queueMicrotask(() => {
-      if (!settlementRuntimeActive || session.events.some(candidate =>
-        candidate.type === 'agent-rp/turn-settlement' && candidate.data.turn === turn)) return
+      if (!settlementRuntimeActive) return
       try {
-        if (plans.length === 0) {
-          recoverSessionRoleplayTurns({
-            session,
-            deployment: config,
-            templateEngineAvailable: options.ejsTemplateEngine !== undefined,
-          })
-          return
-        }
-        const boundary = createSessionRoleplayTurnBoundary(session, event)
-        const resolved = resolveSessionRoleplayRuntime({
-          session: boundary.session,
+        recoverSessionRoleplayTurns({
+          session,
           deployment: config,
-          memoryWriteAvailable: plans.some(({ plan }) => plan.memory.write),
+          turn: event.data.turn,
           templateEngineAvailable: options.ejsTemplateEngine !== undefined,
         })
-        const settlement = compileRoleplayTurnSettlement({
-          sessionId: String(session.id),
-          turn,
-          result,
-          plans,
-          events: boundary.events,
-          after: resolved.snapshot,
-          contributions: collectSessionRoleplaySettlementContributions({
-            session: boundary.session,
-            turn,
-            plans,
-            ...(resolved.mvu === undefined ? {} : { mvu: resolved.mvu }),
-          }),
-        })
-        const settlementEvent = appendRoleplayTurnSettlement(session, settlement)
-        appendRoleplayTurnPresentation(session, compileInitialSessionRoleplayTurnPresentation({
-          session,
-          settlementEvent,
-          plans,
-        }))
       } catch (error: unknown) {
         ctx.logger.warn(`agent-rp: turn settlement failed: ${error instanceof Error ? error.message : String(error)}`)
       }

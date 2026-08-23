@@ -16,6 +16,7 @@ import {
 } from '../src/roleplay-turn-presentation.ts'
 import {
   readLatestRoleplayTurnRecord,
+  readRoleplayTurnRecord,
   readRoleplayTurnRecords,
 } from '../src/roleplay-turn-record.ts'
 import {
@@ -151,6 +152,9 @@ test('joins prepare, recall, act, settle, and present without writing another ev
   assert.equal(record.present?.eventSeq, fixture.presentationEvent.seq)
   assert.equal(record.present?.selectedReply?.sourceSeq, fixture.reply.seq)
   assert.deepEqual(readLatestRoleplayTurnRecord(fixture.session), record)
+  assert.deepEqual(readRoleplayTurnRecord(fixture.session, fixture.turn), record)
+  assert.equal(readRoleplayTurnRecord(fixture.session, fixture.turn + 1), undefined)
+  assert.throws(() => readRoleplayTurnRecord(fixture.session, 0), /positive integer/u)
 
   const reopened = Session.create(fixture.session.id, structuredClone(fixture.session.events))
   assert.deepEqual(readRoleplayTurnRecords(reopened), records)
@@ -237,5 +241,7 @@ test('rejects a persisted act receipt that drifted from canonical Session action
       },
     }
   })
+  assert.equal(readRoleplayTurnRecord({ id: fixture.session.id, events: tampered }, 2), undefined)
   assert.throws(() => readRoleplayTurnRecords({ id: fixture.session.id, events: tampered }), /act receipt drifted/u)
+  assert.throws(() => readRoleplayTurnRecord({ id: fixture.session.id, events: tampered }, 1), /act receipt drifted/u)
 })
