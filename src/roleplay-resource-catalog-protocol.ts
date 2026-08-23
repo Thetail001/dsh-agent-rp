@@ -55,6 +55,82 @@ export type RoleplayResourceDetail =
   | RoleplayWorldResourceDetail
   | RoleplayPromptPolicyResourceDetail
 
+function exactDetailKeys(value: object, allowed: readonly string[]): boolean {
+  return Object.keys(value).every(key => allowed.includes(key))
+}
+
+function detailId(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length === 0 || value.trim() !== value || /\s/u.test(value)) {
+    throw new Error(`${label} must be a non-empty stable id without whitespace`)
+  }
+  return value
+}
+
+/** Parse the one shared bounded detail contract used by providers, HTTP and browser clients. */
+export function parseRoleplayResourceDetail(
+  value: unknown,
+  reference: RoleplayResourceReference,
+): RoleplayResourceDetail {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)
+    || (value as { readonly kind?: unknown }).kind !== reference.kind) {
+    throw new Error(`Roleplay resource ${JSON.stringify([reference.kind, reference.id])} returned mismatched details`)
+  }
+  const detail = value as RoleplayResourceDetail
+  if (detail.kind === 'actor') {
+    if (!exactDetailKeys(detail, ['kind', 'openings'])
+      || !Array.isArray(detail.openings) || detail.openings.length > 1024) {
+      throw new Error(`Roleplay actor ${JSON.stringify(reference.id)} returned invalid openings`)
+    }
+    const openings = detail.openings.map((opening, index) => {
+      if (typeof opening !== 'object' || opening === null || Array.isArray(opening)
+        || !exactDetailKeys(opening, ['id', 'label', 'preview', 'truncated'])) {
+        throw new Error(`Roleplay actor ${JSON.stringify(reference.id)} opening ${index} is invalid`)
+      }
+      const id = detailId(opening.id, `Roleplay actor ${JSON.stringify(reference.id)} opening id`)
+      if (typeof opening.label !== 'string' || opening.label.trim() === '' || opening.label.length > 120
+        || typeof opening.preview !== 'string' || opening.preview.length > 2000
+        || typeof opening.truncated !== 'boolean') {
+        throw new Error(`Roleplay actor ${JSON.stringify(reference.id)} opening ${JSON.stringify(id)} is invalid`)
+      }
+      return Object.freeze({
+        id,
+        label: opening.label.trim(),
+        preview: opening.preview,
+        truncated: opening.truncated,
+      })
+    })
+    if (new Set(openings.map(opening => opening.id)).size !== openings.length) {
+      throw new Error(`Roleplay actor ${JSON.stringify(reference.id)} repeats an opening id`)
+    }
+    return Object.freeze({ kind: 'actor', openings: Object.freeze(openings) })
+  }
+  if (detail.kind === 'persona') {
+    if (!exactDetailKeys(detail, ['kind', 'description'])
+      || typeof detail.description !== 'string' || detail.description.length > 12_000) {
+      throw new Error(`Roleplay Persona ${JSON.stringify(reference.id)} returned invalid details`)
+    }
+    return Object.freeze({ kind: 'persona', description: detail.description })
+  }
+  if (detail.kind === 'world') {
+    if (!exactDetailKeys(detail, ['kind', 'entryCount'])
+      || !Number.isSafeInteger(detail.entryCount) || detail.entryCount < 0) {
+      throw new Error(`Roleplay world ${JSON.stringify(reference.id)} returned invalid details`)
+    }
+    return Object.freeze({ kind: 'world', entryCount: detail.entryCount })
+  }
+  if (!exactDetailKeys(detail, ['kind', 'moduleCount', 'enabledModuleCount'])
+    || !Number.isSafeInteger(detail.moduleCount) || detail.moduleCount < 0
+    || !Number.isSafeInteger(detail.enabledModuleCount) || detail.enabledModuleCount < 0
+    || detail.enabledModuleCount > detail.moduleCount) {
+    throw new Error(`Roleplay prompt policy ${JSON.stringify(reference.id)} returned invalid details`)
+  }
+  return Object.freeze({
+    kind: 'prompt-policy',
+    moduleCount: detail.moduleCount,
+    enabledModuleCount: detail.enabledModuleCount,
+  })
+}
+
 /** Stable reference and presentation metadata without source-format payloads. */
 export interface RoleplayResourceDescriptor extends RoleplayResourceReference {
   readonly name: string

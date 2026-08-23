@@ -4,6 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { isDeepStrictEqual } from 'node:util'
 import {
+  parseRoleplayResourceDetail,
   ROLEPLAY_RESOURCE_KINDS,
   type RoleplayResourceDescriptor,
   type RoleplayResourceDetail,
@@ -116,67 +117,6 @@ function compareDescriptors(left: RoleplayResourceDescriptor, right: RoleplayRes
     || compareText(left.id, right.id)
 }
 
-function exactKeys(value: object, allowed: readonly string[]): boolean {
-  return Object.keys(value).every(key => allowed.includes(key))
-}
-
-function resourceDetail(value: RoleplayResourceDetail, descriptor: RoleplayResourceDescriptor): RoleplayResourceDetail {
-  if (typeof value !== 'object' || value === null || value.kind !== descriptor.kind) {
-    throw new Error(`Roleplay resource ${descriptorKey(descriptor)} returned mismatched details`)
-  }
-  if (value.kind === 'actor') {
-    if (!exactKeys(value, ['kind', 'openings']) || !Array.isArray(value.openings) || value.openings.length > 1024) {
-      throw new Error(`Roleplay actor ${JSON.stringify(descriptor.id)} returned invalid openings`)
-    }
-    const openings = value.openings.map((opening, index) => {
-      if (typeof opening !== 'object' || opening === null || !exactKeys(opening, [
-        'id', 'label', 'preview', 'truncated',
-      ])) throw new Error(`Roleplay actor ${JSON.stringify(descriptor.id)} opening ${index} is invalid`)
-      const id = stableId(opening.id, `Roleplay actor ${JSON.stringify(descriptor.id)} opening id`)
-      if (typeof opening.label !== 'string' || opening.label.trim() === '' || opening.label.length > 120
-        || typeof opening.preview !== 'string' || opening.preview.length > 2000
-        || typeof opening.truncated !== 'boolean') {
-        throw new Error(`Roleplay actor ${JSON.stringify(descriptor.id)} opening ${JSON.stringify(id)} is invalid`)
-      }
-      return Object.freeze({
-        id,
-        label: opening.label.trim(),
-        preview: opening.preview,
-        truncated: opening.truncated,
-      })
-    })
-    if (new Set(openings.map(opening => opening.id)).size !== openings.length) {
-      throw new Error(`Roleplay actor ${JSON.stringify(descriptor.id)} repeats an opening id`)
-    }
-    return Object.freeze({ kind: 'actor', openings: Object.freeze(openings) })
-  }
-  if (value.kind === 'persona') {
-    if (!exactKeys(value, ['kind', 'description'])
-      || typeof value.description !== 'string' || value.description.length > 12_000) {
-      throw new Error(`Roleplay Persona ${JSON.stringify(descriptor.id)} returned invalid details`)
-    }
-    return Object.freeze({ kind: 'persona', description: value.description })
-  }
-  if (value.kind === 'world') {
-    if (!exactKeys(value, ['kind', 'entryCount'])
-      || !Number.isSafeInteger(value.entryCount) || value.entryCount < 0) {
-      throw new Error(`Roleplay world ${JSON.stringify(descriptor.id)} returned invalid details`)
-    }
-    return Object.freeze({ kind: 'world', entryCount: value.entryCount })
-  }
-  if (!exactKeys(value, ['kind', 'moduleCount', 'enabledModuleCount'])
-    || !Number.isSafeInteger(value.moduleCount) || value.moduleCount < 0
-    || !Number.isSafeInteger(value.enabledModuleCount) || value.enabledModuleCount < 0
-    || value.enabledModuleCount > value.moduleCount) {
-    throw new Error(`Roleplay prompt policy ${JSON.stringify(descriptor.id)} returned invalid details`)
-  }
-  return Object.freeze({
-    kind: 'prompt-policy',
-    moduleCount: value.moduleCount,
-    enabledModuleCount: value.enabledModuleCount,
-  })
-}
-
 /**
  * Live resource directory. Providers retain their own storage and mutation policy;
  * the catalog exposes only normalized discovery metadata and exact runtime ids.
@@ -254,7 +194,7 @@ export class RoleplayResourceCatalog {
     if (registration?.inspect === undefined) {
       throw new Error(`Roleplay resource provider ${JSON.stringify(located.providerId)} has no detail reader`)
     }
-    return resourceDetail(registration.inspect(located.descriptor), located.descriptor)
+    return parseRoleplayResourceDetail(registration.inspect(located.descriptor), located.descriptor)
   }
 
   /** Dispatch one selection to its owning provider and verify append-only Session semantics. */

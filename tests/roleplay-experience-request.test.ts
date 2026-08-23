@@ -4,6 +4,7 @@ import {
   characterExperienceLaunchRequest,
   sceneExperienceLaunchRequest,
 } from '../src/client/roleplay-experience-request.ts'
+import { parseRoleplayResourceDetailResponse } from '../src/client/roleplay-resource-detail.ts'
 import { parseAgentRpSessionLaunchRequest } from '../src/session-launch.ts'
 
 test('maps browser library choices to a content-free character experience request', () => {
@@ -55,4 +56,25 @@ test('keeps the primary scene world first in a source-neutral request', () => {
     'standalone:library:world-info-11111111111111111111111111111111',
     'standalone:library:world-info-22222222222222222222222222222222',
   ])
+})
+
+test('accepts only the exact bounded actor detail requested by the browser', () => {
+  const reference = { kind: 'actor' as const, id: 'character:library:card-1' }
+  const response = {
+    format: 0 as const,
+    descriptor: { ...reference, name: '测试角色', availability: 'available' as const },
+    detail: {
+      kind: 'actor' as const,
+      openings: [{ id: 'greeting:0', label: '默认开场', preview: '你好。', truncated: false }],
+    },
+  }
+  assert.deepEqual(parseRoleplayResourceDetailResponse(response, reference), response)
+  assert.throws(() => parseRoleplayResourceDetailResponse({
+    ...response,
+    descriptor: { ...response.descriptor, id: 'character:library:other' },
+  }, reference), /资源详情响应无效/u)
+  assert.throws(() => parseRoleplayResourceDetailResponse({
+    ...response,
+    detail: { kind: 'actor', openings: [{ id: 'greeting:0', label: '默认开场' }] },
+  }, reference), /资源详情响应无效/u)
 })

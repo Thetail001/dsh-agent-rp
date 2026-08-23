@@ -166,6 +166,7 @@ export type {
   RoleplayResourceProvider,
 } from './roleplay-resource-catalog.ts'
 export {
+  parseRoleplayResourceDetail,
   ROLEPLAY_RESOURCE_CATALOG_PATH,
   ROLEPLAY_RESOURCE_KINDS,
 } from './roleplay-resource-catalog-protocol.ts'

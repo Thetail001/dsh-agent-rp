@@ -228,6 +228,7 @@ import {
 } from './tavern-permission.ts'
 import { fetchTavernPreflight } from './tavern-preflight.ts'
 import { RoleplayResourceCenter } from './resource-center.tsx'
+import { fetchRoleplayResourceDetail } from './roleplay-resource-detail.ts'
 import {
   agentRpSessionResourcePermissionsChangedEvent,
   readAgentRpSessionResourcePermissions,
@@ -280,6 +281,8 @@ import {
   type AgentRpSessionLaunchRequest,
   type AgentRpSessionLaunchResponse,
 } from '../session-launch-protocol.ts'
+import type { RoleplayActorResourceDetail } from '../roleplay-resource-catalog-protocol.ts'
+import { characterLibraryRoleplayResourceId } from '../roleplay-resource-library-ids.ts'
 import {
   characterExperienceLaunchRequest,
   sceneExperienceLaunchRequest,
@@ -4952,6 +4955,7 @@ function RoleplayLaunchComposer({
   const [characterId, setCharacterId] = useState('')
   const [character, setCharacter] = useState<CharacterLibraryDetail>()
   const characterRequest = useRef(0)
+  const [actorDetail, setActorDetail] = useState<RoleplayActorResourceDetail>()
   const [worldInfos, setWorldInfos] = useState<readonly WorldInfoLibraryUpload[]>()
   const [primaryWorldInfoId, setPrimaryWorldInfoId] = useState('')
   const [selectedWorldInfoIds, setSelectedWorldInfoIds] = useState<readonly string[]>()
@@ -5023,6 +5027,25 @@ function RoleplayLaunchComposer({
     })
   }, [characterId, readCharacter])
   useEffect(() => {
+    const controller = new AbortController()
+    if (characterId === '') {
+      setActorDetail(undefined)
+      return () => { controller.abort() }
+    }
+    setActorDetail(undefined)
+    setGreetingIndex(0)
+    void fetchRoleplayResourceDetail({
+      kind: 'actor', id: characterLibraryRoleplayResourceId(characterId),
+    }, controller.signal).then(response => {
+      if (response.detail.kind !== 'actor') throw new Error('角色资源没有可用的开场详情')
+      setActorDetail(response.detail)
+    }, reason => {
+      if (controller.signal.aborted) return
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { controller.abort() }
+  }, [characterId])
+  useEffect(() => {
     if (mode === 'world-info' && permissionDuration === 'trust') setPermissionDuration('remember')
   }, [mode, permissionDuration])
   useEffect(() => {
@@ -5056,7 +5079,9 @@ function RoleplayLaunchComposer({
     settled: launchPreflight.settled,
     pendingPermissions,
   })
-  const ready = mode === 'character' ? character !== undefined : primaryWorldInfo !== undefined
+  const ready = mode === 'character'
+    ? character !== undefined && actorDetail !== undefined && actorDetail.openings[greetingIndex] !== undefined
+    : primaryWorldInfo !== undefined
   const busy = starting || launchPreflight.approving
   useAgentRpRuntimeDiagnosticContribution(
     runtimeDiagnostics,
@@ -5233,14 +5258,14 @@ function RoleplayLaunchComposer({
                 <CharacterLibraryAvatar entry={character} size={40} />
                 <span style={{ minWidth: 0 }}>
                   <strong style={{ display: 'block', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{character.displayName}</strong>
-                  <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .5 }}>{character.greetings.length} 个开场 · {character.worldInfoCount} 条内置世界书</span>
+                  <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .5 }}>{actorDetail?.openings.length ?? '…'} 个开场 · {character.worldInfoCount} 条内置世界书</span>
                 </span>
               </>}
               {mode === 'world-info' && primaryWorldInfo !== undefined && <span style={{ minWidth: 0 }}>
                 <strong style={{ display: 'block', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{primaryWorldInfo.name}</strong>
                 <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .5 }}>{primaryWorldInfo.entryCount} 条世界条目</span>
               </span>}
-              {mode === 'character' && characterId !== '' && character === undefined && <span style={{ fontSize: '11px', opacity: .5 }}>正在读取角色设定…</span>}
+              {mode === 'character' && characterId !== '' && (character === undefined || actorDetail === undefined) && <span style={{ fontSize: '11px', opacity: .5 }}>正在读取角色设定…</span>}
               {mode === 'character' && characters?.length === 0 && <span style={{ alignItems: 'center', display: 'flex', flex: 1, gap: '10px', justifyContent: 'space-between' }}>
                 <span style={{ fontSize: '11px', opacity: .52 }}>先添加一张角色卡，之后就能在这里直接选择</span>
                 <button type="button" onClick={() => { onManageResources('characters') }} style={{
@@ -5254,16 +5279,17 @@ function RoleplayLaunchComposer({
                 }}>导入世界书</button>
               </span>}
             </div>
-            {mode === 'character' && character !== undefined && <div style={{ marginTop: '10px' }}>
+            {mode === 'character' && actorDetail !== undefined && <div style={{ marginTop: '10px' }}>
               <label htmlFor="agent-rp-launch-greeting" style={{ display: 'block', fontSize: '11px', marginBottom: '6px', opacity: .55 }}>开场白</label>
               <div style={{ position: 'relative' }}>
                 <select id="agent-rp-launch-greeting" value={greetingIndex} onChange={event => { setGreetingIndex(Number(event.target.value)) }} style={fieldStyle}>
-                  {character.greetings.map((_, index) => <option key={index} value={index}>{index === 0 ? '默认开场' : `备选开场 ${index}`}</option>)}
+                  {actorDetail.openings.map((opening, index) => <option key={opening.id} value={index}>{opening.label}</option>)}
                 </select>
                 <SelectChevron />
               </div>
               <p style={{ display: '-webkit-box', fontSize: '10px', lineHeight: 1.5, margin: '7px 1px 0', opacity: .48, overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2 }}>
-                {compactCharacterDisplayText(character.renderedGreetings[greetingIndex] ?? character.greetings[greetingIndex] ?? '') || '无开场白'}
+                {compactCharacterDisplayText(actorDetail.openings[greetingIndex]?.preview ?? '') || '无开场白'}
+                {actorDetail.openings[greetingIndex]?.truncated === true ? '…' : ''}
               </p>
             </div>}
           </section>
