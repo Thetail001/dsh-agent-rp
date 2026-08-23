@@ -17,6 +17,7 @@ import {
   jsonResponse as json,
   readJsonRequest as readBoundedJsonRequest,
   trustedBrowserRequest,
+  trustedLoopbackAliasOrigin,
   type AgentRpHttpServer,
 } from './host-http.ts'
 import { AGENT_RP_IMAGE_PROVIDERS, normalizeImageGenerationSettings } from './workspace-settings.ts'
@@ -70,8 +71,25 @@ export function installImageGenerationHttp(
     async handler(request, response) {
       const path = parts(request)
       const sandboxedImage = path.length === 3 && path[0] === 'jobs' && path[2] === 'asset'
-      if (!trustedBrowserRequest(request, sandboxedImage)) {
+      const aliasOrigin = trustedLoopbackAliasOrigin(request)
+      if (aliasOrigin !== undefined) {
+        response.setHeader('access-control-allow-origin', aliasOrigin)
+        response.setHeader('vary', 'origin')
+      }
+      if (!trustedBrowserRequest(request, sandboxedImage, true)) {
         json(response, 403, { error: 'forbidden' })
+        return
+      }
+      if (request.method === 'OPTIONS') {
+        response.writeHead(204, {
+          'access-control-allow-headers': 'accept, content-type',
+          'access-control-allow-methods': 'GET, POST, PUT, OPTIONS',
+          ...(request.headers['access-control-request-private-network'] === 'true'
+            ? { 'access-control-allow-private-network': 'true' }
+            : {}),
+          'access-control-max-age': '600',
+        })
+        response.end()
         return
       }
       try {

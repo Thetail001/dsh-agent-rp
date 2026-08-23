@@ -385,10 +385,44 @@ function createWorkspaceSettingsSource(): WorkspaceSettingsSource {
   }
 }
 
+class ImageControlTransportError extends Error {}
+
+function imageControlUrl(path: string): string {
+  const { hostname, port, protocol } = window.location
+  if (protocol !== 'http:') return path
+  const alternate = hostname === '127.0.0.1' ? 'localhost' : hostname === 'localhost' ? '127.0.0.1' : undefined
+  return alternate === undefined ? path : `http://${alternate}:${port || '80'}${path}`
+}
+
+async function imageControlFetch(
+  action: string,
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = 12_000,
+  retryLabel = '重试状态',
+): Promise<Response> {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => {
+    controller.abort(new DOMException(`${action}超时`, 'TimeoutError'))
+  }, timeoutMs)
+  try {
+    return await fetch(imageControlUrl(path), { ...init, credentials: 'omit', signal: controller.signal })
+  } catch (error: unknown) {
+    const timedOut = controller.signal.aborted
+    throw new ImageControlTransportError(timedOut
+      ? `${action}等待本机 DSH 超时；无需重复输入密钥，请稍后再点“${retryLabel}”`
+      : `${action}没有连上本机 DSH；无需重复输入密钥，请再次点“${retryLabel}”`, { cause: error })
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
 async function imageCredentialInfo(provider: ImageGenerationSettings['provider']): Promise<ImageCredentialInfo> {
-  const response = await fetch(`${AGENT_RP_IMAGE_PATH}/credential?provider=${encodeURIComponent(provider)}`, {
-    headers: { accept: 'application/json' },
-  })
+  const response = await imageControlFetch(
+    '读取图片密钥状态',
+    `${AGENT_RP_IMAGE_PATH}/credential?provider=${encodeURIComponent(provider)}`,
+    { headers: { accept: 'application/json' } },
+  )
   const value = await response.json() as { readonly error?: string; readonly credential?: ImageCredentialInfo }
   if (!response.ok || value.credential === undefined) {
     throw new Error(value.error ?? `图片密钥状态读取失败（${response.status}）`)
@@ -399,12 +433,30 @@ async function imageCredentialInfo(provider: ImageGenerationSettings['provider']
 async function updateImageCredential(
   provider: ImageGenerationSettings['provider'],
   change: { readonly value: string } | { readonly clear: true },
+  previous?: ImageCredentialInfo,
 ): Promise<ImageCredentialInfo> {
-  const response = await fetch(`${AGENT_RP_IMAGE_PATH}/credential?provider=${encodeURIComponent(provider)}`, {
-    method: 'PUT',
-    headers: { accept: 'application/json', 'content-type': 'application/json' },
-    body: JSON.stringify(change),
-  })
+  let response: Response
+  try {
+    response = await imageControlFetch(
+      '保存图片密钥',
+      `${AGENT_RP_IMAGE_PATH}/credential?provider=${encodeURIComponent(provider)}`,
+      {
+        method: 'PUT',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify(change),
+      },
+    )
+  } catch (error: unknown) {
+    if (!(error instanceof ImageControlTransportError)) throw error
+    try {
+      const observed = await imageCredentialInfo(provider)
+      if ('clear' in change && !observed.configured) return observed
+      if ('value' in change && previous?.configured !== true && observed.configured) return observed
+    } catch (_statusUnavailable) {
+      // The original transport error is more useful than a second failed probe.
+    }
+    throw error
+  }
   const value = await response.json() as { readonly error?: string; readonly credential?: ImageCredentialInfo }
   if (!response.ok || value.credential === undefined) {
     throw new Error(value.error ?? `图片密钥保存失败（${response.status}）`)
@@ -413,11 +465,11 @@ async function updateImageCredential(
 }
 
 async function testConfiguredImageProvider(settings: ImageGenerationSettings): Promise<ImageProviderTestResult> {
-  const response = await fetch(`${AGENT_RP_IMAGE_PATH}/test`, {
+  const response = await imageControlFetch('测试图片服务', `${AGENT_RP_IMAGE_PATH}/test`, {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify(settings),
-  })
+  }, 18_000, '测试连接')
   const value = await response.json() as { readonly error?: string; readonly test?: ImageProviderTestResult }
   if (!response.ok || value.test === undefined) throw new Error(value.error ?? `图片服务连接测试失败（${response.status}）`)
   return value.test
@@ -2920,6 +2972,8 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
   const [profileName, setProfileName] = useState(activeProfile.name)
   const [credential, setCredential] = useState<ImageCredentialInfo>()
   const [credentialValue, setCredentialValue] = useState('')
+  const [credentialPhase, setCredentialPhase] = useState<'loading' | 'ready' | 'unknown'>('loading')
+  const [credentialReload, setCredentialReload] = useState(0)
   const [credentialBusy, setCredentialBusy] = useState(false)
   const [testBusy, setTestBusy] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
@@ -2935,20 +2989,32 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
   useEffect(() => {
     let active = true
     setCredential(undefined)
+    setCredentialPhase('loading')
     setCredentialValue('')
-    void imageCredentialInfo(draft.provider).then(value => { if (active) setCredential(value) }, reason => {
-      if (active) setError(reason instanceof Error ? reason.message : String(reason))
+    setError(undefined)
+    void imageCredentialInfo(draft.provider).then(value => {
+      if (!active) return
+      setCredential(value)
+      setCredentialPhase('ready')
+    }, reason => {
+      if (!active) return
+      setCredentialPhase('unknown')
+      setError(reason instanceof Error ? reason.message : String(reason))
     })
     return () => { active = false }
-  }, [draft.provider])
+  }, [draft.provider, credentialReload])
   const saveCredential = (change: { readonly value: string } | { readonly clear: true }): void => {
     setCredentialBusy(true)
     setError(undefined)
-    void updateImageCredential(draft.provider, change).then(value => {
+    void updateImageCredential(draft.provider, change, credential).then(value => {
       setCredential(value)
+      setCredentialPhase('ready')
       setCredentialValue('')
       setTestResult(undefined)
-    }, reason => { setError(reason instanceof Error ? reason.message : String(reason)) })
+    }, reason => {
+      if (reason instanceof ImageControlTransportError) setCredentialPhase('unknown')
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
       .finally(() => { setCredentialBusy(false) })
   }
   const testConnection = (): void => {
@@ -3270,17 +3336,23 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
       <label style={labelStyle}>{draft.provider === 'dashscope' ? '百炼 API Key'
         : draft.provider === 'novelai' ? 'NovelAI Access Token' : '服务密钥'}（按图片服务独立保存）
         <input type="password" autoComplete="new-password" value={credentialValue}
-          placeholder={credential?.configured === true ? `已配置${credential.source === undefined ? '' : ` · ${credential.source}`}`
+          placeholder={credentialPhase === 'loading' ? '正在确认密钥状态…'
+            : credentialPhase === 'unknown' ? '密钥状态暂时无法确认'
+              : credential?.configured === true ? `已配置${credential.source === undefined ? '' : ` · ${credential.source}`}`
             : draft.provider === 'openai' ? 'OpenAI / 兼容接口密钥'
               : draft.provider === 'dashscope' ? '与接口地址相同地域的百炼 API Key'
                 : draft.provider === 'novelai' ? 'NovelAI Access Token（必填）' : '无鉴权可留空'}
-          disabled={credentialBusy || credential?.writable === false} onChange={event => { setCredentialValue(event.target.value) }}
+          disabled={credentialBusy || credentialPhase !== 'ready' || credential?.writable === false}
+          onChange={event => { setCredentialValue(event.target.value); setError(undefined) }}
           style={settingsFieldStyle} />
       </label>
       <div style={{ display: 'flex', gap: '7px' }}>
+        {credentialPhase === 'unknown' && <button type="button" disabled={credentialBusy}
+          onClick={() => { setCredentialReload(value => value + 1) }} style={secondaryButtonStyle}>重试状态</button>}
         {credential?.configured === true && <button type="button" disabled={credentialBusy || !credential.writable}
           onClick={() => { saveCredential({ clear: true }) }} style={secondaryButtonStyle}>移除密钥</button>}
-        <button type="button" disabled={credentialBusy || credentialValue.trim() === '' || credential?.writable === false}
+        <button type="button" disabled={credentialBusy || credentialPhase !== 'ready'
+          || credentialValue.trim() === '' || credential?.writable === false}
           onClick={() => { saveCredential({ value: credentialValue }) }} style={secondaryButtonStyle}>
           {credentialBusy ? '正在保存…' : credential?.configured === true ? '更换密钥' : '保存密钥'}
         </button>
@@ -3289,7 +3361,7 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
     <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '14px' }}>
       <button type="button" disabled={!writable || testBusy
         || ((draft.provider === 'openai' || draft.provider === 'dashscope' || draft.provider === 'novelai')
-          && credential?.configured !== true)}
+          && (credentialPhase !== 'ready' || credential?.configured !== true))}
         onClick={testConnection} style={secondaryButtonStyle}>{testBusy ? '正在测试…' : '测试连接'}</button>
       {dirty && <button type="button" disabled={!writable} onClick={restoreProfile} style={secondaryButtonStyle}>还原</button>}
       <button type="button" disabled={!writable || !dirty} onClick={saveProfile} style={primaryButtonStyle}>保存当前档案</button>

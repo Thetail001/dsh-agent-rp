@@ -31,10 +31,42 @@ export interface AgentRpHttpServer {
  * Sandboxed card images are the sole cross-site exception: opaque-origin
  * frames send them as credential-free `no-cors` image requests.
  */
-export function trustedBrowserRequest(request: IncomingMessage, sandboxedImage = false): boolean {
+function loopbackHostname(value: string): boolean {
+  return value === 'localhost' || value === '127.0.0.1' || value === '[::1]'
+}
+
+function loopbackAliasOrigin(request: IncomingMessage): string | undefined {
+  const host = request.headers.host
+  const origin = request.headers.origin
+  if (host === undefined || origin === undefined) return undefined
+  try {
+    const source = new URL(origin)
+    const target = new URL(`http://${host}`)
+    if (source.protocol !== 'http:' || !loopbackHostname(source.hostname) || !loopbackHostname(target.hostname)) {
+      return undefined
+    }
+    return source.port === target.port ? source.origin : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Return the exact loopback-alias Origin that may be echoed by a narrow CORS surface. */
+export function trustedLoopbackAliasOrigin(request: IncomingMessage): string | undefined {
+  const origin = loopbackAliasOrigin(request)
+  if (origin === undefined || new URL(origin).host === request.headers.host) return undefined
+  return origin
+}
+
+export function trustedBrowserRequest(
+  request: IncomingMessage,
+  sandboxedImage = false,
+  allowLoopbackAlias = false,
+): boolean {
   const host = request.headers.host
   if (host === undefined || host.trim() === '') return false
   if (request.headers['sec-fetch-site'] === 'cross-site') {
+    if (allowLoopbackAlias && loopbackAliasOrigin(request) !== undefined) return true
     return sandboxedImage && request.headers['sec-fetch-dest'] === 'image'
       && request.headers['sec-fetch-mode'] === 'no-cors' && request.headers.origin === undefined
   }
@@ -43,6 +75,7 @@ export function trustedBrowserRequest(request: IncomingMessage, sandboxedImage =
   try {
     const parsed = new URL(origin)
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host === host
+      || allowLoopbackAlias && loopbackAliasOrigin(request) !== undefined
   } catch {
     return false
   }

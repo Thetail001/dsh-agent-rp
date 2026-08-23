@@ -6,6 +6,7 @@ import {
   readBoundedRequestBody,
   readJsonRequest,
   trustedBrowserRequest,
+  trustedLoopbackAliasOrigin,
 } from '../src/host-http.ts'
 
 function request(
@@ -38,6 +39,24 @@ test('accepts only same-origin browser requests and the exact sandboxed image ex
     'sec-fetch-dest': 'image',
     'sec-fetch-mode': 'no-cors',
   }), true), false)
+})
+
+test('accepts an explicitly enabled same-port loopback alias without widening ordinary routes', () => {
+  const alias = request({
+    host: 'localhost:3091', origin: 'http://127.0.0.1:3091', 'sec-fetch-site': 'cross-site',
+  })
+  assert.equal(trustedBrowserRequest(alias), false)
+  assert.equal(trustedBrowserRequest(alias, false, true), true)
+  assert.equal(trustedLoopbackAliasOrigin(alias), 'http://127.0.0.1:3091')
+  assert.equal(trustedBrowserRequest(request({
+    host: 'localhost:3092', origin: 'http://127.0.0.1:3091', 'sec-fetch-site': 'same-site',
+  }), false, true), false)
+  assert.equal(trustedBrowserRequest(request({
+    host: 'localhost:3091', origin: 'https://127.0.0.1:3091', 'sec-fetch-site': 'same-site',
+  }), false, true), false)
+  assert.equal(trustedBrowserRequest(request({
+    host: 'localhost:3091', origin: 'http://example.com:3091', 'sec-fetch-site': 'cross-site',
+  }), false, true), false)
 })
 
 test('bounds declared and streamed request bodies and rejects empty input', async () => {
