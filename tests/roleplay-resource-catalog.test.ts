@@ -62,6 +62,13 @@ test('orders providers deterministically, rejects collisions, and follows Cordis
   assert.deepEqual(catalog.get('actor', 'actor:a'), {
     id: 'actor:a', kind: 'actor', name: '起点角色', availability: 'available', updatedAt: 1,
   })
+  assert.deepEqual(catalog.locate('actor', 'actor:a'), {
+    providerId: 'fixture:a',
+    descriptor: {
+      id: 'actor:a', kind: 'actor', name: '起点角色', availability: 'available', updatedAt: 1,
+    },
+  })
+  assert.equal(catalog.locate('actor', 'actor:missing'), undefined)
 
   const duplicate = catalog.register({
     id: 'fixture:duplicate',

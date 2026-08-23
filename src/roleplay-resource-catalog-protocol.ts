@@ -8,10 +8,14 @@ export const ROLEPLAY_RESOURCE_KINDS = ['actor', 'persona', 'world', 'prompt-pol
 
 export type RoleplayResourceKind = typeof ROLEPLAY_RESOURCE_KINDS[number]
 
-/** Stable reference and presentation metadata without source-format payloads. */
-export interface RoleplayResourceDescriptor {
-  readonly id: string
+/** Source-neutral identity used to select one exact reusable resource. */
+export interface RoleplayResourceReference {
   readonly kind: RoleplayResourceKind
+  readonly id: string
+}
+
+/** Stable reference and presentation metadata without source-format payloads. */
+export interface RoleplayResourceDescriptor extends RoleplayResourceReference {
   readonly name: string
   readonly availability: 'available' | 'archived'
   readonly updatedAt?: number

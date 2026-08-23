@@ -23,6 +23,12 @@ export interface RoleplayResourceProvider {
   list(): readonly RoleplayResourceDescriptor[]
 }
 
+/** Host-only ownership result used to dispatch a stable reference back to its provider. */
+export interface LocatedRoleplayResource {
+  readonly providerId: string
+  readonly descriptor: RoleplayResourceDescriptor
+}
+
 interface Registration {
   readonly token: symbol
   readonly id: string
@@ -100,12 +106,11 @@ export class RoleplayResourceCatalog {
     }
   }
 
-  /** Resolve a deterministic detached snapshot from every currently loaded provider. */
-  list(kind?: RoleplayResourceKind): readonly RoleplayResourceDescriptor[] {
+  #locations(kind?: RoleplayResourceKind): readonly LocatedRoleplayResource[] {
     if (kind !== undefined && !ROLEPLAY_RESOURCE_KINDS.includes(kind)) {
       throw new Error(`Unknown Roleplay resource kind ${JSON.stringify(kind)}`)
     }
-    const entries: RoleplayResourceDescriptor[] = []
+    const entries: LocatedRoleplayResource[] = []
     const owners = new Map<string, string>()
     const providers = [...this.#providers.values()].sort((left, right) => compareText(left.id, right.id))
     for (const provider of providers) {
@@ -122,16 +127,26 @@ export class RoleplayResourceCatalog {
           throw new Error(`Roleplay resource ${key} is published by both ${JSON.stringify(owner)} and ${JSON.stringify(provider.id)}`)
         }
         owners.set(key, provider.id)
-        entries.push(normalized)
+        entries.push(Object.freeze({ providerId: provider.id, descriptor: normalized }))
       }
     }
-    return Object.freeze(entries.sort(compareDescriptors))
+    return Object.freeze(entries.sort((left, right) => compareDescriptors(left.descriptor, right.descriptor)))
+  }
+
+  /** Resolve a deterministic detached snapshot from every currently loaded provider. */
+  list(kind?: RoleplayResourceKind): readonly RoleplayResourceDescriptor[] {
+    return Object.freeze(this.#locations(kind).map(value => value.descriptor))
   }
 
   /** Resolve one exact kind/id pair without exposing a provider-specific object. */
   get(kind: RoleplayResourceKind, id: string): RoleplayResourceDescriptor | undefined {
+    return this.locate(kind, id)?.descriptor
+  }
+
+  /** Locate the unique Host provider that owns one stable resource reference. */
+  locate(kind: RoleplayResourceKind, id: string): LocatedRoleplayResource | undefined {
     stableId(id, 'Roleplay resource id')
-    return this.list(kind).find(value => value.id === id)
+    return this.#locations(kind).find(value => value.descriptor.id === id)
   }
 }
 

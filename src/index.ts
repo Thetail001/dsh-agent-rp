@@ -158,7 +158,10 @@ export {
   ROLEPLAY_RESOURCE_CATALOG_KEY,
   RoleplayResourceCatalog,
 } from './roleplay-resource-catalog.ts'
-export type { RoleplayResourceProvider } from './roleplay-resource-catalog.ts'
+export type {
+  LocatedRoleplayResource,
+  RoleplayResourceProvider,
+} from './roleplay-resource-catalog.ts'
 export {
   ROLEPLAY_RESOURCE_CATALOG_PATH,
   ROLEPLAY_RESOURCE_KINDS,
@@ -167,6 +170,7 @@ export type {
   RoleplayResourceCatalogResponse,
   RoleplayResourceDescriptor,
   RoleplayResourceKind,
+  RoleplayResourceReference,
 } from './roleplay-resource-catalog-protocol.ts'
 export {
   registerRoleplayRuntimeExtension,
