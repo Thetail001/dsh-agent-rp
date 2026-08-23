@@ -131,6 +131,9 @@ function CardFrameView({
     .map(resource => [cardRemoteResourceApprovalKey(resource), resource] as const))
   const blocked = character === undefined ? [] : blockedCardFrameResources([...requested.values()], character)
   if (!preview && blocked.length > 0) return <BlockedCardResources character={character!} resources={blocked} />
+  // A document's scrollHeight cannot shrink below its iframe viewport. Seed
+  // live frames at the minimum accepted resize height; a viewport-sized seed
+  // would otherwise lock compact/fixed status bars into a screen-tall blank box.
   return <iframe
     title={`${characterName}的轻前端界面 ${segmentIndex + 1}`}
     data-agent-rp-frame
@@ -148,7 +151,7 @@ function CardFrameView({
     }}
     style={{
       background: 'transparent', border: 0, colorScheme: 'dark', display: 'block',
-      height: preview ? 'min(52vh, 480px)' : 'min(72vh, 720px)', maxWidth: '100%',
+      height: preview ? 'min(52vh, 480px)' : '72px', maxWidth: '100%',
       visibility: preview ? 'visible' : 'hidden', width: '100%',
     }}
   />
