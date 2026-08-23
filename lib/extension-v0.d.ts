@@ -748,9 +748,10 @@ interface RoleplayTurnPlanReceipt {
 /**
  * Published structural projections of the provider-neutral turn plan:
  * 0 predates prompt transforms, 1 adds transforms, 2 adds response repair programs,
- * and 3 adds the independent turn strategy plus semantic state actions.
+ * 3 adds the independent turn strategy plus semantic state actions, and 4 adds
+ * the exact tool policy prepared for the model request and runtime gates.
  */
-type RoleplayTurnPlanSchema = 0 | 1 | 2 | 3;
+type RoleplayTurnPlanSchema = 0 | 1 | 2 | 3 | 4;
 /** Revision change observed at the turn boundary for one runtime state namespace. */
 interface RoleplayStateSettlement {
   readonly id: string;
@@ -849,6 +850,43 @@ interface RoleplayStateActionPlan {
   readonly stateId: string;
   readonly expectedRevision: number;
   readonly operations: readonly MvuStateOperation['op'][];
+}
+/** Provider-neutral Agent tool guidance retained across workspace settings and model turns. */
+/** Whether image tools must stay idle, may be chosen, or should be attempted each RP turn. */
+type AgentRpImageMode = 'never' | 'requested' | 'auto' | 'always';
+/** One deployment-owned instruction for an installed MCP or other tool provider. */
+interface ToolGuidanceEntryConfig {
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly text: string;
+}
+/** Normalized settings compatible with Thetail's public tool-guidance format. */
+interface ResolvedToolGuidanceConfig {
+  readonly enabled: boolean;
+  readonly includeFramework: boolean;
+  readonly includeAgentRp: boolean;
+  readonly imageMode: AgentRpImageMode;
+  readonly custom: readonly ToolGuidanceEntryConfig[];
+}
+/** Immutable tool policy frozen into one concrete Roleplay turn. */
+interface RoleplayToolPolicyPlan {
+  readonly format: 0;
+  /** Exact normalized workspace input needed to replay this policy. */
+  readonly source: ResolvedToolGuidanceConfig;
+  readonly capability: {
+    /** Whether Agent RP's two durable-artifact presentation tools are visible and executable. */readonly artifactPresentation: boolean;
+  };
+  readonly behavior: {
+    readonly image: {
+      readonly mode: AgentRpImageMode; /** Runtime publication limit; choosing whether to generate remains an Agent decision. */
+      readonly maxPublicationsPerTurn: 0 | 1;
+    };
+  };
+  readonly guidance: {
+    readonly includeFramework: boolean;
+    readonly customIds: readonly string[]; /** Short model-visible context compiled from the structured policy. */
+    readonly contextText: string;
+  };
 }
 /** Exact replay key for the Session surface and newly claimed messages used by preparation. */
 interface RoleplayTurnInputKey {
@@ -985,6 +1023,7 @@ interface RoleplayTurnPlan {
   readonly world: RoleplayWorldPlan;
   readonly prompt: RoleplayTurnPromptPlan;
   readonly act: RoleplayTurnActPlan;
+  readonly tools: RoleplayToolPolicyPlan;
   readonly stateReads: readonly RoleplayStateRead[];
   readonly memory: RoleplayMemoryPlan;
   readonly generation: RoleplayGenerationPolicy;

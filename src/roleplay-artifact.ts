@@ -11,6 +11,8 @@ import type { RoleplayPresentedArtifact } from './roleplay-turn-presentation-typ
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   DEFAULT_TOOL_GUIDANCE,
+  prepareRoleplayToolPolicy,
+  type RoleplayToolPolicyPlan,
   type ResolvedToolGuidanceConfig,
 } from './roleplay-tool-guidance.ts'
 
@@ -486,46 +488,32 @@ export const ROLEPLAY_ARTIFACT_PUBLISH_VALUE_SCHEMA = {
   },
 } as const
 
-function roleplayImageModeGuidance(mode: ResolvedToolGuidanceConfig['imageMode']): string {
-  if (mode === 'never') return '图像工具策略：禁止调用生图或角色插图发布工具。'
-  if (mode === 'always') {
-    return '图像工具策略：每个普通角色扮演回合至多尝试一条生图与发布链；工具不可用或失败时继续正常回复，不循环重试。'
-  }
-  return '图像工具策略：按需使用。用户明确要求图片，或当前场景确实受益于插图时可以调用；普通对话无需生图。'
-}
-
-/** Fixed provider-neutral guidance appended only to active Agent RP scopes. */
+/** Compatibility renderer for callers that have not adopted prepared turn policies yet. */
 export function renderRoleplayArtifactToolGuidance(
   config: ResolvedToolGuidanceConfig = DEFAULT_TOOL_GUIDANCE,
 ): string {
-  if (!config.enabled) return ''
-  return [
-    '【Agent RP durable artifacts】',
-    ...(config.includeFramework ? [
-      '只有用户明确要求长期记住时才使用持久记忆工具；显式导入角色卡、世界书或预设时使用对应的导入工具。',
-    ] : []),
-    ...(config.includeAgentRp && config.imageMode !== 'never' ? [
-      'Image tools may return non-model-visible durable artifacts with stable artifact ids.',
-      'To show one such image after this turn\'s final roleplay reply, call stage_roleplay_artifact with the exact id reported by the producing tool.',
-      'For compatibility with existing image toolchains, publish_roleplay_image may be used instead: omit path to select the latest unused same-turn image, or pass a real image path inside the Session workspace.',
-      'Use exactly one of these publication tools for an image. Never pass a URL, data URI, base64 payload, temporary link, or guessed path, and never repeat an unchanged failed publication call.',
-    ] : []),
-    ...config.custom.filter(entry => entry.enabled).map(entry => `自定义工具指导（${entry.id}）：\n${entry.text}`),
-    roleplayImageModeGuidance(config.imageMode),
-  ].join('\n')
+  return prepareRoleplayToolPolicy(config).guidance.contextText
 }
 
 export interface InstallRoleplayArtifactCapabilityOptions {
-  /** Read current settings at request and execution time so WebUI changes need no restart. */
-  readonly toolGuidance?: () => ResolvedToolGuidanceConfig
+  /** Return the exact prepared policy for this Agent's active turn; undefined disables the capability. */
+  readonly toolPolicy?: (agent: Agent) => RoleplayToolPolicyPlan | undefined
+}
+
+/** Synchronous gate used before SystemPrompt assembly for the next model step. */
+export interface RoleplayArtifactCapabilityController {
+  prepare(agent: Agent, policy: RoleplayToolPolicyPlan | undefined): void
 }
 
 /** Install the provider-neutral bridge from durable DSH artifacts to RP stage intent. */
 export function installRoleplayArtifactCapability(
   ctx: Context,
   options: InstallRoleplayArtifactCapabilityOptions = {},
-): void {
-  const currentGuidance = options.toolGuidance ?? (() => DEFAULT_TOOL_GUIDANCE)
+): RoleplayArtifactCapabilityController {
+  const defaultPolicy = prepareRoleplayToolPolicy(DEFAULT_TOOL_GUIDANCE)
+  const currentPolicy = (agent: Agent): RoleplayToolPolicyPlan | undefined => options.toolPolicy === undefined
+    ? defaultPolicy
+    : options.toolPolicy(agent)
   const publishFailures = new WeakMap<Agent, { readonly turn: number; readonly count: number }>()
   const failureRestrictions = new Map<Agent, { readonly turn: number; readonly dispose: () => void }>()
   const policyRestrictions = new Map<Agent, () => void>()
@@ -539,19 +527,25 @@ export function installRoleplayArtifactCapability(
     failureRestrictions.delete(agent)
     restriction?.dispose()
   }
+  const prepare = (agent: Agent, policy: RoleplayToolPolicyPlan | undefined): void => {
+    const disabled = policy?.capability.artifactPresentation !== true
+    const restricted = policyRestrictions.has(agent)
+    if (disabled && !restricted) {
+      policyRestrictions.set(agent, agent.ctx.tools.restrict({
+        deny: [ROLEPLAY_ARTIFACT_STAGE_TOOL, ROLEPLAY_ARTIFACT_PUBLISH_TOOL],
+      }))
+    } else if (!disabled && restricted) {
+      disposeRestriction(agent, policyRestrictions)
+    }
+  }
+  ctx.on('agent/created', ({ agent }) => {
+    prepare(agent, currentPolicy(agent))
+  })
   ctx.on('agent/pre-step', async ({ agent, turn }, next) => {
     const failed = failureRestrictions.get(agent)
     if (failed !== undefined && failed.turn !== turn) {
       disposeFailureRestriction(agent)
       publishFailures.delete(agent)
-    }
-    const guidance = currentGuidance()
-    const disabled = !guidance.enabled || !guidance.includeAgentRp || guidance.imageMode === 'never'
-    const restricted = policyRestrictions.has(agent)
-    if (disabled && !restricted) {
-      policyRestrictions.set(agent, agent.ctx.tools.restrict({ deny: [ROLEPLAY_ARTIFACT_PUBLISH_TOOL] }))
-    } else if (!disabled && restricted) {
-      disposeRestriction(agent, policyRestrictions)
     }
     return await next()
   })
@@ -602,12 +596,20 @@ export function installRoleplayArtifactCapability(
     },
     async execute(args, exec) {
       if (exec.agent === undefined) throw new Error('stage_roleplay_artifact requires an Agent Session')
+      const policy = currentPolicy(exec.agent)
+      if (policy?.capability.artifactPresentation !== true) {
+        throw new Error('roleplay artifact presentation is disabled for this prepared turn')
+      }
       if (exec.parent !== undefined) {
         throw new Error('stage_roleplay_artifact must be a top-level tool call so its stage decision is replayable')
       }
       const artifactId = boundedArtifactId(args.artifactId)
       const caption = boundedCaption(args.caption)
       const call = currentStageCall(exec.agent.session, String(exec.callId))
+      if (readStagedRoleplayArtifacts(exec.agent.session.events, call.data.turn, call.seq).length
+        >= policy.behavior.image.maxPublicationsPerTurn) {
+        throw new Error('this prepared turn already published its allowed roleplay image')
+      }
       const staged = referencedArtifact(exec.agent.session, call, artifactId)
       const stored = await ctx.attachments.readImage(staged.artifact.attachment, exec.signal)
       if (String(stored.ref.attachmentId) !== artifactId) {
@@ -651,17 +653,21 @@ export function installRoleplayArtifactCapability(
     },
     async execute(args, exec) {
       if (exec.agent === undefined) throw new Error('publish_roleplay_image requires an Agent Session')
+      const policy = currentPolicy(exec.agent)
+      if (policy?.capability.artifactPresentation !== true) {
+        throw new Error('publish_roleplay_image is disabled for this prepared turn')
+      }
       if (exec.parent !== undefined) {
         throw new Error('publish_roleplay_image must be a top-level tool call so its stage decision is replayable')
       }
-      const guidance = currentGuidance()
-      if (!guidance.enabled || !guidance.includeAgentRp || guidance.imageMode === 'never') {
-        throw new Error('publish_roleplay_image is disabled by the current Agent RP tool settings')
+      const call = currentToolCall(exec.agent.session, String(exec.callId), ROLEPLAY_ARTIFACT_PUBLISH_TOOL)
+      if (readStagedRoleplayArtifacts(exec.agent.session.events, call.data.turn, call.seq).length
+        >= policy.behavior.image.maxPublicationsPerTurn) {
+        throw new Error('this prepared turn already published its allowed roleplay image')
       }
       try {
         return await preparePublishedArtifacts(ctx.attachments, exec.agent, String(exec.callId), args, exec.signal)
       } catch (error) {
-        const call = currentToolCall(exec.agent.session, String(exec.callId), ROLEPLAY_ARTIFACT_PUBLISH_TOOL)
         recordPublishFailure(exec.agent, call.data.turn)
         throw error
       }
@@ -678,6 +684,7 @@ export function installRoleplayArtifactCapability(
     }),
     isConcurrencySafe: () => false,
   })), 'agent-rp: publish image compatibility artifacts')
+  return { prepare }
 }
 
 /** Read every validated stage decision in one turn before a durable boundary. */

@@ -8,6 +8,7 @@ import { decodeGenerationState, encodeGenerationState, executeGenerationCommand 
 import { agentRpProjectionDefinition } from '../src/projection.ts'
 import { ROLEPLAY_TURN_PHASES, type RoleplayRuntimeSnapshot } from '../src/roleplay-runtime.ts'
 import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
+import { prepareRoleplayToolPolicy } from '../src/roleplay-tool-guidance.ts'
 import {
   appendRoleplayTurnPresentation,
   compileInitialRoleplayTurnPresentation,
@@ -78,6 +79,7 @@ function plan(session: Session, state: RoleplayRuntimeSnapshot['state'] = []): R
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
     act: { strategy: 'conversation', responseRepairs: [], stateActions: [] },
+    tools: prepareRoleplayToolPolicy(),
     stateReads: snapshot.state,
     memory: { ...snapshot.memory, reads: [], contextText: '' },
     generation: {},

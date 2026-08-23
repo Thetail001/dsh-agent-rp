@@ -1,7 +1,7 @@
 /** Provider-neutral Agent tool guidance retained across workspace settings and model turns. */
 
 /** Whether image tools must stay idle, may be chosen, or should be attempted each RP turn. */
-export type AgentRpImageMode = 'never' | 'auto' | 'always'
+export type AgentRpImageMode = 'never' | 'requested' | 'auto' | 'always'
 
 /** One deployment-owned instruction for an installed MCP or other tool provider. */
 export interface ToolGuidanceEntryConfig {
@@ -17,6 +17,30 @@ export interface ResolvedToolGuidanceConfig {
   readonly includeAgentRp: boolean
   readonly imageMode: AgentRpImageMode
   readonly custom: readonly ToolGuidanceEntryConfig[]
+}
+
+/** Immutable tool policy frozen into one concrete Roleplay turn. */
+export interface RoleplayToolPolicyPlan {
+  readonly format: 0
+  /** Exact normalized workspace input needed to replay this policy. */
+  readonly source: ResolvedToolGuidanceConfig
+  readonly capability: {
+    /** Whether Agent RP's two durable-artifact presentation tools are visible and executable. */
+    readonly artifactPresentation: boolean
+  }
+  readonly behavior: {
+    readonly image: {
+      readonly mode: AgentRpImageMode
+      /** Runtime publication limit; choosing whether to generate remains an Agent decision. */
+      readonly maxPublicationsPerTurn: 0 | 1
+    }
+  }
+  readonly guidance: {
+    readonly includeFramework: boolean
+    readonly customIds: readonly string[]
+    /** Short model-visible context compiled from the structured policy. */
+    readonly contextText: string
+  }
 }
 
 /** Neutral defaults expose the publication seam without assuming one image provider. */
@@ -48,7 +72,7 @@ export function normalizeToolGuidanceConfig(value: unknown): ResolvedToolGuidanc
     return candidate
   }
   const imageMode = source.imageMode ?? DEFAULT_TOOL_GUIDANCE.imageMode
-  if (imageMode !== 'never' && imageMode !== 'auto' && imageMode !== 'always') {
+  if (imageMode !== 'never' && imageMode !== 'requested' && imageMode !== 'auto' && imageMode !== 'always') {
     throw new TypeError('toolGuidance.imageMode is invalid')
   }
   const customSource = source.custom ?? DEFAULT_TOOL_GUIDANCE.custom
@@ -78,5 +102,55 @@ export function normalizeToolGuidanceConfig(value: unknown): ResolvedToolGuidanc
     includeAgentRp: bool('includeAgentRp'),
     imageMode,
     custom,
+  }
+}
+
+function roleplayImageModeGuidance(mode: AgentRpImageMode): string {
+  if (mode === 'never') return '图像工具策略：本回合不生成或发布角色插图。'
+  if (mode === 'requested') return '图像工具策略：只有玩家在本轮明确要求图片时才可以调用生图与发布工具。'
+  if (mode === 'always') {
+    return '图像工具策略：若已配置可用的生图工具，本回合应至多尝试一次生图与发布；工具不可用或失败时继续正常回复，不循环重试。'
+  }
+  return '图像工具策略：用户明确要求图片，或当前场景确实受益于插图时可以调用；普通对话无需生图。'
+}
+
+/** Compile persisted compatibility settings into one replayable turn policy. */
+export function prepareRoleplayToolPolicy(
+  value: ResolvedToolGuidanceConfig = DEFAULT_TOOL_GUIDANCE,
+): RoleplayToolPolicyPlan {
+  const source = normalizeToolGuidanceConfig(value)
+  const artifactPresentation = source.enabled && source.includeAgentRp && source.imageMode !== 'never'
+  const custom = source.enabled ? source.custom.filter(entry => entry.enabled) : []
+  const contextText = !source.enabled ? '' : [
+    '【Agent RP 工具策略】',
+    ...(source.includeFramework ? [
+      '只有玩家明确要求长期记住时才使用持久记忆工具；显式导入角色卡、世界书或预设时使用对应的导入工具。',
+    ] : []),
+    ...(artifactPresentation ? [
+      '生图工具可能返回不会直接显示在正文中的持久图片产物。',
+      '要把产物放在本轮最终角色回复之后，优先以其准确 artifact id 调用 stage_roleplay_artifact；兼容旧工具链时可以改用 publish_roleplay_image。',
+      '一次图片只使用一种发布方式；不得传入 URL、data URI、base64、临时链接或猜测的路径，发布失败后不得原样重复调用。',
+    ] : []),
+    ...custom.map(entry => `工具提供方说明（${entry.id}）：\n${entry.text}`),
+    roleplayImageModeGuidance(artifactPresentation ? source.imageMode : 'never'),
+  ].join('\n')
+  return {
+    format: 0,
+    source: {
+      ...source,
+      custom: source.custom.map(entry => ({ ...entry })),
+    },
+    capability: { artifactPresentation },
+    behavior: {
+      image: {
+        mode: artifactPresentation ? source.imageMode : 'never',
+        maxPublicationsPerTurn: artifactPresentation ? 1 : 0,
+      },
+    },
+    guidance: {
+      includeFramework: source.enabled && source.includeFramework,
+      customIds: custom.map(entry => entry.id),
+      contextText,
+    },
   }
 }

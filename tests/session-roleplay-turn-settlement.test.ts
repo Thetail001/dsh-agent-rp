@@ -4,6 +4,7 @@ import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ROLEPLAY_TURN_PHASES, type RoleplayRuntimeSnapshot } from '../src/roleplay-runtime.ts'
 import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
+import { prepareRoleplayToolPolicy } from '../src/roleplay-tool-guidance.ts'
 import { collectSessionRoleplaySettlementContributions } from '../src/session-roleplay-turn-settlement.ts'
 
 const modules = [
@@ -47,6 +48,7 @@ function plan(session: Session, snapshot = runtime()): RoleplayTurnPlan {
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
     act: { strategy: 'conversation', responseRepairs: [], stateActions: [] },
+    tools: prepareRoleplayToolPolicy(),
     stateReads: snapshot.state,
     memory: { ...snapshot.memory, reads: [], contextText: '' },
     generation: {},

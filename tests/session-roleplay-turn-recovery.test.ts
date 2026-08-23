@@ -121,7 +121,16 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
   const staleEvent = session.append('user/message', stale, { surfaceOp: 'append' })
   const message = pending()
   const resolved = resolveSessionRoleplayRuntime({ session, deployment, memoryWriteAvailable: true })
-  const plan = prepareRoleplayTurn({ session, pendingMessages: [message], deployment, resolved })
+  const toolGuidance = {
+    enabled: true,
+    includeFramework: false,
+    includeAgentRp: true,
+    imageMode: 'always' as const,
+    custom: [{ id: 'fixture-image', enabled: true, text: 'Use the configured fixture image producer.' }],
+  }
+  const plan = prepareRoleplayTurn({
+    session, pendingMessages: [message], deployment, resolved, toolGuidance,
+  })
   session.append('step/start', { turn: 1, step: 1 })
   session.append('user/message', message, { surfaceOp: 'append' })
   const external = createUserMessage({
@@ -147,7 +156,8 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
   const reopened = Session.create(session.id, session.events)
   const records = readSessionRoleplayTurnPlans(reopened.events)
   assert.equal(records.length, 1)
-  assert.equal(records[0]?.data.reference.receipt.preparedPlanSchema, 3)
+  assert.equal(records[0]?.data.reference.receipt.preparedPlanSchema, 4)
+  assert.deepEqual(records[0]?.data.toolGuidance, toolGuidance)
   assert.equal(records[0]?.data.reference.receipt.memoryWriteAvailable, true)
   assert.deepEqual(records[0]?.data.reference.receipt.recall, dispatchedPlan.recall)
   const expectedContextReads = session.deriveMessages()

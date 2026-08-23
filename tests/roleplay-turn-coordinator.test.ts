@@ -3,6 +3,7 @@ import test from 'node:test'
 import { ROLEPLAY_TURN_PHASES, type RoleplayRuntimeSnapshot } from '../src/roleplay-runtime.ts'
 import { RoleplayTurnCoordinator } from '../src/roleplay-turn-coordinator.ts'
 import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
+import { prepareRoleplayToolPolicy } from '../src/roleplay-tool-guidance.ts'
 
 function plan(label: string, sessionSeq = 0): RoleplayTurnPlan {
   const runtime: RoleplayRuntimeSnapshot = {
@@ -29,6 +30,7 @@ function plan(label: string, sessionSeq = 0): RoleplayTurnPlan {
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
     act: { strategy: 'conversation', responseRepairs: [], stateActions: [] },
+    tools: prepareRoleplayToolPolicy(),
     stateReads: [],
     memory: { ...runtime.memory, reads: [], contextText: '' },
     generation: {},

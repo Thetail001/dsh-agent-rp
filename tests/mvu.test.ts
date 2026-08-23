@@ -17,6 +17,7 @@ import { installMvuStreamCompletion } from '../src/mvu-stream.ts'
 import { ROLEPLAY_TURN_PHASES } from '../src/roleplay-runtime.ts'
 import { readRoleplayTurnRecords } from '../src/roleplay-turn-record.ts'
 import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
+import { prepareRoleplayToolPolicy } from '../src/roleplay-tool-guidance.ts'
 import {
   appendRoleplayTurnSettlement,
   compileRoleplayActReceipt,
@@ -194,6 +195,7 @@ test('repairs a missing MVU block from only the frozen act plan in a cardless Se
     act: { strategy: 'conversation', stateActions: [], responseRepairs: [{
       engine: 'mvu-v0', moduleId: 'adapter:mvu', stateId: 'state:mvu', updateInstructions: '只用冻结规则',
     }] },
+    tools: prepareRoleplayToolPolicy(),
     stateReads: [{
       id: 'state:mvu', owner: 'session', revision: 3, writerModuleId: 'adapter:mvu', value: { score: 7 },
     }],

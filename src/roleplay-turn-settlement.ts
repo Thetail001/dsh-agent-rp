@@ -78,12 +78,13 @@ export interface RoleplayTurnPlanReceipt {
 /**
  * Published structural projections of the provider-neutral turn plan:
  * 0 predates prompt transforms, 1 adds transforms, 2 adds response repair programs,
- * and 3 adds the independent turn strategy plus semantic state actions.
+ * 3 adds the independent turn strategy plus semantic state actions, and 4 adds
+ * the exact tool policy prepared for the model request and runtime gates.
  */
-export type RoleplayTurnPlanSchema = 0 | 1 | 2 | 3
+export type RoleplayTurnPlanSchema = 0 | 1 | 2 | 3 | 4
 
 /** Current structural projection written into every new plan receipt. */
-export const CURRENT_ROLEPLAY_TURN_PLAN_SCHEMA: RoleplayTurnPlanSchema = 3
+export const CURRENT_ROLEPLAY_TURN_PLAN_SCHEMA: RoleplayTurnPlanSchema = 4
 
 function legacyPromptPreparation(plan: RoleplayTurnPlan): {
   readonly prompt: Omit<RoleplayTurnPlan['prompt'], 'transforms'>
@@ -128,11 +129,19 @@ function planWithoutNativeActions(plan: RoleplayTurnPlan): Omit<RoleplayTurnPlan
   return { ...plan, act: { responseRepairs: plan.act.responseRepairs } }
 }
 
+function planWithoutToolPolicy<T extends { readonly tools: RoleplayTurnPlan['tools'] }>(
+  plan: T,
+): Omit<T, 'tools'> {
+  const { tools: _tools, ...legacy } = plan
+  return legacy
+}
+
 /** Project a current plan into one historically published structural schema. */
 export function projectRoleplayTurnPlan(plan: RoleplayTurnPlan, schema: RoleplayTurnPlanSchema): unknown {
-  if (schema === 3) return plan
-  if (schema === 2) return planWithoutNativeActions(plan)
-  const withoutAct = planWithoutPreparedAct(plan)
+  if (schema === 4) return plan
+  if (schema === 3) return planWithoutToolPolicy(plan)
+  if (schema === 2) return planWithoutToolPolicy(planWithoutNativeActions(plan))
+  const withoutAct = planWithoutToolPolicy(planWithoutPreparedAct(plan))
   if (schema === 1) return withoutAct
   const legacy = legacyPromptPreparation(plan)
   return { ...withoutAct, prompt: legacy.prompt, prepare: legacy.prepare }
@@ -164,8 +173,9 @@ export function matchRoleplayTurnPlanSchema(
   declaredSchema: unknown,
 ): RoleplayTurnPlanSchema | undefined {
   const schemas: readonly RoleplayTurnPlanSchema[] = declaredSchema === undefined
-    ? [3, 2, 1, 0]
-    : declaredSchema === 0 || declaredSchema === 1 || declaredSchema === 2 || declaredSchema === 3
+    ? [4, 3, 2, 1, 0]
+    : declaredSchema === 0 || declaredSchema === 1 || declaredSchema === 2
+      || declaredSchema === 3 || declaredSchema === 4
       ? [declaredSchema] : []
   return schemas.find(schema => roleplayTurnPlanSha256(plan, schema) === expectedDigest)
 }

@@ -61,6 +61,12 @@ import {
 } from './roleplay-state-action.ts'
 import type { RoleplayTurnMode } from './roleplay-turn-mode.ts'
 import { renderNativePromptPolicy } from './native-prompt-policy.ts'
+import {
+  DEFAULT_TOOL_GUIDANCE,
+  prepareRoleplayToolPolicy,
+  type ResolvedToolGuidanceConfig,
+  type RoleplayToolPolicyPlan,
+} from './roleplay-tool-guidance.ts'
 
 /** Exact replay key for the Session surface and newly claimed messages used by preparation. */
 export interface RoleplayTurnInputKey {
@@ -216,6 +222,7 @@ export interface RoleplayTurnPlan {
   readonly world: RoleplayWorldPlan
   readonly prompt: RoleplayTurnPromptPlan
   readonly act: RoleplayTurnActPlan
+  readonly tools: RoleplayToolPolicyPlan
   readonly stateReads: readonly RoleplayStateRead[]
   readonly memory: RoleplayMemoryPlan
   readonly generation: RoleplayGenerationPolicy
@@ -235,6 +242,8 @@ export interface PrepareRoleplayTurnInput {
   readonly pendingMessages?: readonly UserMessage[]
   readonly deployment: ResolvedConfig
   readonly resolved: ResolvedSessionRoleplayRuntime
+  /** Workspace tool settings captured at the same boundary as every other turn input. */
+  readonly toolGuidance?: ResolvedToolGuidanceConfig
   readonly templateEngine?: EjsTemplateEngine
 }
 
@@ -601,6 +610,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     })),
     contextText: renderActiveMemoryContext(memoryHistory.active, snapshot.memory.write),
   }
+  const tools = prepareRoleplayToolPolicy(input.toolGuidance ?? DEFAULT_TOOL_GUIDANCE)
   const worldContributions = world.resources.reduce(
     (count, resource) => count + resource.beforeActor.length + resource.afterActor.length,
     world.inChat.length,
@@ -684,6 +694,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     world,
     prompt,
     act,
+    tools,
     stateReads,
     memory,
     generation: { ...(resolved.preset?.preset.generation ?? {}) },

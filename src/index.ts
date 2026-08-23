@@ -169,7 +169,6 @@ import {
 import { characterLibraryActorRevisionProvider } from './character-library-actor-revision.ts'
 import {
   installRoleplayArtifactCapability,
-  renderRoleplayArtifactToolGuidance,
 } from './roleplay-artifact.ts'
 
 /** Cordis plugin identity. */
@@ -265,13 +264,16 @@ export {
 export {
   DEFAULT_TOOL_GUIDANCE,
   normalizeToolGuidanceConfig,
+  prepareRoleplayToolPolicy,
 } from './roleplay-tool-guidance.ts'
 export type {
   AgentRpImageMode,
   ResolvedToolGuidanceConfig,
+  RoleplayToolPolicyPlan,
   ToolGuidanceEntryConfig,
 } from './roleplay-tool-guidance.ts'
 export type {
+  RoleplayArtifactCapabilityController,
   RoleplayArtifactAutoStageIntent,
   RoleplayArtifactPublishArgs,
   RoleplayArtifactPublishValue,
@@ -762,7 +764,11 @@ export function installAgentRp(
       return selected === undefined ? undefined : { kind: 'actor', id: selected.id }
     },
   })
-  installRoleplayArtifactCapability(ctx, { toolGuidance: () => workspaceSettings.get().toolGuidance })
+  const roleplayArtifactCapability = installRoleplayArtifactCapability(ctx, {
+    toolPolicy: agent => agentsByScope.get(agent) === agent
+      ? turnCoordinator.current(agent)?.tools
+      : undefined,
+  })
   installRoleplayStateActionTool(ctx)
 
   commands.register({
@@ -1091,9 +1097,11 @@ export function installAgentRp(
       pendingMessages: pending.messages,
       deployment: config,
       resolved,
+      toolGuidance: workspaceSettings.get().toolGuidance,
       ...(options.ejsTemplateEngine === undefined ? {} : { templateEngine: options.ejsTemplateEngine }),
     })
     turnCoordinator.prepare(agent, plan)
+    roleplayArtifactCapability.prepare(agent, plan.tools)
     // Inbox claims are published synchronously before SystemPrompt assembly.
     // The restriction must be settled here so the same assembly sees the tool schema.
     setStateActionAvailable(agent, plan.act.strategy === 'agent' && plan.act.stateActions.length > 0)
@@ -1118,9 +1126,11 @@ export function installAgentRp(
   ctx.systemPrompt.context({
     name: 'agent-rp:artifact-tools',
     order: 71,
-    text: ({ scope }) => scope !== undefined && agentsByScope.get(scope) !== undefined
-      ? renderRoleplayArtifactToolGuidance(workspaceSettings.get().toolGuidance)
-      : '',
+    text: ({ scope }) => {
+      if (scope === undefined) return ''
+      const agent = agentsByScope.get(scope)
+      return agent === undefined ? '' : turnCoordinator.current(agent)?.tools.guidance.contextText ?? ''
+    },
   })
   ctx.on('agent/request', async ({ agent, turn, step }, next) => {
     const activePlan = agentsByScope.get(agent) === agent

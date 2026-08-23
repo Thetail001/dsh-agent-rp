@@ -6,6 +6,7 @@ import { prepareAgentRpMemory, type AgentRpMemoryRecord } from '../src/memory.ts
 import { preparedMvuResponseRepair } from '../src/mvu-stream.ts'
 import { ROLEPLAY_TURN_PHASES, type RoleplayRuntimeSnapshot } from '../src/roleplay-runtime.ts'
 import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
+import { prepareRoleplayToolPolicy } from '../src/roleplay-tool-guidance.ts'
 import {
   appendRoleplayTurnSettlement,
   compileRoleplayTurnSettlement,
@@ -55,6 +56,7 @@ function turnPlan(input: {
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
     act: { strategy: 'conversation', responseRepairs: [], stateActions: [] },
+    tools: prepareRoleplayToolPolicy(),
     stateReads: snapshot.state,
     memory: { read: true, write: input.memoryWrite ?? true, reads: [], contextText: '' },
     generation: {},
@@ -319,10 +321,10 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
   const { preparedPlanSha256, preparedPlanSectionsSha256, ...firstReceipt } = settlement.plans[0]!.receipt!
   assert.match(preparedPlanSha256 ?? '', /^[a-f0-9]{64}$/u)
   assert.deepEqual(Object.keys(preparedPlanSectionsSha256 ?? {}), [
-    'format', 'input', 'runtime', 'world', 'prompt', 'act', 'stateReads', 'memory', 'generation', 'prepare', 'recall',
+    'format', 'input', 'runtime', 'world', 'prompt', 'act', 'tools', 'stateReads', 'memory', 'generation', 'prepare', 'recall',
   ])
   assert.deepEqual(firstReceipt, {
-    preparedPlanSchema: 3,
+    preparedPlanSchema: 4,
     runtime: {
       experienceId: 'actor:test',
       actorId: 'actor:card',

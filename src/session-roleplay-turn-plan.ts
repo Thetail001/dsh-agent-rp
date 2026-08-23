@@ -14,6 +14,7 @@ import {
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 import type { RoleplayRuntimeExtensionRegistry } from './roleplay-runtime-extension.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import type { ResolvedToolGuidanceConfig } from './roleplay-tool-guidance.ts'
 
 function replayBoundary(session: Session, events: readonly SessionEvent[]): Session {
   const constructor = session.constructor as typeof Session
@@ -25,6 +26,8 @@ export interface SessionRoleplayTurnPlanRecord {
   readonly format: 0
   readonly sessionId: string
   readonly turn: number
+  /** Exact workspace-derived tool input; absent only on receipts written before schema 4. */
+  readonly toolGuidance?: ResolvedToolGuidanceConfig
   readonly reference: RoleplayTurnPlanReference & { readonly receipt: NonNullable<RoleplayTurnPlanReference['receipt']> }
 }
 
@@ -71,6 +74,7 @@ export function appendSessionRoleplayTurnPlan(
     format: 0,
     sessionId: String(session.id),
     turn,
+    toolGuidance: plan.tools.source,
     reference: { ...reference, receipt: reference.receipt },
   }
   const existing = session.events.find(event => event.type === 'agent-rp/turn-plan'
@@ -162,6 +166,7 @@ export function replaySessionRoleplayTurnPlan(input: {
     pendingMessages: pendingMessagesForRecord(session.events, record),
     deployment: input.deployment,
     resolved,
+    ...(record.data.toolGuidance === undefined ? {} : { toolGuidance: record.data.toolGuidance }),
     ...(input.templateEngine === undefined ? {} : { templateEngine: input.templateEngine }),
   })
   const replayed = bindRoleplayExternalContext({
@@ -187,9 +192,9 @@ export function replaySessionRoleplayTurnPlan(input: {
   if (schema === undefined) {
     const diagnosticSchema = reference.receipt.preparedPlanSchema === 0
       || reference.receipt.preparedPlanSchema === 1 || reference.receipt.preparedPlanSchema === 2
-      || reference.receipt.preparedPlanSchema === 3
+      || reference.receipt.preparedPlanSchema === 3 || reference.receipt.preparedPlanSchema === 4
       ? reference.receipt.preparedPlanSchema
-      : 3
+      : 4
     const actualSections = roleplayTurnPlanSectionSha256(replayed, diagnosticSchema)
     const sections = (Object.keys(actualSections) as (keyof RoleplayTurnPlan)[])
       .filter(key => actualSections[key] !== expectedSections[key])

@@ -37,8 +37,8 @@ test('guides every image producer through one provider-neutral publication path'
   const guidance = renderRoleplayArtifactToolGuidance()
   assert.match(guidance, /stage_roleplay_artifact/u)
   assert.match(guidance, /publish_roleplay_image/u)
-  assert.match(guidance, /exactly one/u)
-  assert.match(guidance, /never repeat/u)
+  assert.match(guidance, /一次图片只使用一种发布方式/u)
+  assert.match(guidance, /不得原样重复调用/u)
   assert.doesNotMatch(guidance, /Comfy|MCP|DashScope|OpenAI/u)
 
   const custom = renderRoleplayArtifactToolGuidance({
@@ -49,7 +49,7 @@ test('guides every image producer through one provider-neutral publication path'
     custom: [{ id: 'fixture-provider', enabled: true, text: 'CALL_FIXTURE_IMAGE_TOOL' }],
   })
   assert.match(custom, /CALL_FIXTURE_IMAGE_TOOL/u)
-  assert.match(custom, /每个普通角色扮演回合/u)
+  assert.match(custom, /本回合应至多尝试一次/u)
   assert.doesNotMatch(custom, /持久记忆工具/u)
 
   const never = renderRoleplayArtifactToolGuidance({
@@ -59,7 +59,7 @@ test('guides every image producer through one provider-neutral publication path'
     imageMode: 'never',
     custom: [],
   })
-  assert.match(never, /禁止调用/u)
+  assert.match(never, /本回合不生成或发布/u)
   assert.doesNotMatch(never, /stage_roleplay_artifact|publish_roleplay_image/u)
   assert.equal(renderRoleplayArtifactToolGuidance({
     enabled: false,
@@ -224,7 +224,7 @@ test('accepts Thetail publish_roleplay_image calls over legacy native image resu
     signal: new AbortController().signal,
   })
   assert.equal(duplicate.isError, true)
-  assert.match(duplicate.content[0]?.type === 'text' ? duplicate.content[0].text : '', /No image can be published/u)
+  assert.match(duplicate.content[0]?.type === 'text' ? duplicate.content[0].text : '', /already published/u)
 })
 
 test('replays early Thetail publication results that carried a native image block', () => {
@@ -265,6 +265,17 @@ test('publishes a real workspace image through the compatibility tool without ac
   await writeFile(join(root, 'outside.png'), PNG)
   context.after(async () => { await rm(root, { recursive: true, force: true }) })
   const { session, agent } = openSession('publish-workspace', workspace)
+  appendCall(session, 'publish-outside', ROLEPLAY_ARTIFACT_PUBLISH_TOOL, { path: join(root, 'outside.png') })
+  const outside = await ctx.tools.execute({
+    callId: CallId('publish-outside'),
+    name: ROLEPLAY_ARTIFACT_PUBLISH_TOOL,
+    arguments: { path: join(root, 'outside.png') },
+    agent,
+    signal: new AbortController().signal,
+  })
+  assert.equal(outside.isError, true)
+  assert.match(outside.content[0]?.type === 'text' ? outside.content[0].text : '', /inside the Session workspace/u)
+
   const publishCallSeq = appendCall(session, 'publish-path', ROLEPLAY_ARTIFACT_PUBLISH_TOOL, {
     path: 'scene.png',
   })
@@ -284,17 +295,6 @@ test('publishes a real workspace image through the compatibility tool without ac
   assert.equal(meta?.artifacts[0]?.attachment.mediaType, 'image/png')
   const publishResultSeq = appendResult(session, 'publish-path', publishCallSeq, result.meta)
   assert.equal(readStagedRoleplayArtifacts(session.events, 1, publishResultSeq + 1).length, 1)
-
-  appendCall(session, 'publish-outside', ROLEPLAY_ARTIFACT_PUBLISH_TOOL, { path: join(root, 'outside.png') })
-  const outside = await ctx.tools.execute({
-    callId: CallId('publish-outside'),
-    name: ROLEPLAY_ARTIFACT_PUBLISH_TOOL,
-    arguments: { path: join(root, 'outside.png') },
-    agent,
-    signal: new AbortController().signal,
-  })
-  assert.equal(outside.isError, true)
-  assert.match(outside.content[0]?.type === 'text' ? outside.content[0].text : '', /inside the Session workspace/u)
 })
 
 test('rejects paths, old-turn ids, and unrecorded artifacts instead of guessing', async (context) => {

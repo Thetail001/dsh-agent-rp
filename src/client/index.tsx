@@ -1922,6 +1922,43 @@ const agentRpResponsiveStyle = `
   [data-agent-rp-generation-action] svg { animation: none !important; }
 }
 @media (max-width: 720px) {
+  [role='dialog'][aria-modal='true'][aria-labelledby]:has(> nav > :first-child[id]) {
+    flex-direction: column !important;
+    height: calc(100dvh - 16px) !important;
+    max-height: calc(100dvh - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    width: calc(100vw - 16px) !important;
+  }
+  [role='dialog'][aria-modal='true'][aria-labelledby]:has(> nav > :first-child[id]) > nav {
+    box-sizing: border-box;
+    flex: 0 0 auto !important;
+    height: auto !important;
+    padding: 12px 12px 0 !important;
+    width: 100% !important;
+  }
+  [role='dialog'][aria-modal='true'][aria-labelledby]:has(> nav > :first-child[id]) > nav > :first-child { display: none !important; }
+  [role='dialog'][aria-modal='true'][aria-labelledby]:has(> nav > :first-child[id]) > nav > :last-child {
+    align-items: center;
+    display: flex !important;
+    flex-direction: row !important;
+    gap: 4px;
+    overflow-x: auto !important;
+    padding-bottom: 9px;
+    scrollbar-width: none;
+    width: 100% !important;
+  }
+  [role='dialog'][aria-modal='true'][aria-labelledby]:has(> nav > :first-child[id]) > nav > :last-child::-webkit-scrollbar { display: none; }
+  [role='dialog'][aria-modal='true'][aria-labelledby]:has(> nav > :first-child[id]) > nav > :last-child > button {
+    flex: 0 0 auto !important;
+    min-height: 38px;
+    white-space: nowrap;
+    width: auto !important;
+  }
+  [role='dialog'][aria-modal='true'][aria-labelledby]:has(> nav > :first-child[id]) > :not(nav) {
+    flex: 1 1 auto !important;
+    min-height: 0;
+    width: 100% !important;
+  }
   .agent-rp-header {
     flex: 1 1 auto !important;
     gap: 6px !important;
@@ -3383,6 +3420,149 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
   </section>
 }
 
+type ToolStrategyDraft = {
+  enabled: boolean
+  includeFramework: boolean
+  includeAgentRp: boolean
+  imageMode: AgentRpSettings['toolGuidance']['imageMode']
+  custom: Array<{ id: string; enabled: boolean; text: string }>
+}
+
+function copyToolStrategy(value: AgentRpSettings['toolGuidance']): ToolStrategyDraft {
+  return { ...value, custom: value.custom.map(entry => ({ ...entry })) }
+}
+
+function nextToolStrategyId(entries: readonly { readonly id: string }[]): string {
+  const ids = new Set(entries.map(entry => entry.id.trim().toLowerCase()))
+  for (let suffix = 1; ; suffix++) {
+    if (!ids.has(`provider-${suffix}`)) return `provider-${suffix}`
+  }
+}
+
+function ToolStrategySettingsPanel({ settings, writable, onSave }: {
+  readonly settings: AgentRpSettings
+  readonly writable: boolean
+  readonly onSave: (settings: AgentRpSettings) => void
+}) {
+  const [draft, setDraft] = useState<ToolStrategyDraft>(() => copyToolStrategy(settings.toolGuidance))
+  useEffect(() => { setDraft(copyToolStrategy(settings.toolGuidance)) }, [settings.toolGuidance])
+  const dirty = JSON.stringify(draft) !== JSON.stringify(settings.toolGuidance)
+  const ids = draft.custom.map(entry => entry.id.trim())
+  const validationError = draft.custom.some(entry => entry.id.trim() === '')
+    ? '提供方 ID 不能为空'
+    : draft.custom.some(entry => entry.text.trim() === '')
+      ? '提供方说明不能为空'
+      : new Set(ids).size !== ids.length ? '提供方 ID 不能重复' : undefined
+  const mode = draft.includeAgentRp ? draft.imageMode : 'never'
+  const modes = [
+    { value: 'never', title: '关闭插图', detail: '不向 Agent 提供图片发布能力' },
+    { value: 'requested', title: '仅在明确要求时', detail: '玩家本轮提出图片请求才使用' },
+    { value: 'auto', title: '按场景判断', detail: '需要插图时由 Agent 自主决定' },
+    { value: 'always', title: '每回合尝试', detail: '已配置生图工具时至多尝试一次' },
+  ] as const
+  const save = (): void => {
+    if (validationError !== undefined) return
+    onSave({
+      ...settings,
+      toolGuidance: {
+        ...draft,
+        custom: draft.custom.map(entry => ({ ...entry, id: entry.id.trim(), text: entry.text.trim() })),
+      },
+    })
+  }
+  return <section style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)', marginTop: '26px', paddingTop: '23px' }}>
+    <div style={{ alignItems: 'flex-start', display: 'flex', gap: '14px', justifyContent: 'space-between' }}>
+      <div>
+        <h3 style={{ fontSize: '15px', margin: 0 }}>Agent 工具策略</h3>
+        <p style={{ fontSize: '12px', lineHeight: 1.65, margin: '6px 0 0', opacity: .58 }}>
+          决定角色何时使用工具；每次修改从下一回合开始，不改变正在生成的回复
+        </p>
+      </div>
+      <label style={{ alignItems: 'center', cursor: writable ? 'pointer' : 'default', display: 'flex', flex: '0 0 auto', fontSize: '12px', gap: '7px', whiteSpace: 'nowrap' }}>
+        <input type="checkbox" checked={draft.enabled} disabled={!writable} onChange={event => {
+          setDraft(current => ({ ...current, enabled: event.target.checked }))
+        }} />启用
+      </label>
+    </div>
+    <div style={{
+      display: 'grid', gap: '8px', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+      marginTop: '14px', opacity: draft.enabled ? 1 : .48,
+    }}>
+      {modes.map(option => {
+        const active = mode === option.value
+        return <button key={option.value} type="button" disabled={!writable || !draft.enabled} onClick={() => {
+          setDraft(current => ({ ...current, includeAgentRp: true, imageMode: option.value }))
+        }} style={{
+          background: active ? `color-mix(in srgb, ${color} 12%, transparent)` : 'transparent',
+          border: `1px solid ${active ? `color-mix(in srgb, ${color} 48%, transparent)` : 'var(--dsw-alias-border-l2, #3d3d43)'}`,
+          borderRadius: '10px', color: 'inherit', cursor: writable && draft.enabled ? 'pointer' : 'default',
+          minHeight: '74px', padding: '10px 11px', textAlign: 'left', width: '100%',
+        }}>
+          <strong style={{ display: 'block', fontSize: '12px', fontWeight: 620 }}>{option.title}</strong>
+          <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.45, marginTop: '4px', opacity: .55 }}>{option.detail}</span>
+        </button>
+      })}
+    </div>
+    {!draft.enabled && <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '9px 0 0', opacity: .56 }}>
+      工具策略已停用；Agent RP 的图片发布工具也不会出现在下一次请求中
+    </p>}
+    <details style={{ border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '10px', marginTop: '13px' }}>
+      <summary style={{ cursor: 'pointer', fontSize: '12px', fontWeight: 580, padding: '11px 12px' }}>
+        第三方工具与兼容设置（高级）
+      </summary>
+      <div style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #3d3d43)', padding: '12px' }}>
+        <label style={{ alignItems: 'flex-start', cursor: writable ? 'pointer' : 'default', display: 'flex', fontSize: '12px', gap: '8px', lineHeight: 1.5 }}>
+          <input type="checkbox" checked={draft.includeFramework} disabled={!writable} onChange={event => {
+            setDraft(current => ({ ...current, includeFramework: event.target.checked }))
+          }} />
+          <span>提供记忆与导入工具的简短使用规则
+            <span style={{ display: 'block', fontSize: '11px', marginTop: '2px', opacity: .52 }}>只影响使用时机，不改变 DSH 原有工具权限</span>
+          </span>
+        </label>
+        <div style={{ alignItems: 'center', display: 'flex', gap: '10px', justifyContent: 'space-between', marginTop: '16px' }}>
+          <div>
+            <strong style={{ display: 'block', fontSize: '12px' }}>工具提供方说明</strong>
+            <span style={{ display: 'block', fontSize: '11px', marginTop: '2px', opacity: .52 }}>仅填写某个 MCP 确实需要的特殊调用方法</span>
+          </div>
+          <button type="button" disabled={!writable || draft.custom.length >= 32} onClick={() => {
+            setDraft(current => ({
+              ...current,
+              custom: [...current.custom, { id: nextToolStrategyId(current.custom), enabled: true, text: '' }],
+            }))
+          }} style={{ ...secondaryButtonStyle, flex: '0 0 auto', whiteSpace: 'nowrap' }}>添加</button>
+        </div>
+        <div style={{ display: 'grid', gap: '9px', marginTop: '9px' }}>
+          {draft.custom.length === 0 && <p style={{ border: '1px dashed var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '9px', fontSize: '11px', margin: 0, opacity: .5, padding: '12px', textAlign: 'center' }}>
+            没有额外说明；工具参数仍以 DSH 实际提供的 schema 为准
+          </p>}
+          {draft.custom.map((entry, index) => <div key={`${index}:${entry.id}`} style={{ border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '9px', padding: '10px' }}>
+            <div style={{ alignItems: 'center', display: 'grid', gap: '8px', gridTemplateColumns: 'auto minmax(0, 1fr) auto' }}>
+              <input aria-label={`启用工具提供方说明 ${index + 1}`} type="checkbox" checked={entry.enabled} disabled={!writable} onChange={event => {
+                setDraft(current => ({ ...current, custom: current.custom.map((item, itemIndex) => itemIndex === index ? { ...item, enabled: event.target.checked } : item) }))
+              }} />
+              <input aria-label={`工具提供方 ${index + 1} ID`} value={entry.id} maxLength={80} disabled={!writable} placeholder="例如 comfy-cloud" onChange={event => {
+                setDraft(current => ({ ...current, custom: current.custom.map((item, itemIndex) => itemIndex === index ? { ...item, id: event.target.value } : item) }))
+              }} style={settingsFieldStyle} />
+              <button type="button" disabled={!writable} aria-label={`删除工具提供方说明 ${index + 1}`} onClick={() => {
+                setDraft(current => ({ ...current, custom: current.custom.filter((_item, itemIndex) => itemIndex !== index) }))
+              }} style={{ ...secondaryButtonStyle, whiteSpace: 'nowrap' }}>删除</button>
+            </div>
+            <textarea aria-label={`工具提供方 ${index + 1} 说明`} value={entry.text} maxLength={12_000} rows={4} disabled={!writable}
+              placeholder="只写该工具无法从 schema 得知的必要步骤" onChange={event => {
+                setDraft(current => ({ ...current, custom: current.custom.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item) }))
+              }} style={{ ...settingsFieldStyle, lineHeight: 1.5, marginTop: '8px', resize: 'vertical', width: '100%' }} />
+          </div>)}
+        </div>
+      </div>
+    </details>
+    {validationError !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', margin: '9px 0 0' }}>{validationError}</p>}
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'flex-end', marginTop: '12px' }}>
+      {dirty && <button type="button" disabled={!writable} onClick={() => { setDraft(copyToolStrategy(settings.toolGuidance)) }} style={secondaryButtonStyle}>还原</button>}
+      <button type="button" disabled={!writable || !dirty || validationError !== undefined} onClick={save} style={primaryButtonStyle}>保存工具策略</button>
+    </div>
+  </section>
+}
+
 function WorkspaceSettingsSection({
   workspaceSettings,
   workspaceList,
@@ -3491,6 +3671,7 @@ function WorkspaceSettingsSection({
       </div>
     </details>
     <NativeIdentitySettingsPanel />
+    <ToolStrategySettingsPanel settings={settings} writable={writable} onSave={write} />
     <ImageGenerationSettingsPanel settings={settings} writable={writable} onSave={write} />
     {snapshot.status === 'loading' && <p role="status" style={{ fontSize: '12px', marginTop: '14px', opacity: .55 }}>正在读取设置…</p>}
     {snapshot.status === 'error' && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '12px', marginTop: '14px' }}>{snapshot.error}</p>}
