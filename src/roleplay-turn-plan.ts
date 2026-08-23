@@ -22,6 +22,7 @@ import {
 } from './prompt.ts'
 import {
   assembleSillyTavernPreset,
+  type RoleplayInChatPrompt,
   type RoleplayProviderPromptPlan,
 } from './preset-prompt.ts'
 import {
@@ -93,6 +94,7 @@ export interface RoleplayWorldResourcePlan {
 export interface RoleplayWorldPlan {
   readonly engine: 'native-v0'
   readonly resources: readonly RoleplayWorldResourcePlan[]
+  readonly inChat: readonly RoleplayInChatPrompt[]
   readonly experienceBeforeActor: readonly string[]
   readonly actorBefore: readonly string[]
   readonly actorAfter: readonly string[]
@@ -215,6 +217,7 @@ function worldPlan(
   return {
     engine: rendered.engine,
     resources,
+    inChat: rendered.inChat,
     experienceBeforeActor: contributions('experience', 'beforeActor'),
     actorBefore: contributions('actor', 'beforeActor'),
     actorAfter: contributions('actor', 'afterActor'),
@@ -377,7 +380,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
 
   const prompt: RoleplayTurnPromptPlan = {
     ...providerPrompt,
-    inChat: [...providerPrompt.inChat, ...injectedPrompts],
+    inChat: [...providerPrompt.inChat, ...world.inChat, ...injectedPrompts],
     systemPromptText: [systemPromptText, renderRoleplayStateContext(resolved.nativeStates)]
       .filter(text => text !== '').join('\n\n'),
     diagnostics: { enabledModules, unsupportedMacros, templateFailures },
@@ -403,7 +406,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   }
   const worldContributions = world.resources.reduce(
     (count, resource) => count + resource.beforeActor.length + resource.afterActor.length,
-    0,
+    world.inChat.length,
   )
   const promptContributions = providerPrompt.beforeHistory.length + providerPrompt.afterHistory.length
     + providerPrompt.inChat.length + (systemPromptText === '' ? 0 : 1)

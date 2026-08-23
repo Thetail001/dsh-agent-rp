@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
 import { createEjsWorldInfoBooks, EjsTemplateEngine } from '../src/ejs-template.ts'
@@ -25,7 +25,7 @@ import {
   roleplayVisibleDialogue,
   roleplayVisibleTranscript,
 } from '../src/prompt.ts'
-import { assembleSillyTavernPreset } from '../src/preset-prompt.ts'
+import { assembleSillyTavernPreset, prepareSillyTavernProviderMessages } from '../src/preset-prompt.ts'
 import {
   prepareRoleplayTurn,
   resolveRoleplayPrepareModuleOutcomes,
@@ -400,6 +400,60 @@ test('preserves native card prompt ordering across experience and actor worlds',
   assert.deepEqual(plan.stateReads.map(stateRead => [stateRead.id, stateRead.revision]), [
     ['state:mvu', 1], ['state:tavern-helper', state.revision],
   ])
+})
+
+test('routes active world depth entries through the shared provider-message plan', () => {
+  const source = cardFixture()
+  const raw = structuredClone(source.raw) as {
+    data: { character_book: { entries: Array<Record<string, unknown>> } }
+  }
+  raw.data.character_book.entries.push({
+    id: 3,
+    keys: [],
+    secondary_keys: [],
+    content: '深度一的玩家侧世界提示。',
+    enabled: true,
+    insertion_order: 77,
+    constant: true,
+    selective: false,
+    position: 'after_char',
+    use_regex: false,
+    extensions: { position: 4, depth: 1, role: 1 },
+  })
+  const card = parseCharacterCardJson(JSON.stringify(raw))
+  const seed = createCharacterCardSessionSeed(
+    card,
+    attachment('turn-plan-world-depth', '白露.json'),
+    0,
+    card.firstMessage,
+    { transport: 'json' },
+  )
+  const session = Session.create(SessionId('turn-plan-world-depth'), seed)
+  const resolved = resolveSessionRoleplayRuntime({ session, deployment })
+  const plan = prepareRoleplayTurn({ session, deployment, resolved })
+
+  assert.deepEqual(plan.world.inChat, [{
+    role: 'user', content: '深度一的玩家侧世界提示。', depth: 1, order: 77,
+  }])
+  assert.deepEqual(plan.prompt.inChat, plan.world.inChat)
+  const messages = prepareSillyTavernProviderMessages([
+    createMessage({
+      role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '较早消息' }],
+    }),
+    createMessage({
+      role: 'assistant', source: { kind: 'plugin', plugin: 'fixture' },
+      content: [{ type: 'text', text: '最近消息' }],
+    }),
+  ], plan.prompt)
+  assert.deepEqual(messages.map(message => [message.role, message.content[0]?.type === 'text'
+    ? message.content[0].text : '']), [
+    ['user', '较早消息'],
+    ['user', '深度一的玩家侧世界提示。'],
+    ['assistant', '最近消息'],
+  ])
+  assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'roleplay:world'), {
+    moduleId: 'roleplay:world', outcome: 'applied', contributions: 1,
+  })
 })
 
 test('uses the shared replay-safe macro boundary for a native card turn', () => {

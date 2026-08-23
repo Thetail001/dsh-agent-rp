@@ -109,7 +109,11 @@ export interface ImportedLorebookEntry {
   readonly matchWholeWords: boolean
   readonly secondaryLogic: 'and-any' | 'and-all' | 'not-any' | 'not-all'
   readonly scanDepth?: number
-  readonly position: 'before_char' | 'after_char'
+  readonly position: 'before_char' | 'after_char' | 'at_depth'
+  /** Provider-message depth used only by `at_depth` entries. */
+  readonly injectionDepth?: number
+  /** Provider-message role used only by `at_depth` entries. */
+  readonly injectionRole?: 'system' | 'user' | 'assistant'
   readonly priority?: number
   /** Card extension flag allowing this entry to bypass the ordinary lorebook token budget. */
   readonly ignoreBudget: boolean

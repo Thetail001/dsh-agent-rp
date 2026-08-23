@@ -20,7 +20,7 @@ function plan(label: string, sessionSeq = 0): RoleplayTurnPlan {
     input: { sessionId: 'coordinator-session', sessionSeq, pendingMessageIds: [] },
     runtime,
     world: {
-      engine: 'native-v0', resources: [], experienceBeforeActor: [], actorBefore: [], actorAfter: [],
+      engine: 'native-v0', resources: [], inChat: [], experienceBeforeActor: [], actorBefore: [], actorAfter: [],
       experienceAfterActor: [], approximateTokens: 0,
     },
     prompt: {

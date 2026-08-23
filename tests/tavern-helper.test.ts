@@ -41,6 +41,7 @@ import { tavernScriptIdentity } from '../src/tavern-script-identity.ts'
 import { executeTavernHelperMutation } from '../src/tavern-helper-command.ts'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
+import { inspectLorebook } from '../src/import/lorebook.ts'
 
 interface CapturedIgnorableEvent {
   readonly type: string
@@ -871,12 +872,27 @@ test('persists script-created worldbooks and activates them only after binding',
     format: 0,
     operation: 'replace-worldbook',
     name: '旅店记忆',
-    entries: [{ name: '钥匙', content: '钥匙藏在钟下。', strategy: { type: 'constant' } }],
+    entries: [
+      { name: '钥匙', content: '钥匙藏在钟下。', strategy: { type: 'constant' } },
+      {
+        name: '耳语', content: '最近的耳语。', strategy: { type: 'constant' },
+        position: { type: 'at_depth', role: 'user', depth: 1, order: 80 },
+      },
+      {
+        name: '坏深度', content: '不能注入。', strategy: { type: 'constant' },
+        position: { type: 'at_depth', role: 'system', depth: -1, order: 70 },
+      },
+    ],
   })))
   const sources = withTavernWorldbooks([], decodeTavernHelperState(encodeTavernHelperState(replaced)))
 
   assert.equal(sources[0]?.name, '旅店记忆')
   assert.equal(sources[0]?.lorebook.entries[0]?.content, '钥匙藏在钟下。')
+  assert.deepEqual(inspectLorebook(sources[0]!.lorebook, []).inChat, [
+    { role: 'user', content: '最近的耳语。', depth: 1, order: 80 },
+    { role: 'system', content: '钥匙藏在钟下。', depth: 4, order: 100 },
+  ])
+  assert.deepEqual(sources[0]?.lorebook.entries[2]?.compatibilityBlockers, ['entry-unsupported-position'])
   assert.deepEqual(activeTavernWorldbooks(sources, replaced), [])
 
   const bound = applyTavernHelperMutation(replaced, {

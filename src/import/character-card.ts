@@ -192,11 +192,30 @@ function hasDecorator(content: string): boolean {
 
 function lorebookPosition(
   value: JsonValue | undefined,
-): { readonly position: ImportedLorebookEntry['position']; readonly unsupported: boolean } {
+  depthValue: JsonValue | undefined,
+  roleValue: JsonValue | undefined,
+): {
+  readonly position: ImportedLorebookEntry['position']
+  readonly unsupported: boolean
+  readonly injectionDepth?: number
+  readonly injectionRole?: NonNullable<ImportedLorebookEntry['injectionRole']>
+} {
   if (value === undefined || value === null || value === 'after_char' || value === 1) {
     return { position: 'after_char', unsupported: false }
   }
   if (value === 'before_char' || value === 0) return { position: 'before_char', unsupported: false }
+  if (value === 4) {
+    const injectionDepth = depthValue === undefined || depthValue === null ? 4 : depthValue
+    const role = roleValue === undefined || roleValue === null ? 0 : roleValue
+    const injectionRole = role === 0 ? 'system' : role === 1 ? 'user' : role === 2 ? 'assistant' : undefined
+    const supported = typeof injectionDepth === 'number' && Number.isSafeInteger(injectionDepth)
+      && injectionDepth >= 0 && injectionDepth <= 10_000 && injectionRole !== undefined
+    return {
+      position: 'at_depth',
+      unsupported: !supported,
+      ...(supported ? { injectionDepth, injectionRole } : {}),
+    }
+  }
   return { position: 'after_char', unsupported: true }
 }
 
@@ -212,7 +231,11 @@ function parseLorebookEntry(value: JsonValue, index: number, version: CharacterC
   const useRegex = optionalBoolean(entry.use_regex, `${path}.use_regex`) ?? false
   if (version === 3 && entry.use_regex === undefined) throw new Error(`${path}.use_regex must be a boolean`)
   const extensionPosition = extensions.position
-  const normalizedPosition = lorebookPosition(extensionPosition ?? entry.position)
+  const normalizedPosition = lorebookPosition(
+    extensionPosition ?? entry.position,
+    extensions.depth ?? entry.depth,
+    extensions.role ?? entry.role,
+  )
   const content = requiredString(entry.content, `${path}.content`)
   const sourceIdValue = entry.id
   if (sourceIdValue !== undefined && sourceIdValue !== null
@@ -236,6 +259,8 @@ function parseLorebookEntry(value: JsonValue, index: number, version: CharacterC
     matchWholeWords: optionalBoolean(entry.match_whole_words, `${path}.match_whole_words`) ?? false,
     secondaryLogic: 'and-any',
     position: normalizedPosition.position,
+    ...(normalizedPosition.injectionDepth === undefined ? {} : { injectionDepth: normalizedPosition.injectionDepth }),
+    ...(normalizedPosition.injectionRole === undefined ? {} : { injectionRole: normalizedPosition.injectionRole }),
     ...(priority === undefined ? {} : { priority }),
     useRegex,
     hasDecorators: hasDecorator(content),

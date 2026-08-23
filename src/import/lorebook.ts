@@ -9,6 +9,14 @@ export interface ActiveLorebook {
   readonly afterCharacter: readonly string[]
 }
 
+/** One active world contribution placed relative to recent provider messages. */
+export interface LorebookInChatContribution {
+  readonly role: 'system' | 'user' | 'assistant'
+  readonly content: string
+  readonly depth: number
+  readonly order: number
+}
+
 /** Why one normalized lorebook entry did or did not enter the current prompt. */
 export type LorebookActivationReason =
   | 'active-constant'
@@ -45,6 +53,7 @@ export interface LorebookEntryActivation {
 /** Prompt fragments and entry-level explanations produced by the same decision pass. */
 export interface InspectedLorebook extends ActiveLorebook {
   readonly entries: readonly LorebookEntryActivation[]
+  readonly inChat: readonly LorebookInChatContribution[]
 }
 
 /** Optional isolated renderer used to admit executable EJS content. */
@@ -91,6 +100,7 @@ export interface LorebookCollectionItem {
 /** Shared-budget inspection retaining entry explanations for every source book. */
 export interface InspectedLorebookCollection extends ActiveLorebook {
   readonly books: readonly { readonly id: string; readonly inspected: InspectedLorebook }[]
+  readonly inChat: readonly LorebookInChatContribution[]
   readonly approximateTokens: number
   readonly tokenBudget?: number
 }
@@ -317,13 +327,22 @@ function budgeted(book: ImportedLorebook, entries: readonly {
   return kept.sort((left, right) => left - right)
 }
 
-function activeContent(book: ImportedLorebook, entries: readonly LorebookEntryActivation[]): ActiveLorebook {
+function activeContent(
+  book: ImportedLorebook,
+  entries: readonly LorebookEntryActivation[],
+): ActiveLorebook & { readonly inChat: readonly LorebookInChatContribution[] } {
   const active = entries.filter(value => value.active)
     .map(value => ({ index: value.index, entry: book.entries[value.index]!, content: value.resolvedContent }))
     .sort((left, right) => left.entry.insertionOrder - right.entry.insertionOrder || left.index - right.index)
   return {
     beforeCharacter: active.filter(value => value.entry.position === 'before_char').map(value => value.content),
     afterCharacter: active.filter(value => value.entry.position === 'after_char').map(value => value.content),
+    inChat: active.filter(value => value.entry.position === 'at_depth').map(value => ({
+      role: value.entry.injectionRole ?? 'system',
+      content: value.content,
+      depth: value.entry.injectionDepth ?? 4,
+      order: value.entry.insertionOrder,
+    })),
   }
 }
 
@@ -438,6 +457,7 @@ export function inspectLorebooks(
   return {
     beforeCharacter: resolved.flatMap(book => book.inspected.beforeCharacter),
     afterCharacter: resolved.flatMap(book => book.inspected.afterCharacter),
+    inChat: resolved.flatMap(book => book.inspected.inChat),
     books: resolved,
     approximateTokens: resolved.flatMap(book => book.inspected.entries)
       .filter(entry => entry.active).reduce((sum, entry) => sum + entry.approximateTokens, 0),

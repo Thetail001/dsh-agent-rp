@@ -53,6 +53,31 @@ test('persists a complete editable World Info overlay without mutating imported 
   assert.deepEqual(configuredLorebook(book, reset).lorebook, book.lorebook)
 })
 
+test('keeps depth placement metadata through a session-local edit', () => {
+  const worldInfo = parseWorldInfoJson(JSON.stringify({ name: '深度世界', entries: {
+    1: {
+      uid: 1, key: [], content: '插入最近一层历史。', constant: true,
+      order: 88, position: 4, depth: 1, role: 2,
+    },
+  } }))
+  const book: SessionLorebookSource = {
+    id: 'standalone:depth', name: '深度世界', source: 'standalone',
+    lorebook: worldInfo.lorebook, degradations: worldInfo.degradations,
+  }
+  const original = book.lorebook.entries[0]!
+  const edited = configureWorldInfo({ format: 0, revision: 0, overrides: [] },
+    parseWorldInfoConfigurationRequest(JSON.stringify({
+      operation: 'edit', revision: 0, bookId: book.id, entryIndex: 0,
+      entry: { ...editableWorldInfoEntry(original), content: '当前会话改写。' },
+    })), [book])
+  const configured = configuredLorebook(book, edited).lorebook.entries[0]
+
+  assert.equal(configured?.position, 'at_depth')
+  assert.equal(configured?.injectionDepth, 1)
+  assert.equal(configured?.injectionRole, 'assistant')
+  assert.equal(configured?.content, '当前会话改写。')
+})
+
 test('restoring an otherwise unchanged removed entry leaves no empty override', () => {
   const book = source()
   const removed = configureWorldInfo({ format: 0, revision: 0, overrides: [] }, {

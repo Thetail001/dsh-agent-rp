@@ -46,7 +46,7 @@ function turnPlan(input: {
     input: { sessionId: input.sessionId, sessionSeq: input.sessionSeq, pendingMessageIds: [] },
     runtime: snapshot,
     world: {
-      engine: 'native-v0', resources: [], experienceBeforeActor: [], actorBefore: [], actorAfter: [],
+      engine: 'native-v0', resources: [], inChat: [], experienceBeforeActor: [], actorBefore: [], actorAfter: [],
       experienceAfterActor: [], approximateTokens: 0,
     },
     prompt: {
@@ -232,6 +232,7 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
     },
     world: {
       engine: 'native-v0',
+      inChat: [],
       resources: [{
         resource: worldBinding,
         beforeActor: ['世界贡献'],

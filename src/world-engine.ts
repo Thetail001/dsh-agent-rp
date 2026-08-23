@@ -93,7 +93,7 @@ export function summarizeWorldEngineResult(result: WorldEngineResult): WorldEngi
     books: result.books.length,
     entries,
     activeEntries,
-    promptContributions: result.beforeCharacter.length + result.afterCharacter.length,
+    promptContributions: result.beforeCharacter.length + result.afterCharacter.length + result.inChat.length,
     approximateTokens: result.approximateTokens,
     ...(result.tokenBudget === undefined ? {} : { tokenBudget: result.tokenBudget }),
     reasons,

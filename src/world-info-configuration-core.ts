@@ -21,8 +21,15 @@ export interface SessionLorebookSource {
 
 function importedScriptEntry(entry: TavernWorldbookEntry): ImportedLorebookEntry {
   const logic = entry.strategy.keys_secondary.logic
-  const before = entry.position.type === 'before_character_definition'
-    || entry.position.type === 'before_example_messages' || entry.position.type === 'before_author_note'
+  const position = entry.position.type === 'before_character_definition' ? 'before_char'
+    : entry.position.type === 'after_character_definition' ? 'after_char'
+      : entry.position.type === 'at_depth' ? 'at_depth' : 'after_char'
+  const validAtDepth = position !== 'at_depth' || (
+    Number.isSafeInteger(entry.position.depth) && entry.position.depth >= 0 && entry.position.depth <= 10_000
+    && (entry.position.role === 'system' || entry.position.role === 'user' || entry.position.role === 'assistant')
+  )
+  const unsupportedPosition = !validAtDepth || (entry.position.type !== 'before_character_definition'
+    && entry.position.type !== 'after_character_definition' && entry.position.type !== 'at_depth')
   return {
     sourceId: String(entry.uid),
     ...(entry.name === '' ? {} : { name: entry.name }),
@@ -38,11 +45,16 @@ function importedScriptEntry(entry: TavernWorldbookEntry): ImportedLorebookEntry
     secondaryLogic: logic === 'and_all' ? 'and-all' : logic === 'not_all' ? 'not-all'
       : logic === 'not_any' ? 'not-any' : 'and-any',
     ...(entry.strategy.scan_depth === 'same_as_global' ? {} : { scanDepth: entry.strategy.scan_depth }),
-    position: before ? 'before_char' : 'after_char',
+    position,
+    ...(position === 'at_depth' && validAtDepth ? {
+      injectionDepth: entry.position.depth,
+      injectionRole: entry.position.role,
+    } : {}),
     priority: entry.position.order,
     ignoreBudget: entry.ignoreBudget === true,
     useRegex: false,
     hasDecorators: false,
+    ...(unsupportedPosition ? { compatibilityBlockers: ['entry-unsupported-position' as const] } : {}),
   }
 }
 
@@ -148,13 +160,29 @@ function editable(value: unknown, label: string): WorldInfoEditableEntry {
   const position = entry.position
   if (secondaryLogic !== 'and-any' && secondaryLogic !== 'and-all'
     && secondaryLogic !== 'not-any' && secondaryLogic !== 'not-all') throw new Error(`${label}.secondaryLogic 无效`)
-  if (position !== 'before_char' && position !== 'after_char') throw new Error(`${label}.position 无效`)
+  if (position !== 'before_char' && position !== 'after_char' && position !== 'at_depth') {
+    throw new Error(`${label}.position 无效`)
+  }
   for (const key of ['enabled', 'selective', 'constant', 'caseSensitive', 'matchWholeWords', 'ignoreBudget'] as const) {
     if (typeof entry[key] !== 'boolean') throw new Error(`${label}.${key} 必须是布尔值`)
   }
   const scanDepth = optionalFinite(entry.scanDepth, `${label}.scanDepth`)
   if (scanDepth !== undefined && scanDepth < 0) throw new Error(`${label}.scanDepth 不能小于零`)
   const priority = optionalFinite(entry.priority, `${label}.priority`)
+  const injectionDepth = optionalFinite(entry.injectionDepth, `${label}.injectionDepth`)
+  const injectionRole = entry.injectionRole === 'system' || entry.injectionRole === 'user'
+    || entry.injectionRole === 'assistant' ? entry.injectionRole : undefined
+  let placement: Pick<WorldInfoEditableEntry, 'injectionDepth' | 'injectionRole'> | undefined
+  if (position === 'at_depth') {
+    if (typeof injectionDepth !== 'number' || !Number.isSafeInteger(injectionDepth)
+      || injectionDepth < 0 || injectionDepth > 10_000) {
+      throw new Error(`${label}.injectionDepth 必须是 0 到 10000 的整数`)
+    }
+    if (injectionRole === undefined) {
+      throw new Error(`${label}.injectionRole 无效`)
+    }
+    placement = { injectionDepth, injectionRole }
+  }
   const name = optionalText(entry.name, `${label}.name`)
   const comment = optionalText(entry.comment, `${label}.comment`)
   return {
@@ -172,6 +200,7 @@ function editable(value: unknown, label: string): WorldInfoEditableEntry {
     secondaryLogic,
     ...(scanDepth === undefined ? {} : { scanDepth }),
     position,
+    ...(placement ?? {}),
     ...(priority === undefined ? {} : { priority }),
     ignoreBudget: entry.ignoreBudget as boolean,
   }
@@ -303,6 +332,8 @@ export function editableWorldInfoEntry(entry: ImportedLorebookEntry): WorldInfoE
     secondaryLogic: entry.secondaryLogic,
     ...(entry.scanDepth === undefined ? {} : { scanDepth: entry.scanDepth }),
     position: entry.position,
+    ...(entry.injectionDepth === undefined ? {} : { injectionDepth: entry.injectionDepth }),
+    ...(entry.injectionRole === undefined ? {} : { injectionRole: entry.injectionRole }),
     ...(entry.priority === undefined ? {} : { priority: entry.priority }),
     ignoreBudget: entry.ignoreBudget,
   }

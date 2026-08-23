@@ -4262,6 +4262,8 @@ function editableFromProjection(entry: WorldInfoEntryProjection): WorldInfoEdita
     secondaryLogic: entry.secondaryLogic,
     ...(entry.scanDepth === undefined ? {} : { scanDepth: entry.scanDepth }),
     position: entry.position,
+    ...(entry.injectionDepth === undefined ? {} : { injectionDepth: entry.injectionDepth }),
+    ...(entry.injectionRole === undefined ? {} : { injectionRole: entry.injectionRole }),
     ...(entry.priority === undefined ? {} : { priority: entry.priority }),
     ignoreBudget: entry.ignoreBudget,
   }
@@ -4477,7 +4479,10 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
             <div style={{ display: 'grid', gap: '12px', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', marginTop: '17px' }}>
               <DetailSection title="主关键词" text={entry.constant ? '常驻，无需关键词' : entry.keys.join('、') || '未设置'} />
               {entry.selective && <DetailSection title="次要关键词" text={entry.secondaryKeys.join('、') || '未设置'} />}
-              <DetailSection title="注入位置" text={entry.position === 'before_char' ? '角色设定之前' : '角色设定之后'} />
+              <DetailSection title="注入位置" text={entry.position === 'before_char' ? '角色设定之前'
+                : entry.position === 'after_char' ? '角色设定之后'
+                  : `对话深度 ${entry.injectionDepth ?? 4} · ${entry.injectionRole === 'assistant' ? '助手'
+                    : entry.injectionRole === 'user' ? '用户' : '系统'}`} />
               <DetailSection title="估算占用" text={`约 ${entry.approximateTokens} tokens${book.tokenBudget === undefined ? '' : ` · 本书预算 ${book.tokenBudget}`}`} />
             </div>
             {(entry.useRegex || entry.hasDecorators || entry.compatibilityBlockers.length > 0 || book.recursiveScanning || book.degradations.length > 0) && <details style={{ fontSize: '12px', lineHeight: 1.65, marginTop: '17px', opacity: .68 }}>
@@ -4526,6 +4531,11 @@ function WorldInfoEntryEditor({ draft, saving, onCancel, onSave }: {
   readonly onSave: (value: WorldInfoEditableEntry) => void
 }) {
   const [value, setValue] = useState(draft)
+  const validPlacement = value.position !== 'at_depth' || (
+    Number.isSafeInteger(value.injectionDepth) && (value.injectionDepth ?? -1) >= 0
+    && (value.injectionDepth ?? Number.POSITIVE_INFINITY) <= 10_000
+    && (value.injectionRole === 'system' || value.injectionRole === 'user' || value.injectionRole === 'assistant')
+  )
   const inputStyle = {
     background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #414146)',
     borderRadius: '8px', boxSizing: 'border-box', color: 'inherit', font: 'inherit', padding: '8px 9px', width: '100%',
@@ -4538,7 +4548,7 @@ function WorldInfoEntryEditor({ draft, saving, onCancel, onSave }: {
         <div style={{ fontSize: '11px', marginTop: '5px', opacity: .48 }}>修改只作用于当前会话，原文件不会被覆盖</div>
       </div>
       <button type="button" onClick={onCancel} style={{ ...generationButtonStyle, marginLeft: 'auto' }}>取消</button>
-      <button type="submit" disabled={saving || value.content.trim() === ''} style={{ ...generationButtonStyle, opacity: value.content.trim() === '' ? .35 : 1 }}>{saving ? '保存中…' : '保存'}</button>
+      <button type="submit" disabled={saving || value.content.trim() === '' || !validPlacement} style={{ ...generationButtonStyle, opacity: value.content.trim() === '' || !validPlacement ? .35 : 1 }}>{saving ? '保存中…' : '保存'}</button>
     </div>
     <div style={{ display: 'grid', gap: '13px', marginTop: '19px' }}>
       <label style={{ fontSize: '12px' }}>名称
@@ -4565,10 +4575,30 @@ function WorldInfoEntryEditor({ draft, saving, onCancel, onSave }: {
       </div>
       <div style={{ display: 'grid', gap: '12px', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
         <label style={{ fontSize: '12px' }}>注入位置
-          <select value={value.position} onChange={event => { setValue(current => ({ ...current, position: event.target.value as WorldInfoEditableEntry['position'] })) }} style={{ ...inputStyle, marginTop: '6px' }}>
-            <option value="before_char">角色设定之前</option><option value="after_char">角色设定之后</option>
+          <select value={value.position} onChange={event => { setValue(current => {
+            const position = event.target.value as WorldInfoEditableEntry['position']
+            if (position === 'at_depth') return { ...current, position, injectionDepth: current.injectionDepth ?? 4, injectionRole: current.injectionRole ?? 'system' }
+            const next = { ...current, position }; delete next.injectionDepth; delete next.injectionRole; return next
+          }) }} style={{ ...inputStyle, marginTop: '6px' }}>
+            <option value="before_char">角色设定之前</option><option value="after_char">角色设定之后</option><option value="at_depth">对话历史内</option>
           </select>
         </label>
+        {value.position === 'at_depth' && <>
+          <label style={{ fontSize: '12px' }}>历史深度
+            <input type="number" min={0} max={10000} step={1} value={value.injectionDepth ?? ''} onChange={event => {
+              const source = event.target.value
+              setValue(current => {
+                if (source !== '') return { ...current, injectionDepth: Number(source) }
+                const next = { ...current }; delete next.injectionDepth; return next
+              })
+            }} style={{ ...inputStyle, marginTop: '6px' }} />
+          </label>
+          <label style={{ fontSize: '12px' }}>消息角色
+            <select value={value.injectionRole ?? 'system'} onChange={event => { setValue(current => ({ ...current, injectionRole: event.target.value as NonNullable<WorldInfoEditableEntry['injectionRole']> })) }} style={{ ...inputStyle, marginTop: '6px' }}>
+              <option value="system">系统</option><option value="user">用户</option><option value="assistant">助手</option>
+            </select>
+          </label>
+        </>}
         <label style={{ fontSize: '12px' }}>次要条件
           <select disabled={!value.selective} value={value.secondaryLogic} onChange={event => { setValue(current => ({ ...current, secondaryLogic: event.target.value as WorldInfoEditableEntry['secondaryLogic'] })) }} style={{ ...inputStyle, marginTop: '6px', opacity: value.selective ? 1 : .45 }}>
             <option value="and-any">任意命中</option><option value="and-all">全部命中</option><option value="not-any">全部不出现</option><option value="not-all">不是全部出现</option>

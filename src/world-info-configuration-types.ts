@@ -15,7 +15,9 @@ export interface WorldInfoEditableEntry {
   readonly matchWholeWords: boolean
   readonly secondaryLogic: 'and-any' | 'and-all' | 'not-any' | 'not-all'
   readonly scanDepth?: number
-  readonly position: 'before_char' | 'after_char'
+  readonly position: 'before_char' | 'after_char' | 'at_depth'
+  readonly injectionDepth?: number
+  readonly injectionRole?: 'system' | 'user' | 'assistant'
   readonly priority?: number
   readonly ignoreBudget: boolean
 }

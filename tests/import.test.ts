@@ -9,7 +9,7 @@ import {
   parseCharacterCardJson,
   parseCharacterCardJsonBytes,
 } from '../src/import/character-card.ts'
-import { activateLorebook } from '../src/import/lorebook.ts'
+import { activateLorebook, inspectLorebook } from '../src/import/lorebook.ts'
 import { readCharacterCardPng } from '../src/import/png.ts'
 
 const base = {
@@ -98,7 +98,7 @@ test('ignores malformed optional nicknames without rejecting or rewriting the ca
   }
 })
 
-test('preserves and blocks unsupported embedded lorebook positions without rejecting the card', () => {
+test('normalizes embedded lorebook depth injection without rewriting the card', () => {
   const raw = {
     spec: 'chara_card_v2',
     spec_version: '2.0',
@@ -118,13 +118,18 @@ test('preserves and blocks unsupported embedded lorebook positions without rejec
   }
   const card = parseCharacterCardJson(JSON.stringify(raw))
 
-  assert.equal(card.lorebook?.entries[0]?.position, 'after_char')
-  assert.deepEqual(card.lorebook?.entries[0]?.compatibilityBlockers, ['entry-unsupported-position'])
-  assert.equal(card.degradations.includes('lorebook-position'), true)
+  assert.equal(card.lorebook?.entries[0]?.position, 'at_depth')
+  assert.equal(card.lorebook?.entries[0]?.injectionDepth, 4)
+  assert.equal(card.lorebook?.entries[0]?.injectionRole, 'system')
+  assert.equal(card.lorebook?.entries[0]?.compatibilityBlockers, undefined)
+  assert.equal(card.degradations.includes('lorebook-position'), false)
   assert.deepEqual(activateLorebook(card.lorebook!, ['去钟楼。']), {
     beforeCharacter: [],
     afterCharacter: [],
   })
+  assert.deepEqual(inspectLorebook(card.lorebook!, ['去钟楼。']).inChat, [{
+    role: 'system', content: '这条内容使用聊天深度插入。', depth: 4, order: 1,
+  }])
   assert.deepEqual(card.raw, raw)
 })
 
@@ -155,10 +160,10 @@ test('accepts exporter-style numeric positions in the character-book position fi
   const card = parseCharacterCardJson(JSON.stringify(raw))
 
   assert.deepEqual(card.lorebook?.entries.map(entry => entry.position), [
-    'before_char', 'after_char', 'after_char',
+    'before_char', 'after_char', 'at_depth',
   ])
   assert.deepEqual(card.lorebook?.entries.map(entry => entry.compatibilityBlockers ?? []), [
-    [], [], ['entry-unsupported-position'],
+    [], [], [],
   ])
   assert.deepEqual(card.raw, raw)
 })

@@ -75,6 +75,19 @@ function secondaryLogic(value: number, path: string): ImportedLorebookEntry['sec
   throw new Error(`${path} must be 0, 1, 2, or 3`)
 }
 
+function atDepthPlacement(
+  depth: JsonValue | undefined,
+  role: JsonValue | undefined,
+): Pick<ImportedLorebookEntry, 'injectionDepth' | 'injectionRole'> | undefined {
+  const injectionDepth = depth === undefined || depth === null ? 4 : depth
+  const roleValue = role === undefined || role === null ? 0 : role
+  const injectionRole = roleValue === 0 ? 'system'
+    : roleValue === 1 ? 'user' : roleValue === 2 ? 'assistant' : undefined
+  if (typeof injectionDepth !== 'number' || !Number.isSafeInteger(injectionDepth)
+    || injectionDepth < 0 || injectionDepth > 10_000 || injectionRole === undefined) return undefined
+  return { injectionDepth, injectionRole }
+}
+
 function parseEntry(
   value: JsonValue,
   id: string,
@@ -101,7 +114,9 @@ function parseEntry(
     throw new Error(`${path}.uid must be a string or number`)
   }
   const displayName = optionalString(entry.comment, `${path}.comment`)
-  const supportedPosition = position === 0 || position === 1
+  const placement = position === 4 ? atDepthPlacement(entry.depth, entry.role) : undefined
+  const validAtDepth = position !== 4 || placement !== undefined
+  const supportedPosition = (position === 0 || position === 1 || position === 4) && validAtDepth
   if (decorated) degradations.add('entry-decorators')
   if (!supportedPosition) degradations.add('entry-unsupported-position')
   if (usesProbability) degradations.add('entry-probability')
@@ -133,7 +148,8 @@ function parseEntry(
     matchWholeWords: boolean(entry.matchWholeWords, `${path}.matchWholeWords`, false),
     secondaryLogic: secondaryLogic(finiteNumber(entry.selectiveLogic, `${path}.selectiveLogic`, 0), `${path}.selectiveLogic`),
     ...(scanDepth === undefined ? {} : { scanDepth }),
-    position: position === 0 ? 'before_char' : 'after_char',
+    position: position === 0 ? 'before_char' : position === 4 ? 'at_depth' : 'after_char',
+    ...(placement ?? {}),
     ignoreBudget: false,
     useRegex,
     hasDecorators: decorated,
