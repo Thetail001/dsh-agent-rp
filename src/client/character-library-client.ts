@@ -3,6 +3,7 @@
 import {
   CHARACTER_LIBRARY_PATH,
   type CharacterLibraryDetail,
+  type CharacterLibraryRuntimeDetail,
   type CharacterLibraryEditRequest,
   type CharacterLibraryWorldInfoPage,
   type CharacterRemoteResourcePolicy,
@@ -26,6 +27,11 @@ export async function fetchCharacterDetail(id: string): Promise<CharacterLibrary
     `/${encodeURIComponent(id)}`,
   )
   return value.entry
+}
+
+/** Load active card metadata and presentation rules in one Host parse for the roleplay renderer. */
+export async function fetchCharacterRuntimeDetail(id: string): Promise<CharacterLibraryRuntimeDetail> {
+  return characterLibraryJson<CharacterLibraryRuntimeDetail>(`/${encodeURIComponent(id)}/runtime-detail`)
 }
 
 /** Notify mounted character consumers after a successful Host mutation. */

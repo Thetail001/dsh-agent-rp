@@ -1,7 +1,7 @@
 /** Browser-safe character-library values shared by the Host and Roleplay UI. */
 
 import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
-import type { CharacterImportDegradation, TavernHelperImportSummary } from './import/types.ts'
+import type { CharacterImportDegradation, ImportedRegexScript, TavernHelperImportSummary } from './import/types.ts'
 import type { CharacterRegexScriptSummary } from './frontend-regex.ts'
 
 /** Same-origin endpoint served by the Agent RP Host plugin. */
@@ -168,6 +168,13 @@ export interface CharacterLibraryDetail extends CharacterLibrarySummary {
   readonly localRevision: number
   /** Whether character fields or card-owned regex switches differ from the imported asset. */
   readonly localEdits: boolean
+}
+
+/** Active card details plus exact pure-display policy loaded only by the local renderer. */
+export interface CharacterLibraryRuntimeDetail {
+  readonly format: 0
+  readonly entry: CharacterLibraryDetail
+  readonly displayRegexScripts: readonly ImportedRegexScript[]
 }
 
 /** What changed when one local card file was added to the library. */

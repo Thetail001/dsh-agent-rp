@@ -50,6 +50,7 @@ import {
   splitCharacterDisplay,
   summarizeCharacterRegexScript,
   traceCharacterPromptView,
+  withCurrentCharacterDisplayScripts,
   USER_INPUT_PLACEMENT,
 } from '../src/frontend-regex.ts'
 
@@ -146,6 +147,33 @@ test('renders plain Markdown replacements for user-message display rules', () =>
   }, USER_INPUT_PLACEMENT)
   assert.equal(rendered, '**new**')
   assert.deepEqual(splitCharacterDisplay(rendered), [{ kind: 'markdown', text: '**new**' }])
+})
+
+test('uses current library display rules without changing Session prompt behavior', () => {
+  const sessionDisplay = { ...base, scriptName: '旧显示', findRegex: 'old', replaceString: 'stale' }
+  const ordinary = { ...base, scriptName: '双向规则', markdownOnly: false, findRegex: 'seed', replaceString: 'old' }
+  const currentDisplay = {
+    ...base,
+    scriptName: '隐藏<details>',
+    findRegex: '<details[^>]*>[\\s\\S]*?<\\/details>',
+    replaceString: '111',
+    placement: [USER_INPUT_PLACEMENT, AI_OUTPUT_PLACEMENT],
+    runOnEdit: true,
+  }
+  const frontend = withCurrentCharacterDisplayScripts({
+    ...character.frontend,
+    regexScripts: [ordinary, sessionDisplay],
+  }, [currentDisplay])
+  const currentCharacter = { ...character, frontend }
+
+  assert.equal(renderCharacterDisplay('seed', currentCharacter, AI_OUTPUT_PLACEMENT), 'old')
+  assert.equal(renderCharacterDisplay(
+    '<details><summary>后台日志</summary>秘密状态</details>',
+    currentCharacter,
+    AI_OUTPUT_PLACEMENT,
+  ), '111')
+  assert.equal(renderCharacterPromptView('seed', currentCharacter, AI_OUTPUT_PLACEMENT), 'old')
+  assert.equal(renderCharacterPromptView('old', currentCharacter, AI_OUTPUT_PLACEMENT), 'old')
 })
 
 test('parses Tavern send and trigger pipelines without leaking commands into chat', () => {

@@ -282,6 +282,7 @@ test('keeps local wording fixes and standalone display regexes beside the origin
     data: extension, filename: '插图.json', approvedImageOrigins: ['https://cdn.example.com'],
   })
   assert.equal(extended.displayExtensions.length, 1)
+  assert.equal(library.resolve(imported.id).card.frontend.regexScripts.at(-1)?.scriptName, '插图 DLC')
   assert.deepEqual(extended.displayExtensions[0]?.remoteImageOrigins, ['https://cdn.example.com'])
   assert.deepEqual(extended.displayExtensions[0]?.replacedCardRegexNames, ['旧图片规则'])
   assert.match(extended.renderedGreetings[0]!, /<img src=https:\/\/cdn\.example\.com\/image\.png/u)
@@ -289,7 +290,9 @@ test('keeps local wording fixes and standalone display regexes beside the origin
   assert.deepEqual(library.asset(imported.id).data, data)
 
   const extensionId = extended.displayExtensions[0]!.id
-  assert.equal(library.setDisplayExtensionEnabled(imported.id, extensionId, false).displayExtensions[0]?.enabled, false)
+  const paused = library.setDisplayExtensionEnabled(imported.id, extensionId, false)
+  assert.equal(paused.displayExtensions[0]?.enabled, false)
+  assert.equal(library.resolve(imported.id).card.frontend.regexScripts.at(-1)?.scriptName, '旧图片规则')
   assert.equal(library.setDisplayExtensionEnabled(imported.id, extensionId, true).displayExtensions[0]?.enabled, true)
   assert.equal(library.removeDisplayExtension(imported.id, extensionId).displayExtensions.length, 0)
   assert.deepEqual(library.asset(imported.id).data, data)

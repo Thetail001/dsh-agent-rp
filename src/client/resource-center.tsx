@@ -30,6 +30,7 @@ interface ResourceCenterProps {
   readonly listWorldInfos: () => Promise<readonly WorldInfoLibraryUpload[]>
   readonly importWorldInfoFile: (file: File) => Promise<WorldInfoLibraryUpload>
   readonly setWorldInfoDefault: (id: string, enabled: boolean) => Promise<WorldInfoLibraryUpload>
+  readonly deleteWorldInfo: (id: string) => Promise<WorldInfoLibraryUpload>
   readonly listPresets: () => Promise<readonly PresetLibrarySummary[]>
   readonly importPresetFile: (file: File) => Promise<PresetLibrarySummary>
   readonly renamePreset: (id: string, name: string) => Promise<PresetLibrarySummary>
@@ -347,7 +348,7 @@ function SillyTavernLibraryMigrationDialog({
 export function RoleplayResourceCenter({
   accent, narrow, initialSection = 'characters',
   listCharacters, setCharacterArchived, importCharacterFile,
-  listWorldInfos, importWorldInfoFile, setWorldInfoDefault,
+  listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo,
   listPresets, importPresetFile, renamePreset,
   listPersonas, savePersona, deletePersona,
   onConfigureWorldInfo,
@@ -366,6 +367,7 @@ export function RoleplayResourceCenter({
   const [personaDraft, setPersonaDraft] = useState<{ readonly id?: string; readonly name: string; readonly description: string }>()
   const [presetDraft, setPresetDraft] = useState<{ readonly id: string; readonly name: string }>()
   const [confirmingPersonaId, setConfirmingPersonaId] = useState<string>()
+  const [confirmingWorldInfoId, setConfirmingWorldInfoId] = useState<string>()
   const [migrationOpen, setMigrationOpen] = useState(false)
   const characterInputRef = useRef<HTMLInputElement | null>(null)
   const worldInfoInputRef = useRef<HTMLInputElement | null>(null)
@@ -478,6 +480,18 @@ export function RoleplayResourceCenter({
         ? `「${updated.name}」会在新 RP 会话中默认加载`
         : `「${updated.name}」改为开聊时手动选择`)
     }).catch(reason => { setError(message(reason)) }).finally(finishAction)
+  }
+  const removeWorldInfo = (entry: WorldInfoLibraryUpload): void => {
+    if (confirmingWorldInfoId !== entry.id) {
+      setConfirmingWorldInfoId(entry.id)
+      return
+    }
+    startAction(`world-info:${entry.id}`)
+    void deleteWorldInfo(entry.id).then(removed => {
+      setWorldInfos(current => current?.filter(candidate => candidate.id !== removed.id))
+      setConfirmingWorldInfoId(undefined)
+      setNotice(`已从世界书库移除「${removed.name}」；已开始的会话不受影响`)
+    }, reason => { setError(message(reason)) }).finally(finishAction)
   }
   const savePersonaDraft = (): void => {
     if (personaDraft === undefined || personaDraft.name.trim() === '') return
@@ -654,6 +668,12 @@ export function RoleplayResourceCenter({
               </div>
               <button type="button" disabled={busy !== undefined} onClick={() => { toggleWorldInfoDefault(entry) }} style={actionStyle(busy === undefined)}>
                 {busy === `world-info-default:${entry.id}` ? '保存中…' : entry.defaultForNewSessions ? '取消默认' : '设为默认'}
+              </button>
+              <button type="button" disabled={busy !== undefined} onClick={() => { removeWorldInfo(entry) }} style={{
+                ...actionStyle(busy === undefined),
+                color: confirmingWorldInfoId === entry.id ? 'var(--dsw-alias-state-danger, #e88989)' : 'inherit',
+              }}>
+                {busy === `world-info:${entry.id}` ? '移除中…' : confirmingWorldInfoId === entry.id ? '确认移除' : '移除'}
               </button>
               {onConfigureWorldInfo !== undefined && <button type="button" disabled={busy !== undefined}
                 onClick={() => { onConfigureWorldInfo(entry) }} style={actionStyle(busy === undefined)}>

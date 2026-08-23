@@ -1,7 +1,7 @@
 /** Host-owned standalone World Info sources used by direct imports. */
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { MAX_WORLD_INFO_JSON_BYTES, parseWorldInfoJsonBytes } from './import/world-info.ts'
@@ -76,6 +76,16 @@ export class WorldInfoLibrary {
     }
     writeFileSync(join(this.root, `${id}.default`), enabled ? '1' : '0', { encoding: 'utf8' })
     return this.resolve(id).upload
+  }
+
+  /** Remove one reusable source without affecting Sessions that already logged its lossless snapshot. */
+  remove(id: string): WorldInfoLibraryUpload {
+    const upload = this.resolve(id).upload
+    for (const suffix of ['.json', '.name', '.default']) {
+      const path = join(this.root, `${id}${suffix}`)
+      if (existsSync(path)) unlinkSync(path)
+    }
+    return upload
   }
 
   /** Load the exact original source bytes retained for one import. */

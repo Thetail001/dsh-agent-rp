@@ -74,3 +74,26 @@ test('deduplicates the same World Info bytes and rejects non-World-Info JSON', c
   assert.equal(library.setDefault(first.id, false).defaultForNewSessions, false)
   assert.throws(() => library.importFile({ data: Buffer.from('{"name":"not a book"}'), filename: 'wrong.json' }), /entries/u)
 })
+
+test('removes a reusable World Info source without invalidating an existing Session snapshot', context => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-rp-world-info-library-remove-'))
+  context.after(() => { rmSync(root, { recursive: true, force: true }) })
+  const library = new WorldInfoLibrary({ root })
+  const upload = library.importFile({ data: source, filename: '海城.json' })
+  library.setDefault(upload.id, true)
+  const session = Session.create(SessionId('removed-world-info'))
+  const agent = { session } as Agent
+  const commandId = CommandId('world-info-library-remove')
+  const rawInput = JSON.stringify({ format: 0, importId: upload.id })
+  session.append('command/run', {
+    commandId, name: 'rp-world-info-import', args: ` ${rawInput}`, source: { kind: 'user' },
+  })
+  const result = executeWorldInfoLibraryCommand(library, { agent, commandId, rawInput })
+  session.append('command/done', { commandId, ...result })
+
+  assert.deepEqual(library.remove(upload.id), { ...upload, defaultForNewSessions: true })
+  assert.deepEqual(library.list(), [])
+  assert.deepEqual(library.defaultIds(), [])
+  assert.throws(() => library.resolve(upload.id), /不可用/u)
+  assert.equal(readActiveSessionWorldInfos(session.events)[0]?.result.name, '海城')
+})

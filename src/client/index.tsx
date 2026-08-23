@@ -106,7 +106,7 @@ import {
 } from '../preset-library-http-protocol.ts'
 import {
   AI_OUTPUT_PLACEMENT, compileCharacterDisplay, renderCharacterDisplay, splitCharacterDisplay,
-  summarizeCharacterRegexScript, USER_INPUT_PLACEMENT, type CompiledCharacterDisplay,
+  summarizeCharacterRegexScript, USER_INPUT_PLACEMENT, withCurrentCharacterDisplayScripts, type CompiledCharacterDisplay,
   type CharacterDisplaySegment, type CharacterRegexScriptSummary,
 } from '../frontend-regex.ts'
 import {
@@ -121,7 +121,7 @@ import {
 import {
   characterLibraryChangedEvent,
   characterLibraryJson,
-  fetchCharacterDetail,
+  fetchCharacterRuntimeDetail,
   fetchCharacterWorldInfoPage,
   notifyCharacterLibraryChanged,
   updateCharacterEdits,
@@ -751,21 +751,28 @@ function usePresetPreference(
   }
 }
 
-function useCharacterDetail(libraryId: string | undefined): CharacterLibraryDetail | undefined {
-  const [detail, setDetail] = useState<CharacterLibraryDetail>()
+interface CharacterRuntimeDetail {
+  readonly detail: CharacterLibraryDetail
+  readonly displayRegexScripts: readonly ImportedRegexScript[]
+}
+
+function useCharacterDetail(libraryId: string | undefined): CharacterRuntimeDetail | undefined {
+  const [loaded, setLoaded] = useState<CharacterRuntimeDetail>()
   useEffect(() => {
     let current = true
     let revision = 0
     if (libraryId === undefined) return () => { current = false }
     const load = (): void => {
       const requestedRevision = ++revision
-      void fetchCharacterDetail(libraryId).then(value => {
-        if (current && requestedRevision === revision) setDetail(value)
+      void fetchCharacterRuntimeDetail(libraryId).then(value => {
+        if (current && requestedRevision === revision) {
+          setLoaded({ detail: value.entry, displayRegexScripts: value.displayRegexScripts })
+        }
       }, () => {
-        if (current && requestedRevision === revision) setDetail(undefined)
+        if (current && requestedRevision === revision) setLoaded(undefined)
       })
     }
-    setDetail(undefined)
+    setLoaded(undefined)
     load()
     const changed = (event: Event): void => {
       const id = (event as CustomEvent<{ readonly id?: unknown }>).detail?.id
@@ -774,7 +781,7 @@ function useCharacterDetail(libraryId: string | undefined): CharacterLibraryDeta
     window.addEventListener(characterLibraryChangedEvent, changed)
     return () => { current = false; window.removeEventListener(characterLibraryChangedEvent, changed) }
   }, [libraryId])
-  return detail
+  return loaded
 }
 
 function backgroundAssets(detail: CharacterLibraryDetail | undefined) {
@@ -1607,6 +1614,7 @@ function CharacterDisplayExtensionsSection({ detail, onChange, onNotice, onError
     setWorking(true)
     void uploadCharacterDisplayExtension(detail.id, value).then(entry => {
       onChange(entry)
+      notifyCharacterLibraryChanged(entry.id)
       onNotice(`已启用显示扩展「${value.scriptName}」`)
       setPending(undefined)
       setWorking(false)
@@ -1626,6 +1634,7 @@ function CharacterDisplayExtensionsSection({ detail, onChange, onNotice, onError
     setWorking(true)
     void updateCharacterDisplayExtension(detail.id, extensionId, operation).then(entry => {
       onChange(entry)
+      notifyCharacterLibraryChanged(entry.id)
       onNotice(operation === 'remove' ? '已移除显示扩展' : operation === 'enable' ? '已启用显示扩展' : '已停用显示扩展')
       setWorking(false)
     }, reason => {
@@ -2453,6 +2462,7 @@ type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
   readonly listWorldInfos: () => Promise<readonly WorldInfoLibraryUpload[]>
   readonly importWorldInfoFile: (file: File) => Promise<WorldInfoLibraryUpload>
   readonly setWorldInfoDefault: (id: string, enabled: boolean) => Promise<WorldInfoLibraryUpload>
+  readonly deleteWorldInfo: (id: string) => Promise<WorldInfoLibraryUpload>
   readonly startWorldInfoSession: (
     sessionId: SessionId,
     worldInfo: WorldInfoLibraryUpload,
@@ -2537,7 +2547,7 @@ function SidebarRoleplayDestination({
   prepareChatMigration, prepareRpDistributionChatMigration, launchPreparedChatMigration,
   startCharacterSession,
   listPresets, importPresetFile, listPersonas, savePersona, deletePersona,
-  listWorldInfos, importWorldInfoFile, setWorldInfoDefault, renamePreset,
+  listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo, renamePreset,
   startWorldInfoSession,
   workspaceSettings, workspaceList,
 }: SidebarRoleplayDestinationProps) {
@@ -2797,6 +2807,7 @@ function SidebarRoleplayDestination({
       listWorldInfos={listWorldInfos}
       importWorldInfoFile={importWorldInfoFile}
       setWorldInfoDefault={setWorldInfoDefault}
+      deleteWorldInfo={deleteWorldInfo}
       listPresets={listPresets}
       importPresetFile={importPresetFile}
       renamePreset={renamePreset}
@@ -3508,7 +3519,8 @@ function RoleplayHeader({
   const [aliasError, setAliasError] = useState<string>()
   const [renaming, setRenaming] = useState(false)
   const viewMode = useRoleplayViewMode(sessionId)
-  const storedCharacterDetail = useCharacterDetail(projection?.avatarLibraryId)
+  const storedCharacterRuntime = useCharacterDetail(projection?.avatarLibraryId)
+  const storedCharacterDetail = storedCharacterRuntime?.detail
   const sessionResourcePermissions = useAgentRpSessionResourcePermissions(sessionId)
   const characterDetail = useMemo(() => storedCharacterDetail === undefined ? undefined
     : withAgentRpSessionCardPermissions(storedCharacterDetail, sessionResourcePermissions),
@@ -3570,11 +3582,13 @@ function RoleplayHeader({
     ? undefined
     : characterLibraryImageUrl(projection.avatarLibraryId, expression.index)
   const imported = projection.importedMessageCount > 0
-  const status = projection.frontend === undefined || projection.mvu === undefined
+  const displayFrontend = projection.frontend === undefined ? undefined
+    : withCurrentCharacterDisplayScripts(projection.frontend, storedCharacterRuntime?.displayRegexScripts)
+  const status = displayFrontend === undefined || projection.mvu === undefined
     ? undefined
     : renderCharacterDisplay(statusPlaceholder, {
         name: projection.characterName,
-        frontend: projection.frontend,
+        frontend: displayFrontend,
       }, AI_OUTPUT_PLACEMENT, 0, projection.userName, projection.preset?.regexScripts)
   const statusHtml = status === undefined || status === statusPlaceholder
     ? undefined
@@ -8280,9 +8294,10 @@ function TavernScriptToast({ toast, onClose }: {
 }
 
 function TavernScriptRuntime({
-  ctx, inputActions, onCompatibilityMarkersChange, onDisplayOverride, projection, runGeneration, runModelList, runMutation,
+  characterDisplayRegexScripts, ctx, inputActions, onCompatibilityMarkersChange, onDisplayOverride, projection, runGeneration, runModelList, runMutation,
   runPresetConfiguration, runPromptPreview, runTrigger, sessionId, runtimeDiagnostics,
 }: {
+  readonly characterDisplayRegexScripts?: readonly ImportedRegexScript[]
   readonly ctx: Context
   readonly inputActions: ComposerDockProps['inputActions']
   readonly onCompatibilityMarkersChange: (markers: readonly string[]) => void
@@ -8432,12 +8447,16 @@ function TavernScriptRuntime({
     readonly apiurl: string
     readonly key?: string
   }[]>())
-  const projectionRef = useRef(projection)
+  const runtimeProjection = projection.frontend === undefined ? projection : {
+    ...projection,
+    frontend: withCurrentCharacterDisplayScripts(projection.frontend, characterDisplayRegexScripts),
+  }
+  const projectionRef = useRef(runtimeProjection)
   const executionScope = useRef<{ readonly sessionId: SessionId; readonly planSignature: string }>()
   const mutationQueue = useRef(Promise.resolve())
   const presetRevisionRef = useRef(projection.preset?.revision ?? 0)
   const presetSessionRef = useRef(sessionId)
-  projectionRef.current = projection
+  projectionRef.current = runtimeProjection
   if (presetSessionRef.current !== sessionId) {
     presetSessionRef.current = sessionId
     presetRevisionRef.current = projection.preset?.revision ?? 0
@@ -8853,7 +8872,7 @@ function TavernScriptRuntime({
       const frame = frameRefs.current.get(entry.key)
       if (frame !== undefined) syncFrame(frame, entry)
     }
-  }, [projection.frontend, projection.mvu, projection.preset, projection.tavern])
+  }, [characterDisplayRegexScripts, projection.frontend, projection.mvu, projection.preset, projection.tavern])
   const previousMvu = useRef<{ readonly sessionId: SessionId; readonly value?: string }>()
   useEffect(() => {
     const current = projection.mvu === undefined ? undefined : JSON.stringify({ stat_data: projection.mvu.statData })
@@ -10280,7 +10299,8 @@ function roleplayComposerDockComponent(
   const cardFramesByTokenRef = useRef(new Map<string, HTMLIFrameElement>())
   const cardFrameDiagnosticSourcesRef = useRef(new Map<string, AgentRpRuntimeDiagnosticSource>())
   const cardFrameDiagnosticFactsRef = useRef(new Map<string, AgentRpRuntimeCardFrameFacts>())
-  const storedCharacterDetail = useCharacterDetail(projection?.avatarLibraryId)
+  const storedCharacterRuntime = useCharacterDetail(projection?.avatarLibraryId)
+  const storedCharacterDetail = storedCharacterRuntime?.detail
   const sessionResourcePermissions = useAgentRpSessionResourcePermissions(sessionId)
   const characterDetail = useMemo(() => storedCharacterDetail === undefined ? undefined
     : withAgentRpSessionCardPermissions(storedCharacterDetail, sessionResourcePermissions),
@@ -10316,9 +10336,15 @@ function roleplayComposerDockComponent(
   const startupPhase = projection === undefined ? 'projection' : waitingForCharacter ? 'character' : 'ready'
   const startupElapsed = startupActive ? liveStartupElapsed
     : currentStartupTiming.characterMs ?? currentStartupTiming.projectionMs ?? liveStartupElapsed
-  const displayStateRef = useRef({ chat, characterDetail, compatibilityMarkers, displayOverrides, projection, viewMode })
+  const displayStateRef = useRef({
+    chat, characterDetail, compatibilityMarkers, displayOverrides,
+    displayRegexScripts: storedCharacterRuntime?.displayRegexScripts, projection, viewMode,
+  })
   const scanDisplayRef = useRef<() => void>(() => undefined)
-  displayStateRef.current = { chat, characterDetail, compatibilityMarkers, displayOverrides, projection, viewMode }
+  displayStateRef.current = {
+    chat, characterDetail, compatibilityMarkers, displayOverrides,
+    displayRegexScripts: storedCharacterRuntime?.displayRegexScripts, projection, viewMode,
+  }
   const backgroundChoice = useRoleplayBackground(sessionId)
   const background = selectedBackground(characterDetail, backgroundChoice)
   const displayName = projection === undefined ? undefined : roleplayDisplayName(summary, projection)
@@ -10861,12 +10887,14 @@ function roleplayComposerDockComponent(
         characterDetail: activeCharacterDetail,
         compatibilityMarkers: activeCompatibilityMarkers,
         displayOverrides: activeDisplayOverrides,
+        displayRegexScripts: activeCharacterDisplayRegexScripts,
         projection: activeProjection,
         viewMode: activeViewMode,
       } = displayStateRef.current
       if (activeProjection === undefined) return
       if (activeProjection.avatarLibraryId !== undefined && activeCharacterDetail === undefined) return
-      const frontend = activeProjection.frontend
+      const frontend = activeProjection.frontend === undefined ? undefined
+        : withCurrentCharacterDisplayScripts(activeProjection.frontend, activeCharacterDisplayRegexScripts)
       const hasDisplayRules = activeViewMode === 'immersive' && frontend !== undefined
         && frontend.regexScripts.length + (activeProjection.preset?.regexScripts.length ?? 0) > 0
       const messageIdBySeq = new Map(activeProjection.tavern?.messages.map(message => [message.seq, message.messageId]))
@@ -11067,7 +11095,9 @@ function roleplayComposerDockComponent(
       }
     }
   }, [runtimeDiagnostics, sessionId, viewMode, projection !== undefined])
-  useEffect(() => { scanDisplayRef.current() }, [chat, characterDetail, compatibilityMarkers, displayOverrides, projection])
+  useEffect(() => { scanDisplayRef.current() }, [
+    chat, characterDetail, compatibilityMarkers, displayOverrides, projection, storedCharacterRuntime?.displayRegexScripts,
+  ])
   const hasTavernVariableSurface = projection !== undefined
     && (['global', 'preset', 'character'] as const).some(scope =>
       activeTavernScripts(projection, scope).some(script => script.enabled && script.content.trim() !== ''))
@@ -11291,6 +11321,7 @@ function roleplayComposerDockComponent(
       </div>
     </section></div>}
     <TavernScriptRuntime key={sessionId} ctx={ctx} inputActions={inputActions}
+      {...(storedCharacterRuntime === undefined ? {} : { characterDisplayRegexScripts: storedCharacterRuntime.displayRegexScripts })}
       runtimeDiagnostics={runtimeDiagnostics}
       onCompatibilityMarkersChange={onCompatibilityMarkersChange} onDisplayOverride={onDisplayOverride} projection={projection}
       runGeneration={runTavernGeneration} runModelList={runTavernModelList} runMutation={runTavernMutation}
@@ -11937,6 +11968,16 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok || value.upload === undefined) throw new Error(value.error ?? `世界书默认加载设置失败（${response.status}）`)
     return value.upload
   }
+  const deleteWorldInfo = async (id: string): Promise<WorldInfoLibraryUpload> => {
+    const response = await fetch(WORLD_INFO_LIBRARY_PATH, {
+      method: 'DELETE',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ format: 0, id }),
+    })
+    const value = await response.json() as Partial<WorldInfoLibraryUploadResponse> & { readonly error?: string }
+    if (!response.ok || value.upload === undefined) throw new Error(value.error ?? `世界书移除失败（${response.status}）`)
+    return value.upload
+  }
   const importWorldInfo = async (sessionId: SessionId, file: File): Promise<void> => {
     const upload = await importWorldInfoFile(file)
     const request: WorldInfoLibraryLaunchRequest = { format: 0, importId: upload.id }
@@ -12103,7 +12144,8 @@ export function apply(ctx: ClientContext): void {
     launchPreparedChatMigration: launchPreparedChatMigrationFromBlankSession,
     startCharacterSession: startCharacterFromBlankSession, listPresets, importPresetFile,
     renamePreset: renamePresetLibraryEntry, listPersonas, savePersona, deletePersona,
-    listWorldInfos, importWorldInfoFile, setWorldInfoDefault, startWorldInfoSession: startWorldInfoFromBlankSession,
+    listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo,
+    startWorldInfoSession: startWorldInfoFromBlankSession,
   }
   ctx.slots.inject('sidebar.destinations', () => ctx.slots.register({
     name: 'sidebar.destinations', id: 'agent-rp-workbench', order: 20,

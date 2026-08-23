@@ -61,8 +61,28 @@ export function installWorldInfoLibraryHttp(
         }
         return
       }
+      if (request.method === 'DELETE') {
+        try {
+          const value = await readJsonRequest(request, {
+            limit: 4 * 1024,
+            emptyMessage: '世界书移除请求为空',
+            tooLargeMessage: '世界书移除请求过大',
+            invalidMessage: '世界书移除请求不是有效 JSON',
+          })
+          if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('世界书移除请求无效')
+          const record = value as Record<string, unknown>
+          if (record.format !== 0 || typeof record.id !== 'string'
+            || Object.keys(record).some(key => !['format', 'id'].includes(key))) {
+            throw new Error('世界书移除请求字段无效')
+          }
+          json(response, 200, { format: 0, upload: library.remove(record.id) })
+        } catch (error: unknown) {
+          json(response, 400, { error: error instanceof Error ? error.message : String(error) })
+        }
+        return
+      }
       if (request.method !== 'POST') {
-        response.setHeader('allow', 'GET, PATCH, POST')
+        response.setHeader('allow', 'DELETE, GET, PATCH, POST')
         json(response, 405, { error: 'method not allowed' })
         return
       }

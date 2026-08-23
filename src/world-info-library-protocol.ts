@@ -21,6 +21,12 @@ export interface WorldInfoLibraryPreferenceRequest {
   readonly defaultForNewSessions: boolean
 }
 
+/** Explicit removal of one reusable source; existing Session snapshots remain valid. */
+export interface WorldInfoLibraryDeleteRequest {
+  readonly format: 0
+  readonly id: string
+}
+
 /** Successful browser upload response. */
 export interface WorldInfoLibraryUploadResponse {
   readonly format: 0

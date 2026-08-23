@@ -152,6 +152,29 @@ export const USER_INPUT_PLACEMENT = 1
 /** SillyTavern regex placement for a character-authored message. */
 export const AI_OUTPUT_PLACEMENT = 2
 
+function pureDisplayScript(script: ImportedRegexScript): boolean {
+  return script.markdownOnly && !script.promptOnly
+}
+
+/**
+ * Keep model-facing regex behavior pinned to the Session while using the current
+ * library copy for presentation-only rules. This lets a player repair, pause, or
+ * remove a display rule without restarting the conversation.
+ */
+export function withCurrentCharacterDisplayScripts(
+  frontend: ImportedCharacterFrontend,
+  current: readonly ImportedRegexScript[] | undefined,
+): ImportedCharacterFrontend {
+  if (current === undefined) return frontend
+  return {
+    ...frontend,
+    regexScripts: [
+      ...frontend.regexScripts.filter(script => !pureDisplayScript(script)),
+      ...current.filter(pureDisplayScript),
+    ],
+  }
+}
+
 function compileRegex(value: string): RegExp | undefined {
   try {
     const literal = value.match(/^\/([\s\S]*)\/([a-z]*)$/iu)

@@ -95,6 +95,14 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
           json(response, 200, { format: 0, entry: library.overview(parts[0]) })
           return
         }
+        if (request.method === 'GET' && parts.length === 2 && parts[0] !== undefined
+          && parts[1] === 'runtime-detail') {
+          const resolved = library.resolve(parts[0])
+          const displayRegexScripts = resolved.card.frontend.regexScripts
+            .filter(script => script.markdownOnly && !script.promptOnly)
+          json(response, 200, { format: 0, entry: browserDetail(resolved.detail), displayRegexScripts })
+          return
+        }
         if (request.method === 'POST' && parts.length === 1 && parts[0] === 'import') {
           const url = new URL(request.url ?? '/', 'http://agent-rp.local')
           const filename = url.searchParams.get('filename')?.trim()
