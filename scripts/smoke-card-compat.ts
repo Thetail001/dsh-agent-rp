@@ -302,7 +302,9 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
   }
 
   async revealSourceLaunchers(): Promise<void> {
-    if (await this.page.locator('[data-agent-rp-action="open-character-library"]').count() > 0) return
+    if (await this.page.locator(
+      '[data-agent-rp-action="open-launch-composer"], [data-agent-rp-action="open-character-library"]',
+    ).count() > 0) return
     const workbench = this.page.locator('[data-agent-rp-action="open-workbench"]').first()
     await workbench.click({ timeout: this.timeoutMs })
     await this.page.locator('[data-agent-rp-workbench]').waitFor({ state: 'visible', timeout: this.timeoutMs })
@@ -348,14 +350,19 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
   }
 
   async sourceLauncherCount(sourceSessionId?: string): Promise<number> {
-    return await this.page.locator('[data-agent-rp-action="open-character-library"]')
+    return await this.page.locator(
+      '[data-agent-rp-action="open-launch-composer"], [data-agent-rp-action="open-character-library"]',
+    )
       .evaluateAll((elements, expected) => expected === undefined ? elements.length : elements.filter(element =>
         element.getAttribute('data-agent-rp-source-session') === expected).length, sourceSessionId)
   }
 
   async clickAction(action: AgentRpCompatSmokeAction, sourceSessionId?: string): Promise<void> {
     this.markConsolePhase(this.launched ? 'interaction' : 'preflight')
-    const candidates = await this.page.locator(`[data-agent-rp-action="${action}"]`).all()
+    const selector = action === 'open-character-library' && !this.launched
+      ? '[data-agent-rp-action="open-launch-composer"], [data-agent-rp-action="open-character-library"]'
+      : `[data-agent-rp-action="${action}"]`
+    const candidates = await this.page.locator(selector).all()
     for (const candidate of candidates) {
       if (sourceSessionId !== undefined
         && await candidate.getAttribute('data-agent-rp-source-session') !== sourceSessionId) continue
@@ -368,10 +375,20 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
 
   async selectCharacter(characterId: string): Promise<void> {
     this.markConsolePhase('preflight')
-    await this.page.waitForFunction(expected => [...document.querySelectorAll('[data-agent-rp-character-id]')]
-      .some(element => element.getAttribute('data-agent-rp-character-id') === expected), characterId, {
+    await this.page.waitForFunction(expected => [...document.querySelectorAll(
+      '#agent-rp-launch-primary option, [data-agent-rp-character-id]',
+    )].some(element => element.getAttribute('value') === expected
+      || element.getAttribute('data-agent-rp-character-id') === expected), characterId, {
       timeout: this.timeoutMs,
     })
+    const composer = this.page.locator('#agent-rp-launch-primary')
+    if (await composer.count() > 0) {
+      await composer.selectOption(characterId, { timeout: this.timeoutMs })
+      await this.page.waitForFunction(expected => (document.querySelector(
+        '#agent-rp-launch-primary',
+      ) as HTMLSelectElement | null)?.value === expected, characterId, { timeout: this.timeoutMs })
+      return
+    }
     const candidates = await this.page.locator('[data-agent-rp-character-id]').all()
     for (const candidate of candidates) {
       if (await candidate.getAttribute('data-agent-rp-character-id') !== characterId) continue
@@ -385,8 +402,18 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
 
   async selectPreset(presetId: string): Promise<void> {
     this.markConsolePhase('preflight')
-    await this.page.waitForFunction(expected => [...document.querySelectorAll('#agent-rp-session-preset option')]
+    await this.page.waitForFunction(expected => [...document.querySelectorAll(
+      '#agent-rp-launch-preset option, #agent-rp-session-preset option',
+    )]
       .some(option => option.getAttribute('value') === expected), presetId, { timeout: this.timeoutMs })
+    const composer = this.page.locator('#agent-rp-launch-preset')
+    if (await composer.count() > 0) {
+      await composer.selectOption(presetId, { timeout: this.timeoutMs })
+      await this.page.waitForFunction(expected => (document.querySelector(
+        '#agent-rp-launch-preset',
+      ) as HTMLSelectElement | null)?.value === expected, presetId, { timeout: this.timeoutMs })
+      return
+    }
     await this.page.locator('#agent-rp-session-preset').selectOption(presetId, { timeout: this.timeoutMs })
     await this.page.waitForFunction(expected => document.querySelector('[data-agent-rp-surface="character-library"]')
       ?.getAttribute('data-agent-rp-selected-preset-id') === expected, presetId, { timeout: this.timeoutMs })
@@ -405,6 +432,14 @@ class PlaywrightSmokeDriver implements AgentRpCompatSmokeDriver {
 
   async startSession(): Promise<void> {
     this.markConsolePhase('runtime')
+    const composer = this.page.locator('[data-agent-rp-start-readiness]')
+    if (await composer.count() > 0) {
+      await composer.click({ timeout: this.timeoutMs })
+      await this.page.locator('[data-agent-rp-surface="launch-composer"]')
+        .waitFor({ state: 'detached', timeout: this.timeoutMs })
+      this.launched = true
+      return
+    }
     await this.page.locator(
       '[data-agent-rp-start-action="approve-and-start"], [data-agent-rp-start-action="start"]',
     ).click({ timeout: this.timeoutMs })

@@ -474,12 +474,6 @@ export async function runAgentRpBrowserCompatibilitySmoke(
   }
   try {
     await driver.clickAction('open-character-library', input.sourceSessionId)
-    const library = await waitForSurface(
-      driver, 'open-character-library', 'open', input.timeoutMs, pollMs,
-    )
-    if (library === undefined || library.interactions.characterLibrary.state !== 'open') {
-      return { decision: failed('selection-failed'), ...(library === undefined ? {} : { snapshot: library }) }
-    }
     await driver.selectCharacter(input.characterId)
     if (input.presetId !== undefined) await driver.selectPreset(input.presetId)
   } catch {

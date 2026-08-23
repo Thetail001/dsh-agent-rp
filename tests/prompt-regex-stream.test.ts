@@ -2,12 +2,20 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createAssistantMessage, createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { parseCharacterCardJson } from '../src/import/character-card.ts'
+import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import type { ImportedCharacterCard, ImportedRegexScript } from '../src/import/types.ts'
 import { roleplayVisibleDialogue, roleplayVisibleTranscript } from '../src/prompt.ts'
 import { applyPromptRegexSurface, installPromptRegexStream } from '../src/prompt-regex-stream.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
+import type {
+  RoleplayPromptRegexTransform,
+  RoleplayPromptTransformPlan,
+  RoleplayTurnPromptPlan,
+} from '../src/roleplay-turn-plan.ts'
 
 const script = (placement: number, findRegex: string, replaceString: string): ImportedRegexScript => ({
   scriptName: `${placement}:${findRegex}`,
@@ -44,6 +52,63 @@ function card(regexScripts: readonly ImportedRegexScript[]): ImportedCharacterCa
   }
 }
 
+function persistableCard(regexScripts: readonly ImportedRegexScript[]): ImportedCharacterCard {
+  return parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: {
+      name: '测试角色', description: '', personality: '', scenario: '', first_mes: '', mes_example: '',
+      creator_notes: '', system_prompt: '', post_history_instructions: '', alternate_greetings: [], tags: [],
+      creator: 'fixture', character_version: '1', extensions: { regex_scripts: regexScripts },
+    },
+  }))
+}
+
+function transformPlan(
+  actorScripts: readonly ImportedRegexScript[],
+  promptPolicyScripts: readonly ImportedRegexScript[] = [],
+): RoleplayPromptTransformPlan {
+  const operation = (
+    value: ImportedRegexScript,
+    owner: RoleplayPromptRegexTransform['owner'],
+    ownerIndex: number,
+  ): RoleplayPromptRegexTransform => ({
+    engine: 'regex-v0',
+    owner,
+    ownerIndex,
+    name: value.scriptName,
+    pattern: value.findRegex,
+    replacement: value.replaceString,
+    trim: value.trimStrings,
+    placements: value.placement.flatMap(placement => placement === 1
+      ? ['user-input' as const] : placement === 2 ? ['assistant-output' as const] : []),
+    enabled: !value.disabled,
+    phase: value.promptOnly ? 'prompt-only' : 'shared',
+    identitySubstitution: 'none',
+  })
+  return {
+    actorName: '测试角色',
+    participantName: '用户',
+    operations: [
+      ...promptPolicyScripts.map((value, index) => operation(value, 'prompt-policy', index)),
+      ...actorScripts.map((value, index) => operation(value, 'actor', index)),
+    ],
+  }
+}
+
+function promptPlan(overrides: Partial<RoleplayTurnPromptPlan> = {}): RoleplayTurnPromptPlan {
+  return {
+    beforeHistory: [],
+    afterHistory: [],
+    inChat: [],
+    includeHistory: true,
+    systemPromptText: '',
+    transforms: transformPlan([]),
+    diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
+    ...overrides,
+  }
+}
+
 function textHistory(session: Session): string[] {
   return session.deriveMessages().flatMap(message =>
     message.content.flatMap(block => block.type === 'text' ? [block.text] : []))
@@ -74,6 +139,23 @@ function openConversation(): Session {
   return session
 }
 
+function openCardConversation(active: ImportedCharacterCard): Session {
+  const seed = createCharacterCardSessionSeed(active, {
+    kind: 'file',
+    attachmentId: AttachmentId('sha256:prompt-regex-live-card'),
+    bytes: 100,
+    name: 'live.json',
+    mediaType: 'application/json',
+  }, 0, '')
+  const session = Session.create(SessionId('prompt-regex-live-card'), seed)
+  session.append('turn/start', { turn: 1 })
+  session.append('step/start', { turn: 1, step: 1 })
+  session.append('user/message', createUserMessage({
+    source: { kind: 'user' }, content: [{ type: 'text', text: 'secret' }],
+  }), { surfaceOp: 'append' })
+  return session
+}
+
 test('logs prompt-only replacements while the visible projection keeps append-origin text', () => {
   const session = openConversation()
   const active = card([
@@ -81,7 +163,7 @@ test('logs prompt-only replacements while the visible projection keeps append-or
     script(2, '/old/gu', 'prior'),
   ])
 
-  const first = applyPromptRegexSurface(session, active, '用户')
+  const first = applyPromptRegexSurface(session, transformPlan(active.frontend.regexScripts))
   assert.equal(first?.replacementCount, 3)
   assert.deepEqual(textHistory(session), ['masked one', 'prior answer', 'masked two'])
   assert.deepEqual(roleplayVisibleDialogue(session), ['secret one', 'old answer', 'secret two'])
@@ -95,7 +177,7 @@ test('logs prompt-only replacements while the visible projection keeps append-or
     ['applied', 1],
   ])
 
-  const second = applyPromptRegexSurface(session, active, '用户')
+  const second = applyPromptRegexSurface(session, transformPlan(active.frontend.regexScripts))
   assert.equal(second?.replacementCount, 0)
   assert.deepEqual(textHistory(session), ['masked one', 'prior answer', 'masked two'])
   assert.equal(session.events.some(event => String(event.type) === 'agent-rp/prompt-regex-trace'), false)
@@ -109,9 +191,23 @@ test('logs prompt-only replacements while the visible projection keeps append-or
   const projection = agentRpProjectionDefinition.wire.view(state)
   assert.deepEqual(projection.promptRegex, second)
 
-  const restored = applyPromptRegexSurface(session, card([]), '用户')
+  const restored = applyPromptRegexSurface(session, transformPlan([]))
   assert.equal(restored?.replacementCount, 3)
   assert.deepEqual(textHistory(session), ['secret one', 'old answer', 'secret two'])
+})
+
+test('preserves shared-before-prompt-only execution across semantic resource owners', () => {
+  const session = openConversation()
+  const sharedActor = { ...script(1, '/secret/gu', 'stage'), promptOnly: false }
+  const promptPolicy = script(1, '/stage/gu', 'prepared')
+
+  const trace = applyPromptRegexSurface(session, transformPlan([sharedActor], [promptPolicy]))
+
+  assert.deepEqual(textHistory(session), ['prepared one', 'old answer', 'prepared two'])
+  assert.deepEqual(trace?.scripts.map(item => [item.source, item.index, item.outcome]), [
+    ['preset', 0, 'applied'],
+    ['character', 0, 'applied'],
+  ])
 })
 
 test('routes a continuation-only plan through the final provider message seam', () => {
@@ -133,8 +229,7 @@ test('routes a continuation-only plan through the final provider message seam', 
   } as unknown as Context
   const session = Session.create(SessionId('continuation-provider-seam'))
   const agent = { session } as Agent
-  installPromptRegexStream(ctx, () => agent, () => ({
-    beforeHistory: [], afterHistory: [], inChat: [], includeHistory: true,
+  installPromptRegexStream(ctx, () => agent, () => promptPlan({
     continuation: { prefill: true, postfix: ' ', nudgePrompt: '不应发送' },
   }))
   const options = Object.freeze({
@@ -168,4 +263,69 @@ test('routes a continuation-only plan through the final provider message seam', 
     ['user', '请开始'],
     ['assistant', '上一段回复 '],
   ])
+})
+
+test('executes only the frozen source-neutral transform plan for a cardless Session', () => {
+  type StreamHandler = (options: GenerateOptions, next: () => unknown) => unknown
+  let handler: StreamHandler | undefined
+  let captured: GenerateOptions | undefined
+  const ctx = {
+    on(_event: string, callback: StreamHandler) { handler = callback },
+    llm: { stream(options: GenerateOptions) { captured = options } },
+  } as unknown as Context
+  const session = openConversation()
+  const agent = { session } as Agent
+  const frozen = transformPlan([script(1, '/secret/gu', 'frozen')])
+  installPromptRegexStream(ctx, () => agent, () => promptPlan({ transforms: frozen }))
+  const options = Object.freeze({
+    provider: 'mock', model: 'mock', sessionId: session.id, messages: session.deriveMessages(),
+  }) as GenerateOptions
+
+  assert.ok(handler)
+  handler(options, () => undefined)
+
+  assert.deepEqual(captured?.messages.flatMap(message => message.content
+    .flatMap(block => block.type === 'text' ? [block.text] : [])), [
+    'frozen one', 'old answer', 'frozen two',
+  ])
+  assert.deepEqual(roleplayVisibleDialogue(session), ['secret one', 'old answer', 'secret two'])
+})
+
+test('does not reread a changed card after the turn plan was prepared', () => {
+  type StreamHandler = (options: GenerateOptions, next: () => unknown) => unknown
+  let handler: StreamHandler | undefined
+  let captured: GenerateOptions | undefined
+  const ctx = {
+    on(_event: string, callback: StreamHandler) { handler = callback },
+    llm: { stream(options: GenerateOptions) { captured = options } },
+  } as unknown as Context
+  const session = openCardConversation(persistableCard([script(1, '/secret/gu', 'changed-source')]))
+  const agent = { session } as Agent
+  const frozen = transformPlan([script(1, '/secret/gu', 'prepared-plan')])
+  installPromptRegexStream(ctx, () => agent, () => promptPlan({ transforms: frozen }))
+
+  assert.ok(handler)
+  handler(Object.freeze({
+    provider: 'mock', model: 'mock', sessionId: session.id, messages: session.deriveMessages(),
+  }) as GenerateOptions, () => undefined)
+
+  assert.deepEqual(captured?.messages.flatMap(message => message.content
+    .flatMap(block => block.type === 'text' ? [block.text] : [])), ['prepared-plan'])
+})
+
+test('does not invent an adapter transform when no prepared plan exists', () => {
+  type StreamHandler = (options: GenerateOptions, next: () => unknown) => unknown
+  let handler: StreamHandler | undefined
+  let calledNext = false
+  const ctx = { on(_event: string, callback: StreamHandler) { handler = callback } } as unknown as Context
+  const session = openCardConversation(persistableCard([script(1, '/secret/gu', 'unprepared')]))
+  installPromptRegexStream(ctx, () => ({ session }) as Agent)
+
+  assert.ok(handler)
+  handler(Object.freeze({
+    provider: 'mock', model: 'mock', sessionId: session.id, messages: session.deriveMessages(),
+  }) as GenerateOptions, () => { calledNext = true })
+
+  assert.equal(calledNext, true)
+  assert.deepEqual(textHistory(session), ['secret'])
 })

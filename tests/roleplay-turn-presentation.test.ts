@@ -73,6 +73,7 @@ function plan(session: Session, state: RoleplayRuntimeSnapshot['state'] = []): R
     },
     prompt: {
       beforeHistory: [], afterHistory: [], inChat: [], includeHistory: true, systemPromptText: '',
+      transforms: { actorName: snapshot.experience.name, operations: [] },
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
     stateReads: snapshot.state,

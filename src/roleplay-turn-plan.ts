@@ -8,6 +8,8 @@ import {
   type EjsTemplateContext,
 } from './ejs-template.ts'
 import type { LorebookActivationReason } from './import/lorebook.ts'
+import { presetRegexScripts } from './import/sillytavern-preset.ts'
+import type { ImportedRegexScript } from './import/types.ts'
 import { readAgentRpMemoryHistory } from './memory.ts'
 import { MVU_ROLEPLAY_MODULE_ID } from './mvu.ts'
 import {
@@ -119,9 +121,37 @@ export interface RoleplayExternalContextRead {
   readonly messageId: string
 }
 
+/** Source-neutral ownership of one ordered model-facing text transformation. */
+export type RoleplayPromptTransformOwner = 'prompt-policy' | 'actor'
+
+/** Normalized regex operation prepared by an input adapter for the native prompt boundary. */
+export interface RoleplayPromptRegexTransform {
+  readonly engine: 'regex-v0'
+  readonly owner: RoleplayPromptTransformOwner
+  readonly ownerIndex: number
+  readonly name: string
+  readonly pattern: string
+  readonly replacement: string
+  readonly trim: readonly string[]
+  readonly placements: readonly ('user-input' | 'assistant-output')[]
+  readonly enabled: boolean
+  readonly phase: 'shared' | 'prompt-only'
+  readonly identitySubstitution: 'none' | 'raw' | 'escaped'
+  readonly minDepth?: number
+  readonly maxDepth?: number
+}
+
+/** Exact ordered transformation program frozen before one provider request. */
+export interface RoleplayPromptTransformPlan {
+  readonly actorName: string
+  readonly participantName?: string
+  readonly operations: readonly RoleplayPromptRegexTransform[]
+}
+
 /** Final prompt plus adapter expansion diagnostics. */
 export interface RoleplayTurnPromptPlan extends RoleplayProviderPromptPlan {
   readonly systemPromptText: string
+  readonly transforms: RoleplayPromptTransformPlan
   readonly diagnostics: {
     readonly enabledModules: number
     readonly unsupportedMacros: number
@@ -183,6 +213,53 @@ const nativeProviderPrompt = (): RoleplayProviderPromptPlan => ({
   inChat: [],
   includeHistory: true,
 })
+
+function promptTransform(
+  script: ImportedRegexScript,
+  owner: RoleplayPromptTransformOwner,
+  ownerIndex: number,
+): RoleplayPromptRegexTransform | undefined {
+  if (script.markdownOnly && !script.promptOnly) return undefined
+  const placements = script.placement.flatMap(value => value === 1
+    ? ['user-input' as const]
+    : value === 2 ? ['assistant-output' as const] : [])
+  const minDepth = script.minDepth === null || script.minDepth < 0 ? undefined : script.minDepth
+  const maxDepth = script.maxDepth === null || script.maxDepth < 0 ? undefined : script.maxDepth
+  return {
+    engine: 'regex-v0',
+    owner,
+    ownerIndex,
+    name: script.scriptName,
+    pattern: script.findRegex,
+    replacement: script.replaceString,
+    trim: [...script.trimStrings],
+    placements: [...new Set(placements)],
+    enabled: !script.disabled,
+    phase: script.promptOnly ? 'prompt-only' : 'shared',
+    identitySubstitution: Number(script.substituteRegex) === 1 ? 'raw'
+      : Number(script.substituteRegex) === 2 ? 'escaped' : 'none',
+    ...(minDepth === undefined ? {} : { minDepth }),
+    ...(maxDepth === undefined ? {} : { maxDepth }),
+  }
+}
+
+function promptTransforms(
+  resolved: ResolvedSessionRoleplayRuntime,
+  actorName: string,
+  participantName: string | undefined,
+): RoleplayPromptTransformPlan {
+  const promptPolicy = resolved.preset === undefined ? [] : presetRegexScripts(resolved.preset.preset)
+  const actor = resolved.card?.frontend.regexScripts ?? []
+  const operations = [
+    ...promptPolicy.map((script, index) => promptTransform(script, 'prompt-policy', index)),
+    ...actor.map((script, index) => promptTransform(script, 'actor', index)),
+  ].filter((operation): operation is RoleplayPromptRegexTransform => operation !== undefined)
+  return {
+    actorName,
+    ...(participantName === undefined ? {} : { participantName }),
+    operations,
+  }
+}
 
 function variableScopes(state: TavernHelperState | undefined): NonNullable<EjsTemplateContext['variableScopes']> {
   return state?.scopes ?? {}
@@ -413,11 +490,13 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     systemPromptText = renderCharacterPrompt(input.deployment, experienceBefore, experienceAfter)
   }
 
+  const transforms = promptTransforms(resolved, characterName, userName)
   const prompt: RoleplayTurnPromptPlan = {
     ...providerPrompt,
     inChat: [...providerPrompt.inChat, ...world.inChat, ...injectedPrompts],
     systemPromptText: [systemPromptText, renderRoleplayStateContext(resolved.nativeStates)]
       .filter(text => text !== '').join('\n\n'),
+    transforms,
     diagnostics: { enabledModules, unsupportedMacros, templateFailures },
   }
   const nativeStatesById = new Map(resolved.nativeStates.map(state => [state.id, state]))
@@ -443,8 +522,12 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     (count, resource) => count + resource.beforeActor.length + resource.afterActor.length,
     world.inChat.length,
   )
+  const promptPolicyTransformCount = transforms.operations
+    .filter(operation => operation.owner === 'prompt-policy').length
+  const actorTransformCount = transforms.operations.filter(operation => operation.owner === 'actor').length
   const promptContributions = providerPrompt.beforeHistory.length + providerPrompt.afterHistory.length
-    + providerPrompt.inChat.length + (systemPromptText === '' ? 0 : 1)
+    + providerPrompt.inChat.length + (systemPromptText === '' ? 0 : 1) + actorTransformCount
+  const promptAdapterContributions = enabledModules + promptPolicyTransformCount
   const worldEntries = world.resources.flatMap(resource => resource.entries)
   const worldTemplateAttempts = worldEntries.filter(entry => entry.template !== undefined).length
   const worldTemplateFailures = worldEntries.filter(entry =>
@@ -457,8 +540,8 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     },
     ...(resolved.preset === undefined ? [] : [{
       moduleId: ROLEPLAY_PROMPT_ADAPTER_MODULE_ID,
-      outcome: enabledModules === 0 ? 'idle' as const : 'applied' as const,
-      contributions: enabledModules,
+      outcome: promptAdapterContributions === 0 ? 'idle' as const : 'applied' as const,
+      contributions: promptAdapterContributions,
     }]),
     ...(resolved.nativeStates.length === 0 ? [] : [{
       moduleId: ROLEPLAY_STATE_MODULE_ID,

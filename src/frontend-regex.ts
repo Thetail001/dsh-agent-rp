@@ -359,16 +359,15 @@ export function renderCharacterPromptView(
   return runScripts(raw, card, placement, 'prompt', depth, userName, presetScripts)
 }
 
-/** Render the prompt view and explain each script without exposing its expression or replacement. */
-export function traceCharacterPromptView(
+/** Execute one already ordered prompt-regex program and explain each operation. */
+export function tracePromptRegexView(
   raw: string,
   card: RegexCharacter,
+  scripts: readonly ImportedRegexScript[],
   placement: number,
   depth?: number,
   userName?: string,
-  presetScripts: readonly ImportedRegexScript[] = [],
 ): PromptRegexTrace {
-  const scripts = [...presetScripts, ...card.frontend.regexScripts]
   const outcomes = new Map<number, PromptRegexOutcome>()
   let text = raw
   for (const [index, script] of scripts.entries()) {
@@ -401,6 +400,25 @@ export function traceCharacterPromptView(
       outcome: outcomes.get(index) ?? 'no-match',
     })),
   }
+}
+
+/** Render the prompt view and explain each imported script without exposing its expression or replacement. */
+export function traceCharacterPromptView(
+  raw: string,
+  card: RegexCharacter,
+  placement: number,
+  depth?: number,
+  userName?: string,
+  presetScripts: readonly ImportedRegexScript[] = [],
+): PromptRegexTrace {
+  return tracePromptRegexView(
+    raw,
+    card,
+    [...presetScripts, ...card.frontend.regexScripts],
+    placement,
+    depth,
+    userName,
+  )
 }
 
 /** Remove a single outer Markdown HTML fence emitted by card display scripts. */

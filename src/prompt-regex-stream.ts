@@ -16,25 +16,22 @@ import {
   AI_OUTPUT_PLACEMENT,
   PROMPT_REGEX_SOURCE_MARKER,
   readPromptRegexSourceMarker,
-  traceCharacterPromptView,
+  tracePromptRegexView,
   USER_INPUT_PLACEMENT,
   type PromptRegexOutcome,
+  type RegexCharacter,
   type PromptRegexSourceMarker,
   type PromptRegexTraceRecord,
 } from './frontend-regex.ts'
-import { presetRegexScripts } from './import/sillytavern-preset.ts'
-import { readActiveSessionPreset } from './import/session-preset.ts'
-import {
-  cardFromImportMeta,
-  readActiveSessionCharacter,
-} from './import/session-character.ts'
-import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
-import type { ImportedCharacterCard, ImportedRegexScript } from './import/types.ts'
+import type { ImportedRegexScript } from './import/types.ts'
 import {
   prepareSillyTavernProviderMessages,
-  type RoleplayProviderPromptPlan,
 } from './preset-prompt.ts'
-import { resolveSessionPersonaIdentity } from './session-persona.ts'
+import type {
+  RoleplayPromptRegexTransform,
+  RoleplayPromptTransformPlan,
+  RoleplayTurnPromptPlan,
+} from './roleplay-turn-plan.ts'
 
 interface DialogueNode {
   readonly current: Extract<SessionEvent, { type: 'user/message' | 'assistant/message' }>
@@ -84,15 +81,15 @@ function openStep(events: readonly SessionEvent[]): OpenStep | undefined {
 
 function transformedContent(
   content: readonly ContentBlock[],
-  card: ImportedCharacterCard,
+  card: RegexCharacter,
   placement: number,
   depth: number,
   userName: string | undefined,
-  presetScripts: readonly ImportedRegexScript[],
+  scripts: readonly ImportedRegexScript[],
 ): { readonly content: ContentBlock[]; readonly outcomes: readonly PromptRegexOutcome[] } {
   const textBlocks = content.filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
   const traces = (textBlocks.length === 0 ? [''] : textBlocks.map(block => block.text)).map(text =>
-    traceCharacterPromptView(text, card, placement, depth, userName, presetScripts))
+    tracePromptRegexView(text, card, scripts, placement, depth, userName))
   let traceIndex = 0
   return {
     content: content.map(block => {
@@ -162,6 +159,43 @@ function outcomeRank(value: PromptRegexOutcome): number {
   }
 }
 
+function importedScript(operation: RoleplayPromptRegexTransform): ImportedRegexScript {
+  return {
+    scriptName: operation.name,
+    findRegex: operation.pattern,
+    replaceString: operation.replacement,
+    trimStrings: operation.trim,
+    placement: operation.placements.map(placement => placement === 'user-input'
+      ? USER_INPUT_PLACEMENT : AI_OUTPUT_PLACEMENT),
+    disabled: !operation.enabled,
+    markdownOnly: false,
+    promptOnly: operation.phase === 'prompt-only',
+    runOnEdit: false,
+    substituteRegex: operation.identitySubstitution === 'raw' ? 1
+      : operation.identitySubstitution === 'escaped' ? 2 : 0,
+    minDepth: operation.minDepth ?? null,
+    maxDepth: operation.maxDepth ?? null,
+  }
+}
+
+function executionProgram(plan: RoleplayPromptTransformPlan): {
+  readonly card: RegexCharacter
+  readonly scripts: readonly ImportedRegexScript[]
+} {
+  return {
+    card: {
+      name: plan.actorName,
+      frontend: {
+        regexScripts: [],
+        tavernHelperScriptNames: [],
+        tavernHelperScripts: [],
+        tavernHelperVariables: {},
+      },
+    },
+    scripts: plan.operations.map(importedScript),
+  }
+}
+
 /** Recognize frozen primary requests even when a linked plugin has a second dsh-llm module instance. */
 function isAgentLoopDispatch(options: GenerateOptions): boolean {
   return isAgentLoopRequest(options)
@@ -171,14 +205,12 @@ function isAgentLoopDispatch(options: GenerateOptions): boolean {
 /** Apply one request's prompt view to the durable model surface. */
 export function applyPromptRegexSurface(
   session: Session,
-  card: ImportedCharacterCard,
-  userName?: string,
-  presetScripts: readonly ImportedRegexScript[] = [],
+  plan: RoleplayPromptTransformPlan,
 ): PromptRegexTraceRecord | undefined {
   const position = openStep(session.events)
   if (position === undefined) return undefined
+  const { card, scripts } = executionProgram(plan)
   const nodes = dialogueNodes(session)
-  const scripts = [...presetScripts, ...card.frontend.regexScripts]
   const summaries = scripts.map((_script, index) => ({ outcome: 'disabled' as PromptRegexOutcome, affectedMessages: 0, index }))
   const replacements: { readonly node: DialogueNode; readonly content: ContentBlock[] }[] = []
   for (const [index, node] of nodes.entries()) {
@@ -189,8 +221,8 @@ export function applyPromptRegexSurface(
       card,
       node.role === 'user' ? USER_INPUT_PLACEMENT : AI_OUTPUT_PLACEMENT,
       nodes.length - index - 1,
-      userName,
-      presetScripts,
+      plan.participantName,
+      scripts,
     )
     for (const [scriptIndex, outcome] of rendered.outcomes.entries()) {
       const summary = summaries[scriptIndex]
@@ -207,8 +239,8 @@ export function applyPromptRegexSurface(
     messageCount: nodes.length,
     replacementCount: replacements.length,
     scripts: scripts.map((script, index) => ({
-      source: index < presetScripts.length ? 'preset' : 'character',
-      index: index < presetScripts.length ? index : index - presetScripts.length,
+      source: plan.operations[index]?.owner === 'prompt-policy' ? 'preset' : 'character',
+      index: plan.operations[index]?.ownerIndex ?? index,
       scriptName: script.scriptName,
       outcome: summaries[index]?.outcome ?? 'no-match',
       affectedMessages: summaries[index]?.affectedMessages ?? 0,
@@ -237,38 +269,22 @@ export function applyPromptRegexSurface(
 export function installPromptRegexStream(
   ctx: Context,
   agentForSession: (sessionId: string) => Agent | undefined,
-  promptPlanForAgent: (agent: Agent) => RoleplayProviderPromptPlan | undefined = () => undefined,
+  promptPlanForAgent: (agent: Agent) => RoleplayTurnPromptPlan | undefined = () => undefined,
 ): void {
   ctx.on('llm/stream', (options, next) => {
     if (!isAgentLoopDispatch(options) || options.sessionId === undefined) return next()
     const agent = agentForSession(String(options.sessionId))
     if (agent === undefined) return next()
-    const plan = promptPlanForAgent(agent) ?? {
-      beforeHistory: [], afterHistory: [], inChat: [], includeHistory: true,
-    }
-    const active = readActiveSessionCharacter(agent.session.events)
-    if (active === undefined) {
-      if (plan.beforeHistory.length === 0 && plan.afterHistory.length === 0 && plan.inChat.length === 0
-        && plan.includeHistory && plan.continuation === undefined) return next()
-      return ctx.llm.stream({ ...options, messages: prepareSillyTavernProviderMessages(options.messages, plan) })
-    }
-    const card = cardFromImportMeta(active.meta)
-    const preset = readActiveSessionPreset(agent.session.events)?.preset
-    const scripts = preset === undefined ? [] : presetRegexScripts(preset)
+    const plan = promptPlanForAgent(agent)
+    if (plan === undefined) return next()
     const hasManagedSurface = dialogueNodes(agent.session).some(node => sourceMarker(messageOf(node.current).source) !== undefined)
-    const hasPromptScripts = [...scripts, ...card.frontend.regexScripts]
-      .some(script => !script.markdownOnly || script.promptOnly)
+    const hasPromptScripts = plan.transforms.operations.length > 0
     if (!hasPromptScripts && !hasManagedSurface
       && plan.beforeHistory.length === 0 && plan.afterHistory.length === 0 && plan.inChat.length === 0
       && plan.includeHistory && plan.continuation === undefined) return next()
     let messages = options.messages
     if (hasPromptScripts || hasManagedSurface) {
-      const identity = resolveSessionPersonaIdentity(
-        agent.session.events,
-        active.result.userName,
-        readSillyTavernChatIdentity(agent.session.events)?.userName,
-      )
-      const trace = applyPromptRegexSurface(agent.session, card, identity.userName, scripts)
+      const trace = applyPromptRegexSurface(agent.session, plan.transforms)
       if (trace !== undefined && trace.replacementCount > 0) messages = [...agent.session.deriveMessages()]
     }
     return ctx.llm.stream({

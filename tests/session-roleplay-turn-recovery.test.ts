@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
+import { createPresetSessionSeed } from '../src/import/session-preset.ts'
+import type { ImportedSillyTavernPreset } from '../src/import/sillytavern-preset.ts'
 import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
 import { bindRoleplayExternalContext } from '../src/roleplay-turn-context.ts'
 import {
@@ -153,6 +156,54 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
     JSON.stringify(records),
     /恢复测试角色|继续测试|不应复制进回合收据的世界正文|持续生效但不应复制|同频道旧世界正文/u,
   )
+})
+
+test('replays a cardless prompt-policy transform from the exact Session prefix', () => {
+  const preset: ImportedSillyTavernPreset = {
+    format: 0,
+    name: '回放变换策略',
+    prompts: [],
+    order: [],
+    generation: {},
+    formats: { worldInfo: '{0}', scenario: '{0}', personality: '{0}' },
+    regexScripts: [{
+      scriptName: '回放净化', findRegex: '/secret/gu', replaceString: 'safe', trimStrings: [],
+      placement: [1], disabled: false, markdownOnly: false, promptOnly: true,
+      runOnEdit: false, substituteRegex: 0, minDepth: null, maxDepth: null,
+    }],
+    extensionSummary: { regexScriptCount: 1, hasSPreset: false, hasTavernHelper: false },
+  }
+  const seed = createPresetSessionSeed([], preset, {
+    kind: 'file',
+    attachmentId: AttachmentId('sha256:turn-plan-transform'),
+    bytes: 100,
+    name: '回放变换策略.json',
+    mediaType: 'application/json',
+  })
+  const session = Session.create(SessionId('turn-plan-transform-replay'), seed)
+  session.append('turn/start', { turn: 1 })
+  const message = pending()
+  const resolved = resolveSessionRoleplayRuntime({ session, deployment })
+  const plan = prepareRoleplayTurn({ session, pendingMessages: [message], deployment, resolved })
+  assert.deepEqual(plan.prompt.transforms.operations.map(operation => [
+    operation.owner, operation.ownerIndex, operation.name,
+  ]), [['prompt-policy', 0, '回放净化']])
+  assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'adapter:prompt-modules'), {
+    moduleId: 'adapter:prompt-modules', outcome: 'applied', contributions: 1,
+  })
+  session.append('step/start', { turn: 1, step: 1 })
+  session.append('user/message', message, { surfaceOp: 'append' })
+  const record = appendSessionRoleplayTurnPlan(session, 1, 1, plan)
+
+  const reopened = Session.create(session.id, session.events)
+  const stored = reopened.events[record.seq]
+  assert.equal(stored?.type, 'agent-rp/turn-plan')
+  assert.deepEqual(replaySessionRoleplayTurnPlan({
+    session: reopened,
+    record: stored as typeof record,
+    deployment,
+  }), plan)
+  assert.doesNotMatch(JSON.stringify(stored), /secret|safe/u)
 })
 
 test('recovers a cold-closed turn and folds a late causal browser state into presentation', () => {

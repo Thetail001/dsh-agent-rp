@@ -77,7 +77,6 @@ import {
 import {
   createPresetSessionSeed,
   preparePresetImportResult,
-  readActiveSessionPreset,
   type PresetImportMeta,
 } from './import/session-preset.ts'
 import {
@@ -969,7 +968,6 @@ export function installAgentRp(
     const config = await next()
     if (agentsByScope.get(agent) !== agent) return config
     const generation = activePlan?.generation
-      ?? readActiveSessionPreset(agent.session.events)?.preset.generation
     if (generation === undefined) return config
     const requestedEffort = generation.reasoningEffort
     const modelInfo = requestedEffort === undefined || requestedEffort === 'auto'

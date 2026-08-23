@@ -11,6 +11,7 @@ import { createPresetSessionSeed } from '../src/import/session-preset.ts'
 import { parseSillyTavernChat } from '../src/import/sillytavern-chat.ts'
 import { createSillyTavernChatSeed } from '../src/import/sillytavern-chat-seed.ts'
 import type { ImportedSillyTavernPreset } from '../src/import/sillytavern-preset.ts'
+import type { ImportedRegexScript } from '../src/import/types.ts'
 import { parseWorldInfoJson } from '../src/import/world-info.ts'
 import {
   appendWorldInfoLibrarySessionSeed,
@@ -85,7 +86,7 @@ function worldAsset(id: string, name: string, content: string) {
   }
 }
 
-function cardFixture() {
+function cardFixture(regexScripts: readonly ImportedRegexScript[] = []) {
   return parseCharacterCardJson(JSON.stringify({
     spec: 'chara_card_v2',
     spec_version: '2.0',
@@ -103,7 +104,7 @@ function cardFixture() {
       tags: [],
       creator: 'fixture',
       character_version: '1',
-      extensions: {},
+      extensions: regexScripts.length === 0 ? {} : { regex_scripts: regexScripts },
       character_book: {
         name: '海城',
         recursive_scanning: false,
@@ -505,7 +506,11 @@ test('uses the shared replay-safe macro boundary for a native card turn', () => 
 })
 
 test('compiles modular prompts, EJS, MVU, generation, and script injections into one plan', async () => {
-  const card = cardFixture()
+  const card = cardFixture([{
+    scriptName: '角色输出净化', findRegex: '/raw/gu', replaceString: 'clean', trimStrings: [],
+    placement: [2], disabled: false, markdownOnly: false, promptOnly: false,
+    runOnEdit: false, substituteRegex: 0, minDepth: null, maxDepth: 4,
+  }])
   const persona = {
     id: 'persona-00000000-0000-4000-8000-000000000020',
     name: '小满',
@@ -525,7 +530,16 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
     '海城天气',
     '海城今晚有雾。',
   ))
-  const preset = modularPreset()
+  const basePreset = modularPreset()
+  const preset: ImportedSillyTavernPreset = {
+    ...basePreset,
+    regexScripts: [{
+      scriptName: '策略输入净化', findRegex: '/secret/gu', replaceString: '{{user}}', trimStrings: ['x'],
+      placement: [1, 9], disabled: false, markdownOnly: false, promptOnly: true,
+      runOnEdit: false, substituteRegex: 2, minDepth: 1, maxDepth: null,
+    }],
+    extensionSummary: { ...basePreset.extensionSummary, regexScriptCount: 1 },
+  }
   seed = createPresetSessionSeed(seed, preset, attachment('turn-plan-preset', '潮汐预设.json'))
   const session = Session.create(SessionId('turn-plan-modular'), seed)
   const frontend = {
@@ -602,6 +616,22 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
   assert.deepEqual(plan.prompt.inChat.at(-1), {
     role: 'system', content: '脚本本轮注入', depth: 0, order: 100,
   })
+  assert.deepEqual(plan.prompt.transforms, {
+    actorName: '白露',
+    participantName: '小满',
+    operations: [
+      {
+        engine: 'regex-v0', owner: 'prompt-policy', ownerIndex: 0, name: '策略输入净化',
+        pattern: '/secret/gu', replacement: '{{user}}', trim: ['x'], placements: ['user-input'],
+        enabled: true, phase: 'prompt-only', identitySubstitution: 'escaped', minDepth: 1,
+      },
+      {
+        engine: 'regex-v0', owner: 'actor', ownerIndex: 0, name: '角色输出净化', pattern: '/raw/gu',
+        replacement: 'clean', trim: [], placements: ['assistant-output'], enabled: true, phase: 'shared',
+        identitySubstitution: 'none', maxDepth: 4,
+      },
+    ],
+  })
   assert.match(plan.prompt.beforeHistory.map(item => item.content).join('\n'), /主提示：白露\/浓雾/u)
   assert.match(plan.prompt.beforeHistory.map(item => item.content).join('\n'), /海城今晚有雾。[\s\S]*浓雾中的钟楼/u)
   assert.match(plan.prompt.afterHistory.map(item => item.content).join('\n'), /UpdateVariable/u)
@@ -610,7 +640,7 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
   assert.equal(plan.runtime.participant?.id, persona.id)
   assert.equal(plan.runtime.memory.write, true)
   assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'adapter:prompt-modules'), {
-    moduleId: 'adapter:prompt-modules', outcome: 'applied', contributions: direct.enabledPromptCount,
+    moduleId: 'adapter:prompt-modules', outcome: 'applied', contributions: direct.enabledPromptCount + 1,
   })
   assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'adapter:mvu'), {
     moduleId: 'adapter:mvu', outcome: 'applied', contributions: 1,

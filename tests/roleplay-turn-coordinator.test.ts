@@ -25,6 +25,7 @@ function plan(label: string, sessionSeq = 0): RoleplayTurnPlan {
     },
     prompt: {
       beforeHistory: [], afterHistory: [], inChat: [], includeHistory: true, systemPromptText: '',
+      transforms: { actorName: label, operations: [] },
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
     stateReads: [],
