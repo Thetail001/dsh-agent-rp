@@ -9,9 +9,11 @@ import {
   roleplayPresentedState,
 } from '../src/roleplay-turn-presentation.ts'
 import {
+  appendRoleplayTurnSettlement,
   compileRoleplayTurnSettlement,
   readRoleplayTurnSettlements,
 } from '../src/roleplay-turn-settlement.ts'
+import { readRoleplayTurnRecords } from '../src/roleplay-turn-record.ts'
 import { resolveSessionRoleplayRuntime } from '../src/session-roleplay-runtime.ts'
 import {
   createSessionRoleplayTurnBoundary,
@@ -182,4 +184,88 @@ test('recovers a cold-closed turn and folds a late causal browser state into pre
     settlements: 0, presentations: 0, turns: [],
   })
   assert.doesNotThrow(() => Session.create(restarted.id, restarted.events))
+})
+
+test('leaves a pre-dispatch plan alone while its turn is still open', () => {
+  const session = Session.create(SessionId('turn-open-recovery'))
+  session.append('turn/start', { turn: 1 })
+  const message = pending()
+  const resolved = resolveSessionRoleplayRuntime({ session, deployment, memoryWriteAvailable: true })
+  const plan = prepareRoleplayTurn({ session, pendingMessages: [message], deployment, resolved })
+  session.append('step/start', { turn: 1, step: 1 })
+  session.append('user/message', message, { surfaceOp: 'append' })
+  appendSessionRoleplayTurnPlan(session, 1, 1, plan)
+
+  assert.deepEqual(recoverSessionRoleplayTurns({ session, deployment }), {
+    settlements: 0, presentations: 0, turns: [],
+  })
+  assert.equal(readRoleplayTurnRecords(session)[0]?.boundary.endSeq, undefined)
+  assert.equal(readRoleplayTurnSettlements(session.events).length, 0)
+})
+
+test('adds only presentation when a durable settlement already exists', () => {
+  const session = Session.create(SessionId('turn-presentation-only-recovery'))
+  session.append('turn/start', { turn: 1 })
+  const message = pending()
+  const resolved = resolveSessionRoleplayRuntime({ session, deployment, memoryWriteAvailable: true })
+  const plan = prepareRoleplayTurn({ session, pendingMessages: [message], deployment, resolved })
+  session.append('step/start', { turn: 1, step: 1 })
+  session.append('user/message', message, { surfaceOp: 'append' })
+  appendSessionRoleplayTurnPlan(session, 1, 1, plan)
+  reply(session, 1, '结算已经存在。')
+  session.append('step/end', { turn: 1, step: 1 })
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const after = resolveSessionRoleplayRuntime({ session, deployment, memoryWriteAvailable: true })
+  appendRoleplayTurnSettlement(session, compileRoleplayTurnSettlement({
+    sessionId: String(session.id),
+    turn: 1,
+    result: 'completed',
+    plans: [{ step: 1, plan }],
+    events: session.events,
+    after: after.snapshot,
+  }))
+
+  assert.equal(readRoleplayTurnRecords(session)[0]?.present, undefined)
+  assert.deepEqual(recoverSessionRoleplayTurns({ session, deployment }), {
+    settlements: 0, presentations: 1, turns: [],
+  })
+  assert.notEqual(readRoleplayTurnRecords(session)[0]?.present, undefined)
+  assert.deepEqual(recoverSessionRoleplayTurns({ session, deployment }), {
+    settlements: 0, presentations: 0, turns: [],
+  })
+})
+
+test('refuses recovery when persisted act evidence no longer matches the Session log', () => {
+  const session = Session.create(SessionId('turn-corrupt-act-recovery'))
+  session.append('turn/start', { turn: 1 })
+  const message = pending()
+  const resolved = resolveSessionRoleplayRuntime({ session, deployment, memoryWriteAvailable: true })
+  const plan = prepareRoleplayTurn({ session, pendingMessages: [message], deployment, resolved })
+  session.append('step/start', { turn: 1, step: 1 })
+  session.append('user/message', message, { surfaceOp: 'append' })
+  appendSessionRoleplayTurnPlan(session, 1, 1, plan)
+  reply(session, 1, '不可漂移。')
+  session.append('step/end', { turn: 1, step: 1 })
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const after = resolveSessionRoleplayRuntime({ session, deployment, memoryWriteAvailable: true })
+  appendRoleplayTurnSettlement(session, compileRoleplayTurnSettlement({
+    sessionId: String(session.id), turn: 1, result: 'completed', plans: [{ step: 1, plan }],
+    events: session.events, after: after.snapshot,
+  }))
+  const tampered = session.events.map(event => event.type !== 'agent-rp/turn-settlement'
+    || event.data.act === undefined ? structuredClone(event) : {
+      ...structuredClone(event),
+      data: {
+        ...event.data,
+        act: {
+          steps: event.data.act.steps.map(step => ({
+            ...step,
+            assistantMessages: step.assistantMessages.map(value => ({ ...value, eventSeq: value.eventSeq + 1 })),
+          })),
+        },
+      },
+    })
+  const restarted = Session.create(session.id, tampered)
+
+  assert.throws(() => recoverSessionRoleplayTurns({ session: restarted, deployment }), /act receipt drifted/u)
 })

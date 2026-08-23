@@ -10,10 +10,8 @@ import {
   compileRoleplayTurnSettlementFromReferences,
   type RoleplayTurnPlanReference,
 } from './roleplay-turn-settlement.ts'
+import { readRoleplayTurnRecords } from './roleplay-turn-record.ts'
 import { resolveSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
-import {
-  readSessionRoleplayTurnPlanReferences,
-} from './session-roleplay-turn-plan.ts'
 import {
   compileInitialSessionRoleplayTurnPresentation,
 } from './session-roleplay-turn-presentation.ts'
@@ -56,14 +54,6 @@ function referencesRecoverable(plans: readonly RoleplayTurnPlanReference[]): boo
     && plan.receipt.runtime.presentModuleIds !== undefined)
 }
 
-function presentationExists(
-  events: readonly SessionEvent[],
-  settlementSeq: number,
-): boolean {
-  return events.some(event => event.type === 'agent-rp/turn-presentation'
-    && event.data.settlementSeq === settlementSeq)
-}
-
 /**
  * Restore missing settlement/presentation records for closed turns.
  * Old logs without pre-dispatch receipts remain readable and are deliberately skipped.
@@ -73,18 +63,24 @@ export function recoverSessionRoleplayTurns(input: {
   readonly deployment: ResolvedConfig
   readonly templateEngineAvailable?: boolean
 }): SessionRoleplayTurnRecoveryResult {
-  const closedTurns = input.session.events.filter((event): event is SessionEvent<'turn/end'> =>
-    event.type === 'turn/end')
+  const records = readRoleplayTurnRecords(input.session)
   const recoveredTurns: number[] = []
   let settlements = 0
   let presentations = 0
-  for (const closing of closedTurns) {
-    let settlement = input.session.events.find(event => event.type === 'agent-rp/turn-settlement'
-      && event.data.turn === closing.data.turn)
-    const plans = settlement?.type === 'agent-rp/turn-settlement'
-      ? settlement.data.plans
-      : readSessionRoleplayTurnPlanReferences(input.session.events, closing.data.turn, closing.seq)
+  for (const record of records) {
+    if (record.boundary.endSeq === undefined) continue
+    const closing = input.session.events[record.boundary.endSeq]
+    if (closing?.type !== 'turn/end' || closing.data.turn !== record.turn) {
+      throw new Error('Roleplay recovery record references a missing closing boundary')
+    }
+    const plans = record.plans.map(value => value.reference)
     if (!referencesRecoverable(plans)) continue
+    let settlement = record.settle === undefined
+      ? undefined
+      : input.session.events[record.settle.eventSeq]
+    if (settlement !== undefined && settlement.type !== 'agent-rp/turn-settlement') {
+      throw new Error('Roleplay recovery record references a missing settlement')
+    }
     if (settlement?.type !== 'agent-rp/turn-settlement') {
       const boundary = createSessionRoleplayTurnBoundary(input.session, closing)
       const memoryWriteAvailable = plans.some(plan => plan.receipt?.memoryWriteAvailable === true)
@@ -111,10 +107,9 @@ export function recoverSessionRoleplayTurns(input: {
       })
       settlement = appendRoleplayTurnSettlement(input.session, value)
       settlements += 1
-      recoveredTurns.push(closing.data.turn)
+      recoveredTurns.push(record.turn)
     }
-    if (settlement.type === 'agent-rp/turn-settlement'
-      && !presentationExists(input.session.events, settlement.seq)) {
+    if (settlement.type === 'agent-rp/turn-settlement' && record.present === undefined) {
       appendRoleplayTurnPresentation(
         input.session,
         compileInitialSessionRoleplayTurnPresentation({
