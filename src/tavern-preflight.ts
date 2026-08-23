@@ -7,6 +7,11 @@ import {
   BUILT_IN_TAVERN_SCRIPT_ORIGINS, resolveTavernScriptExecution, TavernScriptOriginApprovalError,
   type TavernScriptExecution,
 } from './tavern-script-resolver.ts'
+import {
+  readTavernStylesheetSource,
+  resolveTavernStylesheetExecution,
+  type TavernStylesheetSourceReader,
+} from './tavern-stylesheet-resolver.ts'
 import type {
   TavernPreflightEntry, TavernPreflightResult, TavernPreflightScope, TavernPreflightScriptApproval,
 } from './tavern-preflight-protocol.ts'
@@ -30,6 +35,7 @@ export interface TavernExecutionPlanIdentity {
   readonly ownerId: string
   readonly scriptId: string
   readonly approvedOrigins: readonly string[]
+  readonly approvedStyleOrigins?: readonly string[]
 }
 
 interface CachedTavernExecutionPlan {
@@ -39,6 +45,7 @@ interface CachedTavernExecutionPlan {
 
 export interface TavernExecutionPlanCacheOptions extends Omit<TavernExecutionDiskCacheOptions, 'root'> {
   readonly persistentRoot?: string
+  readonly stylesheetReader?: TavernStylesheetSourceReader
 }
 
 function effectiveOrigins(additional: readonly string[]): readonly string[] {
@@ -49,12 +56,14 @@ function effectiveOrigins(additional: readonly string[]): readonly string[] {
 export class TavernExecutionPlanCache {
   private readonly plans = new Map<string, CachedTavernExecutionPlan>()
   private readonly disk: TavernExecutionDiskCache | undefined
+  private readonly stylesheetReader: TavernStylesheetSourceReader
 
   constructor(
     private readonly resolver: TavernScriptExecutionResolver = resolveTavernScriptExecution,
     private readonly maximumEntries = 64,
     options: TavernExecutionPlanCacheOptions = {},
   ) {
+    this.stylesheetReader = options.stylesheetReader ?? readTavernStylesheetSource
     this.disk = options.persistentRoot === undefined ? undefined : new TavernExecutionDiskCache({
       root: options.persistentRoot,
       ...(options.maxAgeMs === undefined ? {} : { maxAgeMs: options.maxAgeMs }),
@@ -70,6 +79,7 @@ export class TavernExecutionPlanCache {
       identity.ownerId,
       identity.scriptId,
       effectiveOrigins(identity.approvedOrigins),
+      [...new Set(identity.approvedStyleOrigins ?? [])].sort(),
     ])
   }
 
@@ -114,7 +124,10 @@ export class TavernExecutionPlanCache {
       const persisted = await this.disk.get(persistentKey).catch(() => undefined)
       if (persisted !== undefined) return this.remember(key, { contentSha256, execution: persisted })
     }
-    const execution = await this.resolver(content, signal, effectiveOrigins(identity.approvedOrigins))
+    const base = await this.resolver(content, signal, effectiveOrigins(identity.approvedOrigins))
+    const execution = await resolveTavernStylesheetExecution(
+      base, [...new Set(identity.approvedStyleOrigins ?? [])].sort(), signal, this.stylesheetReader,
+    )
     this.remember(key, { contentSha256, execution })
     if (this.disk !== undefined) await this.disk.set(persistentKey, execution).catch(() => undefined)
     return execution
@@ -133,18 +146,21 @@ export async function inspectTavernPreflight(
   plans = new TavernExecutionPlanCache(),
 ): Promise<TavernPreflightResult> {
   const originsByScript = new Map(approvals.map(approval => [
-    approvalKey(approval.scope, approval.scriptId), approval.origins,
+    approvalKey(approval.scope, approval.scriptId), approval,
   ]))
   const selected = sources.flatMap(source => source.scripts.flatMap(script =>
     !script.enabled || script.content.trim() === '' ? [] : [{ source, script }]))
   const entries = await Promise.all(selected.map(async ({ source, script }): Promise<TavernPreflightEntry> => {
-    const approvedOrigins = originsByScript.get(approvalKey(source.scope, script.id)) ?? []
+    const approval = originsByScript.get(approvalKey(source.scope, script.id))
+    const approvedOrigins = approval?.origins ?? []
+    const approvedStyleOrigins = approval?.styleOrigins ?? []
     try {
       const execution = await plans.resolve({
         scope: source.scope,
         ownerId: source.ownerId,
         scriptId: script.id,
         approvedOrigins,
+        approvedStyleOrigins,
       }, script.content, signal)
       return {
         scope: source.scope,
@@ -153,6 +169,7 @@ export async function inspectTavernPreflight(
         status: 'ready',
         remoteImageOrigins: execution.remoteImageOrigins ?? [],
         remoteStyleOrigins: execution.remoteStyleOrigins ?? [],
+        remoteFontOrigins: execution.remoteFontOrigins ?? [],
         remoteFrameOrigins: execution.remoteFrameOrigins ?? [],
       }
     } catch (reason: unknown) {
@@ -164,6 +181,7 @@ export async function inspectTavernPreflight(
         ...(reason instanceof TavernScriptOriginApprovalError ? { requestedScriptOrigin: reason.origin } : {}),
         remoteImageOrigins: [],
         remoteStyleOrigins: [],
+        remoteFontOrigins: [],
         remoteFrameOrigins: [],
       }
     }

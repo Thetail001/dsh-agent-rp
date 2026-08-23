@@ -30,6 +30,7 @@ import {
   approvedTavernScriptOrigins,
   parseTavernScriptOriginApprovalKey,
   pendingTavernScriptResourcePermissions,
+  tavernResourcePreflightApprovals,
   tavernPreflightApprovals,
   tavernPreflightLaunchPhase,
   tavernPermissionPlan,
@@ -1024,15 +1025,16 @@ test('preflights selected character and preset resources without executing scrip
     entries: [{
       scope: 'character', scriptId: 'remote-ui', scriptName: 'remote-ui',
       status: 'permission-required', requestedScriptOrigin: 'https://preflight.example.test',
-      remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+      remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }, {
       scope: 'character', scriptId: 'local-ui', scriptName: 'local-ui',
       status: 'ready', remoteImageOrigins: ['https://images.example.test'],
       remoteStyleOrigins: ['https://styles.example.test'],
+      remoteFontOrigins: [],
       remoteFrameOrigins: ['https://panel.example.test'],
     }, {
       scope: 'preset', scriptId: 'invalid-ui', scriptName: 'invalid-ui',
-      status: 'resolution-error', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+      status: 'resolution-error', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }],
   })
 
@@ -1071,6 +1073,26 @@ test('scopes Tavern resource grants to one card, preset, script scope, and scrip
     scope: 'character', scriptId: 'shared-script', origins: ['https://modules.example.test'],
   }, {
     scope: 'preset', scriptId: 'shared-script', origins: ['https://preset-script.test'],
+  }])
+  const styleApprovals = new Set([
+    tavernScriptStyleApprovalKey(
+      'card-a', 'preset-a', 'character', 'shared-script', 'https://styles.example.test',
+    ),
+    tavernScriptStyleApprovalKey(
+      'card-a', 'preset-a', 'preset', 'shared-script', 'https://preset-styles.example.test',
+    ),
+    tavernScriptStyleApprovalKey(
+      'card-b', 'preset-a', 'character', 'shared-script', 'https://other-card-styles.test',
+    ),
+  ])
+  assert.deepEqual(tavernResourcePreflightApprovals(
+    approvals, styleApprovals, 'card-a', 'preset-a',
+  ), [{
+    scope: 'character', scriptId: 'shared-script', origins: ['https://modules.example.test'],
+    styleOrigins: ['https://styles.example.test'],
+  }, {
+    scope: 'preset', scriptId: 'shared-script', origins: ['https://preset-script.test'],
+    styleOrigins: ['https://preset-styles.example.test'],
   }])
   assert.equal(parseTavernScriptOriginApprovalKey('https://legacy-global-origin.test'), undefined)
   assert.notEqual(
@@ -1244,6 +1266,72 @@ test('runs classic plans in an async function context', async () => {
   assert.equal(context.__classicAwaitReady, true)
   assert.equal((context.posted as Record<string, unknown>[])
     .some(message => message.action === 'ready'), true)
+})
+
+test('replays an approved stylesheet fetch locally while keeping iframe connections disabled', async () => {
+  const stylesheetUrl = 'https://styles.example.test/theme.css'
+  const stylesheetSource = '@font-face{font-family:test;src:url(https://fonts.example.test/test.woff2)}'
+  const html = tavernScriptFrameSource({
+    id: 'stylesheet-runtime', name: '在线字体', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, {
+    source: `window.__stylesheetText=await fetch(${JSON.stringify(stylesheetUrl)}).then(response=>response.text());`,
+    mode: 'classic', preloads: [], inlineDependencies: [], needsDomPurify: false, needsFuse: false,
+    compatibilityMarkers: [], remoteStyleOrigins: ['https://styles.example.test'],
+    remoteStylesheetUrls: [stylesheetUrl], remoteFontOrigins: ['https://fonts.example.test'],
+    stylesheetDependencies: [{ url: stylesheetUrl, source: stylesheetSource, status: 200 }],
+  }, {
+    scriptScope: 'character', scriptId: 'stylesheet-runtime', scriptName: '在线字体', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    approvedStyleOrigins: ['https://styles.example.test'], approvedFontOrigins: ['https://fonts.example.test'],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  })
+  assert.match(html, /connect-src 'none'/u)
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([]) as ReturnType<typeof runtimeAcceptanceContext> & {
+    Response: typeof Response
+    __stylesheetText?: string
+  }
+  context.Response = Response
+  runInNewContext(source!, context)
+  await new Promise(resolve => { setTimeout(resolve, 0) })
+  assert.equal(context.__stylesheetText, stylesheetSource)
+})
+
+test('replays an approved stylesheet HTTP failure without failing its script plan', async () => {
+  const stylesheetUrl = 'https://styles.example.test/missing.css'
+  const html = tavernScriptFrameSource({
+    id: 'stylesheet-fallback', name: '字体回退', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, {
+    source: `window.__stylesheetStatus=await fetch(${JSON.stringify(stylesheetUrl)}).then(response=>response.status);`,
+    mode: 'classic', preloads: [], inlineDependencies: [], needsDomPurify: false, needsFuse: false,
+    compatibilityMarkers: [], remoteStyleOrigins: ['https://styles.example.test'],
+    remoteStylesheetUrls: [stylesheetUrl], remoteFontOrigins: [],
+    stylesheetDependencies: [{ url: stylesheetUrl, source: 'not found', status: 404 }],
+  }, {
+    scriptScope: 'character', scriptId: 'stylesheet-fallback', scriptName: '字体回退', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    approvedStyleOrigins: ['https://styles.example.test'], approvedFontOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [],
+    displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([]) as ReturnType<typeof runtimeAcceptanceContext> & {
+    Response: typeof Response
+    __stylesheetStatus?: number
+  }
+  context.Response = Response
+  runInNewContext(source!, context)
+  await new Promise(resolve => { setTimeout(resolve, 0) })
+  assert.equal(context.__stylesheetStatus, 404)
 })
 
 test('reports only bounded true compatibility markers after startup and on request', async () => {

@@ -29,6 +29,14 @@ export interface TavernScriptModuleDependency {
   readonly dependencies: readonly string[]
 }
 
+/** One approved stylesheet copied into the isolated plan for exact local fetch replay. */
+export interface TavernStylesheetDependency {
+  readonly url: string
+  readonly source: string
+  /** Preserve an HTTP failure so the isolated script can run its own fallback path. */
+  readonly status: number
+}
+
 /** Browser execution plan for one isolated Tavern Helper script. */
 export interface TavernScriptExecution {
   readonly source: string
@@ -46,6 +54,12 @@ export interface TavernScriptExecution {
   readonly remoteImageOrigins?: readonly string[]
   /** Static HTTPS stylesheet origins declared by the entry script and inspected dependencies. */
   readonly remoteStyleOrigins?: readonly string[]
+  /** Exact static HTTPS stylesheet URLs eligible for bounded Host resolution after approval. */
+  readonly remoteStylesheetUrls?: readonly string[]
+  /** HTTPS font origins discovered inside already-approved stylesheet sources. */
+  readonly remoteFontOrigins?: readonly string[]
+  /** Approved stylesheet bodies replayed locally to scripts without enabling iframe networking. */
+  readonly stylesheetDependencies?: readonly TavernStylesheetDependency[]
   /** Static HTTPS frame origins declared by the entry script and inspected dependencies. */
   readonly remoteFrameOrigins?: readonly string[]
 }
@@ -346,15 +360,15 @@ function declaredLoadedTavernImageOrigins(source: string): readonly string[] {
   return [...origins].sort()
 }
 
-/** Find static HTTPS stylesheet origins without evaluating script source. */
-export function declaredTavernStyleOrigins(source: string): readonly string[] {
-  const origins = new Set<string>()
+/** Find exact static HTTPS stylesheet URLs without evaluating script source. */
+export function declaredTavernStylesheetUrls(source: string): readonly string[] {
+  const urls = new Set<string>()
   const literals = new Map<string, string>()
   const linkVariables = new Set<string>()
   const add = (value: string): void => {
     try {
       const url = new URL(value.replace(/[),.;]+$/u, ''))
-      if (url.protocol === 'https:' && url.username === '' && url.password === '') origins.add(url.origin)
+      if (url.protocol === 'https:' && url.username === '' && url.password === '') urls.add(url.href)
     } catch {
       // Template fragments and URL-like script text are not static browser resources.
     }
@@ -388,7 +402,12 @@ export function declaredTavernStyleOrigins(source: string): readonly string[] {
       if (value !== undefined) add(value)
     }
   }
-  return [...origins].sort()
+  return [...urls].sort()
+}
+
+/** Find static HTTPS stylesheet origins without evaluating script source. */
+export function declaredTavernStyleOrigins(source: string): readonly string[] {
+  return [...new Set(declaredTavernStylesheetUrls(source).map(value => new URL(value).origin))].sort()
 }
 
 /** Find static HTTPS iframe origins without executing script source. */
@@ -497,6 +516,9 @@ export async function resolveTavernScriptExecution(
       ...dependencySources.flatMap(declaredLoadedTavernImageOrigins),
     ])].sort(),
     remoteStyleOrigins: declaredTavernStyleOrigins(dependencySource),
+    remoteStylesheetUrls: declaredTavernStylesheetUrls(dependencySource),
+    remoteFontOrigins: [],
+    stylesheetDependencies: [],
     remoteFrameOrigins: declaredTavernFrameOrigins(dependencySource),
   }
 }

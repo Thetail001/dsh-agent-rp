@@ -338,6 +338,42 @@ export function tavernPreflightApprovals(
   }))
 }
 
+/** Group exact module and stylesheet grants for Host-side dependency inspection. */
+export function tavernResourcePreflightApprovals(
+  scriptApprovals: ReadonlySet<string>,
+  styleApprovals: ReadonlySet<string>,
+  characterId: string,
+  presetId: string | undefined,
+): readonly TavernPreflightScriptApproval[] {
+  const grouped = new Map<string, {
+    readonly scope: 'character' | 'preset'
+    readonly scriptId: string
+    readonly origins: Set<string>
+    readonly styleOrigins: Set<string>
+  }>()
+  const add = (approvals: ReadonlySet<string>, kind: 'script' | 'style'): void => {
+    for (const approval of approvals) {
+      const value = parseTavernScriptOriginApprovalKey(approval)
+      if (value === undefined || value.characterId !== characterId || value.presetId !== presetId
+        || value.scope === 'global') continue
+      const key = JSON.stringify([value.scope, value.scriptId])
+      const entry = grouped.get(key) ?? {
+        scope: value.scope, scriptId: value.scriptId, origins: new Set<string>(), styleOrigins: new Set<string>(),
+      }
+      entry[kind === 'script' ? 'origins' : 'styleOrigins'].add(value.origin)
+      grouped.set(key, entry)
+    }
+  }
+  add(scriptApprovals, 'script')
+  add(styleApprovals, 'style')
+  return [...grouped.values()].map(entry => ({
+    scope: entry.scope,
+    scriptId: entry.scriptId,
+    origins: [...entry.origins].sort(),
+    styleOrigins: [...entry.styleOrigins].sort(),
+  }))
+}
+
 /** Serialize one remote image grant with the same ownership fields as module grants. */
 export function tavernScriptImageApprovalKey(
   characterId: string,

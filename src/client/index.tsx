@@ -206,7 +206,7 @@ import {
   readApprovedTavernScriptModels,
   readApprovedTavernScriptOrigins,
   readApprovedTavernScriptStyles,
-  tavernPreflightApprovals,
+  tavernResourcePreflightApprovals,
   tavernPreflightLaunchPhase,
   tavernPermissionPlan,
   tavernPermissionOwnerId,
@@ -2082,7 +2082,10 @@ function SillyTavernImportDialog({
     setAutoLaunch(false)
     setError(undefined)
   }
-  const approveResources = useCallback(async (): Promise<AgentRpSessionResourcePermissions | undefined> => {
+  const approveResources = useCallback(async (): Promise<{
+    readonly ready: boolean
+    readonly permissions?: AgentRpSessionResourcePermissions
+  }> => {
     if (prepared === undefined) throw new Error('迁移来源尚未准备完成')
     let character = preparedCharacter
     const exactCardResources = character === undefined || permissionDuration === 'trust' ? []
@@ -2091,10 +2094,14 @@ function SillyTavernImportDialog({
       character = await updateCharacterRemoteResourcePolicy(character.id, 'prompt')
     }
     const tavern = await launchPreflight.approve(permissionDuration)
+    if (!tavern.ready) return { ready: false }
     if (permissionDuration === 'session') {
       return {
-        tavern: tavern ?? { scripts: [], images: [], styles: [], fonts: [], frames: [] },
-        card: exactCardResources,
+        ready: true,
+        permissions: {
+          tavern: tavern.permissions ?? { scripts: [], images: [], styles: [], fonts: [], frames: [] },
+          card: exactCardResources,
+        },
       }
     }
     if (character !== undefined) {
@@ -2108,15 +2115,19 @@ function SillyTavernImportDialog({
       const nextCharacter = character
       setPrepared(current => current === undefined ? current : { ...current, character: nextCharacter })
     }
-    return undefined
+    return { ready: true }
   }, [launchPreflight, permissionDuration, prepared, preparedCharacter])
   const launchPrepared = useCallback(async (): Promise<void> => {
     if (prepared === undefined || working || launchPhase === 'checking') return
     setBusy('launching')
     setError(undefined)
     try {
-      const permissions = launchPhase === 'approval-required' ? await approveResources() : undefined
-      await onLaunch(prepared, selectedPresetId, permissions)
+      const approval = launchPhase === 'approval-required' ? await approveResources() : { ready: true }
+      if (!approval.ready) {
+        setBusy(undefined)
+        return
+      }
+      await onLaunch(prepared, selectedPresetId, approval.permissions)
       onCompleted?.()
       onClose()
     } catch (reason: unknown) {
@@ -4695,8 +4706,14 @@ type TavernPreflightLoadState = {
 type PreflightPermissionDuration = 'session' | 'remember' | 'trust'
 
 interface PreflightApprovalResult {
+  readonly ready: boolean
   readonly character: CharacterLibraryDetail
   readonly resourcePermissions?: AgentRpSessionResourcePermissions
+}
+
+interface TavernPreflightApprovalOutcome {
+  readonly ready: boolean
+  readonly permissions?: AgentRpSessionResourcePermissions['tavern']
 }
 
 /** Share one exact Tavern resource plan across every way a roleplay Session can start. */
@@ -4710,11 +4727,28 @@ function useTavernLaunchPreflight(input: {
   const [approvedScripts, setApprovedScripts] = useState(readApprovedTavernScriptOrigins)
   const [approvedImages, setApprovedImages] = useState(readApprovedTavernScriptImages)
   const [approvedStyles, setApprovedStyles] = useState(readApprovedTavernScriptStyles)
+  const [approvedFonts, setApprovedFonts] = useState(readApprovedTavernScriptFonts)
   const [approvedFrames, setApprovedFrames] = useState(readApprovedTavernScriptFrames)
   const [loadState, setLoadState] = useState<TavernPreflightLoadState>()
   const [approving, setApproving] = useState(false)
+  const resourceKey = input.permissionOwnerId === undefined ? undefined : JSON.stringify([
+    input.permissionOwnerId, input.resources ?? null, input.characterId ?? null, input.presetId ?? null,
+  ])
+  const [sessionApproval, setSessionApproval] = useState<{
+    readonly resourceKey: string
+    readonly permissions: AgentRpSessionResourcePermissions['tavern']
+  }>()
+  const sessionPermissions = resourceKey !== undefined && sessionApproval?.resourceKey === resourceKey
+    ? sessionApproval.permissions : { scripts: [], images: [], styles: [], fonts: [], frames: [] }
+  const effectiveScripts = new Set([...approvedScripts, ...sessionPermissions.scripts])
+  const effectiveImages = new Set([...approvedImages, ...sessionPermissions.images])
+  const effectiveStyles = new Set([...approvedStyles, ...sessionPermissions.styles])
+  const effectiveFonts = new Set([...approvedFonts, ...sessionPermissions.fonts])
+  const effectiveFrames = new Set([...approvedFrames, ...sessionPermissions.frames])
   const approvals = input.permissionOwnerId === undefined ? []
-    : tavernPreflightApprovals(approvedScripts, input.permissionOwnerId, input.presetId)
+    : tavernResourcePreflightApprovals(
+        effectiveScripts, effectiveStyles, input.permissionOwnerId, input.presetId,
+      )
   const selectionKey = !input.expected || input.permissionOwnerId === undefined
     || (input.resources === undefined && input.characterId === undefined && input.presetId === undefined)
     || input.resources?.length === 0 ? undefined : JSON.stringify([
@@ -4729,6 +4763,9 @@ function useTavernLaunchPreflight(input: {
       setLoadState(undefined)
       return
     }
+    // An approval stage already fetched this exact plan so the next render can
+    // reveal nested CSS/font permissions without repeating the Host request.
+    if (loadState?.selectionKey === selectionKey) return
     const controller = new AbortController()
     setLoadState({ selectionKey, status: 'loading' })
     const request = input.resources === undefined ? {
@@ -4757,56 +4794,116 @@ function useTavernLaunchPreflight(input: {
       scriptOrigins: entry.requestedScriptOrigin === undefined ? [] : [entry.requestedScriptOrigin],
       imageOrigins: entry.remoteImageOrigins,
       styleOrigins: entry.remoteStyleOrigins,
+      fontOrigins: entry.remoteFontOrigins,
       frameOrigins: entry.remoteFrameOrigins,
     })) ?? [],
-    approvedScripts,
-    approvedImages,
-    approvedStyles,
-    approvedFonts: new Set<string>(),
-    approvedFrames,
+    approvedScripts: effectiveScripts,
+    approvedImages: effectiveImages,
+    approvedStyles: effectiveStyles,
+    approvedFonts: effectiveFonts,
+    approvedFrames: effectiveFrames,
     trustedScriptOrigins: BUILT_IN_TAVERN_SCRIPT_ORIGINS,
   })
   const approve = async (
     duration: PreflightPermissionDuration,
-  ): Promise<AgentRpSessionResourcePermissions['tavern'] | undefined> => {
+  ): Promise<TavernPreflightApprovalOutcome> => {
     setApproving(true)
     try {
       const scripts = pending.filter(permission => permission.kind === 'script')
       const images = pending.filter(permission => permission.kind === 'image')
       const styles = pending.filter(permission => permission.kind === 'style')
+      const fonts = pending.filter(permission => permission.kind === 'font')
       const frames = pending.filter(permission => permission.kind === 'frame')
-      if (duration === 'session') return {
-        scripts: scripts.map(permission => permission.approvalKey),
-        images: images.map(permission => permission.approvalKey),
-        styles: styles.map(permission => permission.approvalKey),
-        fonts: [],
-        frames: frames.map(permission => permission.approvalKey),
+      const add = (current: ReadonlySet<string>, values: readonly { readonly approvalKey: string }[]): Set<string> => {
+        const next = new Set(current)
+        for (const value of values) next.add(value.approvalKey)
+        return next
       }
-      if (scripts.length > 0) {
-        const next = new Set(approvedScripts)
-        for (const permission of scripts) next.add(permission.approvalKey)
-        writeApprovedTavernScriptOrigins(next)
-        setApprovedScripts(next)
+      let nextScripts = add(effectiveScripts, scripts)
+      let nextImages = add(effectiveImages, images)
+      let nextStyles = add(effectiveStyles, styles)
+      let nextFonts = add(effectiveFonts, fonts)
+      let nextFrames = add(effectiveFrames, frames)
+      let exactSessionPermissions: AgentRpSessionResourcePermissions['tavern'] | undefined
+      if (duration === 'session') {
+        exactSessionPermissions = {
+          scripts: [...new Set([...sessionPermissions.scripts, ...scripts.map(value => value.approvalKey)])],
+          images: [...new Set([...sessionPermissions.images, ...images.map(value => value.approvalKey)])],
+          styles: [...new Set([...sessionPermissions.styles, ...styles.map(value => value.approvalKey)])],
+          fonts: [...new Set([...sessionPermissions.fonts, ...fonts.map(value => value.approvalKey)])],
+          frames: [...new Set([...sessionPermissions.frames, ...frames.map(value => value.approvalKey)])],
+        }
+        if (resourceKey !== undefined) setSessionApproval({ resourceKey, permissions: exactSessionPermissions })
+      } else {
+        // A player may change “仅本次” to a remembered choice between CSS
+        // discovery stages. Persist the whole effective grant, not only the
+        // newly visible origins, so the final Session never loses stage one.
+        if (nextScripts.size !== approvedScripts.size) {
+          writeApprovedTavernScriptOrigins(nextScripts)
+          setApprovedScripts(nextScripts)
+        }
+        if (nextImages.size !== approvedImages.size) {
+          writeApprovedTavernScriptImages(nextImages)
+          setApprovedImages(nextImages)
+        }
+        if (nextStyles.size !== approvedStyles.size) {
+          writeApprovedTavernScriptStyles(nextStyles)
+          setApprovedStyles(nextStyles)
+        }
+        if (nextFonts.size !== approvedFonts.size) {
+          writeApprovedTavernScriptFonts(nextFonts)
+          setApprovedFonts(nextFonts)
+        }
+        if (nextFrames.size !== approvedFrames.size) {
+          writeApprovedTavernScriptFrames(nextFrames)
+          setApprovedFrames(nextFrames)
+        }
+        if (sessionApproval?.resourceKey === resourceKey) setSessionApproval(undefined)
       }
-      if (images.length > 0) {
-        const next = new Set(approvedImages)
-        for (const permission of images) next.add(permission.approvalKey)
-        writeApprovedTavernScriptImages(next)
-        setApprovedImages(next)
+      if (input.permissionOwnerId === undefined || selectionKey === undefined
+        || !pending.some(permission => permission.kind === 'script' || permission.kind === 'style')) {
+        return { ready: true, ...(exactSessionPermissions === undefined ? {} : { permissions: exactSessionPermissions }) }
       }
-      if (styles.length > 0) {
-        const next = new Set(approvedStyles)
-        for (const permission of styles) next.add(permission.approvalKey)
-        writeApprovedTavernScriptStyles(next)
-        setApprovedStyles(next)
+      const nextApprovals = tavernResourcePreflightApprovals(
+        nextScripts, nextStyles, input.permissionOwnerId, input.presetId,
+      )
+      const nextSelectionKey = JSON.stringify([
+        input.permissionOwnerId, input.resources ?? null, input.characterId ?? null, input.presetId ?? null,
+        nextApprovals,
+      ])
+      const request = input.resources === undefined ? {
+        format: 0 as const,
+        ...(input.characterId === undefined ? {} : { characterId: input.characterId }),
+        ...(input.presetId === undefined ? {} : { presetId: input.presetId }),
+        scriptApprovals: nextApprovals,
+      } : { format: 1 as const, resources: input.resources, scriptApprovals: nextApprovals }
+      try {
+        const nextResult = await fetchTavernPreflight(request, new AbortController().signal)
+        setLoadState({ selectionKey: nextSelectionKey, status: 'ready', result: nextResult })
+        const nextPending = pendingTavernScriptResourcePermissions({
+          characterId: input.permissionOwnerId,
+          ...(input.presetId === undefined ? {} : { presetId: input.presetId }),
+          entries: nextResult.entries.map(entry => ({
+            scope: entry.scope, scriptId: entry.scriptId,
+            scriptOrigins: entry.requestedScriptOrigin === undefined ? [] : [entry.requestedScriptOrigin],
+            imageOrigins: entry.remoteImageOrigins, styleOrigins: entry.remoteStyleOrigins,
+            fontOrigins: entry.remoteFontOrigins, frameOrigins: entry.remoteFrameOrigins,
+          })),
+          approvedScripts: nextScripts, approvedImages: nextImages, approvedStyles: nextStyles,
+          approvedFonts: nextFonts, approvedFrames: nextFrames,
+          trustedScriptOrigins: BUILT_IN_TAVERN_SCRIPT_ORIGINS,
+        })
+        return {
+          ready: nextPending.length === 0,
+          ...(exactSessionPermissions === undefined ? {} : { permissions: exactSessionPermissions }),
+        }
+      } catch (reason: unknown) {
+        setLoadState({
+          selectionKey: nextSelectionKey, status: 'error',
+          error: reason instanceof Error ? reason.message : String(reason),
+        })
+        return { ready: false, ...(exactSessionPermissions === undefined ? {} : { permissions: exactSessionPermissions }) }
       }
-      if (frames.length > 0) {
-        const next = new Set(approvedFrames)
-        for (const permission of frames) next.add(permission.approvalKey)
-        writeApprovedTavernScriptFrames(next)
-        setApprovedFrames(next)
-      }
-      return undefined
     } finally {
       setApproving(false)
     }
@@ -5141,10 +5238,7 @@ function RoleplayLaunchComposer({
     return () => { document.removeEventListener('keydown', onKeyDown) }
   }, [busy, onClose])
 
-  const approveCharacterResources = async (): Promise<{
-    readonly character: CharacterLibraryDetail
-    readonly resourcePermissions?: AgentRpSessionResourcePermissions
-  }> => {
+  const approveCharacterResources = async (): Promise<PreflightApprovalResult> => {
     if (character === undefined) throw new Error('请先选择角色')
     let detail = character
     const exactCardResources = permissionDuration === 'trust' ? [] : blockedCardFrameResources(
@@ -5155,10 +5249,12 @@ function RoleplayLaunchComposer({
       setCharacter(detail)
     }
     const tavern = await launchPreflight.approve(permissionDuration)
+    if (!tavern.ready) return { ready: false, character: detail }
     if (permissionDuration === 'session') return {
+      ready: true,
       character: detail,
       resourcePermissions: {
-        tavern: tavern ?? { scripts: [], images: [], styles: [], fonts: [], frames: [] },
+        tavern: tavern.permissions ?? { scripts: [], images: [], styles: [], fonts: [], frames: [] },
         card: exactCardResources,
       },
     }
@@ -5171,7 +5267,7 @@ function RoleplayLaunchComposer({
         setCharacter(detail)
       }
     }
-    return { character: detail }
+    return { ready: true, character: detail }
   }
   const start = (): void => {
     if (!ready || busy || launchPhase === 'checking') return
@@ -5182,25 +5278,31 @@ function RoleplayLaunchComposer({
     }
     const additionalWorldInfoIds = (selectedWorldInfoIds ?? [])
       .filter(id => mode !== 'world-info' || id !== primaryWorldInfoId)
-    void (async (): Promise<void> => {
+    void (async (): Promise<boolean> => {
       if (mode === 'character') {
         if (character === undefined) throw new Error('请先选择角色')
         const approval = launchPhase === 'approval-required'
-          ? await approveCharacterResources() : { character }
+          ? await approveCharacterResources() : { ready: true, character }
+        if (!approval.ready) return false
         await onStartCharacter(
           approval.character, greetingIndex, persona, selectedPresetId,
           additionalWorldInfoIds, approval.resourcePermissions,
         )
-        return
+        return true
       }
       if (primaryWorldInfo === undefined) throw new Error('请先选择世界')
       const tavern = launchPhase === 'approval-required'
         ? await launchPreflight.approve(permissionDuration) : undefined
+      if (tavern !== undefined && !tavern.ready) return false
       await onStartWorldInfo(
         primaryWorldInfo, persona, selectedPresetId, additionalWorldInfoIds,
-        tavern === undefined ? undefined : { tavern, card: [] },
+        tavern?.permissions === undefined ? undefined : { tavern: tavern.permissions, card: [] },
       )
-    })().then(onClose, reason => {
+      return true
+    })().then(started => {
+      setStarting(false)
+      if (started) onClose()
+    }, reason => {
       setStarting(false)
       setError(reason instanceof Error ? reason.message : String(reason))
     })
@@ -5643,12 +5745,16 @@ function WorldInfoLaunchDialog({
           void (async (): Promise<void> => {
             const tavern = launchPhase === 'approval-required'
               ? await launchPreflight.approve(permissionDuration) : undefined
+            if (tavern !== undefined && !tavern.ready) {
+              setStarting(false)
+              return
+            }
             await onStart(
               worldInfo,
               persona,
               selectedPresetId,
               selectedWorldInfoIds,
-              tavern === undefined ? undefined : { tavern, card: [] },
+              tavern?.permissions === undefined ? undefined : { tavern: tavern.permissions, card: [] },
             )
           })().catch(reason => {
             setStarting(false)
@@ -5922,11 +6028,13 @@ function CharacterLibraryDialog({
   const pendingPreflightScripts = pendingPreflightScriptResources.filter(permission => permission.kind === 'script')
   const pendingPreflightImages = pendingPreflightScriptResources.filter(permission => permission.kind === 'image')
   const pendingPreflightStyles = pendingPreflightScriptResources.filter(permission => permission.kind === 'style')
+  const pendingPreflightFonts = pendingPreflightScriptResources.filter(permission => permission.kind === 'font')
   const pendingPreflightFrames = pendingPreflightScriptResources.filter(permission => permission.kind === 'frame')
   const pendingCardResources = selected === undefined
     ? [] : blockedCardFrameResources(selected.remoteResources, selected)
   const pendingPreflightPermissions = pendingPreflightScripts.length
-    + pendingPreflightImages.length + pendingPreflightStyles.length + pendingPreflightFrames.length
+    + pendingPreflightImages.length + pendingPreflightStyles.length + pendingPreflightFonts.length
+    + pendingPreflightFrames.length
     + pendingCardResources.length
   const pendingPreflightHosts = [...new Set([
     ...pendingPreflightScriptResources.map(item => new URL(item.origin).hostname),
@@ -5958,7 +6066,8 @@ function CharacterLibraryDialog({
         cardResources: selected.remoteResources.length,
         pendingCardPermissions: pendingCardResources.length,
         pendingScriptPermissions: pendingPreflightScripts.length
-          + pendingPreflightImages.length + pendingPreflightStyles.length + pendingPreflightFrames.length,
+          + pendingPreflightImages.length + pendingPreflightStyles.length + pendingPreflightFonts.length
+          + pendingPreflightFrames.length,
         pendingScriptOrigins: pendingPreflightScripts.length,
         pendingImageOrigins: pendingPreflightImages.length,
         pendingStyleOrigins: pendingPreflightStyles.length,
@@ -5981,11 +6090,13 @@ function CharacterLibraryDialog({
       setSelected(current => current?.id === detail.id ? detail : current)
     }
     const tavernPermissions = await launchPreflight.approve(duration)
+    if (!tavernPermissions.ready) return { ready: false, character: detail }
     if (duration === 'session') {
       return {
+        ready: true,
         character: detail,
         resourcePermissions: {
-          tavern: tavernPermissions ?? { scripts: [], images: [], styles: [], fonts: [], frames: [] },
+          tavern: tavernPermissions.permissions ?? { scripts: [], images: [], styles: [], fonts: [], frames: [] },
           card: exactCardResources,
         },
       }
@@ -6000,15 +6111,16 @@ function CharacterLibraryDialog({
       }
     }
     setActionNotice(duration === 'trust' ? '已信任这张卡的界面资源' : '已记住确认过的权限')
-    return { character: detail }
+    return { ready: true, character: detail }
   }
   const startSelectedCharacter = (): void => {
     if (selected === undefined || starting || approvingPreflight || preflightChecking) return
     setStarting(true)
     setError(undefined)
-    void (async (): Promise<void> => {
+    void (async (): Promise<boolean> => {
       const approval = preflightLaunchPhase === 'approval-required'
-        ? await approvePreflightResources(preflightPermissionDuration) : { character: selected }
+        ? await approvePreflightResources(preflightPermissionDuration) : { ready: true, character: selected }
+      if (!approval.ready) return false
       const persona = personas?.find(entry => entry.id === personaId)
       await onStart(approval.character, greetingIndex, persona === undefined ? undefined : {
         id: persona.id, name: persona.name, description: persona.description,
@@ -6016,9 +6128,10 @@ function CharacterLibraryDialog({
       selectedWorldInfoIds,
       copyActiveMemory ? 'copy-active' : undefined,
       approval.resourcePermissions)
-    })().then(() => {
+      return true
+    })().then(started => {
       setStarting(false)
-      onClose()
+      if (started) onClose()
     }, startError => {
       setStarting(false)
       setError(startError instanceof Error ? startError.message : String(startError))
@@ -6222,10 +6335,11 @@ function CharacterLibraryDialog({
               data-agent-rp-resource-preflight-scripts={tavernPreflight?.scripts ?? 0}
               data-agent-rp-resource-preflight-card-resources={selected.remoteResources.length}
               data-agent-rp-resource-preflight-card-permissions={pendingCardResources.length}
-              data-agent-rp-resource-preflight-script-permissions={pendingPreflightScripts.length + pendingPreflightImages.length + pendingPreflightStyles.length + pendingPreflightFrames.length}
+              data-agent-rp-resource-preflight-script-permissions={pendingPreflightScripts.length + pendingPreflightImages.length + pendingPreflightStyles.length + pendingPreflightFonts.length + pendingPreflightFrames.length}
               data-agent-rp-resource-preflight-script-origins={pendingPreflightScripts.length}
               data-agent-rp-resource-preflight-image-origins={pendingPreflightImages.length}
               data-agent-rp-resource-preflight-style-origins={pendingPreflightStyles.length}
+              data-agent-rp-resource-preflight-font-origins={pendingPreflightFonts.length}
               data-agent-rp-resource-preflight-frame-origins={pendingPreflightFrames.length}
               data-agent-rp-resource-preflight-permissions={pendingPreflightPermissions}
               data-agent-rp-resource-preflight-failed={tavernPreflight?.failed ?? 0}
@@ -8415,6 +8529,10 @@ function TavernScriptRuntime({
       approvedOrigins, characterApprovalId, presetApprovalId, entry.scope, entry.script.id,
     ),
   ])].sort()
+  const styleOrigins = (entry: Pick<TavernScriptFrame, 'scope' | 'script'>): readonly string[] =>
+    approvedTavernScriptOrigins(
+      approvedStyles, characterApprovalId, presetApprovalId, entry.scope, entry.script.id,
+    )
   const relevantOriginApprovals = [...approvedOrigins].filter(approval => {
     const value = parseTavernScriptOriginApprovalKey(approval)
     return value?.characterId === characterApprovalId && value.presetId === presetApprovalId
@@ -8645,6 +8763,7 @@ function TavernScriptRuntime({
         scope: entry.scope as 'character' | 'preset',
         scriptId: entry.script.id,
         approvedOrigins: scriptOrigins(entry),
+        approvedStyleOrigins: styleOrigins(entry),
       }] : []
     })
     const cachedHostExecutions = hostExecutionEntries.length < 2
@@ -8672,6 +8791,7 @@ function TavernScriptRuntime({
                 scope: scope as 'character' | 'preset',
                 scriptId: script.id,
                 approvedOrigins: approvedScriptOrigins,
+                approvedStyleOrigins: styleOrigins(scopedScript),
               }, controller.signal)) : resolveTavernScriptExecution(
               script.content,
               controller.signal,

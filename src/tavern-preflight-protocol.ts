@@ -16,6 +16,7 @@ export interface TavernPreflightScriptApproval {
   readonly scope: TavernPreflightScope
   readonly scriptId: string
   readonly origins: readonly string[]
+  readonly styleOrigins?: readonly string[]
 }
 
 /** Legacy model-free request retained for chat migration and older launch surfaces. */
@@ -48,6 +49,7 @@ export interface TavernPreflightEntry {
   readonly requestedScriptOrigin?: string
   readonly remoteImageOrigins: readonly string[]
   readonly remoteStyleOrigins: readonly string[]
+  readonly remoteFontOrigins: readonly string[]
   readonly remoteFrameOrigins: readonly string[]
 }
 
@@ -69,6 +71,7 @@ export interface TavernExecutionRequest {
   readonly scope: TavernPreflightScope
   readonly scriptId: string
   readonly approvedOrigins: readonly string[]
+  readonly approvedStyleOrigins?: readonly string[]
 }
 
 /** Host-resolved module graph instantiated only inside the isolated browser frame. */
@@ -82,6 +85,7 @@ export interface TavernExecutionBatchEntry {
   readonly scope: TavernPreflightScope
   readonly scriptId: string
   readonly approvedOrigins: readonly string[]
+  readonly approvedStyleOrigins?: readonly string[]
 }
 
 /** Request several already-preflighted plans through one browser connection. */

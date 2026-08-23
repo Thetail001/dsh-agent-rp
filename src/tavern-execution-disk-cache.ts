@@ -3,11 +3,15 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import type { TavernScriptExecution, TavernScriptModuleDependency } from './tavern-script-resolver.ts'
+import type {
+  TavernScriptExecution,
+  TavernScriptModuleDependency,
+  TavernStylesheetDependency,
+} from './tavern-script-resolver.ts'
 
 const CACHE_FORMAT = 0
 /** Bump when resolver output semantics change; ordinary Agent RP releases need not invalidate the cache. */
-const RESOLVER_CACHE_REVISION = 1
+const RESOLVER_CACHE_REVISION = 3
 const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1_000
 const DEFAULT_MAX_ENTRIES = 64
 const DEFAULT_MAX_BYTES = 96 * 1024 * 1024
@@ -60,6 +64,18 @@ function validOriginArray(value: unknown): value is readonly string[] {
   })
 }
 
+function validHttpsUrlArray(value: unknown): value is readonly string[] {
+  if (!boundedStringArray(value, 64, 2_048)) return false
+  return value.every(entry => {
+    try {
+      const url = new URL(entry)
+      return url.protocol === 'https:' && url.username === '' && url.password === '' && url.href === entry
+    } catch {
+      return false
+    }
+  })
+}
+
 function validModuleDependency(value: unknown): value is TavernScriptModuleDependency {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const dependency = value as Record<string, unknown>
@@ -67,6 +83,14 @@ function validModuleDependency(value: unknown): value is TavernScriptModuleDepen
     && boundedString(dependency.placeholder, 512)
     && boundedString(dependency.source, MAX_FILE_BYTES)
     && boundedStringArray(dependency.dependencies, 256, 256)
+}
+
+function validStylesheetDependency(value: unknown): value is TavernStylesheetDependency {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const dependency = value as Record<string, unknown>
+  return validHttpsUrlArray([dependency.url]) && boundedString(dependency.source, 512 * 1024)
+    && Number.isInteger(dependency.status) && (dependency.status as number) >= 200
+    && (dependency.status as number) <= 599
 }
 
 function validExecution(value: unknown): value is TavernScriptExecution {
@@ -84,8 +108,15 @@ function validExecution(value: unknown): value is TavernScriptExecution {
   if (execution.moduleDependencies !== undefined
     && (!Array.isArray(execution.moduleDependencies) || execution.moduleDependencies.length > 256
       || !execution.moduleDependencies.every(validModuleDependency))) return false
+  if (execution.stylesheetDependencies !== undefined
+    && (!Array.isArray(execution.stylesheetDependencies) || execution.stylesheetDependencies.length > 16
+      || !execution.stylesheetDependencies.every(validStylesheetDependency)
+      || execution.stylesheetDependencies.reduce((bytes, dependency) => bytes
+        + new TextEncoder().encode((dependency as TavernStylesheetDependency).source).byteLength, 0) > 1024 * 1024)) return false
   return (execution.remoteImageOrigins === undefined || validOriginArray(execution.remoteImageOrigins))
     && (execution.remoteStyleOrigins === undefined || validOriginArray(execution.remoteStyleOrigins))
+    && (execution.remoteStylesheetUrls === undefined || validHttpsUrlArray(execution.remoteStylesheetUrls))
+    && (execution.remoteFontOrigins === undefined || validOriginArray(execution.remoteFontOrigins))
     && (execution.remoteFrameOrigins === undefined || validOriginArray(execution.remoteFrameOrigins))
 }
 

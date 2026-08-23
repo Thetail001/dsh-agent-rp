@@ -43,6 +43,12 @@ function validExecution(value: unknown): value is TavernScriptExecution {
     && stringArray(execution.compatibilityMarkers)
     && (execution.remoteImageOrigins === undefined || stringArray(execution.remoteImageOrigins))
     && (execution.remoteStyleOrigins === undefined || stringArray(execution.remoteStyleOrigins))
+    && (execution.remoteStylesheetUrls === undefined || stringArray(execution.remoteStylesheetUrls))
+    && (execution.remoteFontOrigins === undefined || stringArray(execution.remoteFontOrigins))
+    && (execution.stylesheetDependencies === undefined || (Array.isArray(execution.stylesheetDependencies)
+      && execution.stylesheetDependencies.every(stylesheet => typeof stylesheet === 'object' && stylesheet !== null
+        && !Array.isArray(stylesheet) && typeof stylesheet.url === 'string' && typeof stylesheet.source === 'string'
+        && Number.isInteger(stylesheet.status) && stylesheet.status >= 200 && stylesheet.status <= 599)))
     && (execution.remoteFrameOrigins === undefined || stringArray(execution.remoteFrameOrigins))
     && (execution.moduleDependencies === undefined || (Array.isArray(execution.moduleDependencies)
       && execution.moduleDependencies.every(module => typeof module === 'object' && module !== null

@@ -256,6 +256,9 @@ function execution(source: string): TavernScriptExecution {
     compatibilityMarkers: [],
     remoteImageOrigins: [],
     remoteStyleOrigins: [],
+    remoteStylesheetUrls: [],
+    remoteFontOrigins: [],
+    stylesheetDependencies: [],
     remoteFrameOrigins: [],
   }
 }
@@ -336,6 +339,86 @@ test('preflights independent scripts concurrently while preserving library order
   assert.equal(maximumActive, 3)
   assert.deepEqual((result.json as { readonly entries: readonly { readonly scriptId: string }[] }).entries
     .map(entry => entry.scriptId), ['first', 'second', 'third'])
+})
+
+test('resolves approved stylesheet fetches on the Host and discovers fonts before runtime', async () => {
+  const stylesheetUrl = 'https://styles.example.test/theme.css'
+  const stylesheetOrigin = 'https://styles.example.test'
+  const fontOrigin = 'https://fonts.example.test'
+  let reads = 0
+  const plans = new TavernExecutionPlanCache(undefined, 64, {
+    stylesheetReader: async url => {
+      assert.equal(url.href, stylesheetUrl)
+      reads += 1
+      return {
+        source: `@font-face{font-family:test;src:url("${fontOrigin}/test.woff2") format("woff2")}`,
+        status: 200,
+      }
+    },
+  })
+  const libraries = testLibraries([
+    script('character-script', `fetch(${JSON.stringify(stylesheetUrl)}).then(response=>response.text())`),
+  ])
+  const pending = await invoke(registeredRoute(libraries, plans), { body: request() })
+  assert.equal(pending.status, 200)
+  assert.equal(reads, 0)
+  assert.deepEqual((pending.json as { readonly entries: readonly Record<string, unknown>[] }).entries[0], {
+    scope: 'character', scriptId: 'character-script', scriptName: 'script-character-script', status: 'ready',
+    remoteImageOrigins: [], remoteStyleOrigins: [stylesheetOrigin], remoteFontOrigins: [], remoteFrameOrigins: [],
+  })
+
+  const approved = await invoke(registeredRoute(libraries, plans), { body: request({
+    scriptApprovals: [{
+      scope: 'character', scriptId: 'character-script', origins: [], styleOrigins: [stylesheetOrigin],
+    }],
+  }) })
+  assert.equal(approved.status, 200)
+  assert.equal(reads, 1)
+  assert.deepEqual((approved.json as { readonly entries: readonly Record<string, unknown>[] }).entries[0], {
+    scope: 'character', scriptId: 'character-script', scriptName: 'script-character-script', status: 'ready',
+    remoteImageOrigins: [], remoteStyleOrigins: [stylesheetOrigin], remoteFontOrigins: [fontOrigin],
+    remoteFrameOrigins: [],
+  })
+
+  const executionResult = await invoke(registeredExecutionRoute(libraries, plans), {
+    body: executionRequest({ approvedStyleOrigins: [stylesheetOrigin] }),
+  })
+  assert.equal(executionResult.status, 200)
+  const resolved = (executionResult.json as { readonly execution: TavernScriptExecution }).execution
+  assert.deepEqual(resolved.stylesheetDependencies, [{
+    url: stylesheetUrl,
+    source: `@font-face{font-family:test;src:url("${fontOrigin}/test.woff2") format("woff2")}`,
+    status: 200,
+  }])
+})
+
+test('keeps an approved HTTP stylesheet failure inside the script fallback path', async () => {
+  const stylesheetUrl = 'https://styles.example.test/missing.css'
+  const stylesheetOrigin = 'https://styles.example.test'
+  const plans = new TavernExecutionPlanCache(undefined, 64, {
+    stylesheetReader: async () => ({ source: 'not found', status: 404 }),
+  })
+  const libraries = testLibraries([
+    script('character-script', `fetch(${JSON.stringify(stylesheetUrl)}).then(response=>response.ok)`),
+  ])
+  const approved = await invoke(registeredRoute(libraries, plans), { body: request({
+    scriptApprovals: [{
+      scope: 'character', scriptId: 'character-script', origins: [], styleOrigins: [stylesheetOrigin],
+    }],
+  }) })
+  assert.equal(approved.status, 200)
+  assert.deepEqual((approved.json as { readonly entries: readonly Record<string, unknown>[] }).entries[0], {
+    scope: 'character', scriptId: 'character-script', scriptName: 'script-character-script', status: 'ready',
+    remoteImageOrigins: [], remoteStyleOrigins: [stylesheetOrigin], remoteFontOrigins: [], remoteFrameOrigins: [],
+  })
+  const executionResult = await invoke(registeredExecutionRoute(libraries, plans), {
+    body: executionRequest({ approvedStyleOrigins: [stylesheetOrigin] }),
+  })
+  assert.equal(executionResult.status, 200)
+  assert.deepEqual(
+    (executionResult.json as { readonly execution: TavernScriptExecution }).execution.stylesheetDependencies,
+    [{ url: stylesheetUrl, source: 'not found', status: 404 }],
+  )
 })
 
 test('reuses successful preflight plans for runtime despite explicit built-in origins', async () => {
@@ -576,7 +659,7 @@ test('preflights and executes a preset without requiring a character card', asyn
     failed: 0,
     entries: [{
       scope: 'preset', scriptId: 'preset-script', scriptName: 'script-preset-script',
-      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }],
   })
 
@@ -612,10 +695,10 @@ test('preflights one native experience through its complete source-neutral resou
     failed: 0,
     entries: [{
       scope: 'character', scriptId: 'character-script', scriptName: 'script-character-script',
-      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }, {
       scope: 'preset', scriptId: 'preset-script', scriptName: 'script-preset-script',
-      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }],
   })
 })
@@ -651,7 +734,7 @@ test('dispatches native preflight by resource provider ownership without inspect
     failed: 0,
     entries: [{
       scope: 'character', scriptId: 'community-script', scriptName: 'script-community-script',
-      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }],
   })
 })
@@ -902,13 +985,13 @@ test('returns only the static resource plan, never script source, card content, 
     failed: 2,
     entries: [{
       scope: 'character', scriptId: 'ready-script', scriptName: 'script-ready-script',
-      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }, {
       scope: 'character', scriptId: 'failed-script', scriptName: 'script-failed-script',
-      status: 'resolution-error', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+      status: 'resolution-error', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }, {
       scope: 'character', scriptId: 'remote-failed-script', scriptName: 'script-remote-failed-script',
-      status: 'resolution-error', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+      status: 'resolution-error', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }],
   })
   for (const privateValue of [PRIVATE_SCRIPT_SOURCE, PRIVATE_CARD_BODY, PRIVATE_PROMPT, resolverError, PRIVATE_PATH]) {

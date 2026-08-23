@@ -141,7 +141,10 @@ function parseApprovals(
       invalidRequest(`脚本授权 ${index + 1} 无效`)
     }
     const approval = candidate as Record<string, unknown>
-    if (!Array.isArray(approval.origins) || approval.origins.length > MAX_ORIGINS_PER_SCRIPT) {
+    if (!Array.isArray(approval.origins) || approval.origins.length > MAX_ORIGINS_PER_SCRIPT
+      || (approval.styleOrigins !== undefined && (!Array.isArray(approval.styleOrigins)
+        || approval.styleOrigins.length > MAX_ORIGINS_PER_SCRIPT))
+      || Object.keys(approval).some(key => !['scope', 'scriptId', 'origins', 'styleOrigins'].includes(key))) {
       invalidRequest(`脚本授权 ${index + 1} 无效`)
     }
     const scope = safeScope(approval.scope)
@@ -150,6 +153,9 @@ function parseApprovals(
       scope,
       scriptId: safeScriptId(approval.scriptId, `脚本授权 ${index + 1} id`),
       origins: [...new Set(approval.origins.map(safeOrigin))].sort(),
+      ...(approval.styleOrigins === undefined ? {} : {
+        styleOrigins: [...new Set(approval.styleOrigins.map(safeOrigin))].sort(),
+      }),
     }
   })
 }
@@ -205,7 +211,9 @@ function parseExecutionRequest(value: unknown): TavernExecutionRequest {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) invalidRequest('脚本执行计划请求无效')
   const request = value as Record<string, unknown>
   if (request.format !== 0 || !Array.isArray(request.approvedOrigins)
-    || request.approvedOrigins.length > MAX_ORIGINS_PER_SCRIPT) invalidRequest('脚本执行计划请求无效')
+    || request.approvedOrigins.length > MAX_ORIGINS_PER_SCRIPT
+    || (request.approvedStyleOrigins !== undefined && (!Array.isArray(request.approvedStyleOrigins)
+      || request.approvedStyleOrigins.length > MAX_ORIGINS_PER_SCRIPT))) invalidRequest('脚本执行计划请求无效')
   const scope = safeScope(request.scope)
   const characterId = request.characterId === undefined ? undefined : safeLibraryId(request.characterId, '角色卡 id')
   const presetId = request.presetId === undefined ? undefined : safeLibraryId(request.presetId, '预设 id')
@@ -218,6 +226,9 @@ function parseExecutionRequest(value: unknown): TavernExecutionRequest {
     scope,
     scriptId: safeScriptId(request.scriptId, '脚本 id'),
     approvedOrigins: [...new Set(request.approvedOrigins.map(safeOrigin))].sort(),
+    ...(request.approvedStyleOrigins === undefined ? {} : {
+      approvedStyleOrigins: [...new Set(request.approvedStyleOrigins.map(safeOrigin))].sort(),
+    }),
   }
 }
 
@@ -236,7 +247,9 @@ function parseExecutionBatchRequest(value: unknown): TavernExecutionBatchRequest
     const entry = candidate as Record<string, unknown>
     const scope = safeScope(entry.scope)
     if ((scope === 'character' && characterId === undefined) || (scope === 'preset' && presetId === undefined)
-      || !Array.isArray(entry.approvedOrigins) || entry.approvedOrigins.length > MAX_ORIGINS_PER_SCRIPT) {
+      || !Array.isArray(entry.approvedOrigins) || entry.approvedOrigins.length > MAX_ORIGINS_PER_SCRIPT
+      || (entry.approvedStyleOrigins !== undefined && (!Array.isArray(entry.approvedStyleOrigins)
+        || entry.approvedStyleOrigins.length > MAX_ORIGINS_PER_SCRIPT))) {
       invalidRequest(`批量脚本 ${index + 1} 无效`)
     }
     const scriptId = safeScriptId(entry.scriptId, `批量脚本 ${index + 1} id`)
@@ -247,6 +260,9 @@ function parseExecutionBatchRequest(value: unknown): TavernExecutionBatchRequest
       scope,
       scriptId,
       approvedOrigins: [...new Set(entry.approvedOrigins.map(safeOrigin))].sort(),
+      ...(entry.approvedStyleOrigins === undefined ? {} : {
+        approvedStyleOrigins: [...new Set(entry.approvedStyleOrigins.map(safeOrigin))].sort(),
+      }),
     }
   })
   return {
@@ -363,6 +379,9 @@ export function installTavernExecutionHttp(
               ownerId,
               scriptId: entry.scriptId,
               approvedOrigins: entry.approvedOrigins,
+              ...(entry.approvedStyleOrigins === undefined ? {} : {
+                approvedStyleOrigins: entry.approvedStyleOrigins,
+              }),
             })
             if (execution === undefined) throw new TavernExecutionBatchCacheMiss()
             return { scope: entry.scope, scriptId: entry.scriptId, execution }
@@ -377,6 +396,9 @@ export function installTavernExecutionHttp(
           ownerId,
           scriptId: input.scriptId,
           approvedOrigins: input.approvedOrigins,
+          ...(input.approvedStyleOrigins === undefined ? {} : {
+            approvedStyleOrigins: input.approvedStyleOrigins,
+          }),
         }
         const cached = plans.get(identity)
         if (cached !== undefined) {
