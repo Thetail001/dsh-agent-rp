@@ -31,6 +31,7 @@ import {
 } from './world-info-configuration-core.ts'
 import { readActiveSessionLorebookSourcesFromEvents } from './world-info-configuration.ts'
 import {
+  ROLEPLAY_AGENT_MODULE_ID,
   ROLEPLAY_EJS_ADAPTER_MODULE_ID,
   ROLEPLAY_MEMORY_MODULE_ID,
   ROLEPLAY_PROMPT_ADAPTER_MODULE_ID,
@@ -193,6 +194,7 @@ export function resolveSessionRoleplayRuntime(input: {
   const modules: RoleplayModuleBinding[] = [
     runtimeModule(ROLEPLAY_PROMPT_MODULE_ID, 'native', ['prepare']),
     runtimeModule(ROLEPLAY_MEMORY_MODULE_ID, 'native', ['recall', 'act', 'settle']),
+    runtimeModule(ROLEPLAY_AGENT_MODULE_ID, 'native', ['act']),
     runtimeModule('roleplay:reply-versions', 'native', ['present']),
     ...(nativeStates.length === 0 ? [] : [runtimeModule(
       ROLEPLAY_STATE_MODULE_ID,

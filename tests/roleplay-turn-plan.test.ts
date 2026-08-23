@@ -208,6 +208,7 @@ test('plans the minimal deployment character without changing its native prompt'
   })
   assert.deepEqual(plan.runtime.modules.find(module => module.id === 'roleplay:memory')?.phases,
     ['recall', 'act', 'settle'])
+  assert.deepEqual(plan.runtime.modules.find(module => module.id === 'roleplay:agent')?.phases, ['act'])
 })
 
 test('requires one explicit outcome from every active prepare and recall module', () => {

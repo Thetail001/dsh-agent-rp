@@ -92,6 +92,35 @@ export interface RoleplaySettleModuleOutcome {
   readonly error?: string
 }
 
+/** One model message emitted while the Agent acted, without retaining its content twice. */
+export interface RoleplayActAssistantMessageReference {
+  readonly eventSeq: number
+  readonly messageId: string
+  readonly interrupted?: true
+}
+
+/** One tool invocation emitted while the Agent acted, without retaining its arguments twice. */
+export interface RoleplayActToolCallReference {
+  readonly eventSeq: number
+  readonly callId: string
+  readonly name: string
+}
+
+/** One tool result emitted while the Agent acted, without retaining its result content twice. */
+export interface RoleplayActToolResultReference {
+  readonly eventSeq: number
+  readonly callId: string
+  readonly outcome: 'succeeded' | 'failed'
+}
+
+/** Ordered Session-log evidence for one prepared model step. */
+export interface RoleplayActStepReceipt {
+  readonly step: number
+  readonly assistantMessages: readonly RoleplayActAssistantMessageReference[]
+  readonly toolCalls: readonly RoleplayActToolCallReference[]
+  readonly toolResults: readonly RoleplayActToolResultReference[]
+}
+
 /** Replayable summary of state and memory after one complete Roleplay turn. */
 export interface RoleplayTurnSettlement {
   readonly format: 0
@@ -102,6 +131,13 @@ export interface RoleplayTurnSettlement {
   readonly reply?: {
     readonly eventSeq: number
     readonly messageId: string
+  }
+  /**
+   * Content-free evidence for the act phase. Optional only for settlements
+   * written before this receipt was introduced; every current compiler writes it.
+   */
+  readonly act?: {
+    readonly steps: readonly RoleplayActStepReceipt[]
   }
   readonly state: readonly RoleplayStateSettlement[]
   readonly memory: {
@@ -187,6 +223,172 @@ function latestTurnReply(
   return reply?.type === 'assistant/message'
     ? { eventSeq: reply.seq, messageId: String(reply.data.message.id) }
     : undefined
+}
+
+type RoleplayActEvent = SessionEvent<'assistant/message' | 'tool/call' | 'tool/result'>
+
+function isRoleplayActEvent(event: SessionEvent): event is RoleplayActEvent {
+  return event.type === 'assistant/message' || event.type === 'tool/call' || event.type === 'tool/result'
+}
+
+function roleplayActCallKey(step: number, callId: string): string {
+  return JSON.stringify([step, callId])
+}
+
+function exactTurnEvents(
+  events: readonly SessionEvent[],
+  turn: number,
+  result: string,
+): readonly SessionEvent[] {
+  const starts = events.filter((event): event is SessionEvent<'turn/start'> =>
+    event.type === 'turn/start' && event.data.turn === turn)
+  const ends = events.filter((event): event is SessionEvent<'turn/end'> =>
+    event.type === 'turn/end' && event.data.turn === turn)
+  if (starts.length > 1 || ends.length > 1) {
+    throw new Error(`Roleplay act phase has ambiguous boundaries for turn ${String(turn)}`)
+  }
+  const start = starts[0]
+  const end = ends[0]
+  if (start === undefined && end === undefined) return events
+  if (start === undefined || end === undefined || start.seq >= end.seq) {
+    throw new Error(`Roleplay act phase has an incomplete boundary for turn ${String(turn)}`)
+  }
+  if (end.data.reason.kind !== result) {
+    throw new Error('Roleplay settlement result does not match its turn boundary')
+  }
+  return events.filter(event => event.seq > start.seq && event.seq < end.seq)
+}
+
+/** Compile a content-free, source-neutral receipt from the exact closed-turn Session events. */
+function compileRoleplayActReceipt(
+  events: readonly SessionEvent[],
+  turn: number,
+  result: string,
+  plans: readonly RoleplayTurnPlanReference[],
+): NonNullable<RoleplayTurnSettlement['act']> {
+  const bounded = exactTurnEvents(events, turn, result)
+  const plannedSteps = new Set(plans.map(plan => plan.step))
+  const byStep = new Map(plans.map(plan => [plan.step, {
+    step: plan.step,
+    assistantMessages: [] as RoleplayActAssistantMessageReference[],
+    toolCalls: [] as RoleplayActToolCallReference[],
+    toolResults: [] as RoleplayActToolResultReference[],
+  }]))
+  const starts = new Map<number, SessionEvent<'step/start'>>()
+  const ends = new Map<number, SessionEvent<'step/end'>>()
+  for (const event of bounded) {
+    if (event.type !== 'step/start' && event.type !== 'step/end') continue
+    if (event.data.turn !== turn) {
+      throw new Error('Roleplay act boundary contains a step from another turn')
+    }
+    if (!plannedSteps.has(event.data.step)) {
+      throw new Error(`Roleplay act phase contains unprepared step ${String(event.data.step)}`)
+    }
+    const duplicate = event.type === 'step/start'
+      ? starts.has(event.data.step)
+      : ends.has(event.data.step)
+    if (duplicate) {
+      throw new Error(`Roleplay act phase contains duplicate ${event.type} for step ${String(event.data.step)}`)
+    }
+    if (event.type === 'step/start') starts.set(event.data.step, event)
+    else ends.set(event.data.step, event)
+  }
+  if (starts.size > 0 || ends.size > 0) {
+    for (const step of plannedSteps) {
+      const start = starts.get(step)
+      const end = ends.get(step)
+      if (start === undefined || end === undefined || start.seq >= end.seq) {
+        throw new Error(`Roleplay act phase has an incomplete boundary for step ${String(step)}`)
+      }
+    }
+  }
+
+  const assistantToolCalls = new Map<string, {
+    readonly eventSeq: number
+    readonly step: number
+    readonly name: string
+    readonly arguments: string
+  }>()
+  const calls = new Map<string, SessionEvent<'tool/call'>>()
+  const results = new Set<string>()
+  const actEvents = bounded.filter(isRoleplayActEvent).sort((left, right) => left.seq - right.seq)
+  for (const event of actEvents) {
+    if (event.data.turn !== turn) {
+      throw new Error('Roleplay act boundary contains an action from another turn')
+    }
+    const step = byStep.get(event.data.step)
+    if (step === undefined) {
+      throw new Error(`Roleplay act phase references unprepared step ${String(event.data.step)}`)
+    }
+    const start = starts.get(event.data.step)
+    const end = ends.get(event.data.step)
+    if ((start !== undefined && event.seq <= start.seq) || (end !== undefined && event.seq >= end.seq)) {
+      throw new Error(`Roleplay act event ${String(event.seq)} falls outside step ${String(event.data.step)}`)
+    }
+    if (event.type === 'assistant/message') {
+      step.assistantMessages.push({
+        eventSeq: event.seq,
+        messageId: String(event.data.message.id),
+        ...(event.data.interrupted === true ? { interrupted: true as const } : {}),
+      })
+      for (const block of event.data.message.content) {
+        if (block.type !== 'tool-call') continue
+        const callId = String(block.id)
+        const callKey = roleplayActCallKey(event.data.step, callId)
+        if (assistantToolCalls.has(callKey)) {
+          throw new Error(`Roleplay act phase contains duplicate model tool call ${callId}`)
+        }
+        assistantToolCalls.set(callKey, {
+          eventSeq: event.seq,
+          step: event.data.step,
+          name: block.name,
+          arguments: block.arguments,
+        })
+      }
+      continue
+    }
+    if (event.type === 'tool/call') {
+      const callId = String(event.data.callId)
+      const callKey = roleplayActCallKey(event.data.step, callId)
+      if (calls.has(callKey)) throw new Error(`Roleplay act phase contains duplicate tool call ${callId}`)
+      const modelCall = assistantToolCalls.get(callKey)
+      if (modelCall === undefined || modelCall.eventSeq >= event.seq
+        || modelCall.step !== event.data.step || modelCall.name !== event.data.name
+        || modelCall.arguments !== event.data.arguments) {
+        throw new Error(`Roleplay tool call ${callId} does not match its assistant message`)
+      }
+      calls.set(callKey, event)
+      step.toolCalls.push({ eventSeq: event.seq, callId, name: event.data.name })
+      continue
+    }
+    const block = event.data.message.content[0]
+    const callId = String(event.data.message.source.callId)
+    const callKey = roleplayActCallKey(event.data.step, callId)
+    if (block.type !== 'tool-result' || String(block.toolCallId) !== callId) {
+      throw new Error(`Roleplay tool result ${String(event.seq)} has inconsistent call identity`)
+    }
+    const call = calls.get(callKey)
+    if (call === undefined || call.seq >= event.seq || call.data.turn !== turn
+      || call.data.step !== event.data.step) {
+      throw new Error(`Roleplay tool result ${callId} does not reference an earlier call in its step`)
+    }
+    if (event.sourceEventSeqs !== undefined && !event.sourceEventSeqs.includes(call.seq)) {
+      throw new Error(`Roleplay tool result ${callId} does not cite call event ${String(call.seq)}`)
+    }
+    if (results.has(callKey)) throw new Error(`Roleplay act phase contains duplicate tool result ${callId}`)
+    results.add(callKey)
+    step.toolResults.push({
+      eventSeq: event.seq,
+      callId,
+      outcome: block.isError === true || event.data.error !== undefined ? 'failed' : 'succeeded',
+    })
+  }
+  for (const [callKey, call] of calls) {
+    if (!results.has(callKey)) {
+      throw new Error(`Roleplay tool call ${String(call.data.callId)} has no result in the closed turn`)
+    }
+  }
+  return { steps: [...byStep.values()] }
 }
 
 function planReceipt(plan: RoleplayTurnPlan): RoleplayTurnPlanReceipt {
@@ -406,6 +608,7 @@ export function compileRoleplayTurnSettlementFromReferences(
     activeCount: afterMemory.active.length,
   }
   const reply = latestTurnReply(input.events, input.turn)
+  const act = compileRoleplayActReceipt(input.events, input.turn, input.result, plans)
   return {
     format: 0,
     sessionId: input.sessionId,
@@ -413,6 +616,7 @@ export function compileRoleplayTurnSettlementFromReferences(
     result: input.result,
     plans,
     ...(reply === undefined ? {} : { reply }),
+    act,
     state,
     memory,
     settle: { modules: settleModules(contracts, state, memory, contributions) },

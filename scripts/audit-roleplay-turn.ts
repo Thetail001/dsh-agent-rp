@@ -5,7 +5,12 @@ import { readFileSync } from 'node:fs'
 import { basename, extname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
-import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import {
+  CallId,
+  createAssistantMessage,
+  createToolResultMessage,
+  createUserMessage,
+} from '@deepseek-ai/dsh-llm'
 import {
   Session,
   SessionId,
@@ -75,7 +80,7 @@ export interface RoleplayTurnAuditInput {
 
 /** Content-free result safe to paste into an issue or community feedback thread. */
 export interface RoleplayTurnAuditResult {
-  readonly audit: 'roleplay-turn-roundtrip-v1'
+  readonly audit: 'roleplay-turn-roundtrip-v2'
   readonly ok: true
   readonly assets: {
     readonly card: {
@@ -112,6 +117,10 @@ export interface RoleplayTurnAuditResult {
   readonly settlement: {
     readonly receiptPresent: boolean
     readonly replyPresent: boolean
+    readonly actSteps: number
+    readonly assistantActions: number
+    readonly toolCalls: number
+    readonly toolResults: number
     readonly moduleOutcomes: Counter
     readonly stateOutcomes: Counter
   }
@@ -127,6 +136,7 @@ export interface RoleplayTurnAuditResult {
     readonly presentationRecovered: boolean
     readonly preDispatchReceiptRecovered: boolean
     readonly recallReceiptRecovered: boolean
+    readonly actReceiptRecovered: boolean
     readonly exactPlanRecovered: boolean
     readonly coldSettlementRecovered: boolean
     readonly resourceReferencesMatch: boolean
@@ -277,14 +287,34 @@ function appendSyntheticTurn(
   session.append('step/start', { turn, step: 1 })
   session.append('user/message', pending, { surfaceOp: 'append' })
   appendSessionRoleplayTurnPlan(session, turn, 1, plan)
+  const callId = CallId('agent-rp-model-free-audit-call')
   const reply = session.append('assistant/message', {
     turn,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'agent-rp-audit', model: 'local-fixture' },
-      content: [{ type: 'text', text: '[agent-rp:model-free-audit-reply]' }],
+      content: [
+        { type: 'text', text: '[agent-rp:model-free-audit-reply]' },
+        { type: 'tool-call', id: callId, name: 'agent_rp_audit_probe', arguments: '{}' },
+      ],
     }),
   }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  const call = session.append('tool/call', {
+    turn,
+    step: 1,
+    callId,
+    name: 'agent_rp_audit_probe',
+    arguments: '{}',
+  })
+  session.append('tool/result', {
+    turn,
+    step: 1,
+    message: createToolResultMessage({
+      callId,
+      content: [{ type: 'text', text: '[agent-rp:model-free-audit-tool-result]' }],
+      isError: false,
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
   session.append('step/end', { turn, step: 1 })
   session.append('turn/end', { turn, reason: { kind: 'completed' } })
   return reply
@@ -410,6 +440,10 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
     && event.data.turn === turn && event.data.reference.step === 1)
   const preDispatchReceiptRecovered = planRecord?.type === 'agent-rp/turn-plan'
   const recallReceiptRecovered = receipt?.recall !== undefined && equalJson(receipt.recall, plan.recall)
+  const actReceiptRecovered = recoveredSettlement?.act !== undefined
+    && equalJson(recoveredSettlement.act, settlement.act)
+    && recoveredSettlement.act.steps.some(step => step.assistantMessages.some(message =>
+      message.eventSeq === reply.seq && message.messageId === String(reply.data.message.id)))
   const exactPlanRecovered = planRecord?.type === 'agent-rp/turn-plan' && equalJson(
     replaySessionRoleplayTurnPlan({ session: reopened, record: planRecord, deployment, templateEngine: engine }),
     plan,
@@ -474,13 +508,14 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
   if (receipt === undefined || !settlementRecovered || !presentationRecovered
     || !equalStrings(runtimeResourceIds, receiptResourceIds)
     || !worldActivationMatches || !stateReferencesResolve || !memoryReferencesResolve
-    || !preDispatchReceiptRecovered || !recallReceiptRecovered || !exactPlanRecovered || !coldSettlementRecovered
+    || !preDispatchReceiptRecovered || !recallReceiptRecovered || !actReceiptRecovered
+    || !exactPlanRecovered || !coldSettlementRecovered
     || !currentReplyMatches || !nextPrepareContinues || !nextRecallContinues) {
     throw new Error('Roleplay turn audit replay invariant failed')
   }
 
   return {
-    audit: 'roleplay-turn-roundtrip-v1',
+    audit: 'roleplay-turn-roundtrip-v2',
     ok: true,
     assets: {
       card: {
@@ -517,6 +552,11 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
     settlement: {
       receiptPresent: true,
       replyPresent: recoveredSettlement?.reply !== undefined,
+      actSteps: settlement.act?.steps.length ?? 0,
+      assistantActions: settlement.act?.steps.reduce((total, step) =>
+        total + step.assistantMessages.length, 0) ?? 0,
+      toolCalls: settlement.act?.steps.reduce((total, step) => total + step.toolCalls.length, 0) ?? 0,
+      toolResults: settlement.act?.steps.reduce((total, step) => total + step.toolResults.length, 0) ?? 0,
       moduleOutcomes: counter(settlement.settle.modules.map(module => module.outcome)),
       stateOutcomes: counter(settlement.state.map(state => state.outcome)),
     },
@@ -532,6 +572,7 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
       presentationRecovered,
       preDispatchReceiptRecovered,
       recallReceiptRecovered,
+      actReceiptRecovered,
       exactPlanRecovered,
       coldSettlementRecovered,
       resourceReferencesMatch: true,
@@ -568,7 +609,7 @@ const entry = process.argv[1]
 if (entry !== undefined && basename(entry).startsWith('audit-roleplay-turn.')
   && pathToFileURL(resolve(entry)).href === import.meta.url) {
   main().catch(() => {
-    process.stderr.write(`${JSON.stringify({ audit: 'roleplay-turn-roundtrip-v1', ok: false })}\n`)
+    process.stderr.write(`${JSON.stringify({ audit: 'roleplay-turn-roundtrip-v2', ok: false })}\n`)
     process.exitCode = 1
   })
 }

@@ -15,6 +15,10 @@ test('audits a complete model-free turn and reopens it from the Session log', as
   assert.equal(result.ok, true)
   assert.equal(result.settlement.receiptPresent, true)
   assert.equal(result.settlement.replyPresent, true)
+  assert.equal(result.settlement.actSteps, 1)
+  assert.equal(result.settlement.assistantActions, 1)
+  assert.equal(result.settlement.toolCalls, 1)
+  assert.equal(result.settlement.toolResults, 1)
   assert.equal(result.presentation.current, true)
   assert.equal(result.presentation.replySelected, true)
   assert.deepEqual(result.replay, {
@@ -23,6 +27,7 @@ test('audits a complete model-free turn and reopens it from the Session log', as
     presentationRecovered: true,
     preDispatchReceiptRecovered: true,
     recallReceiptRecovered: true,
+    actReceiptRecovered: true,
     exactPlanRecovered: true,
     coldSettlementRecovered: true,
     resourceReferencesMatch: true,

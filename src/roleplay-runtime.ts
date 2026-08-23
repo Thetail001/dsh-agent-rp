@@ -9,6 +9,7 @@ export type RoleplayTurnPhase = typeof ROLEPLAY_TURN_PHASES[number]
 export const ROLEPLAY_PROMPT_MODULE_ID = 'roleplay:prompt'
 export const ROLEPLAY_MEMORY_MODULE_ID = 'roleplay:memory'
 export const ROLEPLAY_WORLD_MODULE_ID = 'roleplay:world'
+export const ROLEPLAY_AGENT_MODULE_ID = 'roleplay:agent'
 export const ROLEPLAY_PROMPT_ADAPTER_MODULE_ID = 'adapter:prompt-modules'
 export const ROLEPLAY_EJS_ADAPTER_MODULE_ID = 'adapter:ejs'
 

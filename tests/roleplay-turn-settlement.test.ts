@@ -77,12 +77,26 @@ function appendRemember(
   callId: string,
   input: { readonly kind: 'fact'; readonly subject: string; readonly text: string; readonly supersedes?: string },
 ): AgentRpMemoryRecord {
+  const argumentsText = JSON.stringify(input)
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' },
+      content: [{
+        type: 'tool-call',
+        id: CallId(callId),
+        name: 'remember',
+        arguments: argumentsText,
+      }],
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [] })
   const call = session.append('tool/call', {
     turn: 1,
     step: 1,
     callId: CallId(callId),
     name: 'remember',
-    arguments: JSON.stringify(input),
+    arguments: argumentsText,
   })
   const record = prepareAgentRpMemory(session, callId, input)
   session.append('tool/result', {
@@ -203,6 +217,20 @@ test('compares native memory history across the exact first-plan boundary', () =
     supersededIds: ['memory-seed-0-0'],
     activeCount: 1,
   })
+  const assistant = session.events.find(event => event.type === 'assistant/message')
+  const call = session.events.find(event => event.type === 'tool/call')
+  const result = session.events.find(event => event.type === 'tool/result')
+  assert.equal(assistant?.type, 'assistant/message')
+  assert.equal(call?.type, 'tool/call')
+  assert.equal(result?.type, 'tool/result')
+  assert.deepEqual(settlement.act, {
+    steps: [{
+      step: 1,
+      assistantMessages: [{ eventSeq: assistant!.seq, messageId: String(assistant!.data.message.id) }],
+      toolCalls: [{ eventSeq: call!.seq, callId: 'settlement-memory-call', name: 'remember' }],
+      toolResults: [{ eventSeq: result!.seq, callId: 'settlement-memory-call', outcome: 'succeeded' }],
+    }],
+  })
   assert.deepEqual(settlement.settle.modules, [{ moduleId: 'roleplay:memory', outcome: 'applied', changes: 2 }])
 })
 
@@ -273,7 +301,7 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
       ],
     },
   }
-  appendReply(session, 3, 1, '先检查一下。')
+  const firstReply = appendReply(session, 3, 1, '先检查一下。')
   const second = turnPlan({ sessionId: String(session.id), sessionSeq: session.seq })
   const finalReply = appendReply(session, 3, 2, '已经完成。')
   session.append('turn/end', { turn: 3, reason: { kind: 'max-tokens' } })
@@ -323,7 +351,115 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
     },
   })
   assert.deepEqual(settlement.reply, { eventSeq: finalReply.seq, messageId: String(finalReply.data.message.id) })
+  assert.deepEqual(settlement.act, {
+    steps: [
+      {
+        step: 1,
+        assistantMessages: [{ eventSeq: firstReply.seq, messageId: String(firstReply.data.message.id) }],
+        toolCalls: [],
+        toolResults: [],
+      },
+      {
+        step: 2,
+        assistantMessages: [{ eventSeq: finalReply.seq, messageId: String(finalReply.data.message.id) }],
+        toolCalls: [],
+        toolResults: [],
+      },
+    ],
+  })
   assert.equal(settlement.result, 'max-tokens')
+})
+
+test('rejects a tool result whose Session citation does not point to its call', () => {
+  const session = Session.create(SessionId('settlement-invalid-tool-citation'))
+  session.append('turn/start', { turn: 1 })
+  const prepared = turnPlan({ sessionId: String(session.id), sessionSeq: session.seq })
+  const callId = CallId('invalid-citation-call')
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' },
+      content: [{ type: 'tool-call', id: callId, name: 'inspect', arguments: '{}' }],
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  const call = session.append('tool/call', {
+    turn: 1, step: 1, callId, name: 'inspect', arguments: '{}',
+  })
+  session.append('tool/result', {
+    turn: 1,
+    step: 1,
+    message: createToolResultMessage({
+      callId,
+      content: [{ type: 'text', text: 'ok' }],
+      isError: false,
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const events = structuredClone(session.events)
+  const result = events.find(event => event.type === 'tool/result')
+  assert.equal(result?.type, 'tool/result')
+  if (result?.type === 'tool/result') result.sourceEventSeqs = []
+
+  assert.throws(() => compileRoleplayTurnSettlement({
+    sessionId: String(session.id),
+    turn: 1,
+    result: 'completed',
+    plans: [{ step: 1, plan: prepared }],
+    events,
+    after: runtime(),
+  }), /does not cite call event/u)
+})
+
+test('correlates provider call ids within their step rather than across the whole turn', () => {
+  const session = Session.create(SessionId('settlement-reused-call-id'))
+  session.append('turn/start', { turn: 1 })
+  const plans: { step: number; plan: RoleplayTurnPlan }[] = []
+  const callId = CallId('provider-reused-call-id')
+  for (const step of [1, 2]) {
+    plans.push({ step, plan: turnPlan({ sessionId: String(session.id), sessionSeq: session.seq }) })
+    session.append('step/start', { turn: 1, step })
+    const argumentsText = JSON.stringify({ step })
+    session.append('assistant/message', {
+      turn: 1,
+      step,
+      message: createAssistantMessage({
+        source: { provider: 'fixture', model: 'fixture' },
+        content: [{ type: 'tool-call', id: callId, name: 'inspect', arguments: argumentsText }],
+      }),
+    }, { surfaceOp: 'append', sourceEventSeqs: [] })
+    const call = session.append('tool/call', {
+      turn: 1, step, callId, name: 'inspect', arguments: argumentsText,
+    })
+    session.append('tool/result', {
+      turn: 1,
+      step,
+      message: createToolResultMessage({
+        callId,
+        content: [{ type: 'text', text: `step ${String(step)}` }],
+        isError: false,
+      }),
+    }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+    session.append('step/end', { turn: 1, step })
+  }
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+
+  const settlement = compileRoleplayTurnSettlement({
+    sessionId: String(session.id),
+    turn: 1,
+    result: 'completed',
+    plans,
+    events: session.events,
+    after: runtime(),
+  })
+  assert.deepEqual(settlement.act?.steps.map(step => ({
+    step: step.step,
+    callIds: step.toolCalls.map(call => call.callId),
+    resultIds: step.toolResults.map(result => result.callId),
+  })), [
+    { step: 1, callIds: ['provider-reused-call-id'], resultIds: ['provider-reused-call-id'] },
+    { step: 2, callIds: ['provider-reused-call-id'], resultIds: ['provider-reused-call-id'] },
+  ])
 })
 
 test('appends only one replayable settlement for a turn', () => {
