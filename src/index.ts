@@ -167,6 +167,18 @@ export type {
   RoleplayStateSnapshot,
   WriteRoleplayStateInput,
 } from './roleplay-state.ts'
+export {
+  readLatestRoleplayTurnRecord,
+  readRoleplayTurnRecords,
+} from './roleplay-turn-record.ts'
+export type {
+  RoleplayTurnPlanEvidence,
+  RoleplayTurnPrepareStepRecord,
+  RoleplayTurnPresentRecord,
+  RoleplayTurnRecallStepRecord,
+  RoleplayTurnRecord,
+  RoleplayTurnSettleRecord,
+} from './roleplay-turn-record.ts'
 export { AGENT_RP_EMBEDDED_IDENTITY_CHANNEL } from './embedded-identity-protocol.ts'
 export type {
   EmbeddedNativeIdentityFailure,

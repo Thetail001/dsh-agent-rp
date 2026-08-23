@@ -249,7 +249,14 @@ function exactTurnEvents(
   }
   const start = starts[0]
   const end = ends[0]
-  if (start === undefined && end === undefined) return events
+  if (start === undefined && end === undefined) {
+    return events.filter((event) => {
+      if (event.type === 'step/start' || event.type === 'step/end'
+        || event.type === 'assistant/message' || event.type === 'tool/call'
+        || event.type === 'tool/result') return event.data.turn === turn
+      return false
+    })
+  }
   if (start === undefined || end === undefined || start.seq >= end.seq) {
     throw new Error(`Roleplay act phase has an incomplete boundary for turn ${String(turn)}`)
   }
@@ -260,7 +267,7 @@ function exactTurnEvents(
 }
 
 /** Compile a content-free, source-neutral receipt from the exact closed-turn Session events. */
-function compileRoleplayActReceipt(
+export function compileRoleplayActReceipt(
   events: readonly SessionEvent[],
   turn: number,
   result: string,
