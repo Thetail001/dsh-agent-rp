@@ -64,6 +64,7 @@ function entry(record: RoleplayTurnRecord): RoleplayTurnHealthEntry {
       recalledSteps,
       actedSteps: actSteps.length,
       assistantMessages: actSteps.reduce((total, step) => total + step.assistantMessages.length, 0),
+      modelCalls: actSteps.reduce((total, step) => total + step.modelCalls.length, 0),
       toolCalls: actSteps.reduce((total, step) => total + step.toolCalls.length, 0),
       toolResults: actSteps.reduce((total, step) => total + step.toolResults.length, 0),
       settled: record.settle !== undefined,

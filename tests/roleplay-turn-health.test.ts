@@ -58,6 +58,10 @@ function record(input: {
       act: { steps: [{
         step: 1,
         assistantMessages: [{ eventSeq: 3, messageId: 'private-reply' }],
+        modelCalls: [{
+          requestEventSeq: 3, resultEventSeq: 4, requestId: 'private-model', purpose: 'response-repair',
+          engine: 'mvu-v0', moduleId: 'private-module', stateId: 'private-state', outcome: 'applied',
+        }],
         toolCalls: [{ eventSeq: 4, callId: 'private-call', name: 'private-tool' }],
         toolResults: [{ eventSeq: 5, callId: 'private-call', outcome: 'succeeded' }],
       }] },
@@ -95,7 +99,7 @@ test('locates the next lifecycle phase without retaining record content', () => 
     externalRecall: { steps: 1, messages: 2 },
     phases: {
       plannedSteps: 1, preparedSteps: 1, recalledSteps: 1, actedSteps: 1,
-      assistantMessages: 1, toolCalls: 1, toolResults: 1, settled: true, presented: true,
+      assistantMessages: 1, modelCalls: 1, toolCalls: 1, toolResults: 1, settled: true, presented: true,
     },
   })
   assert.doesNotMatch(
@@ -124,7 +128,7 @@ test('keeps a boundary-only open turn visible to prepare-phase diagnostics', () 
     finalizableFromLog: false,
     phases: {
       plannedSteps: 0, preparedSteps: 0, recalledSteps: 0, actedSteps: 0,
-      assistantMessages: 0, toolCalls: 0, toolResults: 0, settled: false, presented: false,
+      assistantMessages: 0, modelCalls: 0, toolCalls: 0, toolResults: 0, settled: false, presented: false,
     },
   })
 })

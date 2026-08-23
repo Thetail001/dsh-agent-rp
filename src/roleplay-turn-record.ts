@@ -100,6 +100,20 @@ function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
+function normalizePersistedActReceipt(
+  act: NonNullable<RoleplayTurnSettlement['act']>,
+): NonNullable<RoleplayTurnSettlement['act']> {
+  return {
+    steps: act.steps.map(step => ({
+      step: step.step,
+      assistantMessages: step.assistantMessages,
+      modelCalls: step.modelCalls ?? [],
+      toolCalls: step.toolCalls,
+      toolResults: step.toolResults,
+    })),
+  }
+}
+
 function eventMap(events: readonly SessionEvent[]): ReadonlyMap<number, SessionEvent> {
   const result = new Map<number, SessionEvent>()
   for (const [index, event] of events.entries()) {
@@ -340,7 +354,8 @@ function readSelectedRoleplayTurnRecords(
       settlement.data.result,
       settlement.data.plans,
     )
-    if (settlement?.data.act !== undefined && !sameJson(settlement.data.act, act)) {
+    if (settlement?.data.act !== undefined
+      && !sameJson(normalizePersistedActReceipt(settlement.data.act), act)) {
       throw new Error(`Roleplay turn ${String(turn)} act receipt drifted from its Session events`)
     }
     const presentationEvents = settlement === undefined

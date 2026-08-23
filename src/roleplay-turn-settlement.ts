@@ -48,6 +48,13 @@ export interface RoleplayTurnPlanReceipt {
     readonly tokenBudget?: number
   }
   readonly promptDiagnostics: RoleplayTurnPlan['prompt']['diagnostics']
+  readonly act?: {
+    readonly responseRepairs: readonly {
+      readonly engine: RoleplayTurnPlan['act']['responseRepairs'][number]['engine']
+      readonly moduleId: string
+      readonly stateId: string
+    }[]
+  }
   readonly stateReads: readonly {
     readonly id: string
     readonly revision?: number
@@ -113,10 +120,23 @@ export interface RoleplayActToolResultReference {
   readonly outcome: 'succeeded' | 'failed'
 }
 
+/** One auxiliary model call dispatched by a prepared act-phase program. */
+export interface RoleplayActModelCallReference {
+  readonly requestEventSeq: number
+  readonly resultEventSeq: number
+  readonly requestId: string
+  readonly purpose: 'response-repair'
+  readonly engine: RoleplayTurnPlan['act']['responseRepairs'][number]['engine']
+  readonly moduleId: string
+  readonly stateId: string
+  readonly outcome: 'applied' | 'rejected' | 'failed'
+}
+
 /** Ordered Session-log evidence for one prepared model step. */
 export interface RoleplayActStepReceipt {
   readonly step: number
   readonly assistantMessages: readonly RoleplayActAssistantMessageReference[]
+  readonly modelCalls: readonly RoleplayActModelCallReference[]
   readonly toolCalls: readonly RoleplayActToolCallReference[]
   readonly toolResults: readonly RoleplayActToolResultReference[]
 }
@@ -240,6 +260,7 @@ function exactTurnEvents(
   turn: number,
   result: string,
 ): readonly SessionEvent[] {
+  const eventsBySeq = new Map(events.map(event => [event.seq, event]))
   const starts = events.filter((event): event is SessionEvent<'turn/start'> =>
     event.type === 'turn/start' && event.data.turn === turn)
   const ends = events.filter((event): event is SessionEvent<'turn/end'> =>
@@ -253,7 +274,13 @@ function exactTurnEvents(
     return events.filter((event) => {
       if (event.type === 'step/start' || event.type === 'step/end'
         || event.type === 'assistant/message' || event.type === 'tool/call'
-        || event.type === 'tool/result') return event.data.turn === turn
+        || event.type === 'tool/result' || event.type === 'agent-rp/act-model-request') {
+        return event.data.turn === turn
+      }
+      if (event.type === 'agent-rp/act-model-result') {
+        const request = eventsBySeq.get(event.data.requestSeq)
+        return request?.type === 'agent-rp/act-model-request' && request.data.turn === turn
+      }
       return false
     })
   }
@@ -274,10 +301,12 @@ export function compileRoleplayActReceipt(
   plans: readonly RoleplayTurnPlanReference[],
 ): NonNullable<RoleplayTurnSettlement['act']> {
   const bounded = exactTurnEvents(events, turn, result)
+  const eventsBySeq = new Map(events.map(event => [event.seq, event]))
   const plannedSteps = new Set(plans.map(plan => plan.step))
   const byStep = new Map(plans.map(plan => [plan.step, {
     step: plan.step,
     assistantMessages: [] as RoleplayActAssistantMessageReference[],
+    modelCalls: [] as RoleplayActModelCallReference[],
     toolCalls: [] as RoleplayActToolCallReference[],
     toolResults: [] as RoleplayActToolResultReference[],
   }]))
@@ -307,6 +336,76 @@ export function compileRoleplayActReceipt(
       if (start === undefined || end === undefined || start.seq >= end.seq) {
         throw new Error(`Roleplay act phase has an incomplete boundary for step ${String(step)}`)
       }
+    }
+  }
+
+  const actModelRequests = new Map<string, SessionEvent<'agent-rp/act-model-request'>>()
+  const actModelResults = new Set<string>()
+  for (const event of [...bounded].sort((left, right) => left.seq - right.seq)) {
+    if (event.type === 'agent-rp/act-model-request') {
+      const data = event.data
+      const step = byStep.get(data.step)
+      const reference = plans.find(plan => plan.step === data.step)
+      const start = starts.get(data.step)
+      const end = ends.get(data.step)
+      const planEvent = eventsBySeq.get(data.planSeq)
+      const expected = reference?.receipt?.act?.responseRepairs.some(program =>
+        program.engine === data.purpose.engine && program.moduleId === data.purpose.moduleId
+          && program.stateId === data.purpose.stateId) === true
+      if (data.format !== 0 || data.sessionId !== reference?.input.sessionId || data.turn !== turn
+        || data.purpose.kind !== 'response-repair' || data.requestId === ''
+        || step === undefined || reference === undefined || !expected
+        || planEvent?.type !== 'agent-rp/turn-plan' || planEvent.seq >= event.seq
+        || planEvent.data.turn !== turn || planEvent.data.reference.step !== data.step
+        || JSON.stringify(planEvent.data.reference) !== JSON.stringify(reference)
+        || typeof data.dispatch.provider !== 'string' || data.dispatch.provider === ''
+        || typeof data.dispatch.model !== 'string' || data.dispatch.model === ''
+        || !Array.isArray(data.dispatch.messages)
+        || (start !== undefined && event.seq <= start.seq) || (end !== undefined && event.seq >= end.seq)) {
+        throw new Error(`Roleplay act model request ${JSON.stringify(data.requestId)} is invalid`)
+      }
+      if (actModelRequests.has(data.requestId)) {
+        throw new Error(`Roleplay act phase contains duplicate model request ${data.requestId}`)
+      }
+      actModelRequests.set(data.requestId, event)
+      continue
+    }
+    if (event.type !== 'agent-rp/act-model-result') continue
+    const data = event.data
+    const request = actModelRequests.get(data.requestId)
+    if (data.format !== 0 || request === undefined || request.seq !== data.requestSeq
+      || request.seq >= event.seq || actModelResults.has(data.requestId)) {
+      throw new Error(`Roleplay act model result ${JSON.stringify(data.requestId)} is invalid`)
+    }
+    let outcome: RoleplayActModelCallReference['outcome']
+    if (data.result.kind === 'success') {
+      if (typeof data.result.text !== 'string'
+        || (data.result.application !== 'applied' && data.result.application !== 'rejected')) {
+        throw new Error(`Roleplay act model result ${JSON.stringify(data.requestId)} is malformed`)
+      }
+      outcome = data.result.application
+    } else {
+      if (data.result.failure !== 'aborted' && data.result.failure !== 'provider'
+        && data.result.failure !== 'unknown') {
+        throw new Error(`Roleplay act model failure ${JSON.stringify(data.requestId)} is malformed`)
+      }
+      outcome = 'failed'
+    }
+    actModelResults.add(data.requestId)
+    byStep.get(request.data.step)!.modelCalls.push({
+      requestEventSeq: request.seq,
+      resultEventSeq: event.seq,
+      requestId: data.requestId,
+      purpose: request.data.purpose.kind,
+      engine: request.data.purpose.engine,
+      moduleId: request.data.purpose.moduleId,
+      stateId: request.data.purpose.stateId,
+      outcome,
+    })
+  }
+  for (const [requestId] of actModelRequests) {
+    if (!actModelResults.has(requestId)) {
+      throw new Error(`Roleplay act model request ${requestId} has no result`)
     }
   }
 
@@ -426,6 +525,13 @@ function planReceipt(plan: RoleplayTurnPlan): RoleplayTurnPlanReceipt {
       ...(plan.world.tokenBudget === undefined ? {} : { tokenBudget: plan.world.tokenBudget }),
     },
     promptDiagnostics: { ...plan.prompt.diagnostics },
+    act: {
+      responseRepairs: plan.act.responseRepairs.map(program => ({
+        engine: program.engine,
+        moduleId: program.moduleId,
+        stateId: program.stateId,
+      })),
+    },
     stateReads: plan.stateReads.map(read => ({
       id: read.id,
       ...(read.revision === undefined ? {} : { revision: read.revision }),

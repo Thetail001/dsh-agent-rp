@@ -6,6 +6,7 @@ import { CommandId } from '@deepseek-ai/dsh-commands'
 import {
   createAssistantMessage,
   createUserMessage,
+  markAgentLoopRequest,
   type GenerateOptions,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
@@ -14,7 +15,14 @@ import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { appendMvuState, readCurrentMvuState, readCurrentSessionMvuState, readInitialMvuState } from '../src/mvu.ts'
 import { installMvuStreamCompletion } from '../src/mvu-stream.ts'
 import { ROLEPLAY_TURN_PHASES } from '../src/roleplay-runtime.ts'
+import { readRoleplayTurnRecords } from '../src/roleplay-turn-record.ts'
 import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
+import {
+  appendRoleplayTurnSettlement,
+  compileRoleplayActReceipt,
+  compileRoleplayTurnSettlement,
+} from '../src/roleplay-turn-settlement.ts'
+import { appendSessionRoleplayTurnPlan } from '../src/session-roleplay-turn-plan.ts'
 import {
   applyTavernHelperMutation,
   encodeTavernHelperState,
@@ -153,9 +161,12 @@ test('repairs a missing MVU block from only the frozen act plan in a cardless Se
     next: () => AsyncIterable<StreamChunk>,
   ) => AsyncIterable<StreamChunk>
   const session = Session.create(SessionId('mvu-frozen-act-plan'))
+  session.append('command/done', {
+    commandId: CommandId('mvu-frozen-act-plan-prefix'), kind: 'success', text: 'unrelated earlier event',
+  })
   const plan: RoleplayTurnPlan = {
     format: 0,
-    input: { sessionId: String(session.id), sessionSeq: 0, pendingMessageIds: [] },
+    input: { sessionId: String(session.id), sessionSeq: session.events.length, pendingMessageIds: [] },
     runtime: {
       format: 0,
       lifecycle: ROLEPLAY_TURN_PHASES,
@@ -188,6 +199,9 @@ test('repairs a missing MVU block from only the frozen act plan in a cardless Se
     prepare: { modules: [] },
     recall: { modules: [] },
   }
+  session.append('turn/start', { turn: 1 })
+  session.append('step/start', { turn: 1, step: 1 })
+  const planEvent = appendSessionRoleplayTurnPlan(session, 1, 1, plan)
   let handler: StreamHandler | undefined
   let supplementalRequest: GenerateOptions | undefined
   const ctx = {
@@ -204,30 +218,86 @@ test('repairs a missing MVU block from only the frozen act plan in a cardless Se
         })()
       },
     },
+    sessions: { flush: async () => true },
     logger: { warn() {} },
   } as unknown as Context
   const agent = { session } as Agent
   installMvuStreamCompletion(ctx, id => id === String(session.id) ? agent : undefined, () => plan)
   assert.ok(handler)
-  const options = Object.freeze({
-    provider: 'fixture', model: 'fixture', sessionId: session.id,
-    messages: [createUserMessage({
-      source: { kind: 'user' }, content: [{ type: 'text', text: '继续' }],
-    })],
-  }) as GenerateOptions
-  const output: StreamChunk[] = []
   const original = async function* (): AsyncIterable<StreamChunk> {
     yield { type: 'block-start', index: 0, blockType: 'text' }
     yield { type: 'text-delta', index: 0, text: '原始回复' }
     yield { type: 'block-end', index: 0, block: { type: 'text', text: '原始回复' } }
     yield { type: 'finish', reason: { kind: 'stop' } }
   }
+  let bypassed = 0
+  handler(Object.freeze({
+    provider: 'fixture', model: 'fixture', sessionId: session.id, messages: [],
+  }) as GenerateOptions, () => {
+    bypassed += 1
+    return original()
+  })
+  assert.equal(bypassed, 1)
+  assert.equal(session.events.some(event => event.type === 'agent-rp/act-model-request'), false)
+
+  const options = Object.freeze(markAgentLoopRequest({
+    provider: 'fixture', model: 'fixture', sessionId: session.id,
+    messages: [createUserMessage({
+      source: { kind: 'user' }, content: [{ type: 'text', text: '继续' }],
+    })],
+  })) as GenerateOptions
+  const output: StreamChunk[] = []
   for await (const chunk of handler(options, original)) output.push(chunk)
 
   const requestText = supplementalRequest?.messages.flatMap(message => message.content
     .flatMap(block => block.type === 'text' ? [block.text] : [])).join('\n') ?? ''
   assert.match(requestText, /"score":7/u)
   assert.match(requestText, /只用冻结规则/u)
-  assert.match(output.flatMap(chunk => chunk.type === 'text-delta' ? [chunk.text] : []).join(''),
-    /<UpdateVariable>/u)
+  const outputText = output.flatMap(chunk => chunk.type === 'text-delta' ? [chunk.text] : []).join('')
+  assert.match(outputText, /<UpdateVariable>/u)
+  const requestEvent = session.events.find(event => event.type === 'agent-rp/act-model-request')
+  const resultEvent = session.events.find(event => event.type === 'agent-rp/act-model-result')
+  assert.equal(requestEvent?.type, 'agent-rp/act-model-request')
+  assert.equal(resultEvent?.type, 'agent-rp/act-model-result')
+  if (requestEvent?.type !== 'agent-rp/act-model-request'
+    || resultEvent?.type !== 'agent-rp/act-model-result') throw new Error('missing act-model audit')
+  assert.equal(requestEvent.data.planSeq, planEvent.seq)
+  assert.deepEqual(requestEvent.data.dispatch.messages, supplementalRequest?.messages)
+  assert.deepEqual(resultEvent.data.result, {
+    kind: 'success',
+    text: '<UpdateVariable><Analysis>无变化</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>',
+    application: 'applied',
+  })
+
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: outputText }],
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  session.append('step/end', { turn: 1, step: 1 })
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const receipt = compileRoleplayActReceipt(session.events, 1, 'completed', [planEvent.data.reference])
+  assert.deepEqual(receipt.steps[0]?.modelCalls, [{
+    requestEventSeq: requestEvent.seq,
+    resultEventSeq: resultEvent.seq,
+    requestId: requestEvent.data.requestId,
+    purpose: 'response-repair',
+    engine: 'mvu-v0',
+    moduleId: 'adapter:mvu',
+    stateId: 'state:mvu',
+    outcome: 'applied',
+  }])
+  const settlement = compileRoleplayTurnSettlement({
+    sessionId: String(session.id),
+    turn: 1,
+    result: 'completed',
+    plans: [{ step: 1, plan }],
+    events: session.events,
+    after: plan.runtime,
+  })
+  appendRoleplayTurnSettlement(session, settlement)
+  assert.deepEqual(readRoleplayTurnRecords(session)[0]?.act?.steps[0]?.modelCalls,
+    receipt.steps[0]?.modelCalls)
 })

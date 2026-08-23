@@ -245,3 +245,28 @@ test('rejects a persisted act receipt that drifted from canonical Session action
   assert.throws(() => readRoleplayTurnRecords({ id: fixture.session.id, events: tampered }), /act receipt drifted/u)
   assert.throws(() => readRoleplayTurnRecord({ id: fixture.session.id, events: tampered }, 1), /act receipt drifted/u)
 })
+
+test('normalizes pre-audit act receipts whose steps omit modelCalls', () => {
+  const fixture = completeTwoStepTurn()
+  const legacy = fixture.session.events.map((event): SessionEvent => {
+    if (event.type !== 'agent-rp/turn-settlement' || event.data.act === undefined) {
+      return structuredClone(event)
+    }
+    return {
+      ...structuredClone(event),
+      data: {
+        ...event.data,
+        act: {
+          steps: event.data.act.steps.map(step => {
+            const { modelCalls: _modelCalls, ...legacyStep } = step
+            return legacyStep
+          }),
+        } as unknown as typeof event.data.act,
+      },
+    }
+  })
+
+  const records = readRoleplayTurnRecords({ id: fixture.session.id, events: legacy })
+  assert.equal(records.length, 1)
+  assert.deepEqual(records.at(-1)?.act?.steps.map(step => step.modelCalls), [[], []])
+})

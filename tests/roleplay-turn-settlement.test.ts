@@ -229,6 +229,7 @@ test('compares native memory history across the exact first-plan boundary', () =
     steps: [{
       step: 1,
       assistantMessages: [{ eventSeq: assistant!.seq, messageId: String(assistant!.data.message.id) }],
+      modelCalls: [],
       toolCalls: [{ eventSeq: call!.seq, callId: 'settlement-memory-call', name: 'remember' }],
       toolResults: [{ eventSeq: result!.seq, callId: 'settlement-memory-call', outcome: 'succeeded' }],
     }],
@@ -338,6 +339,7 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
       tokenBudget: 512,
     },
     promptDiagnostics: { enabledModules: 2, unsupportedMacros: 1, templateFailures: 0 },
+    act: { responseRepairs: [] },
     stateReads: [{ id: 'state:test', revision: 2, eventSeq: 0 }],
     memoryReads: [{ id: 'memory:test', sourceEventSeq: 0 }],
     memoryWriteAvailable: true,
@@ -358,12 +360,14 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
       {
         step: 1,
         assistantMessages: [{ eventSeq: firstReply.seq, messageId: String(firstReply.data.message.id) }],
+        modelCalls: [],
         toolCalls: [],
         toolResults: [],
       },
       {
         step: 2,
         assistantMessages: [{ eventSeq: finalReply.seq, messageId: String(finalReply.data.message.id) }],
+        modelCalls: [],
         toolCalls: [],
         toolResults: [],
       },
@@ -501,6 +505,7 @@ test('resolves MVU completion only from one prepared act program and its frozen 
     stateReads: [{ ...enabled.stateReads[0]!, value: { score: 1 } }],
   }
   assert.deepEqual(preparedMvuResponseRepair(prepared), {
+    engine: 'mvu-v0', moduleId: 'adapter:mvu', stateId: 'state:mvu',
     current: { score: 1 }, updateInstructions: '冻结规则',
   })
   assert.equal(preparedMvuResponseRepair({ ...prepared, stateReads: [] }), undefined)

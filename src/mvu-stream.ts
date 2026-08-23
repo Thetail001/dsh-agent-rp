@@ -5,6 +5,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import {
   BlockAssembler,
   createUserMessage,
+  isAgentLoopRequest,
   ReasoningEffortId,
   type GenerateOptions,
   type StreamChunk,
@@ -12,14 +13,26 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import {
+  appendRoleplayActModelRequest,
+  appendRoleplayActModelResult,
+  resolveRoleplayActModelBoundary,
+  roleplayActModelDispatch,
+  roleplayActModelFailure,
+  type RoleplayActModelFailureKind,
+} from './roleplay-act-model-log.ts'
+import {
   MVU_ROLEPLAY_MODULE_ID,
   MVU_ROLEPLAY_STATE_ID,
   normalizeChoiceSupplement,
   normalizeMvuSupplement,
 } from './mvu.ts'
 import type { RoleplayTurnPlan } from './roleplay-turn-plan.ts'
+import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
 
 export interface PreparedMvuResponseRepair {
+  readonly engine: 'mvu-v0'
+  readonly moduleId: string
+  readonly stateId: string
   readonly current: JsonValue
   readonly updateInstructions?: string
   readonly choiceInstructions?: string
@@ -39,6 +52,9 @@ export function preparedMvuResponseRepair(plan: RoleplayTurnPlan | undefined): P
   const state = plan.stateReads.find(read => read.id === program.stateId)
   if (state?.value === undefined) return undefined
   return {
+    engine: program.engine,
+    moduleId: program.moduleId,
+    stateId: program.stateId,
     current: state.value,
     ...(program.updateInstructions === undefined ? {} : { updateInstructions: program.updateInstructions }),
     ...(program.choiceInstructions === undefined ? {} : { choiceInstructions: program.choiceInstructions }),
@@ -70,16 +86,14 @@ function addUsage(left: TokenUsage | undefined, right: TokenUsage | undefined): 
   }
 }
 
-async function requestSupplement(
-  ctx: Context,
+function supplementRequest(
   options: GenerateOptions,
   current: JsonValue,
   mvuRules: string | undefined,
   choiceRules: string | undefined,
   assistantReply: string,
-): Promise<{ readonly text?: string; readonly usage?: TokenUsage }> {
-  const assembler = new BlockAssembler()
-  const request: GenerateOptions = {
+): GenerateOptions {
+  return {
     provider: options.provider,
     model: options.model,
     reasoningEffort: ReasoningEffortId('off'),
@@ -111,23 +125,41 @@ async function requestSupplement(
     temperature: 0,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   }
-  for await (const chunk of ctx.llm.stream(request)) assembler.push(chunk)
-  if (assembler.finish.kind === 'error' || assembler.finish.kind === 'aborted') return {}
-  const text = assembler.blocks().flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
-  return { text, ...(assembler.usage === undefined ? {} : { usage: assembler.usage }) }
 }
 
-/** Install a stream wrapper that supplements only active MVU Character Card sessions. */
+type SupplementResult =
+  | { readonly kind: 'success'; readonly text: string; readonly usage?: TokenUsage }
+  | { readonly kind: 'failure'; readonly failure: RoleplayActModelFailureKind; readonly usage?: TokenUsage }
+
+async function requestSupplement(ctx: Context, request: GenerateOptions): Promise<SupplementResult> {
+  const assembler = new BlockAssembler()
+  for await (const chunk of ctx.llm.stream(request)) assembler.push(chunk)
+  if (assembler.finish.kind === 'error' || assembler.finish.kind === 'aborted') {
+    return {
+      kind: 'failure',
+      failure: assembler.finish.kind === 'aborted' ? 'aborted' : 'provider',
+      ...(assembler.usage === undefined ? {} : { usage: assembler.usage }),
+    }
+  }
+  const text = assembler.blocks().flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+  return { kind: 'success', text, ...(assembler.usage === undefined ? {} : { usage: assembler.usage }) }
+}
+
+/** Install a stream wrapper that applies only the MVU repair frozen into the prepared Agent Loop plan. */
 export function installMvuStreamCompletion(
   ctx: Context,
   agentForSession: (sessionId: string) => Agent | undefined,
   planForAgent: (agent: Agent) => RoleplayTurnPlan | undefined = () => undefined,
 ): void {
   ctx.on('llm/stream', (options, next) => {
-    const agent = options.sessionId === undefined ? undefined : agentForSession(String(options.sessionId))
+    if (!isAgentLoopRequest(options) || options.sessionId === undefined) return next()
+    const agent = agentForSession(String(options.sessionId))
     if (agent === undefined) return next()
-    const prepared = preparedMvuResponseRepair(planForAgent(agent))
+    const plan = planForAgent(agent)
+    if (plan === undefined) return next()
+    const prepared = preparedMvuResponseRepair(plan)
     if (prepared === undefined) return next()
+    if (!supportsAgentRpSessionEvents(agent.session)) return next()
     const current = prepared.current
     const mvuRules = prepared.updateInstructions
     const choiceRules = prepared.choiceInstructions
@@ -153,29 +185,79 @@ export function installMvuStreamCompletion(
         if (finish !== undefined) yield finish
         return
       }
+      const boundary = resolveRoleplayActModelBoundary(agent.session, plan)
+      if (boundary === undefined) {
+        ctx.logger.warn('agent-rp: MVU supplement skipped because its prepared step boundary is unavailable')
+        if (usage !== undefined) yield { type: 'usage', usage }
+        if (finish !== undefined) yield finish
+        return
+      }
+      const request = supplementRequest(
+        options,
+        current,
+        missingMvu ? mvuRules : undefined,
+        missingChoices ? choiceRules : undefined,
+        reply,
+      )
+      const requestId = crypto.randomUUID()
+      const requestEvent = appendRoleplayActModelRequest(agent.session, {
+        format: 0,
+        requestId,
+        sessionId: String(agent.session.id),
+        ...boundary,
+        purpose: {
+          kind: 'response-repair',
+          engine: prepared.engine,
+          moduleId: prepared.moduleId,
+          stateId: prepared.stateId,
+        },
+        dispatch: roleplayActModelDispatch(request),
+      })
       try {
-        const supplemental = await requestSupplement(
-          ctx,
-          options,
-          current,
-          missingMvu ? mvuRules : undefined,
-          missingChoices ? choiceRules : undefined,
-          reply,
-        )
-        const additions = supplemental.text === undefined ? [] : [
-          ...(missingMvu ? [normalizeMvuSupplement(current, supplemental.text)] : []),
-          ...(missingChoices ? [normalizeChoiceSupplement(supplemental.text)] : []),
-        ].filter((value): value is string => value !== undefined)
-        if (additions.length > 0) {
-          const index = maxIndex + 1
-          const text = `\n\n${additions.join('\n\n')}`
-          yield { type: 'block-start', index, blockType: 'text' }
-          yield { type: 'text-delta', index, text }
-          yield { type: 'block-end', index, block: { type: 'text', text } }
-          usage = addUsage(usage, supplemental.usage)
-          finish = { type: 'finish', reason: finish.reason }
+        await ctx.sessions.flush(agent.session)
+        const supplemental = await requestSupplement(ctx, request)
+        usage = addUsage(usage, supplemental.usage)
+        if (supplemental.kind === 'failure') {
+          appendRoleplayActModelResult(agent.session, {
+            format: 0,
+            requestId,
+            requestSeq: requestEvent.seq,
+            result: { kind: 'failure', failure: supplemental.failure },
+          })
+        } else {
+          const additions = [
+            ...(missingMvu ? [normalizeMvuSupplement(current, supplemental.text)] : []),
+            ...(missingChoices ? [normalizeChoiceSupplement(supplemental.text)] : []),
+          ].filter((value): value is string => value !== undefined)
+          appendRoleplayActModelResult(agent.session, {
+            format: 0,
+            requestId,
+            requestSeq: requestEvent.seq,
+            result: {
+              kind: 'success',
+              text: supplemental.text,
+              application: additions.length === 0 ? 'rejected' : 'applied',
+            },
+          })
+          if (additions.length > 0) {
+            const index = maxIndex + 1
+            const text = `\n\n${additions.join('\n\n')}`
+            yield { type: 'block-start', index, blockType: 'text' }
+            yield { type: 'text-delta', index, text }
+            yield { type: 'block-end', index, block: { type: 'text', text } }
+            finish = { type: 'finish', reason: finish.reason }
+          }
         }
       } catch (error: unknown) {
+        if (!agent.session.events.some(event => event.type === 'agent-rp/act-model-result'
+          && event.data.requestSeq === requestEvent.seq)) {
+          appendRoleplayActModelResult(agent.session, {
+            format: 0,
+            requestId,
+            requestSeq: requestEvent.seq,
+            result: { kind: 'failure', failure: roleplayActModelFailure(error) },
+          })
+        }
         ctx.logger.warn(`agent-rp: MVU supplement failed: ${error instanceof Error ? error.message : String(error)}`)
       }
       if (usage !== undefined) yield { type: 'usage', usage }

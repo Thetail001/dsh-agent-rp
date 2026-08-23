@@ -22,7 +22,7 @@ const sessionFacts: AgentRpRuntimeSessionFacts = {
         },
         phases: {
           plannedSteps: 1, preparedSteps: 1, recalledSteps: 1, actedSteps: 1,
-          assistantMessages: 1, toolCalls: 0, toolResults: 0, settled: true, presented: true,
+          assistantMessages: 1, modelCalls: 0, toolCalls: 0, toolResults: 0, settled: true, presented: true,
         },
       },
     },

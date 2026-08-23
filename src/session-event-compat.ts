@@ -8,6 +8,8 @@ import type {
 
 /** Complete private event vocabulary owned by Agent RP. */
 export const AGENT_RP_SESSION_EVENT_TYPES = [
+  'agent-rp/act-model-request',
+  'agent-rp/act-model-result',
   'agent-rp/character-card-seed',
   'agent-rp/memory-seed',
   'agent-rp/mvu-state',

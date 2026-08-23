@@ -41,6 +41,7 @@ export interface RoleplayTurnHealthEntry {
     readonly recalledSteps: number
     readonly actedSteps: number
     readonly assistantMessages: number
+    readonly modelCalls: number
     readonly toolCalls: number
     readonly toolResults: number
     readonly settled: boolean
@@ -151,6 +152,7 @@ function parseEntry(value: unknown): RoleplayTurnHealthEntry {
       recalledSteps: nonNegative(counts.recalledSteps, 'recalled steps'),
       actedSteps: nonNegative(counts.actedSteps, 'acted steps'),
       assistantMessages: nonNegative(counts.assistantMessages, 'assistant messages'),
+      modelCalls: nonNegative(counts.modelCalls ?? 0, 'model calls'),
       toolCalls: nonNegative(counts.toolCalls, 'tool calls'),
       toolResults: nonNegative(counts.toolResults, 'tool results'),
       settled: counts.settled,
