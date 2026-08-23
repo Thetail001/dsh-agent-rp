@@ -22,6 +22,7 @@ import {
   RoleplayResourceCatalog,
 } from './roleplay-resource-catalog.ts'
 import { roleplayLibraryResourceProviders } from './roleplay-resource-library-providers.ts'
+import { characterLibraryRoleplayResourceId } from './roleplay-resource-library-ids.ts'
 import { installRoleplayResourceCatalogHttp } from './roleplay-resource-catalog-http.ts'
 import { tavernResourceLibraryPreflightContributors } from './tavern-resource-library-preflight.ts'
 import {
@@ -153,6 +154,13 @@ import {
 } from './session-roleplay-turn-presentation.ts'
 import { executeRoleplayStateCommand } from './roleplay-state-command.ts'
 import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
+import { readRoleplayExperienceSelection } from './roleplay-experience-selection.ts'
+import {
+  installRoleplayActorRevisionCapability,
+  ROLEPLAY_ACTOR_REVISION_REGISTRY_KEY,
+  RoleplayActorRevisionRegistry,
+} from './roleplay-actor-revision.ts'
+import { characterLibraryActorRevisionProvider } from './character-library-actor-revision.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -209,6 +217,38 @@ export {
   readRoleplayExperienceSelection,
 } from './roleplay-experience-selection.ts'
 export type { RoleplayExperienceSelectionSnapshot } from './roleplay-experience-selection.ts'
+export {
+  installRoleplayActorRevisionCapability,
+  parseRoleplayActorDefinition,
+  parseRoleplayActorInspectionResult,
+  parseRoleplayActorRevisionChanges,
+  parseRoleplayActorRevisionResult,
+  parseRoleplayActorRevisionToolInput,
+  registerRoleplayActorRevisionProvider,
+  readRoleplayActorRevisionAttempts,
+  ROLEPLAY_ACTOR_DEFINITION_FIELDS,
+  ROLEPLAY_ACTOR_INSPECTION_TOOL,
+  ROLEPLAY_ACTOR_INSPECTION_VALUE_SCHEMA,
+  ROLEPLAY_ACTOR_REVISION_TOOL,
+  ROLEPLAY_ACTOR_REVISION_REGISTRY_KEY,
+  ROLEPLAY_ACTOR_REVISION_VALUE_SCHEMA,
+  RoleplayActorRevisionConflictError,
+  RoleplayActorRevisionRegistry,
+} from './roleplay-actor-revision.ts'
+export type {
+  RoleplayActorDefinition,
+  RoleplayActorDefinitionField,
+  RoleplayActorInspectionValue,
+  RoleplayActorRevisionAttempt,
+  RoleplayActorRevisionCapabilityOptions,
+  RoleplayActorRevisionChanges,
+  RoleplayActorRevisionInput,
+  RoleplayActorRevisionProvider,
+  RoleplayActorRevisionSettlement,
+  RoleplayActorRevisionSnapshot,
+  RoleplayActorRevisionToolInput,
+  RoleplayActorRevisionValue,
+} from './roleplay-actor-revision.ts'
 export {
   registerRoleplayRuntimeExtension,
   ROLEPLAY_RUNTIME_EXTENSIONS_KEY,
@@ -623,6 +663,12 @@ export function installAgentRp(
   const characterLibrary = new CharacterLibrary(options.characterLibraryRoot === undefined
     ? {}
     : { root: options.characterLibraryRoot })
+  const actorRevisions = new RoleplayActorRevisionRegistry()
+  ctx.provide(ROLEPLAY_ACTOR_REVISION_REGISTRY_KEY, actorRevisions)
+  ctx.effect(
+    () => actorRevisions.register(characterLibraryActorRevisionProvider(characterLibrary)),
+    'agent-rp: character-library actor revisions',
+  )
   const chatLibrary = new SillyTavernChatLibrary()
   const worldInfoLibrary = new WorldInfoLibrary()
   const generatedImageLibrary = new GeneratedImageLibrary()
@@ -643,6 +689,20 @@ export function installAgentRp(
     runtimeExtensions = undefined
   }
   const worldbookCharacterDisposers = new Map<Agent, readonly (() => void)[]>()
+
+  installRoleplayActorRevisionCapability(ctx, actorRevisions, {
+    resolveActor(agent) {
+      if (agentsByScope.get(agent) !== agent) return undefined
+      const active = readActiveSessionCharacter(agent.session.events)
+      if (active !== undefined) {
+        return active.result.libraryId === undefined
+          ? undefined
+          : { kind: 'actor', id: characterLibraryRoleplayResourceId(active.result.libraryId) }
+      }
+      const selected = readRoleplayExperienceSelection(agent.session.events)?.actor
+      return selected === undefined ? undefined : { kind: 'actor', id: selected.id }
+    },
+  })
 
   commands.register({
     name: 'rp-tavern-variables',
