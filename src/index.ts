@@ -160,6 +160,9 @@ export {
 } from './roleplay-resource-catalog.ts'
 export type {
   LocatedRoleplayResource,
+  RoleplayResourceMaterialization,
+  RoleplayResourceMaterializationContext,
+  RoleplayResourceMaterializationInput,
   RoleplayResourceProvider,
 } from './roleplay-resource-catalog.ts'
 export {
@@ -171,7 +174,15 @@ export type {
   RoleplayResourceDescriptor,
   RoleplayResourceKind,
   RoleplayResourceReference,
+  RoleplayResourceSelection,
 } from './roleplay-resource-catalog-protocol.ts'
+export { prepareRoleplayExperienceSession } from './roleplay-experience-materialization.ts'
+export {
+  appendRoleplayExperienceSelection,
+  parseRoleplayExperienceSelection,
+  readRoleplayExperienceSelection,
+} from './roleplay-experience-selection.ts'
+export type { RoleplayExperienceSelectionSnapshot } from './roleplay-experience-selection.ts'
 export {
   registerRoleplayRuntimeExtension,
   ROLEPLAY_RUNTIME_EXTENSIONS_KEY,
@@ -1268,7 +1279,16 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         installAgentRpCommandHttp(webCtx, ctx, server)
         installAgentRpMemoryHttp(webCtx, ctx, server)
         installRoleplayTurnHealthHttp(webCtx, ctx, server)
-        installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, worldInfoLibrary, server)
+        installSessionLaunchHttp(
+          webCtx,
+          ctx,
+          characterLibrary,
+          chatLibrary,
+          presetLibrary,
+          worldInfoLibrary,
+          resourceCatalog,
+          server,
+        )
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
         installRoleplayResourceCatalogHttp(webCtx, resourceCatalog, server)

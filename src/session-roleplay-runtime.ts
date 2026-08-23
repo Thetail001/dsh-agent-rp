@@ -17,6 +17,7 @@ import {
   type MvuStateSnapshot,
 } from './mvu.ts'
 import { resolveSessionPersonaIdentity } from './session-persona.ts'
+import { readRoleplayExperienceSelection } from './roleplay-experience-selection.ts'
 import {
   readTavernHelperState,
   TAVERN_HELPER_ROLEPLAY_MODULE_ID,
@@ -133,6 +134,7 @@ export function resolveSessionRoleplayRuntime(input: {
   const mvu = card === undefined ? undefined : readCurrentSessionMvuState(card, input.session)
   const extensions = input.extensions?.resolve(events)
     ?? { modules: [], world: [], state: [], prepare: [], recall: [] }
+  const selectedExperience = readRoleplayExperienceSelection(events)
 
   const deploymentActor: RoleplayResourceRef = {
     id: 'deployment:default-actor',
@@ -142,7 +144,7 @@ export function resolveSessionRoleplayRuntime(input: {
   let actor: RoleplayResourceRef | undefined
   if (activeCharacter !== undefined && card !== undefined) {
     actor = sessionResource(
-      `character:${activeCharacter.result.sourceAttachmentId}`,
+      selectedExperience?.actor?.id ?? `character:${activeCharacter.result.sourceAttachmentId}`,
       card.nickname?.trim() || card.name,
       'sillytavern:character-card',
     )
@@ -154,7 +156,9 @@ export function resolveSessionRoleplayRuntime(input: {
   const experience = worldScenario !== undefined && actor === undefined
     ? {
         ...sessionResource(
-          `world:${worldScenario.meta.result.sourceAttachmentId}`,
+          selectedExperience?.mode === 'scene'
+            ? selectedExperience.worlds[0]!.id
+            : `world:${worldScenario.meta.result.sourceAttachmentId}`,
           worldScenario.meta.result.name,
           'sillytavern:world-info',
         ),
@@ -163,7 +167,7 @@ export function resolveSessionRoleplayRuntime(input: {
     : { ...(actor ?? deploymentActor), mode: 'character' as const }
   const participant = identity.persona !== undefined
     ? {
-        id: identity.persona.id,
+        id: selectedExperience?.participant?.id ?? identity.persona.id,
         name: identity.persona.name,
         owner: 'session' as const,
         description: identity.persona.description,
@@ -174,7 +178,7 @@ export function resolveSessionRoleplayRuntime(input: {
   const promptResource = preset === undefined
     ? undefined
     : sessionResource(
-        `preset:${preset.result.sourceAttachmentId}`,
+        selectedExperience?.promptPolicy?.id ?? `preset:${preset.result.sourceAttachmentId}`,
         preset.result.name,
         'sillytavern:chat-completion-preset',
       )

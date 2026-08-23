@@ -14,6 +14,11 @@ export interface RoleplayResourceReference {
   readonly id: string
 }
 
+/** One reusable resource plus an optional provider-owned immutable variant. */
+export interface RoleplayResourceSelection extends RoleplayResourceReference {
+  readonly variant?: string
+}
+
 /** Stable reference and presentation metadata without source-format payloads. */
 export interface RoleplayResourceDescriptor extends RoleplayResourceReference {
   readonly name: string

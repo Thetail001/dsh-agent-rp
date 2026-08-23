@@ -1,6 +1,7 @@
 /** Browser-safe requests for creating a seeded Agent RP Session. */
 
 import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
+import type { RoleplayResourceSelection } from './roleplay-resource-catalog-protocol.ts'
 
 /** Same-origin endpoint that creates one complete roleplay Session. */
 export const AGENT_RP_SESSION_PATH = '/api/agent-rp/sessions'
@@ -42,6 +43,18 @@ export interface ChatSessionLaunchRequest {
   readonly presetId?: string
 }
 
+/** Start one source-neutral experience from independently selected reusable resources. */
+export interface RoleplayExperienceSessionLaunchRequest {
+  readonly format: 0
+  readonly sourceSessionId: string
+  readonly kind: 'experience'
+  readonly mode: 'character' | 'scene'
+  readonly actor?: RoleplayResourceSelection
+  readonly participant?: RoleplayResourceSelection
+  readonly worlds?: readonly RoleplayResourceSelection[]
+  readonly promptPolicy?: RoleplayResourceSelection
+}
+
 /** Start a child Session immediately before one completed user turn. */
 export interface RewriteSessionLaunchRequest {
   readonly format: 0
@@ -56,10 +69,15 @@ export type AgentRpSessionLaunchRequest =
   | CharacterSessionLaunchRequest
   | WorldInfoSessionLaunchRequest
   | ChatSessionLaunchRequest
+  | RoleplayExperienceSessionLaunchRequest
   | RewriteSessionLaunchRequest
 
 /** Library-backed launch request that does not depend on an existing RP transcript. */
-export type LibrarySessionLaunchRequest = CharacterSessionLaunchRequest | WorldInfoSessionLaunchRequest | ChatSessionLaunchRequest
+export type LibrarySessionLaunchRequest =
+  | CharacterSessionLaunchRequest
+  | WorldInfoSessionLaunchRequest
+  | ChatSessionLaunchRequest
+  | RoleplayExperienceSessionLaunchRequest
 
 /** Successful launch result returned after the Agent is published. */
 export interface AgentRpSessionLaunchResponse {

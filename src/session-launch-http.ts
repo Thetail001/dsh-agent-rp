@@ -24,6 +24,7 @@ import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
 import { WorldInfoLibrary } from './world-info-library.ts'
 import { appendAgentRpMemorySeed, readAgentRpMemoryHistory } from './memory.ts'
 import { readActiveSessionCharacter } from './import/session-character.ts'
+import type { RoleplayResourceCatalog } from './roleplay-resource-catalog.ts'
 
 const MAX_REQUEST_BYTES = 32 * 1024
 
@@ -87,6 +88,7 @@ export async function launchAgentRpSession(
   presetLibrary: PresetLibrary,
   worldInfos: WorldInfoLibrary,
   input: unknown,
+  resources?: RoleplayResourceCatalog,
 ): Promise<{ readonly sessionId: SessionId; readonly title: string; readonly seed: readonly SessionEvent[] }> {
   const request = parseAgentRpSessionLaunchRequest(input)
   const sourceId = SessionId(request.sourceSessionId)
@@ -112,7 +114,7 @@ export async function launchAgentRpSession(
   }
   let prepared = request.kind === 'rewrite'
     ? prepareAgentRpRewriteSession(source.session, request.turn, titles?.get(source.session)?.title)
-    : prepareAgentRpSession(characters, chats, presetLibrary, worldInfos, request)
+    : prepareAgentRpSession(characters, chats, presetLibrary, worldInfos, request, resources)
   if (request.kind === 'character' && request.memory === 'copy-active') {
     if (source.session.header.agentPreset !== 'agent-rp') throw new Error('只能从角色会话继承记忆')
     if (source.status !== 'idle' || source.inbox.hasPending) throw new Error('请等待当前回复完成后再继承记忆')
@@ -189,6 +191,7 @@ export function installSessionLaunchHttp(
   chats: SillyTavernChatLibrary,
   presets: PresetLibrary,
   worldInfos: WorldInfoLibrary,
+  resources: RoleplayResourceCatalog,
   server: AgentRpHttpServer,
 ): void {
   routeCtx.effect(() => server.register({
@@ -205,7 +208,15 @@ export function installSessionLaunchHttp(
         return
       }
       try {
-        const result = await launchAgentRpSession(hostCtx, characters, chats, presets, worldInfos, await readJson(request))
+        const result = await launchAgentRpSession(
+          hostCtx,
+          characters,
+          chats,
+          presets,
+          worldInfos,
+          await readJson(request),
+          resources,
+        )
         json(response, 200, { format: 0, sessionId: result.sessionId, title: result.title })
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)

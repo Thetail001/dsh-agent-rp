@@ -13,6 +13,12 @@ import type { PresetLibrary, PresetLibraryEntry } from './preset-library.ts'
 import { substituteCardMacros } from './prompt.ts'
 import { parseSessionPersona } from './session-persona.ts'
 import type { AgentRpSessionLaunchRequest, LibrarySessionLaunchRequest } from './session-launch-protocol.ts'
+import type {
+  RoleplayResourceKind,
+  RoleplayResourceSelection,
+} from './roleplay-resource-catalog-protocol.ts'
+import type { RoleplayResourceCatalog } from './roleplay-resource-catalog.ts'
+import { prepareRoleplayExperienceSession } from './roleplay-experience-materialization.ts'
 import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
 import { WorldInfoLibrary } from './world-info-library.ts'
 
@@ -40,6 +46,29 @@ function parseAdditionalWorldInfoIds(value: unknown, primaryId?: string): readon
     throw new Error('附加世界书不能重复')
   }
   return [...ids]
+}
+
+function parseResourceSelection(
+  value: unknown,
+  expectedKind: RoleplayResourceKind,
+  label: string,
+): RoleplayResourceSelection {
+  const record = object(value, label)
+  const keys = Object.keys(record)
+  if (record.kind !== expectedKind
+    || typeof record.id !== 'string' || record.id.length > 512
+    || record.id.trim() !== record.id || record.id === '' || /\s/u.test(record.id)
+    || (record.variant !== undefined
+      && (typeof record.variant !== 'string' || record.variant.length > 256
+        || record.variant.trim() !== record.variant || record.variant === '' || /\s/u.test(record.variant)))
+    || keys.some(key => key !== 'kind' && key !== 'id' && key !== 'variant')) {
+    throw new Error(`${label}字段无效`)
+  }
+  return {
+    kind: expectedKind,
+    id: record.id,
+    ...(typeof record.variant === 'string' ? { variant: record.variant } : {}),
+  }
 }
 
 /** Validate one same-origin browser request without accepting filesystem paths. */
@@ -107,6 +136,39 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       importId: record.importId,
       ...(typeof record.characterId === 'string' ? { characterId: record.characterId } : {}),
       ...(typeof record.presetId === 'string' ? { presetId: record.presetId } : {}),
+    }
+  }
+  if (record.kind === 'experience') {
+    if ((record.mode !== 'character' && record.mode !== 'scene')
+      || (record.actor !== undefined && record.mode !== 'character')
+      || (record.mode === 'character' && record.actor === undefined)
+      || !Array.isArray(record.worlds) || record.worlds.length > 16
+      || (record.mode === 'scene' && record.worlds.length === 0)
+      || Object.keys(record).some(key => ![
+        'format', 'sourceSessionId', 'kind', 'mode', 'actor', 'participant', 'worlds', 'promptPolicy',
+      ].includes(key))) {
+      throw new Error('原生角色体验启动请求字段无效')
+    }
+    const actor = record.actor === undefined
+      ? undefined
+      : parseResourceSelection(record.actor, 'actor', '角色资源')
+    const participant = record.participant === undefined
+      ? undefined
+      : parseResourceSelection(record.participant, 'persona', '玩家身份资源')
+    const worlds = record.worlds.map(value => parseResourceSelection(value, 'world', '世界资源'))
+    if (new Set(worlds.map(world => world.id)).size !== worlds.length) throw new Error('世界资源不能重复')
+    const promptPolicy = record.promptPolicy === undefined
+      ? undefined
+      : parseResourceSelection(record.promptPolicy, 'prompt-policy', '提示策略资源')
+    return {
+      format: 0,
+      sourceSessionId: record.sourceSessionId as string,
+      kind: 'experience',
+      mode: record.mode,
+      ...(actor === undefined ? {} : { actor }),
+      ...(participant === undefined ? {} : { participant }),
+      worlds,
+      ...(promptPolicy === undefined ? {} : { promptPolicy }),
     }
   }
   if (record.kind === 'rewrite') {
@@ -186,7 +248,12 @@ export function prepareAgentRpSession(
   presets: PresetLibrary,
   worldInfos: WorldInfoLibrary,
   request: LibrarySessionLaunchRequest,
+  resources?: RoleplayResourceCatalog,
 ): PreparedAgentRpSession {
+  if (request.kind === 'experience') {
+    if (resources === undefined) throw new Error('当前 Host 没有可用的原生角色资源目录')
+    return prepareRoleplayExperienceSession(resources, request)
+  }
   if (request.kind === 'character') {
     const resolved = characters.resolve(request.characterId)
     if (resolved.detail.archived) throw new Error('请先恢复这个角色，再开始对话')

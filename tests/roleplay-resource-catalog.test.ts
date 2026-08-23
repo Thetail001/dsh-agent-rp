@@ -82,6 +82,38 @@ test('orders providers deterministically, rejects collisions, and follows Cordis
   assert.deepEqual(catalog.list(), [])
 })
 
+test('dispatches materialization to the owner while enforcing append-only Session logs', () => {
+  const catalog = new RoleplayResourceCatalog()
+  catalog.register({
+    id: 'fixture:actor-materializer',
+    list: () => [{ id: 'actor:seed', kind: 'actor', name: '种子角色', availability: 'available' }],
+    materialize: () => ({
+      title: '种子角色',
+      events: [{ type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } }, {
+        type: 'turn/end', seq: 1, time: 1, data: { turn: 1, reason: { kind: 'completed' } },
+      }],
+    }),
+  })
+  const first = catalog.materialize(
+    { kind: 'actor', id: 'actor:seed' },
+    [],
+    { mode: 'character', participantName: '旅人' },
+  )
+  assert.equal(first.title, '种子角色')
+  assert.deepEqual(first.events.map(event => event.seq), [0, 1])
+
+  catalog.register({
+    id: 'fixture:world-rewriter',
+    list: () => [{ id: 'world:rewrite', kind: 'world', name: '错误世界', availability: 'available' }],
+    materialize: input => ({ events: input.events.slice(1) }),
+  })
+  assert.throws(() => catalog.materialize(
+    { kind: 'world', id: 'world:rewrite' },
+    first.events,
+    { mode: 'character' },
+  ), /must only append/u)
+})
+
 test('maps all reusable Host libraries onto the exact references written into a Session', (context) => {
   const root = fixtureRoot(context)
   const characters = new CharacterLibrary({ root: join(root, 'characters') })

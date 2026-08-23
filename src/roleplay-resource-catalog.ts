@@ -1,10 +1,13 @@
 /** Source-neutral, read-only registry of reusable Roleplay resources. */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { isDeepStrictEqual } from 'node:util'
 import {
   ROLEPLAY_RESOURCE_KINDS,
   type RoleplayResourceDescriptor,
   type RoleplayResourceKind,
+  type RoleplayResourceSelection,
 } from './roleplay-resource-catalog-protocol.ts'
 
 /** Host service used by trusted plugins to publish discoverable Roleplay resources. */
@@ -21,6 +24,28 @@ declare module '@deepseek-ai/cordis' {
 export interface RoleplayResourceProvider {
   readonly id: string
   list(): readonly RoleplayResourceDescriptor[]
+  /** Freeze one owned selection into a complete replayable Session-event prefix. */
+  materialize?(input: RoleplayResourceMaterializationInput): RoleplayResourceMaterialization
+}
+
+/** Source-neutral facts shared with each provider while a new experience is assembled. */
+export interface RoleplayResourceMaterializationContext {
+  readonly mode: 'character' | 'scene'
+  readonly participantName?: string
+}
+
+/** Detached input given to the unique provider that owns the selected resource. */
+export interface RoleplayResourceMaterializationInput {
+  readonly selection: RoleplayResourceSelection
+  readonly descriptor: RoleplayResourceDescriptor
+  readonly events: readonly SessionEvent[]
+  readonly context: RoleplayResourceMaterializationContext
+}
+
+/** Complete event prefix after one provider has appended its immutable snapshot. */
+export interface RoleplayResourceMaterialization {
+  readonly events: readonly SessionEvent[]
+  readonly title?: string
 }
 
 /** Host-only ownership result used to dispatch a stable reference back to its provider. */
@@ -33,6 +58,7 @@ interface Registration {
   readonly token: symbol
   readonly id: string
   readonly list: RoleplayResourceProvider['list']
+  readonly materialize?: NonNullable<RoleplayResourceProvider['materialize']>
 }
 
 const KIND_ORDER = new Map<RoleplayResourceKind, number>(
@@ -99,7 +125,12 @@ export class RoleplayResourceCatalog {
     if (this.#providers.has(id)) {
       throw new Error(`Roleplay resource provider ${JSON.stringify(id)} is already registered`)
     }
-    const registration = { token: Symbol(id), id, list: provider.list.bind(provider) }
+    const registration = {
+      token: Symbol(id),
+      id,
+      list: provider.list.bind(provider),
+      ...(provider.materialize === undefined ? {} : { materialize: provider.materialize.bind(provider) }),
+    }
     this.#providers.set(id, registration)
     return () => {
       if (this.#providers.get(id)?.token === registration.token) this.#providers.delete(id)
@@ -147,6 +178,72 @@ export class RoleplayResourceCatalog {
   locate(kind: RoleplayResourceKind, id: string): LocatedRoleplayResource | undefined {
     stableId(id, 'Roleplay resource id')
     return this.#locations(kind).find(value => value.descriptor.id === id)
+  }
+
+  /** Dispatch one selection to its owning provider and verify append-only Session semantics. */
+  materialize(
+    selection: RoleplayResourceSelection,
+    events: readonly SessionEvent[],
+    context: RoleplayResourceMaterializationContext,
+  ): RoleplayResourceMaterialization {
+    const located = this.locate(selection.kind, selection.id)
+    if (located === undefined) {
+      throw new Error(`Roleplay resource ${descriptorKey(selection)} is unavailable`)
+    }
+    if (located.descriptor.availability !== 'available') {
+      throw new Error(`Roleplay resource ${descriptorKey(selection)} is archived`)
+    }
+    if (selection.variant !== undefined) stableId(selection.variant, 'Roleplay resource variant')
+    if (context.mode !== 'character' && context.mode !== 'scene') {
+      throw new Error('Roleplay resource materialization has an unknown experience mode')
+    }
+    if (context.participantName !== undefined
+      && (typeof context.participantName !== 'string' || context.participantName.trim() === '')) {
+      throw new Error('Roleplay resource materialization has an invalid participant name')
+    }
+    const registration = this.#providers.get(located.providerId)
+    if (registration?.materialize === undefined) {
+      throw new Error(`Roleplay resource provider ${JSON.stringify(located.providerId)} cannot materialize selections`)
+    }
+    const prefix = Object.freeze(structuredClone(events))
+    const input = Object.freeze({
+      selection: Object.freeze({
+        kind: located.descriptor.kind,
+        id: located.descriptor.id,
+        ...(selection.variant === undefined ? {} : { variant: selection.variant }),
+      }),
+      descriptor: located.descriptor,
+      events: prefix,
+      context: Object.freeze({
+        mode: context.mode,
+        ...(context.participantName === undefined ? {} : { participantName: context.participantName }),
+      }),
+    })
+    const result = registration.materialize(input)
+    if (typeof result === 'object' && result !== null
+      && 'then' in result && typeof result.then === 'function') {
+      throw new Error(`Roleplay resource provider ${JSON.stringify(located.providerId)} must materialize synchronously`)
+    }
+    if (typeof result !== 'object' || result === null || !Array.isArray(result.events)) {
+      throw new Error(`Roleplay resource provider ${JSON.stringify(located.providerId)} returned invalid Session events`)
+    }
+    const next = structuredClone(result.events)
+    if (next.length <= prefix.length
+      || !next.slice(0, prefix.length).every((event, index) => isDeepStrictEqual(event, prefix[index]))) {
+      throw new Error(`Roleplay resource provider ${JSON.stringify(located.providerId)} must only append Session events`)
+    }
+    if (next.some((event, index) => event.seq !== index)) {
+      throw new Error(`Roleplay resource provider ${JSON.stringify(located.providerId)} returned non-contiguous Session events`)
+    }
+    const validated = Session.create(SessionId('agent-rp-resource-materialization-validation'), next)
+    const title = typeof result.title === 'string' ? result.title.trim() : undefined
+    if (result.title !== undefined && (title === undefined || title === '')) {
+      throw new Error(`Roleplay resource provider ${JSON.stringify(located.providerId)} returned an invalid title`)
+    }
+    return Object.freeze({
+      events: Object.freeze(validated.events.slice(0, next.length)),
+      ...(title === undefined ? {} : { title }),
+    })
   }
 }
 

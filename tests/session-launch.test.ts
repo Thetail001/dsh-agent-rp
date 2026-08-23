@@ -12,6 +12,13 @@ import { readActiveSessionPreset } from '../src/import/session-preset.ts'
 import { readActiveSessionWorldInfos } from '../src/import/session-world-info.ts'
 import { parseSillyTavernPresetJson } from '../src/import/sillytavern-preset.ts'
 import { PresetLibrary } from '../src/preset-library.ts'
+import { PersonaLibrary } from '../src/persona-library.ts'
+import { readRoleplayExperienceSelection } from '../src/roleplay-experience-selection.ts'
+import { RoleplayResourceCatalog } from '../src/roleplay-resource-catalog.ts'
+import {
+  roleplayLibraryResourceProviders,
+  worldInfoLibraryRoleplayResourceId,
+} from '../src/roleplay-resource-library-providers.ts'
 import {
   prepareAgentRpRewriteSession,
   prepareAgentRpSession,
@@ -29,6 +36,7 @@ function libraries(context: test.TestContext) {
     characters: new CharacterLibrary({ root: join(root, 'characters') }),
     chats: new SillyTavernChatLibrary({ root: join(root, 'chats') }),
     presets: new PresetLibrary({ root: join(root, 'presets') }),
+    personas: new PersonaLibrary({ root: join(root, 'personas') }),
     worldInfos: new WorldInfoLibrary({ root: join(root, 'world-info') }),
   }
 }
@@ -211,8 +219,8 @@ test('starts a replayable roleplay Session from standalone World Info without fa
   assert.equal(replay.events.findLast(event => event.type === 'turn/start')?.data.turn, 2)
 })
 
-test('publishes a World Info Session into the source Workspace', async context => {
-  const { characters, chats, presets, worldInfos } = libraries(context)
+test('publishes a source-neutral World Info experience into the source Workspace', async context => {
+  const { characters, chats, presets, personas, worldInfos } = libraries(context)
   const worldInfo = worldInfos.importFile({
     data: new Uint8Array(readFileSync('tests/fixtures/manual-world-info.json')),
     filename: '海城.json',
@@ -262,17 +270,24 @@ test('publishes a World Info Session into the source Workspace', async context =
     logger: { warn: () => {} },
   } as unknown as Context
 
+  const resources = new RoleplayResourceCatalog()
+  for (const provider of roleplayLibraryResourceProviders({ characters, personas, presets, worldInfos })) {
+    resources.register(provider)
+  }
+
   const result = await launchAgentRpSession(ctx, characters, chats, presets, worldInfos, {
     format: 0,
     sourceSessionId: sourceId,
-    kind: 'world-info',
-    importId: worldInfo.id,
-  })
+    kind: 'experience',
+    mode: 'scene',
+    worlds: [{ kind: 'world', id: worldInfoLibraryRoleplayResourceId(worldInfo.id) }],
+  }, resources)
 
   assert.equal(attachedSessionId, result.sessionId)
   assert.equal(renamedTitle, '海城')
   assert.equal(createdSession?.events.some(event => event.type === 'turn/start'), true)
   assert.deepEqual(createdSession?.deriveMessages(), [])
+  assert.equal(readRoleplayExperienceSelection(createdSession?.events ?? [])?.mode, 'scene')
 })
 
 test('prepares imported JSONL with consecutive turns before the Agent is constructed', (context) => {
