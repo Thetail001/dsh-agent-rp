@@ -7,7 +7,7 @@ import { prepareRoleplayTurn, type RoleplayTurnPlan } from './roleplay-turn-plan
 import { bindRoleplayExternalContext } from './roleplay-turn-context.ts'
 import {
   createRoleplayTurnPlanReference,
-  roleplayTurnPlanSha256,
+  matchRoleplayTurnPlanSchema,
   roleplayTurnPlanSectionSha256,
   type RoleplayTurnPlanReference,
 } from './roleplay-turn-settlement.ts'
@@ -37,6 +37,20 @@ declare module '@deepseek-ai/dsh-session' {
 
 function sameRecord(left: SessionRoleplayTurnPlanRecord, right: SessionRoleplayTurnPlanRecord): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function storedSubsetMatches(expected: unknown, stored: unknown): boolean {
+  if (Array.isArray(stored)) {
+    return Array.isArray(expected) && expected.length === stored.length
+      && stored.every((value, index) => storedSubsetMatches(expected[index], value))
+  }
+  if (typeof stored === 'object' && stored !== null) {
+    if (typeof expected !== 'object' || expected === null || Array.isArray(expected)) return false
+    const expectedRecord = expected as Record<string, unknown>
+    return Object.entries(stored).every(([key, value]) => Object.hasOwn(expectedRecord, key)
+      && storedSubsetMatches(expectedRecord[key], value))
+  }
+  return Object.is(expected, stored)
 }
 
 /** Persist one prepared plan before the provider request leaves the Host. */
@@ -165,14 +179,23 @@ export function replaySessionRoleplayTurnPlan(input: {
       + `(boundary ${String(reference.input.sessionSeq)} -> ${String(replayed.input.sessionSeq)}, `
       + `pending ids match: ${String(messageIdsMatch)})`)
   }
-  if (roleplayTurnPlanSha256(replayed) !== expectedDigest) {
-    const actualSections = roleplayTurnPlanSectionSha256(replayed)
+  const schema = matchRoleplayTurnPlanSchema(
+    replayed,
+    expectedDigest,
+    reference.receipt.preparedPlanSchema,
+  )
+  if (schema === undefined) {
+    const diagnosticSchema = reference.receipt.preparedPlanSchema === 0
+      || reference.receipt.preparedPlanSchema === 1 || reference.receipt.preparedPlanSchema === 2
+      ? reference.receipt.preparedPlanSchema
+      : 2
+    const actualSections = roleplayTurnPlanSectionSha256(replayed, diagnosticSchema)
     const sections = (Object.keys(actualSections) as (keyof RoleplayTurnPlan)[])
       .filter(key => actualSections[key] !== expectedSections[key])
     throw new Error(`Roleplay turn plan no longer matches its durable content digest (${sections.join(', ')})`)
   }
-  const replayedReference = createRoleplayTurnPlanReference(reference.step, replayed)
-  if (JSON.stringify(replayedReference) !== JSON.stringify(reference)) {
+  const replayedReference = createRoleplayTurnPlanReference(reference.step, replayed, schema)
+  if (!storedSubsetMatches(replayedReference, reference)) {
     throw new Error('Roleplay turn plan references no longer match their durable receipt')
   }
   return replayed

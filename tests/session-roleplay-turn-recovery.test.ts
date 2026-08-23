@@ -2,13 +2,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import { createPresetSessionSeed } from '../src/import/session-preset.ts'
 import type { ImportedSillyTavernPreset } from '../src/import/sillytavern-preset.ts'
-import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
+import { prepareRoleplayTurn, type RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
 import { bindRoleplayExternalContext } from '../src/roleplay-turn-context.ts'
 import {
   readCurrentRoleplayTurnPresentation,
@@ -17,7 +17,10 @@ import {
 import {
   appendRoleplayTurnSettlement,
   compileRoleplayTurnSettlement,
+  createRoleplayTurnPlanReference,
+  projectRoleplayTurnPlan,
   readRoleplayTurnSettlements,
+  type RoleplayTurnPlanSchema,
 } from '../src/roleplay-turn-settlement.ts'
 import { readRoleplayTurnRecords } from '../src/roleplay-turn-record.ts'
 import { resolveSessionRoleplayRuntime } from '../src/session-roleplay-runtime.ts'
@@ -75,6 +78,28 @@ function appendRecoverableTextTurn(session: Session, turn: number, text: string)
   session.append('turn/end', { turn, reason: { kind: 'completed' } })
 }
 
+function reopenWithLegacyPlanReceipt(
+  session: Session,
+  recordSeq: number,
+  plan: ReturnType<typeof prepareRoleplayTurn>,
+  schema: RoleplayTurnPlanSchema,
+): { readonly session: Session; readonly record: SessionEvent<'agent-rp/turn-plan'> } {
+  const reference = createRoleplayTurnPlanReference(1, plan, schema)
+  if (reference.receipt === undefined) throw new Error('missing fixture plan receipt')
+  const { preparedPlanSchema: _preparedPlanSchema, ...legacyReceipt } = reference.receipt
+  const events = session.events.map((event): SessionEvent => event.seq !== recordSeq ? structuredClone(event) : {
+    ...structuredClone(event),
+    data: {
+      ...(event as SessionEvent<'agent-rp/turn-plan'>).data,
+      reference: { ...reference, receipt: legacyReceipt },
+    },
+  } as SessionEvent<'agent-rp/turn-plan'>)
+  const reopened = Session.create(session.id, events)
+  const record = reopened.events[recordSeq]
+  if (record?.type !== 'agent-rp/turn-plan') throw new Error('missing fixture plan event')
+  return { session: reopened, record }
+}
+
 test('persists one content-free plan receipt before dispatch and rejects retry drift', () => {
   const session = Session.create(SessionId('turn-plan-receipt'))
   session.append('turn/start', { turn: 1 })
@@ -122,6 +147,7 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
   const reopened = Session.create(session.id, session.events)
   const records = readSessionRoleplayTurnPlans(reopened.events)
   assert.equal(records.length, 1)
+  assert.equal(records[0]?.data.reference.receipt.preparedPlanSchema, 2)
   assert.equal(records[0]?.data.reference.receipt.memoryWriteAvailable, true)
   assert.deepEqual(records[0]?.data.reference.receipt.recall, dispatchedPlan.recall)
   const expectedContextReads = session.deriveMessages()
@@ -149,6 +175,30 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
     record,
     deployment,
   }), dispatchedPlan)
+  const rc236 = reopenWithLegacyPlanReceipt(session, first.seq, dispatchedPlan, 2)
+  assert.deepEqual(replaySessionRoleplayTurnPlan({
+    session: rc236.session,
+    record: rc236.record,
+    deployment,
+  }), dispatchedPlan)
+  const wrongSchemaEvents = session.events.map((event): SessionEvent => event.seq !== first.seq
+    ? structuredClone(event)
+    : {
+        ...structuredClone(event),
+        data: {
+          ...(event as typeof first).data,
+          reference: {
+            ...(event as typeof first).data.reference,
+            receipt: { ...(event as typeof first).data.reference.receipt, preparedPlanSchema: 1 },
+          },
+        },
+      } as typeof first)
+  const wrongSchemaSession = Session.create(session.id, wrongSchemaEvents)
+  assert.throws(() => replaySessionRoleplayTurnPlan({
+    session: wrongSchemaSession,
+    record: wrongSchemaSession.events[first.seq] as typeof first,
+    deployment,
+  }), /content digest/u)
   assert.throws(() => replaySessionRoleplayTurnPlan({
     session: reopened,
     record,
@@ -205,6 +255,19 @@ test('replays a cardless prompt-policy transform from the exact Session prefix',
     record: stored as typeof record,
     deployment,
   }), plan)
+  const legacyProjection = projectRoleplayTurnPlan(plan, 0) as Record<string, unknown>
+  assert.equal(Object.hasOwn(legacyProjection, 'act'), false)
+  assert.equal(Object.hasOwn(legacyProjection.prompt as object, 'transforms'), false)
+  assert.deepEqual((legacyProjection.prepare as RoleplayTurnPlan['prepare']).modules
+    .find(module => module.moduleId === 'adapter:prompt-modules'), {
+      moduleId: 'adapter:prompt-modules', outcome: 'idle', contributions: 0,
+    })
+  const legacy = reopenWithLegacyPlanReceipt(session, record.seq, plan, 0)
+  assert.deepEqual(replaySessionRoleplayTurnPlan({
+    session: legacy.session,
+    record: legacy.record,
+    deployment,
+  }), plan)
   assert.doesNotMatch(JSON.stringify(stored), /secret|safe/u)
 })
 
@@ -257,6 +320,20 @@ test('replays frozen MVU response repair rules and state without copying either 
   assert.deepEqual(replaySessionRoleplayTurnPlan({
     session: reopened,
     record: stored as typeof record,
+    deployment,
+  }), plan)
+  const legacyProjection = projectRoleplayTurnPlan(plan, 1) as Record<string, unknown>
+  assert.equal(Object.hasOwn(legacyProjection, 'act'), false)
+  const legacyRuntime = legacyProjection.runtime as RoleplayTurnPlan['runtime']
+  assert.equal(legacyRuntime.modules.find(module => module.id === 'adapter:mvu')?.phases.includes('act'), false)
+  const legacyStateReads = legacyProjection.stateReads as RoleplayTurnPlan['stateReads']
+  const legacyMvu = legacyStateReads.find(read => read.id === 'state:mvu')
+  assert.equal(Object.hasOwn(legacyMvu ?? {}, 'writerModuleId'), false)
+  assert.equal(Object.hasOwn(legacyMvu ?? {}, 'value'), false)
+  const legacy = reopenWithLegacyPlanReceipt(session, record.seq, plan, 1)
+  assert.deepEqual(replaySessionRoleplayTurnPlan({
+    session: legacy.session,
+    record: legacy.record,
     deployment,
   }), plan)
   assert.doesNotMatch(JSON.stringify(stored), /sentinel-mvu-rule|"score":7/u)

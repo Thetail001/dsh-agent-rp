@@ -322,6 +322,7 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
     'format', 'input', 'runtime', 'world', 'prompt', 'act', 'stateReads', 'memory', 'generation', 'prepare', 'recall',
   ])
   assert.deepEqual(firstReceipt, {
+    preparedPlanSchema: 2,
     runtime: {
       experienceId: 'actor:test',
       actorId: 'actor:card',

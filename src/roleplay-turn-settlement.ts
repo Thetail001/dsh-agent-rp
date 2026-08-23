@@ -3,8 +3,11 @@
 import { createHash } from 'node:crypto'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { readAgentRpMemoryHistory } from './memory.ts'
+import { MVU_ROLEPLAY_MODULE_ID, MVU_ROLEPLAY_STATE_ID } from './mvu.ts'
 import {
   ROLEPLAY_MEMORY_MODULE_ID,
+  ROLEPLAY_PROMPT_ADAPTER_MODULE_ID,
+  ROLEPLAY_PROMPT_MODULE_ID,
   type RoleplayRuntimeSnapshot,
   type RoleplayStateBinding,
   type RoleplayTurnSettlementContribution,
@@ -22,10 +25,12 @@ export interface RoleplayTurnPlanReference {
 
 /** Durable resource and decision references retained without duplicating model-visible prose. */
 export interface RoleplayTurnPlanReceipt {
+  /** Structural projection used to compute the prepared-plan proofs. */
+  readonly preparedPlanSchema?: RoleplayTurnPlanSchema
   /** Content-free proof that replay rebuilt the complete provider-neutral plan byte-for-byte. */
   readonly preparedPlanSha256?: string
   /** Per-section proofs used to diagnose drift without retaining model-visible prose twice. */
-  readonly preparedPlanSectionsSha256?: Readonly<Record<keyof RoleplayTurnPlan, string>>
+  readonly preparedPlanSectionsSha256?: Readonly<Partial<Record<keyof RoleplayTurnPlan, string>>>
   readonly runtime: {
     readonly experienceId: string
     readonly actorId?: string
@@ -67,19 +72,90 @@ export interface RoleplayTurnPlanReceipt {
   readonly recall?: RoleplayTurnPlan['recall']
 }
 
-/** Stable content digest for one JSON-only prepared plan. */
-export function roleplayTurnPlanSha256(plan: RoleplayTurnPlan): string {
-  return createHash('sha256').update(JSON.stringify(plan)).digest('hex')
+/**
+ * Published structural projections of the provider-neutral turn plan:
+ * 0 predates prompt transforms, 1 adds transforms, and 2 adds prepared act programs.
+ */
+export type RoleplayTurnPlanSchema = 0 | 1 | 2
+
+/** Current structural projection written into every new plan receipt. */
+export const CURRENT_ROLEPLAY_TURN_PLAN_SCHEMA: RoleplayTurnPlanSchema = 2
+
+function legacyPromptPreparation(plan: RoleplayTurnPlan): {
+  readonly prompt: Omit<RoleplayTurnPlan['prompt'], 'transforms'>
+  readonly prepare: RoleplayTurnPlan['prepare']
+} {
+  const { transforms, ...prompt } = plan.prompt
+  const actorTransforms = transforms.operations.filter(operation => operation.owner === 'actor').length
+  const policyTransforms = transforms.operations.filter(operation => operation.owner === 'prompt-policy').length
+  const modules = plan.prepare.modules.map((module) => {
+    const removed = module.moduleId === ROLEPLAY_PROMPT_MODULE_ID
+      ? actorTransforms
+      : module.moduleId === ROLEPLAY_PROMPT_ADAPTER_MODULE_ID ? policyTransforms : 0
+    if (removed === 0) return module
+    const contributions = Math.max(0, module.contributions - removed)
+    return { ...module, outcome: contributions === 0 ? 'idle' as const : 'applied' as const, contributions }
+  })
+  return { prompt, prepare: { modules } }
 }
 
-/** Stable content digests for the named top-level sections of one prepared plan. */
+function planWithoutPreparedAct(plan: RoleplayTurnPlan): Omit<RoleplayTurnPlan, 'act'> {
+  const { act: _act, ...withoutAct } = plan
+  return {
+    ...withoutAct,
+    runtime: {
+      ...plan.runtime,
+      modules: plan.runtime.modules.map(module => module.id !== MVU_ROLEPLAY_MODULE_ID ? module : {
+        ...module,
+        phases: module.phases.filter(phase => phase !== 'act'),
+      }),
+    },
+    stateReads: plan.stateReads.map((read) => {
+      if (read.id !== MVU_ROLEPLAY_STATE_ID) return read
+      const { writerModuleId: _writerModuleId, value: _value, ...legacy } = read
+      return legacy
+    }),
+  }
+}
+
+/** Project a current plan into one historically published structural schema. */
+export function projectRoleplayTurnPlan(plan: RoleplayTurnPlan, schema: RoleplayTurnPlanSchema): unknown {
+  if (schema === 2) return plan
+  const withoutAct = planWithoutPreparedAct(plan)
+  if (schema === 1) return withoutAct
+  const legacy = legacyPromptPreparation(plan)
+  return { ...withoutAct, prompt: legacy.prompt, prepare: legacy.prepare }
+}
+
+/** Stable content digest for one versioned JSON-only prepared-plan projection. */
+export function roleplayTurnPlanSha256(
+  plan: RoleplayTurnPlan,
+  schema: RoleplayTurnPlanSchema = CURRENT_ROLEPLAY_TURN_PLAN_SCHEMA,
+): string {
+  return createHash('sha256').update(JSON.stringify(projectRoleplayTurnPlan(plan, schema))).digest('hex')
+}
+
+/** Stable content digests for the named top-level sections of one versioned projection. */
 export function roleplayTurnPlanSectionSha256(
   plan: RoleplayTurnPlan,
-): Readonly<Record<keyof RoleplayTurnPlan, string>> {
-  return Object.fromEntries(Object.entries(plan).map(([key, value]) => [
+  schema: RoleplayTurnPlanSchema = CURRENT_ROLEPLAY_TURN_PLAN_SCHEMA,
+): Readonly<Partial<Record<keyof RoleplayTurnPlan, string>>> {
+  return Object.fromEntries(Object.entries(projectRoleplayTurnPlan(plan, schema) as object).map(([key, value]) => [
     key,
     createHash('sha256').update(JSON.stringify(value)).digest('hex'),
-  ])) as unknown as Readonly<Record<keyof RoleplayTurnPlan, string>>
+  ])) as Readonly<Partial<Record<keyof RoleplayTurnPlan, string>>>
+}
+
+/** Resolve either an explicit schema or one of the finite pre-version projections by exact digest. */
+export function matchRoleplayTurnPlanSchema(
+  plan: RoleplayTurnPlan,
+  expectedDigest: string,
+  declaredSchema: unknown,
+): RoleplayTurnPlanSchema | undefined {
+  const schemas: readonly RoleplayTurnPlanSchema[] = declaredSchema === undefined
+    ? [2, 1, 0]
+    : declaredSchema === 0 || declaredSchema === 1 || declaredSchema === 2 ? [declaredSchema] : []
+  return schemas.find(schema => roleplayTurnPlanSha256(plan, schema) === expectedDigest)
 }
 
 /** Revision change observed at the turn boundary for one runtime state namespace. */
@@ -497,10 +573,17 @@ export function compileRoleplayActReceipt(
   return { steps: [...byStep.values()] }
 }
 
-function planReceipt(plan: RoleplayTurnPlan): RoleplayTurnPlanReceipt {
+function planReceipt(
+  plan: RoleplayTurnPlan,
+  schema: RoleplayTurnPlanSchema = CURRENT_ROLEPLAY_TURN_PLAN_SCHEMA,
+): RoleplayTurnPlanReceipt {
+  const projected = projectRoleplayTurnPlan(plan, schema) as Omit<RoleplayTurnPlan, 'act'> & {
+    readonly act?: RoleplayTurnPlan['act']
+  }
   return {
-    preparedPlanSha256: roleplayTurnPlanSha256(plan),
-    preparedPlanSectionsSha256: roleplayTurnPlanSectionSha256(plan),
+    preparedPlanSchema: schema,
+    preparedPlanSha256: roleplayTurnPlanSha256(plan, schema),
+    preparedPlanSectionsSha256: roleplayTurnPlanSectionSha256(plan, schema),
     runtime: {
       experienceId: plan.runtime.experience.id,
       ...(plan.runtime.actor === undefined ? {} : { actorId: plan.runtime.actor.id }),
@@ -525,13 +608,13 @@ function planReceipt(plan: RoleplayTurnPlan): RoleplayTurnPlanReceipt {
       ...(plan.world.tokenBudget === undefined ? {} : { tokenBudget: plan.world.tokenBudget }),
     },
     promptDiagnostics: { ...plan.prompt.diagnostics },
-    act: {
-      responseRepairs: plan.act.responseRepairs.map(program => ({
+    ...(projected.act === undefined ? {} : { act: {
+      responseRepairs: projected.act.responseRepairs.map(program => ({
         engine: program.engine,
         moduleId: program.moduleId,
         stateId: program.stateId,
       })),
-    },
+    } }),
     stateReads: plan.stateReads.map(read => ({
       id: read.id,
       ...(read.revision === undefined ? {} : { revision: read.revision }),
@@ -540,7 +623,7 @@ function planReceipt(plan: RoleplayTurnPlan): RoleplayTurnPlanReceipt {
     memoryReads: plan.memory.reads.map(read => ({ ...read })),
     memoryWriteAvailable: plan.memory.write,
     generation: { ...plan.generation },
-    prepare: { modules: plan.prepare.modules.map(module => ({ ...module })) },
+    prepare: { modules: projected.prepare.modules.map(module => ({ ...module })) },
     recall: {
       modules: plan.recall.modules.map(module => ({ ...module })),
       ...(plan.recall.contextReads === undefined ? {} : {
@@ -554,8 +637,9 @@ function planReceipt(plan: RoleplayTurnPlan): RoleplayTurnPlanReceipt {
 export function createRoleplayTurnPlanReference(
   step: number,
   plan: RoleplayTurnPlan,
+  schema: RoleplayTurnPlanSchema = CURRENT_ROLEPLAY_TURN_PLAN_SCHEMA,
 ): RoleplayTurnPlanReference {
-  return { step, input: plan.input, receipt: planReceipt(plan) }
+  return { step, input: plan.input, receipt: planReceipt(plan, schema) }
 }
 
 interface SettleModuleContract {
