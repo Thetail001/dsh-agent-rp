@@ -27,6 +27,7 @@ test('describes a fresh deployment character without an import-format dependency
   assert.equal(runtime.snapshot.prompt.strategy, 'native')
   assert.deepEqual(runtime.snapshot.world.bindings, [])
   assert.deepEqual(runtime.snapshot.lifecycle, ROLEPLAY_TURN_PHASES)
+  assert.deepEqual(runtime.snapshot.lifecycle, ['prepare', 'recall', 'act', 'settle', 'present'])
   assert.deepEqual(runtime.snapshot.memory, { read: true, write: true })
 })
 

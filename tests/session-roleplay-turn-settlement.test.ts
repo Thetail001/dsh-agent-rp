@@ -49,6 +49,7 @@ function plan(session: Session, snapshot = runtime()): RoleplayTurnPlan {
     memory: { ...snapshot.memory, reads: [], contextText: '' },
     generation: {},
     prepare: { modules: [] },
+    recall: { modules: [] },
   }
 }
 

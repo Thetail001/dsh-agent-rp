@@ -29,6 +29,7 @@ import { assembleSillyTavernPreset, prepareSillyTavernProviderMessages } from '.
 import {
   prepareRoleplayTurn,
   resolveRoleplayPrepareModuleOutcomes,
+  resolveRoleplayRecallModuleOutcomes,
 } from '../src/roleplay-turn-plan.ts'
 import { resolveSessionRoleplayRuntime } from '../src/session-roleplay-runtime.ts'
 import {
@@ -202,40 +203,44 @@ test('plans the minimal deployment character without changing its native prompt'
     reads: [],
     contextText: renderMemoryContext(session.events, true),
   })
-  assert.ok(plan.prepare.modules.some(module => module.moduleId === 'roleplay:memory'
-    && module.outcome === 'applied' && module.contributions === 1))
+  assert.deepEqual(plan.recall.modules.find(module => module.moduleId === 'roleplay:memory'), {
+    moduleId: 'roleplay:memory', outcome: 'idle', contributions: 0,
+  })
+  assert.deepEqual(plan.runtime.modules.find(module => module.id === 'roleplay:memory')?.phases,
+    ['recall', 'act', 'settle'])
 })
 
-test('requires one explicit outcome from every active prepare module', () => {
+test('requires one explicit outcome from every active prepare and recall module', () => {
   const session = Session.create(SessionId('turn-plan-module-contract'))
   const runtime = resolveSessionRoleplayRuntime({ session, deployment }).snapshot
   const prompt = { moduleId: 'roleplay:prompt', outcome: 'applied', contributions: 1 } as const
   const memory = { moduleId: 'roleplay:memory', outcome: 'idle', contributions: 0 } as const
 
-  assert.deepEqual(resolveRoleplayPrepareModuleOutcomes(runtime, [memory, prompt]), [prompt, memory])
+  assert.deepEqual(resolveRoleplayPrepareModuleOutcomes(runtime, [prompt]), [prompt])
+  assert.deepEqual(resolveRoleplayRecallModuleOutcomes(runtime, [memory]), [memory])
   assert.throws(
-    () => resolveRoleplayPrepareModuleOutcomes(runtime, [prompt]),
+    () => resolveRoleplayRecallModuleOutcomes(runtime, []),
     /roleplay:memory did not declare/u,
   )
   assert.throws(
-    () => resolveRoleplayPrepareModuleOutcomes(runtime, [prompt, memory, memory]),
+    () => resolveRoleplayRecallModuleOutcomes(runtime, [memory, memory]),
     /declared more than once/u,
   )
   assert.throws(
-    () => resolveRoleplayPrepareModuleOutcomes(runtime, [prompt, memory, {
+    () => resolveRoleplayRecallModuleOutcomes(runtime, [memory, {
       moduleId: 'adapter:missing', outcome: 'idle', contributions: 0,
     }]),
     /inactive module adapter:missing/u,
   )
   assert.throws(
-    () => resolveRoleplayPrepareModuleOutcomes(runtime, [prompt, {
+    () => resolveRoleplayRecallModuleOutcomes(runtime, [{
       moduleId: 'roleplay:memory', outcome: 'idle', contributions: -1,
     }]),
     /invalid contribution count/u,
   )
 })
 
-test('freezes exact durable memory reads and context into prepare', () => {
+test('freezes exact durable memory reads and context into recall', () => {
   const session = Session.create(SessionId('turn-plan-memory'), [{
     type: 'agent-rp/memory-seed',
     seq: 0,
@@ -253,7 +258,7 @@ test('freezes exact durable memory reads and context into prepare', () => {
   assert.deepEqual(plan.memory.reads, [{ id: 'memory-seed-0-0', sourceEventSeq: 0 }])
   assert.equal(plan.memory.contextText, renderMemoryContext(session.events))
   assert.match(plan.memory.contextText, /用户喝咖啡时不加糖/u)
-  assert.ok(plan.prepare.modules.some(module => module.moduleId === 'roleplay:memory'
+  assert.ok(plan.recall.modules.some(module => module.moduleId === 'roleplay:memory'
     && module.outcome === 'applied' && module.contributions === 1))
 
   session.append('agent-rp/memory-seed', {
@@ -286,7 +291,7 @@ test('keeps a standalone World Info launch actor-free and explains its activatio
   assert.doesNotMatch(plan.prompt.systemPromptText, /\{\{/u)
 })
 
-test('distinguishes idle and degraded EJS prepare participation', async () => {
+test('distinguishes idle prompt preparation from degraded EJS world recall', async () => {
   const engine = await EjsTemplateEngine.create()
   const plainSession = Session.create(SessionId('turn-plan-ejs-idle'))
   const plainResolved = resolveSessionRoleplayRuntime({
@@ -318,10 +323,10 @@ test('distinguishes idle and degraded EJS prepare participation', async () => {
   const plan = prepareRoleplayTurn({ session, deployment, resolved, templateEngine: engine })
 
   assert.equal(plan.world.resources[0]?.entries[0]?.reason, 'template-error')
-  assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'roleplay:world'), {
+  assert.deepEqual(plan.recall.modules.find(module => module.moduleId === 'roleplay:world'), {
     moduleId: 'roleplay:world', outcome: 'idle', contributions: 0,
   })
-  assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'adapter:ejs'), {
+  assert.deepEqual(plan.recall.modules.find(module => module.moduleId === 'adapter:ejs'), {
     moduleId: 'adapter:ejs', outcome: 'degraded', contributions: 1,
   })
 })
@@ -451,7 +456,7 @@ test('routes active world depth entries through the shared provider-message plan
     ['user', '深度一的玩家侧世界提示。'],
     ['assistant', '最近消息'],
   ])
-  assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'roleplay:world'), {
+  assert.deepEqual(plan.recall.modules.find(module => module.moduleId === 'roleplay:world'), {
     moduleId: 'roleplay:world', outcome: 'applied', contributions: 1,
   })
 })
@@ -610,12 +615,18 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
     moduleId: 'adapter:mvu', outcome: 'applied', contributions: 1,
   })
   assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'adapter:tavern-helper'), {
-    moduleId: 'adapter:tavern-helper', outcome: 'applied', contributions: 2,
+    moduleId: 'adapter:tavern-helper', outcome: 'applied', contributions: 1,
+  })
+  assert.deepEqual(plan.recall.modules.find(module => module.moduleId === 'adapter:tavern-helper'), {
+    moduleId: 'adapter:tavern-helper', outcome: 'applied', contributions: 1,
   })
   assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'adapter:ejs'), {
     moduleId: 'adapter:ejs', outcome: 'applied',
-    contributions: direct.templateRenderCount + direct.templateFailureCount
-      + plan.world.resources.flatMap(resource => resource.entries)
-        .filter(entry => entry.template !== undefined).length,
+    contributions: direct.templateRenderCount + direct.templateFailureCount,
+  })
+  assert.deepEqual(plan.recall.modules.find(module => module.moduleId === 'adapter:ejs'), {
+    moduleId: 'adapter:ejs', outcome: 'applied',
+    contributions: plan.world.resources.flatMap(resource => resource.entries)
+      .filter(entry => entry.template !== undefined).length,
   })
 })

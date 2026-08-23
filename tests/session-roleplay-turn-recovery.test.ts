@@ -75,6 +75,7 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
   const records = readSessionRoleplayTurnPlans(reopened.events)
   assert.equal(records.length, 1)
   assert.equal(records[0]?.data.reference.receipt.memoryWriteAvailable, true)
+  assert.deepEqual(records[0]?.data.reference.receipt.recall, plan.recall)
   assert.deepEqual(records[0]?.data.reference.receipt.runtime.settleModules, [{
     moduleId: 'roleplay:memory', stateIds: [],
   }])

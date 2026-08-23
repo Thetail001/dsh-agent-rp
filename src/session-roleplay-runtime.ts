@@ -192,7 +192,7 @@ export function resolveSessionRoleplayRuntime(input: {
   }
   const modules: RoleplayModuleBinding[] = [
     runtimeModule(ROLEPLAY_PROMPT_MODULE_ID, 'native', ['prepare']),
-    runtimeModule(ROLEPLAY_MEMORY_MODULE_ID, 'native', ['prepare', 'generate', 'settle']),
+    runtimeModule(ROLEPLAY_MEMORY_MODULE_ID, 'native', ['recall', 'act', 'settle']),
     runtimeModule('roleplay:reply-versions', 'native', ['present']),
     ...(nativeStates.length === 0 ? [] : [runtimeModule(
       ROLEPLAY_STATE_MODULE_ID,
@@ -200,7 +200,7 @@ export function resolveSessionRoleplayRuntime(input: {
       ['prepare', 'settle', 'present'],
       nativeStates.map(nativeState => nativeState.id),
     )]),
-    ...(lorebooks.length === 0 ? [] : [runtimeModule(ROLEPLAY_WORLD_MODULE_ID, 'native', ['prepare'])]),
+    ...(lorebooks.length === 0 ? [] : [runtimeModule(ROLEPLAY_WORLD_MODULE_ID, 'native', ['recall'])]),
     ...(preset === undefined ? [] : [runtimeModule(ROLEPLAY_PROMPT_ADAPTER_MODULE_ID, 'adapter', ['prepare'])]),
     ...(mvu === undefined ? [] : [runtimeModule(
       MVU_ROLEPLAY_MODULE_ID, 'adapter', ['prepare', 'settle'], [MVU_ROLEPLAY_STATE_ID],
@@ -212,7 +212,7 @@ export function resolveSessionRoleplayRuntime(input: {
       [TAVERN_HELPER_ROLEPLAY_STATE_ID],
     )]),
     ...(input.templateEngineAvailable === true
-      ? [runtimeModule(ROLEPLAY_EJS_ADAPTER_MODULE_ID, 'adapter', ['prepare'])]
+      ? [runtimeModule(ROLEPLAY_EJS_ADAPTER_MODULE_ID, 'adapter', ['prepare', 'recall'])]
       : []),
   ]
   const tokenBudget = worldInfoTokenBudget(worldConfiguration)

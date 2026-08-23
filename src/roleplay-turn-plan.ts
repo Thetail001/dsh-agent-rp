@@ -103,12 +103,15 @@ export interface RoleplayWorldPlan {
   readonly tokenBudget?: number
 }
 
-/** Content-free module outcome useful for diagnostics and later orchestration. */
-export interface RoleplayPrepareModuleOutcome {
+/** Content-free phase outcome useful for diagnostics and later orchestration. */
+export interface RoleplayPhaseModuleOutcome {
   readonly moduleId: string
   readonly outcome: 'applied' | 'idle' | 'degraded'
   readonly contributions: number
 }
+
+export type RoleplayPrepareModuleOutcome = RoleplayPhaseModuleOutcome
+export type RoleplayRecallModuleOutcome = RoleplayPhaseModuleOutcome
 
 /** Final prompt plus adapter expansion diagnostics. */
 export interface RoleplayTurnPromptPlan extends RoleplayProviderPromptPlan {
@@ -151,6 +154,9 @@ export interface RoleplayTurnPlan {
   readonly generation: RoleplayGenerationPolicy
   readonly prepare: {
     readonly modules: readonly RoleplayPrepareModuleOutcome[]
+  }
+  readonly recall: {
+    readonly modules: readonly RoleplayRecallModuleOutcome[]
   }
 }
 
@@ -227,33 +233,50 @@ function worldPlan(
   }
 }
 
-/** Validate one explicit outcome from every module that declared prepare participation. */
-export function resolveRoleplayPrepareModuleOutcomes(
+/** Validate one explicit outcome from every module participating in one declarative phase. */
+export function resolveRoleplayPhaseModuleOutcomes(
   runtime: RoleplayRuntimeSnapshot,
-  declarations: readonly RoleplayPrepareModuleOutcome[],
-): readonly RoleplayPrepareModuleOutcome[] {
-  const active = runtime.modules.filter(module => module.phases.includes('prepare'))
+  phase: 'prepare' | 'recall',
+  declarations: readonly RoleplayPhaseModuleOutcome[],
+): readonly RoleplayPhaseModuleOutcome[] {
+  const active = runtime.modules.filter(module => module.phases.includes(phase))
   const activeIds = new Set(active.map(module => module.id))
-  const declared = new Map<string, RoleplayPrepareModuleOutcome>()
+  const declared = new Map<string, RoleplayPhaseModuleOutcome>()
   for (const declaration of declarations) {
     if (!activeIds.has(declaration.moduleId)) {
-      throw new Error(`Roleplay prepare declaration references inactive module ${declaration.moduleId}`)
+      throw new Error(`Roleplay ${phase} declaration references inactive module ${declaration.moduleId}`)
     }
     if (declared.has(declaration.moduleId)) {
-      throw new Error(`Roleplay prepare module ${declaration.moduleId} declared more than once`)
+      throw new Error(`Roleplay ${phase} module ${declaration.moduleId} declared more than once`)
     }
     if (!Number.isSafeInteger(declaration.contributions) || declaration.contributions < 0) {
-      throw new Error(`Roleplay prepare module ${declaration.moduleId} has an invalid contribution count`)
+      throw new Error(`Roleplay ${phase} module ${declaration.moduleId} has an invalid contribution count`)
     }
     declared.set(declaration.moduleId, declaration)
   }
   return active.map(module => {
     const declaration = declared.get(module.id)
     if (declaration === undefined) {
-      throw new Error(`Roleplay prepare module ${module.id} did not declare an outcome`)
+      throw new Error(`Roleplay ${phase} module ${module.id} did not declare an outcome`)
     }
     return declaration
   })
+}
+
+/** Validate every module that declared prepare participation. */
+export function resolveRoleplayPrepareModuleOutcomes(
+  runtime: RoleplayRuntimeSnapshot,
+  declarations: readonly RoleplayPrepareModuleOutcome[],
+): readonly RoleplayPrepareModuleOutcome[] {
+  return resolveRoleplayPhaseModuleOutcomes(runtime, 'prepare', declarations)
+}
+
+/** Validate every module that declared world or memory recall participation. */
+export function resolveRoleplayRecallModuleOutcomes(
+  runtime: RoleplayRuntimeSnapshot,
+  declarations: readonly RoleplayRecallModuleOutcome[],
+): readonly RoleplayRecallModuleOutcome[] {
+  return resolveRoleplayPhaseModuleOutcomes(runtime, 'recall', declarations)
 }
 
 /** Compile all Session resources into the exact immutable inputs consumed by the next generation. */
@@ -414,24 +437,12 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   const worldTemplateAttempts = worldEntries.filter(entry => entry.template !== undefined).length
   const worldTemplateFailures = worldEntries.filter(entry =>
     entry.reason === 'template-error' || entry.reason === 'template-unsupported').length
-  const ejsContributions = templateRenders + templateFailures + worldTemplateAttempts
-  const ejsFailures = templateFailures + worldTemplateFailures
   const prepareDeclarations: RoleplayPrepareModuleOutcome[] = [
     {
       moduleId: ROLEPLAY_PROMPT_MODULE_ID,
       outcome: promptContributions === 0 ? 'idle' : 'applied',
       contributions: promptContributions,
     },
-    {
-      moduleId: ROLEPLAY_MEMORY_MODULE_ID,
-      outcome: memory.reads.length === 0 && !memory.write ? 'idle' : 'applied',
-      contributions: memory.reads.length + (memory.write ? 1 : 0),
-    },
-    ...(world.resources.length === 0 ? [] : [{
-      moduleId: ROLEPLAY_WORLD_MODULE_ID,
-      outcome: worldContributions === 0 ? 'idle' as const : 'applied' as const,
-      contributions: worldContributions,
-    }]),
     ...(resolved.preset === undefined ? [] : [{
       moduleId: ROLEPLAY_PROMPT_ADAPTER_MODULE_ID,
       outcome: enabledModules === 0 ? 'idle' as const : 'applied' as const,
@@ -449,14 +460,37 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     }]),
     ...(tavern === undefined ? [] : [{
       moduleId: TAVERN_HELPER_ROLEPLAY_MODULE_ID,
-      outcome: 'applied' as const,
-      contributions: injectedScanText.length + injectedPrompts.length,
+      outcome: injectedPrompts.length === 0 ? 'idle' as const : 'applied' as const,
+      contributions: injectedPrompts.length,
     }]),
     ...(snapshot.modules.some(module => module.id === ROLEPLAY_EJS_ADAPTER_MODULE_ID) ? [{
       moduleId: ROLEPLAY_EJS_ADAPTER_MODULE_ID,
-      outcome: input.templateEngine === undefined || ejsFailures > 0 ? 'degraded' as const
-        : ejsContributions === 0 ? 'idle' as const : 'applied' as const,
-      contributions: ejsContributions,
+      outcome: input.templateEngine === undefined || templateFailures > 0 ? 'degraded' as const
+        : templateRenders === 0 ? 'idle' as const : 'applied' as const,
+      contributions: templateRenders + templateFailures,
+    }] : []),
+  ]
+  const recallDeclarations: RoleplayRecallModuleOutcome[] = [
+    {
+      moduleId: ROLEPLAY_MEMORY_MODULE_ID,
+      outcome: memory.reads.length === 0 ? 'idle' : 'applied',
+      contributions: memory.reads.length,
+    },
+    ...(world.resources.length === 0 ? [] : [{
+      moduleId: ROLEPLAY_WORLD_MODULE_ID,
+      outcome: worldContributions === 0 ? 'idle' as const : 'applied' as const,
+      contributions: worldContributions,
+    }]),
+    ...(tavern === undefined ? [] : [{
+      moduleId: TAVERN_HELPER_ROLEPLAY_MODULE_ID,
+      outcome: injectedScanText.length === 0 ? 'idle' as const : 'applied' as const,
+      contributions: injectedScanText.length,
+    }]),
+    ...(snapshot.modules.some(module => module.id === ROLEPLAY_EJS_ADAPTER_MODULE_ID) ? [{
+      moduleId: ROLEPLAY_EJS_ADAPTER_MODULE_ID,
+      outcome: input.templateEngine === undefined || worldTemplateFailures > 0 ? 'degraded' as const
+        : worldTemplateAttempts === 0 ? 'idle' as const : 'applied' as const,
+      contributions: worldTemplateAttempts,
     }] : []),
   ]
   return {
@@ -473,5 +507,6 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     memory,
     generation: { ...(resolved.preset?.preset.generation ?? {}) },
     prepare: { modules: resolveRoleplayPrepareModuleOutcomes(snapshot, prepareDeclarations) },
+    recall: { modules: resolveRoleplayRecallModuleOutcomes(snapshot, recallDeclarations) },
   }
 }

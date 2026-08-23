@@ -31,6 +31,7 @@ function plan(label: string, sessionSeq = 0): RoleplayTurnPlan {
     memory: { ...runtime.memory, reads: [], contextText: '' },
     generation: {},
     prepare: { modules: [] },
+    recall: { modules: [] },
   }
 }
 

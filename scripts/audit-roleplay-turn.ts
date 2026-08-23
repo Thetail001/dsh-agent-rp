@@ -75,7 +75,7 @@ export interface RoleplayTurnAuditInput {
 
 /** Content-free result safe to paste into an issue or community feedback thread. */
 export interface RoleplayTurnAuditResult {
-  readonly audit: 'roleplay-turn-roundtrip-v0'
+  readonly audit: 'roleplay-turn-roundtrip-v1'
   readonly ok: true
   readonly assets: {
     readonly card: {
@@ -99,12 +99,15 @@ export interface RoleplayTurnAuditResult {
   }
   readonly prepare: {
     readonly resources: number
-    readonly activeWorldEntries: number
     readonly stateReads: number
-    readonly memoryReads: number
     readonly moduleOutcomes: Counter
     readonly promptModules: number
     readonly templateFailures: number
+  }
+  readonly recall: {
+    readonly activeWorldEntries: number
+    readonly memoryReads: number
+    readonly moduleOutcomes: Counter
   }
   readonly settlement: {
     readonly receiptPresent: boolean
@@ -123,6 +126,7 @@ export interface RoleplayTurnAuditResult {
     readonly settlementRecovered: boolean
     readonly presentationRecovered: boolean
     readonly preDispatchReceiptRecovered: boolean
+    readonly recallReceiptRecovered: boolean
     readonly exactPlanRecovered: boolean
     readonly coldSettlementRecovered: boolean
     readonly resourceReferencesMatch: boolean
@@ -131,7 +135,9 @@ export interface RoleplayTurnAuditResult {
     readonly memoryReferencesResolve: boolean
     readonly currentReplyMatches: boolean
     readonly nextPrepareContinues: boolean
+    readonly nextRecallContinues: boolean
     readonly nextPrepareOutcomes: Counter
+    readonly nextRecallOutcomes: Counter
   }
 }
 
@@ -403,6 +409,7 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
   const planRecord = reopened.events.find(event => event.type === 'agent-rp/turn-plan'
     && event.data.turn === turn && event.data.reference.step === 1)
   const preDispatchReceiptRecovered = planRecord?.type === 'agent-rp/turn-plan'
+  const recallReceiptRecovered = receipt?.recall !== undefined && equalJson(receipt.recall, plan.recall)
   const exactPlanRecovered = planRecord?.type === 'agent-rp/turn-plan' && equalJson(
     replaySessionRoleplayTurnPlan({ session: reopened, record: planRecord, deployment, templateEngine: engine }),
     plan,
@@ -457,6 +464,8 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
     && nextPlan.input.pendingMessageIds.length === 1
     && nextPlan.prepare.modules.length === nextPlan.runtime.modules.filter(module =>
       module.phases.includes('prepare')).length
+  const nextRecallContinues = nextPlan.recall.modules.length === nextPlan.runtime.modules.filter(module =>
+    module.phases.includes('recall')).length
     && equalStrings(
       nextPlan.runtime.world.bindings.map(binding => binding.id),
       plan.runtime.world.bindings.map(binding => binding.id),
@@ -465,13 +474,13 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
   if (receipt === undefined || !settlementRecovered || !presentationRecovered
     || !equalStrings(runtimeResourceIds, receiptResourceIds)
     || !worldActivationMatches || !stateReferencesResolve || !memoryReferencesResolve
-    || !preDispatchReceiptRecovered || !exactPlanRecovered || !coldSettlementRecovered
-    || !currentReplyMatches || !nextPrepareContinues) {
+    || !preDispatchReceiptRecovered || !recallReceiptRecovered || !exactPlanRecovered || !coldSettlementRecovered
+    || !currentReplyMatches || !nextPrepareContinues || !nextRecallContinues) {
     throw new Error('Roleplay turn audit replay invariant failed')
   }
 
   return {
-    audit: 'roleplay-turn-roundtrip-v0',
+    audit: 'roleplay-turn-roundtrip-v1',
     ok: true,
     assets: {
       card: {
@@ -495,12 +504,15 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
     },
     prepare: {
       resources: runtimeResourceIds.length,
-      activeWorldEntries: planWorldEntries.reduce((total, resource) => total + resource.entryIds.length, 0),
       stateReads: plan.stateReads.length,
-      memoryReads: plan.memory.reads.length,
       moduleOutcomes: counter(plan.prepare.modules.map(module => module.outcome)),
       promptModules: plan.prompt.diagnostics.enabledModules,
       templateFailures: plan.prompt.diagnostics.templateFailures,
+    },
+    recall: {
+      activeWorldEntries: planWorldEntries.reduce((total, resource) => total + resource.entryIds.length, 0),
+      memoryReads: plan.memory.reads.length,
+      moduleOutcomes: counter(plan.recall.modules.map(module => module.outcome)),
     },
     settlement: {
       receiptPresent: true,
@@ -519,6 +531,7 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
       settlementRecovered,
       presentationRecovered,
       preDispatchReceiptRecovered,
+      recallReceiptRecovered,
       exactPlanRecovered,
       coldSettlementRecovered,
       resourceReferencesMatch: true,
@@ -527,7 +540,9 @@ export async function auditRoleplayTurn(input: RoleplayTurnAuditInput): Promise<
       memoryReferencesResolve,
       currentReplyMatches,
       nextPrepareContinues,
+      nextRecallContinues,
       nextPrepareOutcomes: counter(nextPlan.prepare.modules.map(module => module.outcome)),
+      nextRecallOutcomes: counter(nextPlan.recall.modules.map(module => module.outcome)),
     },
   }
 }
@@ -553,7 +568,7 @@ const entry = process.argv[1]
 if (entry !== undefined && basename(entry).startsWith('audit-roleplay-turn.')
   && pathToFileURL(resolve(entry)).href === import.meta.url) {
   main().catch(() => {
-    process.stderr.write(`${JSON.stringify({ audit: 'roleplay-turn-roundtrip-v0', ok: false })}\n`)
+    process.stderr.write(`${JSON.stringify({ audit: 'roleplay-turn-roundtrip-v1', ok: false })}\n`)
     process.exitCode = 1
   })
 }

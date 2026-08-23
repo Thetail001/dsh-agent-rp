@@ -79,6 +79,7 @@ function plan(session: Session, state: RoleplayRuntimeSnapshot['state'] = []): R
     memory: { ...snapshot.memory, reads: [], contextText: '' },
     generation: {},
     prepare: { modules: [] },
+    recall: { modules: [] },
   }
 }
 

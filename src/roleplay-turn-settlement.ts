@@ -57,6 +57,7 @@ export interface RoleplayTurnPlanReceipt {
   readonly memoryWriteAvailable?: boolean
   readonly generation: RoleplayTurnPlan['generation']
   readonly prepare: RoleplayTurnPlan['prepare']
+  readonly recall?: RoleplayTurnPlan['recall']
 }
 
 /** Stable content digest for one JSON-only prepared plan. */
@@ -225,6 +226,7 @@ function planReceipt(plan: RoleplayTurnPlan): RoleplayTurnPlanReceipt {
     memoryWriteAvailable: plan.memory.write,
     generation: { ...plan.generation },
     prepare: { modules: plan.prepare.modules.map(module => ({ ...module })) },
+    recall: { modules: plan.recall.modules.map(module => ({ ...module })) },
   }
 }
 

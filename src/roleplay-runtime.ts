@@ -1,7 +1,7 @@
 /** Format-independent description of one Roleplay turn runtime. */
 
 /** Stable lifecycle shared by native resources and compatibility adapters. */
-export const ROLEPLAY_TURN_PHASES = ['prepare', 'generate', 'settle', 'present'] as const
+export const ROLEPLAY_TURN_PHASES = ['prepare', 'recall', 'act', 'settle', 'present'] as const
 
 export type RoleplayTurnPhase = typeof ROLEPLAY_TURN_PHASES[number]
 

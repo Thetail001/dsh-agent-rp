@@ -22,6 +22,7 @@ test('audits a complete model-free turn and reopens it from the Session log', as
     settlementRecovered: true,
     presentationRecovered: true,
     preDispatchReceiptRecovered: true,
+    recallReceiptRecovered: true,
     exactPlanRecovered: true,
     coldSettlementRecovered: true,
     resourceReferencesMatch: true,
@@ -30,6 +31,7 @@ test('audits a complete model-free turn and reopens it from the Session log', as
     memoryReferencesResolve: true,
     currentReplyMatches: true,
     nextPrepareContinues: true,
+    nextRecallContinues: true,
   })
   assert.doesNotMatch(JSON.stringify(result), /角色|世界|预设|fixture|manual|Audit User/u)
 })

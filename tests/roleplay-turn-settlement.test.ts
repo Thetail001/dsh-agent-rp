@@ -18,7 +18,7 @@ installIgnorableSessionEventFixture()
 function runtime(
   state: RoleplayRuntimeSnapshot['state'] = [],
   modules: RoleplayRuntimeSnapshot['modules'] = [{
-    id: 'roleplay:memory', source: 'native', phases: ['prepare', 'generate', 'settle'],
+    id: 'roleplay:memory', source: 'native', phases: ['recall', 'act', 'settle'],
   }],
 ): RoleplayRuntimeSnapshot {
   return {
@@ -57,6 +57,7 @@ function turnPlan(input: {
     memory: { read: true, write: input.memoryWrite ?? true, reads: [], contextText: '' },
     generation: {},
     prepare: { modules: [] },
+    recall: { modules: [] },
   }
 }
 
@@ -100,7 +101,7 @@ test('settles state, memory, and deferred browser work from one prepared plan', 
   const session = Session.create(SessionId('settlement-state'))
   session.append('turn/start', { turn: 1 })
   const modules = [
-    { id: 'roleplay:memory', source: 'native', phases: ['prepare', 'generate', 'settle'] },
+    { id: 'roleplay:memory', source: 'native', phases: ['recall', 'act', 'settle'] },
     { id: 'adapter:mvu', source: 'adapter', phases: ['prepare', 'settle'], stateIds: ['state:mvu'] },
     {
       id: 'adapter:tavern-helper', source: 'adapter', phases: ROLEPLAY_TURN_PHASES,
@@ -226,7 +227,7 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
       state: [{ id: 'state:test', owner: 'session', revision: 2 }],
       modules: [
         ...firstBase.runtime.modules,
-        { id: 'roleplay:world', source: 'native', phases: ['prepare'] },
+        { id: 'roleplay:world', source: 'native', phases: ['recall'] },
         { id: 'roleplay:state', source: 'native', phases: ['prepare'] },
       ],
     },
@@ -263,7 +264,13 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
     },
     generation: { temperature: 0.7, maxTokens: 2048 },
     prepare: {
-      modules: [{ moduleId: 'roleplay:memory', outcome: 'applied', contributions: 1 }],
+      modules: [{ moduleId: 'roleplay:state', outcome: 'applied', contributions: 1 }],
+    },
+    recall: {
+      modules: [
+        { moduleId: 'roleplay:memory', outcome: 'applied', contributions: 1 },
+        { moduleId: 'roleplay:world', outcome: 'applied', contributions: 1 },
+      ],
     },
   }
   appendReply(session, 3, 1, '先检查一下。')
@@ -281,7 +288,7 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
   const { preparedPlanSha256, preparedPlanSectionsSha256, ...firstReceipt } = settlement.plans[0]!.receipt!
   assert.match(preparedPlanSha256 ?? '', /^[a-f0-9]{64}$/u)
   assert.deepEqual(Object.keys(preparedPlanSectionsSha256 ?? {}), [
-    'format', 'input', 'runtime', 'world', 'prompt', 'stateReads', 'memory', 'generation', 'prepare',
+    'format', 'input', 'runtime', 'world', 'prompt', 'stateReads', 'memory', 'generation', 'prepare', 'recall',
   ])
   assert.deepEqual(firstReceipt, {
     runtime: {
@@ -306,7 +313,13 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
     memoryWriteAvailable: true,
     generation: { temperature: 0.7, maxTokens: 2048 },
     prepare: {
-      modules: [{ moduleId: 'roleplay:memory', outcome: 'applied', contributions: 1 }],
+      modules: [{ moduleId: 'roleplay:state', outcome: 'applied', contributions: 1 }],
+    },
+    recall: {
+      modules: [
+        { moduleId: 'roleplay:memory', outcome: 'applied', contributions: 1 },
+        { moduleId: 'roleplay:world', outcome: 'applied', contributions: 1 },
+      ],
     },
   })
   assert.deepEqual(settlement.reply, { eventSeq: finalReply.seq, messageId: String(finalReply.data.message.id) })
