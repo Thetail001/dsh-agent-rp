@@ -21,6 +21,7 @@ import {
   type RoleplayTurnPlanReference,
   type RoleplayTurnSettlement,
 } from './roleplay-turn-settlement.ts'
+import { readToolArtifactPresentationMeta } from './roleplay-artifact.ts'
 
 /** Durable pre-dispatch reference associated with its exact Session event when available. */
 export interface RoleplayTurnPlanEvidence {
@@ -64,6 +65,7 @@ export interface RoleplayTurnPresentRecord {
   readonly state: RoleplayTurnPresentation['state']
   readonly version?: RoleplayTurnPresentation['version']
   readonly modules: RoleplayTurnPresentation['present']['modules']
+  readonly artifacts?: RoleplayTurnPresentation['present']['artifacts']
 }
 
 /**
@@ -264,6 +266,17 @@ function validatePresentation(input: {
       throw new Error(`Roleplay presentation state ${state.id} references an unavailable event`)
     }
   }
+  for (const artifact of presentation.present.artifacts ?? []) {
+    const source = input.eventsBySeq.get(artifact.sourceResultSeq)
+    const sourceArtifacts = source?.type === 'tool/result'
+      ? readToolArtifactPresentationMeta(source.data.meta)?.artifacts
+      : undefined
+    if (source?.type !== 'tool/result' || source.seq >= input.event.seq
+      || !sourceArtifacts?.some(candidate =>
+        String(candidate.attachment.attachmentId) === artifact.artifactId)) {
+      throw new Error(`Roleplay presentation artifact ${artifact.artifactId} references an unavailable result`)
+    }
+  }
   return presentation
 }
 
@@ -382,6 +395,9 @@ function readSelectedRoleplayTurnRecords(
       state: latestPresentation.state,
       ...(latestPresentation.version === undefined ? {} : { version: latestPresentation.version }),
       modules: latestPresentation.present.modules,
+      ...(latestPresentation.present.artifacts === undefined
+        ? {}
+        : { artifacts: latestPresentation.present.artifacts }),
     }
     return {
       format: 0,

@@ -20,6 +20,7 @@ import type {
   RoleplayTurnPresentation,
 } from './roleplay-turn-presentation-types.ts'
 import type { BoundRoleplayTurnPlan } from './roleplay-turn-settlement.ts'
+import { readStagedRoleplayArtifacts } from './roleplay-artifact.ts'
 import {
   decodeTavernHelperStateAttachment,
   decodeTavernHelperState,
@@ -99,9 +100,23 @@ export function compileInitialSessionRoleplayTurnPresentation(input: {
   readonly plans?: readonly BoundRoleplayTurnPlan[]
 }): RoleplayTurnPresentation {
   const tavern = initialTavernContribution(input)
+  const artifacts = readStagedRoleplayArtifacts(
+    input.session.events,
+    input.settlementEvent.data.turn,
+    input.settlementEvent.seq,
+  ).map(staged => ({
+    type: staged.artifact.type,
+    artifactId: String(staged.artifact.attachment.attachmentId),
+    attachment: staged.artifact.attachment,
+    sourceResultSeq: staged.sourceResultSeq,
+    sourceCallId: staged.sourceCallId,
+    sourceToolName: staged.sourceToolName,
+    ...(staged.caption === undefined ? {} : { caption: staged.caption }),
+  }))
   return compileInitialRoleplayTurnPresentation({
     ...input,
     ...(tavern === undefined ? {} : { contributions: [tavern] }),
+    ...(artifacts.length === 0 ? {} : { artifacts }),
   })
 }
 

@@ -325,6 +325,7 @@ import {
   type RpDistributionProbeResponse,
   type RpDistributionTransferResponse,
 } from '../rp-distribution-bridge-protocol.ts'
+import { installRoleplayArtifactTail } from './roleplay-artifact-tail.tsx'
 
 interface WorkspaceListSource {
   readonly getSnapshot: () => { readonly items: readonly WorkspaceView[] }
@@ -11734,10 +11735,11 @@ function avatarLoader(ctx: ClientContext) {
 }
 
 /** Client services required by the Roleplay shell. */
-export const inject = ['connection', 'slots', 'sessions', 'workspaces']
+export const inject = ['connection', 'conversationEvents', 'slots', 'sessions', 'workspaces']
 
 /** Register the Agent RP header, composer presentation, and import affordance. */
 export function apply(ctx: ClientContext): void {
+  installRoleplayArtifactTail(ctx)
   const runtimeDiagnostics = new AgentRpRuntimeDiagnosticRegistry()
   ctx.effect(() => installAgentRpRuntimeDiagnostic(window, runtimeDiagnostics))
   ctx.effect(() => installAgentRpBrowserCompatibilityDiagnostic(window, document, runtimeDiagnostics))

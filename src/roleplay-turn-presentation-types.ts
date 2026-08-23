@@ -1,5 +1,7 @@
 /** Browser-safe contracts for the replayable Roleplay present phase. */
 
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+
 /** Explainable result of one module participating in the present phase. */
 export interface RoleplayPresentModuleOutcome {
   readonly moduleId: string
@@ -14,6 +16,17 @@ export interface RoleplayPresentedState {
   readonly status: 'absent' | 'settled' | 'pending' | 'attached' | 'failed'
   readonly eventSeq?: number
   readonly error?: string
+}
+
+/** One immutable tool artifact explicitly selected for the player-facing stage. */
+export interface RoleplayPresentedArtifact {
+  readonly type: 'image'
+  readonly artifactId: string
+  readonly attachment: ImageAttachmentRef
+  readonly sourceResultSeq: number
+  readonly sourceCallId: string
+  readonly sourceToolName: string
+  readonly caption?: string
 }
 
 /** State and module changes contributed by one present-phase participant. */
@@ -56,5 +69,6 @@ export interface RoleplayTurnPresentation {
   }
   readonly present: {
     readonly modules: readonly RoleplayPresentModuleOutcome[]
+    readonly artifacts?: readonly RoleplayPresentedArtifact[]
   }
 }

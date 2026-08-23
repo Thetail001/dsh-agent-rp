@@ -161,6 +161,7 @@ import {
   RoleplayActorRevisionRegistry,
 } from './roleplay-actor-revision.ts'
 import { characterLibraryActorRevisionProvider } from './character-library-actor-revision.ts'
+import { installRoleplayArtifactCapability } from './roleplay-artifact.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -235,6 +236,21 @@ export {
   RoleplayActorRevisionConflictError,
   RoleplayActorRevisionRegistry,
 } from './roleplay-actor-revision.ts'
+export {
+  installRoleplayArtifactCapability,
+  readRoleplayArtifactStageRecord,
+  readStagedRoleplayArtifacts,
+  readToolArtifactPresentationMeta,
+  ROLEPLAY_ARTIFACT_STAGE_FORMAT,
+  ROLEPLAY_ARTIFACT_STAGE_TOOL,
+  ROLEPLAY_ARTIFACT_STAGE_VALUE_SCHEMA,
+  TOOL_ARTIFACT_PRESENTATION_FORMAT,
+} from './roleplay-artifact.ts'
+export type {
+  RoleplayArtifactStageRecord,
+  RoleplayToolImageArtifact,
+  ToolArtifactPresentationMeta,
+} from './roleplay-artifact.ts'
 export type {
   RoleplayActorDefinition,
   RoleplayActorDefinitionField,
@@ -703,6 +719,7 @@ export function installAgentRp(
       return selected === undefined ? undefined : { kind: 'actor', id: selected.id }
     },
   })
+  installRoleplayArtifactCapability(ctx)
 
   commands.register({
     name: 'rp-tavern-variables',

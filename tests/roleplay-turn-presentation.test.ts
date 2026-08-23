@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { AttachmentId, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { CommandId } from '@deepseek-ai/dsh-commands'
-import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { CallId, createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { Session, SessionId, type JsonValue } from '@deepseek-ai/dsh-session'
 import { decodeGenerationState, encodeGenerationState, executeGenerationCommand } from '../src/generation.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
 import { ROLEPLAY_TURN_PHASES, type RoleplayRuntimeSnapshot } from '../src/roleplay-runtime.ts'
@@ -152,6 +153,80 @@ test('presents the settled reply with pending browser state and survives replay'
   let projected = agentRpProjectionDefinition.init()
   for (const event of reopened.events) projected = agentRpProjectionDefinition.apply(projected, event)
   assert.deepEqual(agentRpProjectionDefinition.wire.view(projected).presentation, presentation)
+})
+
+test('binds only explicitly staged durable artifacts to the settled reply', () => {
+  const session = Session.create(SessionId('presentation-artifact'))
+  session.append('turn/start', { turn: 1 })
+  const turnPlan = plan(session)
+  const attachment: ImageAttachmentRef = {
+    attachmentId: AttachmentId('sha256:presentation-artifact'),
+    mediaType: 'image/png',
+    bytes: 68,
+    width: 1,
+    height: 1,
+  }
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' },
+      content: [{
+        type: 'tool-call', id: CallId('image-source'), name: 'generate_image', arguments: '{}',
+      }, {
+        type: 'tool-call', id: CallId('image-stage'), name: 'stage_roleplay_artifact', arguments: '{}',
+      }],
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  const sourceCall = session.append('tool/call', {
+    turn: 1, step: 1, callId: CallId('image-source'), name: 'generate_image', arguments: '{}',
+  })
+  const sourceResult = session.append('tool/result', {
+    turn: 1,
+    step: 1,
+    message: createToolResultMessage({
+      callId: CallId('image-source'), content: [{ type: 'text', text: '[image artifact]' }], isError: false,
+    }),
+    meta: {
+      format: 'dsh.tool-artifacts', version: 0, artifacts: [{ type: 'image', attachment }],
+    } as unknown as JsonValue,
+  }, { surfaceOp: 'append', sourceEventSeqs: [sourceCall.seq] })
+  const stageCall = session.append('tool/call', {
+    turn: 1, step: 1, callId: CallId('image-stage'), name: 'stage_roleplay_artifact', arguments: '{}',
+  })
+  session.append('tool/result', {
+    turn: 1,
+    step: 1,
+    message: createToolResultMessage({
+      callId: CallId('image-stage'), content: [{ type: 'text', text: 'staged' }], isError: false,
+    }),
+    meta: {
+      format: 'agent-rp.staged-artifact',
+      version: 0,
+      artifact: { type: 'image', attachment },
+      sourceResultSeq: sourceResult.seq,
+      sourceCallId: 'image-source',
+      sourceToolName: 'generate_image',
+      caption: '钟楼外的雨夜。',
+    } as unknown as JsonValue,
+  }, { surfaceOp: 'append', sourceEventSeqs: [stageCall.seq] })
+  const reply = appendReply(session, 1, '雨还没有停。')
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const settlementEvent = settle(session, turnPlan, 1)
+  const presentation = compileInitialSessionRoleplayTurnPresentation({
+    session, settlementEvent, plans: [{ step: 1, plan: turnPlan }],
+  })
+
+  assert.deepEqual(presentation.present.artifacts, [{
+    type: 'image',
+    artifactId: String(attachment.attachmentId),
+    attachment,
+    sourceResultSeq: sourceResult.seq,
+    sourceCallId: 'image-source',
+    sourceToolName: 'generate_image',
+    caption: '钟楼外的雨夜。',
+  }])
+  assert.equal(presentation.selectedReply?.surfaceSeq, reply.seq)
 })
 
 test('records a blocked turn without inventing a selected reply', () => {

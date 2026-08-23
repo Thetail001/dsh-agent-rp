@@ -10,6 +10,7 @@ import {
   normalizeRoleplayTurnPresentation as importedNormalizePresentation,
 } from './roleplay-turn-presentation-state.ts'
 import type {
+  RoleplayPresentedArtifact,
   RoleplayPresentedState,
   RoleplayPresentationContribution,
   RoleplayPresentModuleOutcome,
@@ -28,6 +29,7 @@ export {
   roleplayPresentedState,
 } from './roleplay-turn-presentation-state.ts'
 export type {
+  RoleplayPresentedArtifact,
   RoleplayPresentedState,
   RoleplayPresentationContribution,
   RoleplayPresentModuleOutcome,
@@ -156,6 +158,7 @@ export function compileInitialRoleplayTurnPresentation(input: {
   readonly settlementEvent: Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }>
   readonly plans?: readonly BoundRoleplayTurnPlan[]
   readonly contributions?: readonly RoleplayPresentationContribution[]
+  readonly artifacts?: readonly RoleplayPresentedArtifact[]
 }): RoleplayTurnPresentation {
   const { session, settlementEvent } = input
   const settlement = settlementEvent.data
@@ -187,7 +190,12 @@ export function compileInitialRoleplayTurnPresentation(input: {
       },
     }),
     state: presented.states,
-    present: { modules: presented.modules },
+    present: {
+      modules: presented.modules,
+      ...(input.artifacts === undefined || input.artifacts.length === 0
+        ? {}
+        : { artifacts: input.artifacts }),
+    },
   }
 }
 
@@ -275,7 +283,10 @@ export function compileRoleplayReplyVersionPresentation(input: {
       anchorSeq: input.anchorSeq,
       selectedVersionSeq: input.selectedVersionSeq,
     },
-    present: { modules: presented.modules },
+    present: {
+      modules: presented.modules,
+      ...(baseline.present.artifacts === undefined ? {} : { artifacts: baseline.present.artifacts }),
+    },
   }
 }
 
@@ -297,7 +308,10 @@ export function compileRoleplayModulePresentationUpdate(input: {
     trigger: { kind: 'module-update', eventSeq: input.eventSeq, moduleId: input.moduleId },
     current: latestVisibleAssistantSeq(input.session) === baseline.selectedReply.surfaceSeq,
     state: presented.states,
-    present: { modules: presented.modules },
+    present: {
+      modules: presented.modules,
+      ...(baseline.present.artifacts === undefined ? {} : { artifacts: baseline.present.artifacts }),
+    },
   }
 }
 
