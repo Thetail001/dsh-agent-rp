@@ -1,6 +1,7 @@
 /** Agent RP profile bundle and preset-scoped character runtime. */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-credentials'
@@ -1202,7 +1203,9 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         installCharacterLibraryHttp(webCtx, characterLibrary, server)
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
         installPresetLibraryHttp(webCtx, presetLibrary, server)
-        const tavernExecutionPlans = new TavernExecutionPlanCache()
+        const tavernExecutionPlans = new TavernExecutionPlanCache(undefined, 64, {
+          persistentRoot: dshHomePath('agent-rp', 'cache', 'tavern-execution-plans'),
+        })
         installTavernPreflightHttp(webCtx, characterLibrary, presetLibrary, server, tavernExecutionPlans)
         installTavernExecutionHttp(webCtx, characterLibrary, presetLibrary, server, tavernExecutionPlans)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)

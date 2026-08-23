@@ -1,6 +1,8 @@
 /** Static, non-executing Tavern Helper resource inspection for pre-launch permission planning. */
 
+import { createHash } from 'node:crypto'
 import type { ImportedTavernHelperScript } from './import/types.ts'
+import { TavernExecutionDiskCache, type TavernExecutionDiskCacheOptions } from './tavern-execution-disk-cache.ts'
 import {
   BUILT_IN_TAVERN_SCRIPT_ORIGINS, resolveTavernScriptExecution, TavernScriptOriginApprovalError,
   type TavernScriptExecution,
@@ -31,8 +33,12 @@ export interface TavernExecutionPlanIdentity {
 }
 
 interface CachedTavernExecutionPlan {
-  readonly content: string
+  readonly contentSha256: string
   readonly execution: TavernScriptExecution
+}
+
+export interface TavernExecutionPlanCacheOptions extends Omit<TavernExecutionDiskCacheOptions, 'root'> {
+  readonly persistentRoot?: string
 }
 
 function effectiveOrigins(additional: readonly string[]): readonly string[] {
@@ -42,11 +48,21 @@ function effectiveOrigins(additional: readonly string[]): readonly string[] {
 /** Host LRU shared by launch preflight and the matching active Tavern runtimes. */
 export class TavernExecutionPlanCache {
   private readonly plans = new Map<string, CachedTavernExecutionPlan>()
+  private readonly disk: TavernExecutionDiskCache | undefined
 
   constructor(
     private readonly resolver: TavernScriptExecutionResolver = resolveTavernScriptExecution,
     private readonly maximumEntries = 64,
-  ) {}
+    options: TavernExecutionPlanCacheOptions = {},
+  ) {
+    this.disk = options.persistentRoot === undefined ? undefined : new TavernExecutionDiskCache({
+      root: options.persistentRoot,
+      ...(options.maxAgeMs === undefined ? {} : { maxAgeMs: options.maxAgeMs }),
+      ...(options.maximumEntries === undefined ? {} : { maximumEntries: options.maximumEntries }),
+      ...(options.maximumBytes === undefined ? {} : { maximumBytes: options.maximumBytes }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+    })
+  }
 
   private key(identity: TavernExecutionPlanIdentity): string {
     return JSON.stringify([
@@ -55,6 +71,21 @@ export class TavernExecutionPlanCache {
       identity.scriptId,
       effectiveOrigins(identity.approvedOrigins),
     ])
+  }
+
+  private contentSha256(content: string): string {
+    return createHash('sha256').update(content).digest('hex')
+  }
+
+  private persistentKey(key: string, contentSha256: string): string {
+    return createHash('sha256').update(JSON.stringify([key, contentSha256])).digest('hex')
+  }
+
+  private remember(key: string, cached: CachedTavernExecutionPlan): TavernScriptExecution {
+    this.plans.delete(key)
+    this.plans.set(key, cached)
+    while (this.plans.size > this.maximumEntries) this.plans.delete(this.plans.keys().next().value!)
+    return cached.execution
   }
 
   /** Read and refresh one exact successful plan without touching its source library. */
@@ -74,16 +105,18 @@ export class TavernExecutionPlanCache {
     signal: AbortSignal,
   ): Promise<TavernScriptExecution> {
     const key = this.key(identity)
+    const contentSha256 = this.contentSha256(content)
     const cached = this.plans.get(key)
-    if (cached?.content === content) {
-      this.plans.delete(key)
-      this.plans.set(key, cached)
-      return cached.execution
-    }
+    if (cached?.contentSha256 === contentSha256) return this.remember(key, cached)
     if (cached !== undefined) this.plans.delete(key)
+    const persistentKey = this.persistentKey(key, contentSha256)
+    if (this.disk !== undefined) {
+      const persisted = await this.disk.get(persistentKey).catch(() => undefined)
+      if (persisted !== undefined) return this.remember(key, { contentSha256, execution: persisted })
+    }
     const execution = await this.resolver(content, signal, effectiveOrigins(identity.approvedOrigins))
-    this.plans.set(key, { content, execution })
-    while (this.plans.size > this.maximumEntries) this.plans.delete(this.plans.keys().next().value!)
+    this.remember(key, { contentSha256, execution })
+    if (this.disk !== undefined) await this.disk.set(persistentKey, execution).catch(() => undefined)
     return execution
   }
 }

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
@@ -445,6 +448,70 @@ test('invalidates an older successful plan when the source changes under one own
   await assert.rejects(plans.resolve(identity, 'window.version=3', signal), /new source is invalid/u)
   assert.equal(calls, 3)
   assert.equal(plans.get(identity), undefined)
+})
+
+test('reuses an exact successful execution plan across fresh Host cache instances', async context => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-rp-tavern-plan-cache-'))
+  context.after(() => { rmSync(root, { recursive: true, force: true }) })
+  let resolutions = 0
+  const resolver = async (source: string): Promise<TavernScriptExecution> => {
+    resolutions += 1
+    return execution(source)
+  }
+  const identity = {
+    scope: 'character' as const,
+    ownerId: 'persistent-character',
+    scriptId: 'persistent-script',
+    approvedOrigins: ['https://modules.example'] as readonly string[],
+  }
+  const cacheOptions = { persistentRoot: root, maximumEntries: 2 }
+  const first = new TavernExecutionPlanCache(resolver, 64, cacheOptions)
+  assert.equal((await first.resolve(identity, 'window.persisted=true', AbortSignal.timeout(5_000))).source,
+    'window.persisted=true')
+  assert.equal(resolutions, 1)
+  assert.equal(readdirSync(root).filter(name => name.endsWith('.json')).length, 1)
+
+  const afterRestart = new TavernExecutionPlanCache(resolver, 64, cacheOptions)
+  assert.equal((await afterRestart.resolve(identity, 'window.persisted=true', AbortSignal.timeout(5_000))).source,
+    'window.persisted=true')
+  assert.equal(resolutions, 1)
+
+  await afterRestart.resolve({ ...identity, approvedOrigins: ['https://expanded.example'] },
+    'window.persisted=true', AbortSignal.timeout(5_000))
+  await afterRestart.resolve(identity, 'window.persisted="changed"', AbortSignal.timeout(5_000))
+  assert.equal(resolutions, 3)
+  assert.equal(readdirSync(root).filter(name => name.endsWith('.json')).length, 2)
+})
+
+test('expires and repairs disposable execution-plan files without blocking script resolution', async context => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-rp-tavern-plan-repair-'))
+  context.after(() => { rmSync(root, { recursive: true, force: true }) })
+  let now = 1_000
+  let resolutions = 0
+  const resolver = async (source: string): Promise<TavernScriptExecution> => {
+    resolutions += 1
+    return execution(source)
+  }
+  const options = { persistentRoot: root, maxAgeMs: 100, now: () => now }
+  const identity = {
+    scope: 'preset' as const,
+    ownerId: 'persistent-preset',
+    scriptId: 'repair-script',
+    approvedOrigins: [] as readonly string[],
+  }
+  await new TavernExecutionPlanCache(resolver, 64, options)
+    .resolve(identity, 'window.repair=true', AbortSignal.timeout(5_000))
+  const [cacheFile] = readdirSync(root).filter(name => name.endsWith('.json'))
+  assert.ok(cacheFile)
+  writeFileSync(join(root, cacheFile), '{broken', 'utf8')
+  await new TavernExecutionPlanCache(resolver, 64, options)
+    .resolve(identity, 'window.repair=true', AbortSignal.timeout(5_000))
+  assert.equal(resolutions, 2)
+
+  now = 1_101
+  await new TavernExecutionPlanCache(resolver, 64, options)
+    .resolve(identity, 'window.repair=true', AbortSignal.timeout(5_000))
+  assert.equal(resolutions, 3)
 })
 
 test('preflights and executes a preset without requiring a character card', async () => {
