@@ -91,7 +91,12 @@ function browserSnapshot(options: {
       variables: { surfaces: 2, sharedScopes: 5, scriptScopes: 1 },
       renderer: { inlineFrontendSanitizer: 'ready' },
       worldEngine: {
-        engine: 'native-v0', entries: 611, active: 12, budgetExcluded: 0,
+        engine: 'native-v0', bindings: { books: 2, character: 1, standalone: 1 },
+        entries: 611, enabled: 600, active: 12, budgetExcluded: 0,
+        reasons: {
+          'active-constant': 8, 'active-keyword': 4, disabled: 7, deleted: 4,
+          'primary-unmatched': 500, 'secondary-unmatched': 88,
+        },
         failures: {
           regexRuntimeUnavailable: 0, regexInvalid: 0, regexExecutionLimit: 0,
           regexResourceLimit: 0, decoratorUnsupported: 0, templateUnsupported: 0, templateError: 0,

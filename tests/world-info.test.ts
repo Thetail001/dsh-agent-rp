@@ -3,7 +3,11 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { activateLorebook, inspectLorebook, inspectLorebooks } from '../src/import/lorebook.ts'
 import { parseWorldInfoJson, parseWorldInfoJsonBytes } from '../src/import/world-info.ts'
-import { summarizeWorldEngineFailures, worldEngineFailureTotal } from '../src/world-engine-diagnostic.ts'
+import {
+  summarizeWorldEngineActivationReasons,
+  summarizeWorldEngineFailures,
+  worldEngineFailureTotal,
+} from '../src/world-engine-diagnostic.ts'
 import { createNativeWorldEngine, summarizeWorldEngineResult } from '../src/world-engine.ts'
 import { ReplayableRoleplayMacros } from '../src/roleplay-macro.ts'
 
@@ -231,6 +235,19 @@ test('summarizes only World Info execution failures for content-free diagnostics
     templateError: 1,
   })
   assert.equal(worldEngineFailureTotal(counts), 7)
+})
+
+test('summarizes every World Info activation reason without entry identity', () => {
+  const counts = summarizeWorldEngineActivationReasons([
+    'active-constant', 'active-keyword', 'primary-unmatched', 'primary-unmatched', 'deleted',
+  ])
+  assert.deepEqual(counts, {
+    'active-constant': 1, 'active-keyword': 1, 'primary-unmatched': 2, deleted: 1,
+  })
+  assert.doesNotMatch(
+    JSON.stringify(counts),
+    /private|book-name|entry-id|content-text/u,
+  )
 })
 
 test('activates constant entries without evaluating their regex keywords', () => {

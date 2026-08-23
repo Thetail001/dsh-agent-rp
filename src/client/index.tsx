@@ -148,6 +148,7 @@ import {
   type AgentRpRuntimeDiagnosticContribution,
   type AgentRpRuntimeDiagnosticSource,
 } from './runtime-diagnostic.ts'
+import { summarizeWorldEngineActivationReasons } from '../world-engine-diagnostic.ts'
 import { installAgentRpNativeBack } from './native-back.ts'
 import { installAgentRpNativeShare } from './native-share.ts'
 import { loadAgentRpTurnHealth } from './roleplay-turn-health.ts'
@@ -11147,6 +11148,9 @@ function roleplayComposerDockComponent(
     regexRuntimeUnavailable: 0, regexInvalid: 0, regexExecutionLimit: 0, regexResourceLimit: 0,
     decoratorUnsupported: 0, templateUnsupported: 0, templateError: 0,
   }
+  const worldInfoBooks = projection?.worldInfo.books ?? []
+  const worldInfoEntries = worldInfoBooks.flatMap(book => book.entries)
+  const worldEngineReasons = summarizeWorldEngineActivationReasons(worldInfoEntries.map(entry => entry.reason))
   useAgentRpRuntimeDiagnosticContribution(
     runtimeDiagnostics,
     'roleplay-session',
@@ -11179,10 +11183,17 @@ function roleplayComposerDockComponent(
         },
         renderer: { inlineFrontendSanitizer: inlineCardSanitizerProbeState() },
         worldEngine: {
-          engine: projection.worldInfoCount === 0 ? 'inactive' : 'native-v0',
+          engine: worldInfoBooks.length === 0 ? 'inactive' : 'native-v0',
+          bindings: {
+            books: worldInfoBooks.length,
+            character: worldInfoBooks.filter(book => book.source === 'character').length,
+            standalone: worldInfoBooks.filter(book => book.source === 'standalone').length,
+          },
           entries: projection.worldInfoCount,
+          enabled: worldInfoEntries.filter(entry => entry.enabled && !entry.deleted).length,
           active: projection.worldInfo.activeCount,
           budgetExcluded: projection.worldInfo.budgetExcludedCount,
+          reasons: worldEngineReasons,
           failures: worldEngineFailures,
         },
       },
@@ -11233,10 +11244,31 @@ function roleplayComposerDockComponent(
     data-agent-rp-chat-write-surfaces={hasTavernVariableSurface ? 1 : 0}
     data-agent-rp-prompt-injection-surfaces={hasTavernVariableSurface ? 1 : 0}
     data-agent-rp-prompt-preview-surfaces={hasTavernVariableSurface ? 1 : 0}
-    data-agent-rp-world-engine={projection.worldInfoCount === 0 ? 'inactive' : 'native-v0'}
+    data-agent-rp-world-engine={worldInfoBooks.length === 0 ? 'inactive' : 'native-v0'}
+    data-agent-rp-world-engine-books={worldInfoBooks.length}
+    data-agent-rp-world-engine-character-books={worldInfoBooks.filter(book => book.source === 'character').length}
+    data-agent-rp-world-engine-standalone-books={worldInfoBooks.filter(book => book.source === 'standalone').length}
     data-agent-rp-world-engine-entries={projection.worldInfoCount}
+    data-agent-rp-world-engine-enabled={worldInfoEntries.filter(entry => entry.enabled && !entry.deleted).length}
     data-agent-rp-world-engine-active={projection.worldInfo.activeCount}
     data-agent-rp-world-engine-budget-excluded={projection.worldInfo.budgetExcludedCount}
+    data-agent-rp-world-engine-reason-active-constant={worldEngineReasons['active-constant'] ?? 0}
+    data-agent-rp-world-engine-reason-active-keyword={worldEngineReasons['active-keyword'] ?? 0}
+    data-agent-rp-world-engine-reason-disabled={worldEngineReasons.disabled ?? 0}
+    data-agent-rp-world-engine-reason-deleted={worldEngineReasons.deleted ?? 0}
+    data-agent-rp-world-engine-reason-empty-content={worldEngineReasons['empty-content'] ?? 0}
+    data-agent-rp-world-engine-reason-compatibility-unsupported={worldEngineReasons['compatibility-unsupported'] ?? 0}
+    data-agent-rp-world-engine-reason-decorator-unsupported={worldEngineReasons['decorator-unsupported'] ?? 0}
+    data-agent-rp-world-engine-reason-template-unsupported={worldEngineReasons['template-unsupported'] ?? 0}
+    data-agent-rp-world-engine-reason-template-error={worldEngineReasons['template-error'] ?? 0}
+    data-agent-rp-world-engine-reason-regex-runtime-unavailable={worldEngineReasons['regex-runtime-unavailable'] ?? 0}
+    data-agent-rp-world-engine-reason-regex-invalid={worldEngineReasons['regex-invalid'] ?? 0}
+    data-agent-rp-world-engine-reason-regex-execution-limit={worldEngineReasons['regex-execution-limit'] ?? 0}
+    data-agent-rp-world-engine-reason-regex-resource-limit={worldEngineReasons['regex-resource-limit'] ?? 0}
+    data-agent-rp-world-engine-reason-primary-unmatched={worldEngineReasons['primary-unmatched'] ?? 0}
+    data-agent-rp-world-engine-reason-secondary-unmatched={worldEngineReasons['secondary-unmatched'] ?? 0}
+    data-agent-rp-world-engine-reason-budget-excluded={worldEngineReasons['budget-excluded'] ?? 0}
+    data-agent-rp-world-engine-reason-session-budget-excluded={worldEngineReasons['session-budget-excluded'] ?? 0}
     data-agent-rp-world-engine-regex-runtime-unavailable={worldEngineFailures.regexRuntimeUnavailable}
     data-agent-rp-world-engine-regex-invalid={worldEngineFailures.regexInvalid}
     data-agent-rp-world-engine-regex-execution-limit={worldEngineFailures.regexExecutionLimit}

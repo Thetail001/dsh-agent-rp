@@ -5,6 +5,7 @@ import type {
   AgentRpRuntimeDiagnosticSnapshot,
 } from './runtime-diagnostic.ts'
 import type { AgentRpTurnHealthDiagnostic } from '../roleplay-turn-health-protocol.ts'
+import { WORLD_ENGINE_ACTIVATION_REASONS } from '../world-engine-diagnostic.ts'
 
 type Counter = Readonly<Record<string, number>>
 
@@ -31,6 +32,7 @@ export type AgentRpBrowserCompatibilityIssue =
   | 'tavern-permission-count-mismatch'
   | 'tavern-runtime-failed'
   | 'turn-record-invalid'
+  | 'world-engine-count-mismatch'
   | 'world-engine-degraded'
 
 /** Content-free Host runtime facts plus mounted DOM integrity and interaction checks. */
@@ -129,9 +131,16 @@ export interface AgentRpBrowserCompatibilitySnapshot {
     }
     readonly worldEngine: {
       readonly engine: string
+      readonly bindings: {
+        readonly books: number
+        readonly character: number
+        readonly standalone: number
+      }
       readonly entries: number
+      readonly enabled: number
       readonly active: number
       readonly budgetExcluded: number
+      readonly reasons: Counter
       readonly failures: {
         readonly regexRuntimeUnavailable: number
         readonly regexInvalid: number
@@ -390,6 +399,10 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       templateUnsupported: integer(status, 'data-agent-rp-world-engine-template-unsupported'),
       templateError: integer(status, 'data-agent-rp-world-engine-template-error'),
     }
+    const worldEngineReasons = Object.fromEntries(WORLD_ENGINE_ACTIVATION_REASONS.flatMap(reason => {
+      const total = integer(status, `data-agent-rp-world-engine-reason-${reason}`)
+      return total === 0 ? [] : [[reason, total]]
+    }))
     session = {
       capabilities,
       auxiliaryGenerations: {
@@ -414,9 +427,16 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       renderer: { inlineFrontendSanitizer },
       worldEngine: {
         engine: value(status, 'data-agent-rp-world-engine'),
+        bindings: {
+          books: integer(status, 'data-agent-rp-world-engine-books'),
+          character: integer(status, 'data-agent-rp-world-engine-character-books'),
+          standalone: integer(status, 'data-agent-rp-world-engine-standalone-books'),
+        },
         entries: integer(status, 'data-agent-rp-world-engine-entries'),
+        enabled: integer(status, 'data-agent-rp-world-engine-enabled'),
         active: integer(status, 'data-agent-rp-world-engine-active'),
         budgetExcluded: integer(status, 'data-agent-rp-world-engine-budget-excluded'),
+        reasons: worldEngineReasons,
         failures: worldEngineFailures,
       },
       ...(tavern === null ? {} : { tavern: {
@@ -490,6 +510,17 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       issues.add('card-frame-runtime-failed')
     }
     if ((session.tavern?.failed ?? 0) > 0) issues.add('tavern-runtime-failed')
+    const worldReasonTotal = Object.values(session.worldEngine.reasons).reduce((total, count) => total + count, 0)
+    const worldActive = (session.worldEngine.reasons['active-constant'] ?? 0)
+      + (session.worldEngine.reasons['active-keyword'] ?? 0)
+    const worldCountsConsistent = session.worldEngine.bindings.books
+        === session.worldEngine.bindings.character + session.worldEngine.bindings.standalone
+      && session.worldEngine.entries === worldReasonTotal
+      && session.worldEngine.active === worldActive
+      && session.worldEngine.enabled === session.worldEngine.entries
+        - (session.worldEngine.reasons.disabled ?? 0) - (session.worldEngine.reasons.deleted ?? 0)
+      && (session.worldEngine.engine === 'inactive') === (session.worldEngine.bindings.books === 0)
+    if (!worldCountsConsistent) issues.add('world-engine-count-mismatch')
     if (Object.values(session.worldEngine.failures).some(count => count > 0)) issues.add('world-engine-degraded')
   }
 
@@ -642,7 +673,8 @@ export function collectAgentRpBrowserCompatibilitySnapshot(
       tavernPermissionsConsistent,
       tavernRuntimeHealthy: session?.tavern === undefined || session.tavern.failed === 0,
       turnRecordHealthy: session?.turns?.status !== 'invalid',
-      worldEngineHealthy: session === undefined || !issues.has('world-engine-degraded'),
+      worldEngineHealthy: session === undefined || (!issues.has('world-engine-degraded')
+        && !issues.has('world-engine-count-mismatch')),
     },
     issues: [...issues].sort(),
   }

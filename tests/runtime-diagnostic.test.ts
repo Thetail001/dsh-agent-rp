@@ -37,7 +37,12 @@ const sessionFacts: AgentRpRuntimeSessionFacts = {
   variables: { surfaces: 2, sharedScopes: 5, scriptScopes: 1 },
   renderer: { inlineFrontendSanitizer: 'ready' },
   worldEngine: {
-    engine: 'native-v0', entries: 611, active: 14, budgetExcluded: 21,
+    engine: 'native-v0', bindings: { books: 3, character: 1, standalone: 2 },
+    entries: 611, enabled: 585, active: 14, budgetExcluded: 21,
+    reasons: {
+      'active-constant': 10, 'active-keyword': 4, disabled: 20, deleted: 6,
+      'primary-unmatched': 500, 'secondary-unmatched': 50, 'session-budget-excluded': 21,
+    },
     failures: {
       regexRuntimeUnavailable: 0, regexInvalid: 0, regexExecutionLimit: 0, regexResourceLimit: 0,
       decoratorUnsupported: 0, templateUnsupported: 0, templateError: 0,
@@ -158,7 +163,11 @@ test('selects the latest mounted Session and never inherits facts from another s
     kind: 'session', scope: 'second-private-id',
     facts: {
       ...sessionFacts,
-      worldEngine: { ...sessionFacts.worldEngine, engine: 'inactive', entries: 0, active: 0 },
+      worldEngine: {
+        ...sessionFacts.worldEngine,
+        engine: 'inactive', bindings: { books: 0, character: 0, standalone: 0 },
+        entries: 0, enabled: 0, active: 0, budgetExcluded: 0, reasons: {},
+      },
     },
   })
   const second = registry.snapshot()
@@ -184,13 +193,17 @@ test('normalizes invalid runtime values and restores a previous global snapshot 
       capabilities: { ...sessionFacts.capabilities, requirements: -2 },
       externalWindowPhases: ['not-a-phase'],
       renderer: { inlineFrontendSanitizer: 'private-card-name' },
+      worldEngine: {
+        ...sessionFacts.worldEngine,
+        reasons: { ...sessionFacts.worldEngine.reasons, 'private-reason': 9 },
+      },
     },
   } as unknown as AgentRpRuntimeDiagnosticContribution)
   const snapshot = registry.snapshot()
   assert.equal(snapshot.session?.capabilities.requirements, 0)
   assert.deepEqual(snapshot.session?.externalWindows.phases, {})
   assert.equal(snapshot.session?.renderer.inlineFrontendSanitizer, 'unknown')
-  assert.doesNotMatch(JSON.stringify(snapshot), /not-a-phase|private-card-name/u)
+  assert.doesNotMatch(JSON.stringify(snapshot), /not-a-phase|private-card-name|private-reason/u)
 
   const previous = () => ({ previous: true })
   const target = { __dshAgentRpRuntimeSnapshot: previous } as unknown as Window

@@ -6,6 +6,10 @@ import type { ExternalWindowPhase } from './external-window.ts'
 import type { TavernScriptRuntimePhase } from './tavern-runtime.ts'
 import type { TavernScriptTreeScope } from '../tavern-helper.ts'
 import {
+  WORLD_ENGINE_ACTIVATION_REASONS,
+  type WorldEngineActivationReasonCounts,
+} from '../world-engine-diagnostic.ts'
+import {
   parseAgentRpTurnHealthDiagnostic,
   type AgentRpTurnHealthDiagnostic,
 } from '../roleplay-turn-health-protocol.ts'
@@ -71,9 +75,16 @@ export interface AgentRpRuntimeSessionFacts {
   }
   readonly worldEngine: {
     readonly engine: 'inactive' | 'native-v0' | 'unknown'
+    readonly bindings: {
+      readonly books: number
+      readonly character: number
+      readonly standalone: number
+    }
     readonly entries: number
+    readonly enabled: number
     readonly active: number
     readonly budgetExcluded: number
+    readonly reasons: WorldEngineActivationReasonCounts
     readonly failures: {
       readonly regexRuntimeUnavailable: number
       readonly regexInvalid: number
@@ -236,6 +247,13 @@ function counter(values: readonly string[], order: readonly string[]): Counter {
   return result
 }
 
+function normalizeWorldEngineActivationReasons(value: WorldEngineActivationReasonCounts): WorldEngineActivationReasonCounts {
+  return Object.fromEntries(WORLD_ENGINE_ACTIVATION_REASONS.flatMap(reason => {
+    const total = count(value[reason] ?? 0)
+    return total === 0 ? [] : [[reason, total]]
+  }))
+}
+
 function addCounters(left: Counter, right: Counter): Counter {
   const result: Record<string, number> = { ...left }
   for (const [key, value] of Object.entries(right)) result[key] = (result[key] ?? 0) + value
@@ -308,8 +326,15 @@ function normalizeSession(facts: AgentRpRuntimeSessionFacts): AgentRpRuntimeSess
     },
     worldEngine: {
       engine: oneOf(facts.worldEngine.engine, ['inactive', 'native-v0', 'unknown'] as const, 'unknown'),
-      entries: count(facts.worldEngine.entries), active: count(facts.worldEngine.active),
+      bindings: {
+        books: count(facts.worldEngine.bindings.books),
+        character: count(facts.worldEngine.bindings.character),
+        standalone: count(facts.worldEngine.bindings.standalone),
+      },
+      entries: count(facts.worldEngine.entries), enabled: count(facts.worldEngine.enabled),
+      active: count(facts.worldEngine.active),
       budgetExcluded: count(facts.worldEngine.budgetExcluded),
+      reasons: normalizeWorldEngineActivationReasons(facts.worldEngine.reasons),
       failures: {
         regexRuntimeUnavailable: count(facts.worldEngine.failures.regexRuntimeUnavailable),
         regexInvalid: count(facts.worldEngine.failures.regexInvalid),

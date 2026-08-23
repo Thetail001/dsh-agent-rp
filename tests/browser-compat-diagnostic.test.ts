@@ -47,9 +47,20 @@ const capabilityAttributes = {
   'data-agent-rp-variable-shared-scopes': '5',
   'data-agent-rp-variable-script-scopes': '1',
   'data-agent-rp-world-engine': 'native-v0',
+  'data-agent-rp-world-engine-books': '3',
+  'data-agent-rp-world-engine-character-books': '1',
+  'data-agent-rp-world-engine-standalone-books': '2',
   'data-agent-rp-world-engine-entries': '611',
+  'data-agent-rp-world-engine-enabled': '585',
   'data-agent-rp-world-engine-active': '14',
   'data-agent-rp-world-engine-budget-excluded': '21',
+  'data-agent-rp-world-engine-reason-active-constant': '10',
+  'data-agent-rp-world-engine-reason-active-keyword': '4',
+  'data-agent-rp-world-engine-reason-disabled': '20',
+  'data-agent-rp-world-engine-reason-deleted': '6',
+  'data-agent-rp-world-engine-reason-primary-unmatched': '500',
+  'data-agent-rp-world-engine-reason-secondary-unmatched': '50',
+  'data-agent-rp-world-engine-reason-session-budget-excluded': '21',
   'data-agent-rp-world-engine-regex-runtime-unavailable': '0',
   'data-agent-rp-world-engine-regex-invalid': '0',
   'data-agent-rp-world-engine-regex-execution-limit': '0',
@@ -413,9 +424,15 @@ test('reports World Info execution failures without treating misses or budget ex
   assert.deepEqual(report.issues, ['world-engine-degraded'])
   assert.deepEqual(report.session?.worldEngine, {
     engine: 'native-v0',
+    bindings: { books: 3, character: 1, standalone: 2 },
     entries: 611,
+    enabled: 585,
     active: 14,
     budgetExcluded: 44,
+    reasons: {
+      'active-constant': 10, 'active-keyword': 4, disabled: 20, deleted: 6,
+      'primary-unmatched': 500, 'secondary-unmatched': 50, 'session-budget-excluded': 21,
+    },
     failures: {
       regexRuntimeUnavailable: 0,
       regexInvalid: 2,
@@ -427,6 +444,19 @@ test('reports World Info execution failures without treating misses or budget ex
     },
   })
   assert.doesNotMatch(JSON.stringify(report), /private|world-book-name|must not appear/u)
+})
+
+test('reports inconsistent content-free World Info counts as a diagnostic fault', () => {
+  const report = collectAgentRpBrowserCompatibilitySnapshot(diagnosticRoot({
+    '[data-agent-rp-status]': [new DiagnosticElement({
+      ...capabilityAttributes,
+      'data-agent-rp-world-engine-books': '4',
+    })],
+    ...stableInteractionSelectors,
+  }))
+
+  assert.equal(report.checks.worldEngineHealthy, false)
+  assert.deepEqual(report.issues, ['world-engine-count-mismatch'])
 })
 
 test('reports missing stable interaction entries without reading labels or content', () => {
@@ -593,7 +623,8 @@ test('uses Host runtime facts while retaining DOM-owned sandbox checks', () => {
       variables: { surfaces: 1, sharedScopes: 5, scriptScopes: 0 },
       renderer: { inlineFrontendSanitizer: 'ready' },
       worldEngine: {
-        engine: 'inactive', entries: 0, active: 0, budgetExcluded: 0,
+        engine: 'inactive', bindings: { books: 0, character: 0, standalone: 0 },
+        entries: 0, enabled: 0, active: 0, budgetExcluded: 0, reasons: {},
         failures: {
           regexRuntimeUnavailable: 0, regexInvalid: 0, regexExecutionLimit: 0,
           regexResourceLimit: 0, decoratorUnsupported: 0, templateUnsupported: 0, templateError: 0,
