@@ -26,6 +26,13 @@ import { readSessionPersona } from '../src/session-persona.ts'
 import { SillyTavernChatLibrary } from '../src/sillytavern-chat-library.ts'
 import { WorldInfoLibrary } from '../src/world-info-library.ts'
 import { auditRoleplayExperience } from '../scripts/audit-roleplay-experience.ts'
+import {
+  IMMERSIVE_STORY_PROMPT_POLICY_ID,
+  nativePromptPolicyResourceProvider,
+  readNativePromptPolicy,
+  renderNativePromptPolicy,
+} from '../src/native-prompt-policy.ts'
+import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
 
 function fixture(context: test.TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'agent-rp-experience-materialization-'))
@@ -68,6 +75,7 @@ function fixture(context: test.TestContext) {
   for (const provider of roleplayLibraryResourceProviders({ characters, personas, presets, worldInfos })) {
     catalog.register(provider)
   }
+  catalog.register(nativePromptPolicyResourceProvider())
   return { characters, personas, presets, worldInfos, chats, character, persona, preset, world, catalog }
 }
 
@@ -155,6 +163,52 @@ test('materializes a scene without fabricating an actor and preserves its primar
   assert.equal(runtime.actor, undefined)
   assert.equal(session.events.filter(event => event.type === 'turn/start').length, 1)
   assert.equal(session.events.some(event => event.type === 'user/message' || event.type === 'assistant/message'), false)
+})
+
+test('freezes and applies the built-in immersive story policy as one replayable experience resource', context => {
+  const value = fixture(context)
+  const actorId = characterLibraryRoleplayResourceId(value.character.id)
+  const request = parseAgentRpSessionLaunchRequest({
+    format: 0,
+    sourceSessionId: 'source-session',
+    kind: 'experience',
+    mode: 'character',
+    actor: { kind: 'actor', id: actorId },
+    worlds: [],
+    promptPolicy: { kind: 'prompt-policy', id: IMMERSIVE_STORY_PROMPT_POLICY_ID },
+  })
+  if (request.kind !== 'experience') assert.fail('experience request was not parsed')
+  const prepared = prepareAgentRpSession(
+    value.characters,
+    value.chats,
+    value.presets,
+    value.worldInfos,
+    request,
+    value.catalog,
+  )
+  const session = Session.create(SessionId('native-prompt-policy-replay'), structuredClone(prepared.seed))
+  const resolved = resolveSessionRoleplayRuntime({
+    session,
+    deployment: resolveConfig({ characterName: 'fallback' }),
+  })
+  const policy = readNativePromptPolicy(session.events)
+  assert.ok(policy !== undefined)
+  const plan = prepareRoleplayTurn({
+    session,
+    deployment: resolveConfig({ characterName: 'fallback' }),
+    resolved,
+  })
+
+  assert.equal(resolved.snapshot.prompt.strategy, 'native')
+  assert.equal(resolved.snapshot.prompt.resource?.id, IMMERSIVE_STORY_PROMPT_POLICY_ID)
+  assert.deepEqual(policy.modules.map(module => [module.layer, module.id]), [
+    ['frontstage', 'frontstage:presence'],
+    ['stage', 'stage:causality'],
+    ['frontstage', 'frontstage:concrete-prose'],
+    ['stage', 'stage:player-space'],
+  ])
+  assert.equal(plan.prompt.systemPromptText.endsWith(renderNativePromptPolicy(policy)), true)
+  assert.equal(plan.prompt.diagnostics.enabledModules, 4)
 })
 
 test('rejects malformed cross-kind and duplicate source-neutral selections', () => {

@@ -60,6 +60,7 @@ import {
   type RoleplayStateActionPlan,
 } from './roleplay-state-action.ts'
 import type { RoleplayTurnMode } from './roleplay-turn-mode.ts'
+import { renderNativePromptPolicy } from './native-prompt-policy.ts'
 
 /** Exact replay key for the Session surface and newly claimed messages used by preparation. */
 export interface RoleplayTurnInputKey {
@@ -534,6 +535,12 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     )
   } else {
     systemPromptText = renderCharacterPrompt(input.deployment, experienceBefore, experienceAfter)
+  }
+
+  if (resolved.nativePromptPolicy !== undefined) {
+    systemPromptText = [systemPromptText, renderNativePromptPolicy(resolved.nativePromptPolicy)]
+      .filter(Boolean).join('\n\n')
+    enabledModules = resolved.nativePromptPolicy.modules.filter(module => module.enabled).length
   }
 
   if (stateActionTarget !== undefined) {

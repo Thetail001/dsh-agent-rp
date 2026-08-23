@@ -13,6 +13,7 @@ export const AGENT_RP_SESSION_EVENT_TYPES = [
   'agent-rp/character-card-seed',
   'agent-rp/memory-seed',
   'agent-rp/mvu-state',
+  'agent-rp/native-prompt-policy-seed',
   'agent-rp/persona-seed',
   'agent-rp/sillytavern-chat-import',
   'agent-rp/sillytavern-preset-seed',

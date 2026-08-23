@@ -21,6 +21,7 @@ import {
   RoleplayResourceCatalog,
 } from './roleplay-resource-catalog.ts'
 import { roleplayLibraryResourceProviders } from './roleplay-resource-library-providers.ts'
+import { nativePromptPolicyResourceProvider } from './native-prompt-policy.ts'
 import { characterLibraryRoleplayResourceId } from './roleplay-resource-library-ids.ts'
 import { installRoleplayResourceCatalogHttp } from './roleplay-resource-catalog-http.ts'
 import { tavernResourceLibraryPreflightContributors } from './tavern-resource-library-preflight.ts'
@@ -1453,7 +1454,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
       personas: personaLibrary,
       presets: presetLibrary,
       worldInfos: worldInfoLibrary,
-    })) ctx.effect(
+    }).concat(nativePromptPolicyResourceProvider())) ctx.effect(
       () => resourceCatalog.register(provider),
       `agent-rp: built-in resource provider ${provider.id}`,
     )

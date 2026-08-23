@@ -51,6 +51,7 @@ import {
   type RoleplayStateSnapshot,
 } from './roleplay-state.ts'
 import { readRoleplayTurnMode, type RoleplayTurnMode } from './roleplay-turn-mode.ts'
+import { readNativePromptPolicy, type NativePromptPolicySnapshot } from './native-prompt-policy.ts'
 
 /** One source plus the Session overlay that will be evaluated for this turn. */
 export interface ConfiguredRoleplayLorebook {
@@ -67,6 +68,7 @@ export interface ResolvedSessionRoleplayRuntime {
   readonly importedChat?: SillyTavernChatIdentity
   readonly worldScenario?: WorldInfoLibrarySeedRecord
   readonly preset?: ActiveSessionPreset
+  readonly nativePromptPolicy?: NativePromptPolicySnapshot
   readonly tavern?: TavernHelperState
   readonly mvu?: MvuStateSnapshot
   readonly lorebooks: readonly ConfiguredRoleplayLorebook[]
@@ -112,6 +114,10 @@ export function resolveSessionRoleplayRuntime(input: {
   const importedChat = readSillyTavernChatIdentity(events)
   const worldScenario = readWorldInfoLibrarySessionSeed(events)
   const preset = readActiveSessionPreset(events)
+  const nativePromptPolicy = readNativePromptPolicy(events)
+  if (preset !== undefined && nativePromptPolicy !== undefined) {
+    throw new Error('Roleplay Session cannot activate imported and native prompt policies together')
+  }
   const tavern = readTavernHelperState(events)
   const turnMode = readRoleplayTurnMode(events)
   const nativeStates = readRoleplayStates(events)
@@ -138,6 +144,10 @@ export function resolveSessionRoleplayRuntime(input: {
   const extensions = input.extensions?.resolve(events)
     ?? { modules: [], world: [], state: [], prepare: [], recall: [] }
   const selectedExperience = readRoleplayExperienceSelection(events)
+  if (nativePromptPolicy !== undefined && selectedExperience?.promptPolicy !== undefined
+    && selectedExperience.promptPolicy.id !== nativePromptPolicy.id) {
+    throw new Error('Roleplay native prompt policy snapshot does not match the selected resource')
+  }
 
   const deploymentActor: RoleplayResourceRef = {
     id: 'deployment:default-actor',
@@ -178,13 +188,19 @@ export function resolveSessionRoleplayRuntime(input: {
     : identity.userName === undefined
       ? undefined
       : sessionResource('session:participant-identity', identity.userName, 'sillytavern:identity')
-  const promptResource = preset === undefined
-    ? undefined
-    : sessionResource(
+  const promptResource = preset !== undefined
+    ? sessionResource(
         selectedExperience?.promptPolicy?.id ?? `preset:${preset.result.sourceAttachmentId}`,
         preset.result.name,
         'sillytavern:chat-completion-preset',
       )
+    : nativePromptPolicy === undefined
+      ? undefined
+      : sessionResource(
+          selectedExperience?.promptPolicy?.id ?? nativePromptPolicy.id,
+          nativePromptPolicy.name,
+          'agent-rp:native-prompt-policy',
+        )
   const state = [
     ...nativeStates.map(nativeState => ({
       id: nativeState.id,
@@ -271,9 +287,9 @@ export function resolveSessionRoleplayRuntime(input: {
       bindings: worldBindings,
       ...(tokenBudget === undefined ? {} : { tokenBudget }),
     },
-    prompt: promptResource === undefined
-      ? { strategy: 'native' }
-      : { strategy: 'modules', resource: promptResource },
+    prompt: preset === undefined
+      ? { strategy: 'native', ...(promptResource === undefined ? {} : { resource: promptResource }) }
+      : { strategy: 'modules', resource: promptResource! },
     state,
     memory: { read: true, write: input.memoryWriteAvailable === true },
     modules,
@@ -286,6 +302,7 @@ export function resolveSessionRoleplayRuntime(input: {
     ...(importedChat === undefined ? {} : { importedChat }),
     ...(worldScenario === undefined ? {} : { worldScenario }),
     ...(preset === undefined ? {} : { preset }),
+    ...(nativePromptPolicy === undefined ? {} : { nativePromptPolicy }),
     ...(tavern === undefined ? {} : { tavern }),
     ...(mvu === undefined ? {} : { mvu }),
     lorebooks,
