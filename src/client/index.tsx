@@ -11043,7 +11043,7 @@ function roleplayComposerDockComponent(
           if (selected !== undefined && original !== null) {
             const rendered = renderCharacterDisplay(selected.text.replaceAll(statusPlaceholder, ''), {
               name: activeProjection.characterName,
-              frontend: activeProjection.frontend ?? {
+              frontend: frontend ?? {
                 regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {},
               },
             }, AI_OUTPUT_PLACEMENT, depth, activeProjection.userName, activeProjection.preset?.regexScripts)
