@@ -61,6 +61,14 @@ test('keeps one exact reusable Character Card asset with selectable greetings', 
     '门还没锁，你进来吧。',
     '今天来得很早。',
   ])
+  const firstResolution = library.resolve(first.id)
+  const cachedResolution = library.resolve(first.id)
+  assert.equal(cachedResolution.card, firstResolution.card)
+  assert.equal(Object.isFrozen(firstResolution.card), true)
+  assert.equal(Object.isFrozen(firstResolution.card.frontend), true)
+  assert.throws(() => {
+    (firstResolution.card as unknown as { name: string }).name = '不应写进缓存'
+  }, TypeError)
   assert.deepEqual(library.asset(first.id).data, data)
 
   assert.equal(library.archive(first.id).archived, true)
@@ -290,10 +298,14 @@ test('keeps local wording fixes and standalone display regexes beside the origin
   assert.deepEqual(library.asset(imported.id).data, data)
 
   const extensionId = extended.displayExtensions[0]!.id
+  const enabledCard = library.resolve(imported.id).card
   const paused = library.setDisplayExtensionEnabled(imported.id, extensionId, false)
   assert.equal(paused.displayExtensions[0]?.enabled, false)
-  assert.equal(library.resolve(imported.id).card.frontend.regexScripts.at(-1)?.scriptName, '旧图片规则')
+  const pausedCard = library.resolve(imported.id).card
+  assert.notEqual(pausedCard, enabledCard)
+  assert.equal(pausedCard.frontend.regexScripts.at(-1)?.scriptName, '旧图片规则')
   assert.equal(library.setDisplayExtensionEnabled(imported.id, extensionId, true).displayExtensions[0]?.enabled, true)
+  assert.notEqual(library.resolve(imported.id).card, pausedCard)
   assert.equal(library.removeDisplayExtension(imported.id, extensionId).displayExtensions.length, 0)
   assert.deepEqual(library.asset(imported.id).data, data)
 })
@@ -312,6 +324,7 @@ test('saves reversible character fields and regex switches beside every original
   const bytes = new TextEncoder().encode(JSON.stringify(source))
   const library = new CharacterLibrary({ root })
   const imported = library.importFile({ data: bytes, filename: '白露.json', mediaType: 'application/json' })
+  const originalCard = library.resolve(imported.id).card
   const edited = library.updateContent(imported.id, {
     ...imported.content,
     name: '白露·本机版',
@@ -324,6 +337,9 @@ test('saves reversible character fields and regex switches beside every original
   assert.equal(edited.localEdits, true)
   assert.equal(edited.name, '白露·本机版')
   assert.deepEqual(edited.greetings, ['新的默认开场。', '新的备选开场。'])
+  const contentEditedCard = library.resolve(imported.id).card
+  assert.notEqual(contentEditedCard, originalCard)
+  assert.equal(contentEditedCard.name, '白露·本机版')
   assert.deepEqual(library.asset(imported.id).data, bytes)
   assert.throws(() => library.updateContent(imported.id, edited.content, 0), /已在别处改变/u)
 
@@ -331,7 +347,9 @@ test('saves reversible character fields and regex switches beside every original
   assert.equal(regexEdited.localRevision, 2)
   assert.equal(regexEdited.regexScripts[0]?.enabled, false)
   assert.equal(regexEdited.regexScripts[0]?.locallyOverridden, true)
-  assert.equal(library.resolve(imported.id).card.frontend.regexScripts[0]?.disabled, true)
+  const regexEditedCard = library.resolve(imported.id).card
+  assert.notEqual(regexEditedCard, contentEditedCard)
+  assert.equal(regexEditedCard.frontend.regexScripts[0]?.disabled, true)
   assert.equal(parseCharacterCardJsonBytes(library.exportModified(imported.id).data).name, '白露·本机版')
 
   const restored = library.resetLocalEdits(imported.id, 2)

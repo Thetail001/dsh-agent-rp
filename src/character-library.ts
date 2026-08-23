@@ -44,6 +44,8 @@ const ID_PATTERN = /^card-[a-f0-9]{32}$/u
 const DISPLAY_EXTENSION_ID_PATTERN = /^display-[a-f0-9]{32}$/u
 const MAX_DISPLAY_EXTENSION_BYTES = 256 * 1024
 const MAX_REMOTE_RESOURCE_APPROVALS = 128
+const MAX_PARSED_CACHE_ENTRIES = 8
+const MAX_PARSED_CACHE_SOURCE_BYTES = 64 * 1024 * 1024
 
 interface StoredCharacterMetadata {
   readonly format: 0
@@ -171,13 +173,40 @@ interface ParsedStoredCharacter {
   readonly sourceCard: ImportedCharacterCard
   readonly overlay: StoredCharacterOverlay
   readonly avatarAvailable: boolean
-  readonly avatar?: CharacterLibraryAvatar
   readonly images: readonly CharacterLibraryImage[]
+}
+
+interface CachedParsedStoredCharacter {
+  readonly signature: string
+  readonly sourceBytes: number
+  readonly parsed: ParsedStoredCharacter
+}
+
+interface RegularFileVersion {
+  readonly version: string
+  readonly bytes: number
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${label} must be an object`)
   return value as Record<string, unknown>
+}
+
+function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return value
+  seen.add(value)
+  for (const child of Object.values(value)) deepFreeze(child, seen)
+  return Object.freeze(value)
+}
+
+function regularFileVersion(path: string): RegularFileVersion {
+  const file = statSync(path, { bigint: true })
+  const bytes = Number(file.size)
+  if (!file.isFile() || !Number.isSafeInteger(bytes)) throw new Error('character library path is not a regular file')
+  return {
+    version: `${file.dev}:${file.ino}:${file.size}:${file.mtimeNs}:${file.ctimeNs}`,
+    bytes,
+  }
 }
 
 function nonNegativeInteger(value: unknown, label: string): number {
@@ -777,6 +806,8 @@ function characterDetail(
 /** Small content-addressed card library; the original PNG, JSON, or CHARX remains exportable. */
 export class CharacterLibrary {
   readonly root: string
+  private readonly parsed = new Map<string, CachedParsedStoredCharacter>()
+  private parsedSourceBytes = 0
 
   constructor(options: CharacterLibraryOptions = {}) {
     this.root = resolve(options.root ?? dshHomePath('agent-rp', 'characters'))
@@ -794,19 +825,19 @@ export class CharacterLibrary {
 
   /** Load card metadata and selectable greetings by opaque id. */
   get(id: string): CharacterLibraryDetail {
-    const entry = this.readId(id)
-    const parsed = this.parseStored(entry.meta, entry.data)
-    const detail = characterDetail(entry.meta, parsed, true)
-    this.rememberIndex(entry.meta, detail)
+    const meta = this.readMetadata(id)
+    const parsed = this.parseStoredId(meta)
+    const detail = characterDetail(meta, parsed, true)
+    this.rememberIndex(meta, detail)
     return detail
   }
 
   /** Load greetings and frontend metadata without materializing World Info entry bodies. */
   overview(id: string): CharacterLibraryDetail {
-    const entry = this.readId(id)
-    const parsed = this.parseStored(entry.meta, entry.data)
-    const detail = characterDetail(entry.meta, parsed, false)
-    this.rememberIndex(entry.meta, detail)
+    const meta = this.readMetadata(id)
+    const parsed = this.parseStoredId(meta)
+    const detail = characterDetail(meta, parsed, false)
+    this.rememberIndex(meta, detail)
     return detail
   }
 
@@ -814,8 +845,8 @@ export class CharacterLibrary {
   worldInfoPage(id: string, offset: number, limit: number): CharacterLibraryWorldInfoPage | undefined {
     if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('invalid World Info offset')
     if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('invalid World Info limit')
-    const entry = this.readId(id)
-    const card = this.parseStored(entry.meta, entry.data).card
+    const meta = this.readMetadata(id)
+    const card = this.parseStoredId(meta).card
     if (card.lorebook === undefined) return undefined
     return {
       ...(card.lorebook.name === undefined ? {} : { name: card.lorebook.name }),
@@ -827,18 +858,18 @@ export class CharacterLibrary {
 
   /** Resolve one reusable card for a model-free Session launch. */
   resolve(id: string): ResolvedCharacterLibraryEntry {
-    const entry = this.readId(id)
-    const parsed = this.parseStored(entry.meta, entry.data)
+    const meta = this.readMetadata(id)
+    const parsed = this.parseStoredId(meta)
     return {
-      detail: characterDetail(entry.meta, parsed, true),
+      detail: characterDetail(meta, parsed, true),
       card: parsed.card,
-      transport: entry.meta.transport === 'png'
-        ? { transport: 'png', metadataKeyword: entry.meta.metadataKeyword! }
-        : { transport: entry.meta.transport },
+      transport: meta.transport === 'png'
+        ? { transport: 'png', metadataKeyword: meta.metadataKeyword! }
+        : { transport: meta.transport },
       source: {
-        bytes: entry.data.byteLength,
-        originalFilename: entry.meta.originalFilename,
-        mediaType: entry.meta.mediaType,
+        bytes: meta.bytes,
+        originalFilename: meta.originalFilename,
+        mediaType: meta.mediaType,
       },
     }
   }
@@ -899,7 +930,7 @@ export class CharacterLibrary {
         ? undefined
         : { mediaType: avatar.mediaType, data: readCharxImageAsset(charx, avatar) }
     }
-    return this.parseStored(entry.meta, entry.data).avatar
+    return { mediaType: 'image/png', data: entry.data }
   }
 
   /** Load one card-declared embedded image by its stable V3 asset index. */
@@ -1211,18 +1242,18 @@ export class CharacterLibrary {
 
   /** Hide one reusable card from the everyday collection without touching its original asset. */
   archive(id: string): CharacterLibraryDetail {
-    const entry = this.readId(id)
-    if (entry.meta.archivedAt !== undefined) return this.get(id)
+    const meta = this.readMetadata(id)
+    if (meta.archivedAt !== undefined) return this.get(id)
     const now = Date.now()
-    this.writeMetadata({ ...entry.meta, archivedAt: now, updatedAt: now })
+    this.writeMetadata({ ...meta, archivedAt: now, updatedAt: now })
     return this.get(id)
   }
 
   /** Return one archived card to the everyday collection without changing its original asset. */
   restore(id: string): CharacterLibraryDetail {
-    const entry = this.readId(id)
-    if (entry.meta.archivedAt === undefined) return this.get(id)
-    const { archivedAt: _archivedAt, ...active } = entry.meta
+    const meta = this.readMetadata(id)
+    if (meta.archivedAt === undefined) return this.get(id)
+    const { archivedAt: _archivedAt, ...active } = meta
     this.writeMetadata({ ...active, updatedAt: Date.now() })
     return this.get(id)
   }
@@ -1308,11 +1339,65 @@ export class CharacterLibrary {
 
   private parseStored(meta: StoredCharacterMetadata, data: Uint8Array): ParsedStoredCharacter {
     const overlay = this.readOverlay(meta.id)
+    const asset = regularFileVersion(this.assetPath(meta))
+    if (asset.bytes !== meta.bytes) throw new Error('character library asset byte count changed')
+    const signature = this.parsedSignature(meta, overlay, asset.version)
+    const cached = this.cachedParsed(meta.id, signature)
+    if (cached !== undefined) return cached
+    return this.parseAndRemember(meta, data, overlay, signature)
+  }
+
+  private parseStoredId(meta: StoredCharacterMetadata): ParsedStoredCharacter {
+    const asset = regularFileVersion(this.assetPath(meta))
+    if (asset.bytes !== meta.bytes) throw new Error('character library asset byte count changed')
+    const overlay = this.readOverlay(meta.id)
+    const signature = this.parsedSignature(meta, overlay, asset.version)
+    const cached = this.cachedParsed(meta.id, signature)
+    if (cached !== undefined) return cached
+    return this.parseAndRemember(meta, new Uint8Array(readFileSync(this.assetPath(meta))), overlay, signature)
+  }
+
+  private parsedSignature(meta: StoredCharacterMetadata, overlay: StoredCharacterOverlay, sourceVersion: string): string {
+    return JSON.stringify([meta.transport, meta.metadataKeyword ?? null, meta.bytes, sourceVersion, overlay])
+  }
+
+  private cachedParsed(id: string, signature: string): ParsedStoredCharacter | undefined {
+    const cached = this.parsed.get(id)
+    if (cached === undefined || cached.signature !== signature) return undefined
+    this.parsed.delete(id)
+    this.parsed.set(id, cached)
+    return cached.parsed
+  }
+
+  private rememberParsed(id: string, cached: CachedParsedStoredCharacter): ParsedStoredCharacter {
+    const previous = this.parsed.get(id)
+    if (previous !== undefined) this.parsedSourceBytes -= previous.sourceBytes
+    this.parsed.delete(id)
+    if (cached.sourceBytes <= MAX_PARSED_CACHE_SOURCE_BYTES) {
+      this.parsed.set(id, cached)
+      this.parsedSourceBytes += cached.sourceBytes
+    }
+    while (this.parsed.size > MAX_PARSED_CACHE_ENTRIES
+      || this.parsedSourceBytes > MAX_PARSED_CACHE_SOURCE_BYTES) {
+      const oldest = this.parsed.keys().next().value
+      if (oldest === undefined) break
+      this.parsedSourceBytes -= this.parsed.get(oldest)!.sourceBytes
+      this.parsed.delete(oldest)
+    }
+    return cached.parsed
+  }
+
+  private parseAndRemember(
+    meta: StoredCharacterMetadata,
+    data: Uint8Array,
+    overlay: StoredCharacterOverlay,
+    signature: string,
+  ): ParsedStoredCharacter {
+    let parsed: ParsedStoredCharacter
     if (meta.transport === 'json') {
       const sourceCard = parseCharacterCardJsonBytes(data)
-      return { card: applyOverlay(sourceCard, overlay), sourceCard, overlay, avatarAvailable: false, images: [] }
-    }
-    if (meta.transport === 'charx') {
+      parsed = { card: applyOverlay(sourceCard, overlay), sourceCard, overlay, avatarAvailable: false, images: [] }
+    } else if (meta.transport === 'charx') {
       const charx = parseCharx(data)
       const charxImages = charxImageAssets(charx)
       const images = charxImages.map(image => ({
@@ -1322,25 +1407,30 @@ export class CharacterLibrary {
         mediaType: image.mediaType,
         sourceUri: charx.card.assets?.[image.index]?.uri ?? '',
       }))
-      return {
+      parsed = {
         card: applyOverlay(charx.card, overlay),
         sourceCard: charx.card,
         overlay,
         avatarAvailable: charxAvatar(charx) !== undefined,
         images,
       }
+    } else {
+      const payload = readCharacterCardPng(data)
+      if (payload.keyword !== meta.metadataKeyword) throw new Error('character library PNG metadata keyword changed')
+      const sourceCard = parseCharacterCardJson(payload.json)
+      parsed = {
+        card: applyOverlay(sourceCard, overlay), sourceCard, overlay,
+        avatarAvailable: true, images: [],
+      }
     }
-    const payload = readCharacterCardPng(data)
-    if (payload.keyword !== meta.metadataKeyword) throw new Error('character library PNG metadata keyword changed')
-    const sourceCard = parseCharacterCardJson(payload.json)
-    return {
-      card: applyOverlay(sourceCard, overlay), sourceCard, overlay,
-      avatarAvailable: true,
-      avatar: { mediaType: 'image/png', data }, images: [],
-    }
+    return this.rememberParsed(meta.id, {
+      signature,
+      sourceBytes: meta.bytes,
+      parsed: deepFreeze(parsed),
+    })
   }
 
-  private readId(id: string): { readonly meta: StoredCharacterMetadata; readonly data: Uint8Array } {
+  private readMetadata(id: string): StoredCharacterMetadata {
     const metaPath = this.metaPath(id)
     if (!existsSync(metaPath)) throw new Error(`角色库中没有 ${JSON.stringify(id)}`)
     let meta: StoredCharacterMetadata
@@ -1350,6 +1440,11 @@ export class CharacterLibrary {
       throw new Error(`无法读取角色库文件 ${JSON.stringify(metaPath)}`, { cause: error })
     }
     if (meta.id !== id) throw new Error('character library filename and metadata id differ')
+    return meta
+  }
+
+  private readId(id: string): { readonly meta: StoredCharacterMetadata; readonly data: Uint8Array } {
+    const meta = this.readMetadata(id)
     const assetPath = this.assetPath(meta)
     const data = new Uint8Array(readFileSync(assetPath))
     if (data.byteLength !== meta.bytes) throw new Error('character library asset byte count changed')
