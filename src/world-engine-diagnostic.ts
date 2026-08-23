@@ -21,6 +21,38 @@ export function summarizeWorldEngineActivationReasons(
   return result
 }
 
+export interface WorldEngineResourceDiagnosticBook {
+  readonly source: 'character' | 'standalone'
+  readonly entries: readonly {
+    readonly enabled: boolean
+    readonly deleted: boolean
+    readonly reason: LorebookActivationReason
+  }[]
+}
+
+/** Summarize bound World resources using engine entries, including deleted overlay tombstones. */
+export function summarizeWorldEngineResources(books: readonly WorldEngineResourceDiagnosticBook[]): {
+  readonly bindings: { readonly books: number; readonly character: number; readonly standalone: number }
+  readonly entries: number
+  readonly enabled: number
+  readonly active: number
+  readonly reasons: WorldEngineActivationReasonCounts
+} {
+  const entries = books.flatMap(book => book.entries)
+  const reasons = summarizeWorldEngineActivationReasons(entries.map(entry => entry.reason))
+  return {
+    bindings: {
+      books: books.length,
+      character: books.filter(book => book.source === 'character').length,
+      standalone: books.filter(book => book.source === 'standalone').length,
+    },
+    entries: entries.length,
+    enabled: entries.filter(entry => entry.enabled && !entry.deleted).length,
+    active: (reasons['active-constant'] ?? 0) + (reasons['active-keyword'] ?? 0),
+    reasons,
+  }
+}
+
 /** Failure categories that indicate an entry could not complete normal World Info evaluation. */
 export interface WorldEngineFailureCounts {
   readonly regexRuntimeUnavailable: number

@@ -6,6 +6,7 @@ import { parseWorldInfoJson, parseWorldInfoJsonBytes } from '../src/import/world
 import {
   summarizeWorldEngineActivationReasons,
   summarizeWorldEngineFailures,
+  summarizeWorldEngineResources,
   worldEngineFailureTotal,
 } from '../src/world-engine-diagnostic.ts'
 import { createNativeWorldEngine, summarizeWorldEngineResult } from '../src/world-engine.ts'
@@ -248,6 +249,27 @@ test('summarizes every World Info activation reason without entry identity', () 
     JSON.stringify(counts),
     /private|book-name|entry-id|content-text/u,
   )
+})
+
+test('counts bound World resources independently from visible non-deleted entry totals', () => {
+  const summary = summarizeWorldEngineResources([
+    {
+      source: 'character',
+      entries: [
+        { enabled: true, deleted: false, reason: 'active-keyword' },
+        { enabled: true, deleted: true, reason: 'deleted' },
+      ],
+    },
+    { source: 'standalone', entries: [] },
+  ])
+
+  assert.deepEqual(summary, {
+    bindings: { books: 2, character: 1, standalone: 1 },
+    entries: 2,
+    enabled: 1,
+    active: 1,
+    reasons: { 'active-keyword': 1, deleted: 1 },
+  })
 })
 
 test('activates constant entries without evaluating their regex keywords', () => {

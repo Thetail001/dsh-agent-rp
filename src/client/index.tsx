@@ -148,7 +148,7 @@ import {
   type AgentRpRuntimeDiagnosticContribution,
   type AgentRpRuntimeDiagnosticSource,
 } from './runtime-diagnostic.ts'
-import { summarizeWorldEngineActivationReasons } from '../world-engine-diagnostic.ts'
+import { summarizeWorldEngineResources } from '../world-engine-diagnostic.ts'
 import { installAgentRpNativeBack } from './native-back.ts'
 import { installAgentRpNativeShare } from './native-share.ts'
 import { loadAgentRpTurnHealth } from './roleplay-turn-health.ts'
@@ -11149,8 +11149,8 @@ function roleplayComposerDockComponent(
     decoratorUnsupported: 0, templateUnsupported: 0, templateError: 0,
   }
   const worldInfoBooks = projection?.worldInfo.books ?? []
-  const worldInfoEntries = worldInfoBooks.flatMap(book => book.entries)
-  const worldEngineReasons = summarizeWorldEngineActivationReasons(worldInfoEntries.map(entry => entry.reason))
+  const worldEngineResources = summarizeWorldEngineResources(worldInfoBooks)
+  const worldEngineReasons = worldEngineResources.reasons
   useAgentRpRuntimeDiagnosticContribution(
     runtimeDiagnostics,
     'roleplay-session',
@@ -11184,14 +11184,10 @@ function roleplayComposerDockComponent(
         renderer: { inlineFrontendSanitizer: inlineCardSanitizerProbeState() },
         worldEngine: {
           engine: worldInfoBooks.length === 0 ? 'inactive' : 'native-v0',
-          bindings: {
-            books: worldInfoBooks.length,
-            character: worldInfoBooks.filter(book => book.source === 'character').length,
-            standalone: worldInfoBooks.filter(book => book.source === 'standalone').length,
-          },
-          entries: projection.worldInfoCount,
-          enabled: worldInfoEntries.filter(entry => entry.enabled && !entry.deleted).length,
-          active: projection.worldInfo.activeCount,
+          bindings: worldEngineResources.bindings,
+          entries: worldEngineResources.entries,
+          enabled: worldEngineResources.enabled,
+          active: worldEngineResources.active,
           budgetExcluded: projection.worldInfo.budgetExcludedCount,
           reasons: worldEngineReasons,
           failures: worldEngineFailures,
@@ -11245,12 +11241,12 @@ function roleplayComposerDockComponent(
     data-agent-rp-prompt-injection-surfaces={hasTavernVariableSurface ? 1 : 0}
     data-agent-rp-prompt-preview-surfaces={hasTavernVariableSurface ? 1 : 0}
     data-agent-rp-world-engine={worldInfoBooks.length === 0 ? 'inactive' : 'native-v0'}
-    data-agent-rp-world-engine-books={worldInfoBooks.length}
-    data-agent-rp-world-engine-character-books={worldInfoBooks.filter(book => book.source === 'character').length}
-    data-agent-rp-world-engine-standalone-books={worldInfoBooks.filter(book => book.source === 'standalone').length}
-    data-agent-rp-world-engine-entries={projection.worldInfoCount}
-    data-agent-rp-world-engine-enabled={worldInfoEntries.filter(entry => entry.enabled && !entry.deleted).length}
-    data-agent-rp-world-engine-active={projection.worldInfo.activeCount}
+    data-agent-rp-world-engine-books={worldEngineResources.bindings.books}
+    data-agent-rp-world-engine-character-books={worldEngineResources.bindings.character}
+    data-agent-rp-world-engine-standalone-books={worldEngineResources.bindings.standalone}
+    data-agent-rp-world-engine-entries={worldEngineResources.entries}
+    data-agent-rp-world-engine-enabled={worldEngineResources.enabled}
+    data-agent-rp-world-engine-active={worldEngineResources.active}
     data-agent-rp-world-engine-budget-excluded={projection.worldInfo.budgetExcludedCount}
     data-agent-rp-world-engine-reason-active-constant={worldEngineReasons['active-constant'] ?? 0}
     data-agent-rp-world-engine-reason-active-keyword={worldEngineReasons['active-keyword'] ?? 0}
