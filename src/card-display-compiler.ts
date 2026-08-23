@@ -66,6 +66,8 @@ interface HtmlTagToken {
   readonly start: number
   readonly end: number
   readonly name: string
+  readonly closing: boolean
+  readonly selfClosing: boolean
 }
 
 const HTML_DISPLAY_TAGS = new Set([
@@ -80,6 +82,14 @@ const HTML_DISPLAY_TAGS = new Set([
   'select', 'slot', 'small', 'source', 'span', 'strong', 'style', 'sub', 'summary', 'sup',
   'table', 'tbody', 'td', 'template', 'textarea', 'tfoot', 'th', 'thead', 'time', 'title',
   'tr', 'track', 'u', 'ul', 'var', 'video', 'wbr',
+])
+
+/** Block elements whose balanced leading wrapper can be isolated from following Markdown prose. */
+const HTML_BLOCK_TAGS = new Set([
+  'address', 'article', 'aside', 'blockquote', 'body', 'center', 'details', 'dialog', 'div',
+  'dl', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5',
+  'h6', 'head', 'header', 'hgroup', 'html', 'main', 'menu', 'nav', 'ol', 'p', 'pre', 'search',
+  'section', 'summary', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul',
 ])
 
 function htmlTagsOutsideCode(value: string): readonly HtmlTagToken[] {
@@ -97,10 +107,16 @@ function htmlTagsOutsideCode(value: string): readonly HtmlTagToken[] {
       continue
     }
     if (codeTicks === 0 && value[cursor] === '<') {
-      const tag = value.slice(cursor).match(/^<\/?([A-Za-z][A-Za-z0-9:_-]*)(?:\s[^<>]*?)?\s*\/?>/u)
-      const name = tag?.[1]?.toLowerCase()
+      const tag = value.slice(cursor).match(/^<(\/)?([A-Za-z][A-Za-z0-9:_-]*)(?:\s[^<>]*?)?\s*(\/?)>/u)
+      const name = tag?.[2]?.toLowerCase()
       if (tag?.[0] !== undefined && name !== undefined) {
-        tags.push({ start: cursor, end: cursor + tag[0].length, name })
+        tags.push({
+          start: cursor,
+          end: cursor + tag[0].length,
+          name,
+          closing: tag[1] === '/',
+          selfClosing: tag[3] === '/',
+        })
         cursor += tag[0].length
         continue
       }
@@ -132,6 +148,26 @@ function stripUnknownTagsOutsideCode(value: string): {
 
 function hasDisplayHtmlOutsideCode(value: string): boolean {
   return htmlTagsOutsideCode(value).some(tag => HTML_DISPLAY_TAGS.has(tag.name))
+}
+
+/** Split one balanced leading block wrapper while leaving its following prose byte-for-byte intact. */
+function splitLeadingHtmlBlock(value: string): { readonly html: string; readonly rest: string } | undefined {
+  const start = value.search(/\S/u)
+  if (start < 0) return undefined
+  const tags = htmlTagsOutsideCode(value)
+  const first = tags.find(tag => tag.start >= start)
+  if (first?.start !== start || first.closing || first.selfClosing || !HTML_BLOCK_TAGS.has(first.name)) {
+    return undefined
+  }
+  let depth = 0
+  for (const tag of tags) {
+    if (tag.start < first.start || tag.name !== first.name || tag.selfClosing) continue
+    if (tag.closing) depth -= 1
+    else depth += 1
+    if (depth === 0) return { html: value.slice(0, tag.end), rest: value.slice(tag.end) }
+    if (depth < 0) return undefined
+  }
+  return undefined
 }
 
 function sourceLines(value: string): SourceLine[] {
@@ -194,6 +230,13 @@ function appendMarkdown(
   text: string,
 ): void {
   if (hasDisplayHtmlOutsideCode(text)) {
+    const split = splitLeadingHtmlBlock(text)
+    if (split !== undefined && split.rest.trim() !== '') {
+      diagnostics.inlineHtml += 1
+      segments.push({ kind: 'inline-html', source: split.html })
+      appendMarkdown(segments, diagnostics, split.rest)
+      return
+    }
     diagnostics.inlineHtml += 1
     segments.push({ kind: 'inline-html', source: text })
     return

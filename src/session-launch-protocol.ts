@@ -84,4 +84,6 @@ export interface AgentRpSessionLaunchResponse {
   readonly format: 0
   readonly sessionId: string
   readonly title: string
+  /** Non-fatal reason the created Session could not inherit a Workspace. */
+  readonly workspaceWarning?: string
 }

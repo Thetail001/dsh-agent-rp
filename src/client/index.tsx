@@ -12054,6 +12054,7 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok || value.sessionId === undefined) {
       throw new Error(value.error ?? `角色会话创建失败（${response.status}）`)
     }
+    if (value.workspaceWarning !== undefined) console.warn(`Agent RP：${value.workspaceWarning}`)
     const sessionId = value.sessionId as SessionId
     if (resourcePermissions !== undefined) {
       writeAgentRpSessionResourcePermissions(

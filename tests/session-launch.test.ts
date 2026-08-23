@@ -226,7 +226,9 @@ test('publishes a source-neutral World Info experience into the source Workspace
     filename: '海城.json',
   })
   const sourceId = SessionId('world-info-source')
-  const sourceSession = Session.create(sourceId)
+  const sourceSession = Session.create(sourceId, [], {
+    version: 0, id: sourceId, createdAt: 0, cwd: 'C:\\fixture-workspace',
+  })
   const sourceAgent = { id: sourceId, session: sourceSession, status: 'idle', inbox: { hasPending: false } }
   let createdSession: Session | undefined
   let attachedSessionId: SessionId | undefined
@@ -258,10 +260,11 @@ test('publishes a source-neutral World Info experience into the source Workspace
         get: () => undefined,
         rename: (_session: Session, title: string) => { renamedTitle = title },
       }
-      if (name === 'workspace') return {
+      if (name === 'workspaceRegistry') return {
         list: () => [{
           id: 'workspace-fixture',
-          sessionIds: [sourceId],
+          path: 'C:\\fixture-workspace',
+          sessionIds: [],
           attachSession: async (sessionId: SessionId) => { attachedSessionId = sessionId },
         }],
       }

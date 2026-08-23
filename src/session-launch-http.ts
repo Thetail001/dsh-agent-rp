@@ -33,12 +33,16 @@ interface AgentPresetGateway {
   mount(agentCtx: Context, id?: string): Promise<unknown>
 }
 
+interface LaunchWorkspace {
+  readonly id: string
+  readonly path?: string
+  readonly sessionIds: readonly SessionId[]
+  attachSession(sessionId: SessionId): Promise<void>
+}
+
 interface WorkspaceGateway {
-  list(): readonly {
-    readonly id: string
-    readonly sessionIds: readonly SessionId[]
-    attachSession(sessionId: SessionId): Promise<void>
-  }[]
+  list(): readonly LaunchWorkspace[]
+  resolveByPath?(path: string): Promise<LaunchWorkspace | undefined>
 }
 
 interface SessionTitleGateway {
@@ -89,7 +93,12 @@ export async function launchAgentRpSession(
   worldInfos: WorldInfoLibrary,
   input: unknown,
   resources?: RoleplayResourceCatalog,
-): Promise<{ readonly sessionId: SessionId; readonly title: string; readonly seed: readonly SessionEvent[] }> {
+): Promise<{
+  readonly sessionId: SessionId
+  readonly title: string
+  readonly seed: readonly SessionEvent[]
+  readonly workspaceWarning?: string
+}> {
   const request = parseAgentRpSessionLaunchRequest(input)
   const sourceId = SessionId(request.sourceSessionId)
   const agents = ctx.get('agents') as Context['agents'] | undefined
@@ -165,14 +174,31 @@ export async function launchAgentRpSession(
       ctx.logger.warn(`agent-rp: Session ${JSON.stringify(sessionId)} title was not applied: ${String(error)}`)
     }
   }
-  const workspaces = ctx.get('workspace') as WorkspaceGateway | undefined
-  const workspace = workspaces?.list().find(item => item.sessionIds.includes(sourceId))
-  if (workspace !== undefined) {
-    try {
-      await workspace.attachSession(sessionId)
-    } catch (error: unknown) {
-      ctx.logger.warn(`agent-rp: Session ${JSON.stringify(sessionId)} remains ungrouped: ${String(error)}`)
+  let workspaceWarning: string | undefined
+  try {
+    const workspaces = (ctx.get('workspace') ?? ctx.get('workspaceRegistry')) as WorkspaceGateway | undefined
+    if (workspaces === undefined) {
+      workspaceWarning = '当前 DSH 没有可用的工作区服务，新角色会话保留在“未分组”'
+    } else {
+      const listed = workspaces.list()
+      const workspace = listed.find(item => item.sessionIds.includes(sourceId))
+        ?? (source.session.header.cwd === undefined
+          ? undefined
+          : await workspaces.resolveByPath?.(source.session.header.cwd)
+            ?? listed.find(item => item.path === source.session.header.cwd))
+      if (workspace === undefined) {
+        workspaceWarning = source.session.header.cwd === undefined
+          ? '来源会话没有工作目录，新角色会话保留在“未分组”'
+          : '没有找到来源工作目录对应的工作区，新角色会话保留在“未分组”'
+      } else {
+        await workspace.attachSession(sessionId)
+      }
     }
+  } catch (error: unknown) {
+    workspaceWarning = `工作区挂靠失败：${error instanceof Error ? error.message : String(error)}`
+  }
+  if (workspaceWarning !== undefined) {
+    ctx.logger.warn(`agent-rp: Session ${JSON.stringify(sessionId)} remains ungrouped: ${workspaceWarning}`)
   }
   if (request.kind === 'rewrite') {
     handle.agent.followup(createUserMessage({
@@ -180,7 +206,12 @@ export async function launchAgentRpSession(
       source: { kind: 'user' },
     }))
   }
-  return { sessionId, title: prepared.title, seed: prepared.seed }
+  return {
+    sessionId,
+    title: prepared.title,
+    seed: prepared.seed,
+    ...(workspaceWarning === undefined ? {} : { workspaceWarning }),
+  }
 }
 
 /** Register the current-public-DSH bridge for seeded Session creation. */
@@ -217,7 +248,12 @@ export function installSessionLaunchHttp(
           await readJson(request),
           resources,
         )
-        json(response, 200, { format: 0, sessionId: result.sessionId, title: result.title })
+        json(response, 200, {
+          format: 0,
+          sessionId: result.sessionId,
+          title: result.title,
+          ...(result.workspaceWarning === undefined ? {} : { workspaceWarning: result.workspaceWarning }),
+        })
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)
         json(response, /过大/u.test(message) ? 413 : 400, { error: message })
