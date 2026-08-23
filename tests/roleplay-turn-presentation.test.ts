@@ -97,6 +97,42 @@ function appendReply(session: Session, turn: number, text: string) {
   }, { surfaceOp: 'append', sourceEventSeqs: [] })
 }
 
+function appendAutoStagedArtifact(session: Session, turn: number, id: string) {
+  const attachment: ImageAttachmentRef = {
+    attachmentId: AttachmentId(`sha256:${id}`),
+    mediaType: 'image/png',
+    bytes: 68,
+    width: 1,
+    height: 1,
+  }
+  const callId = CallId(`image-${id}`)
+  session.append('assistant/message', {
+    turn,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' },
+      content: [{ type: 'tool-call', id: callId, name: 'generate_image', arguments: '{}' }],
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  const call = session.append('tool/call', {
+    turn, step: 1, callId, name: 'generate_image', arguments: '{}',
+  })
+  const result = session.append('tool/result', {
+    turn,
+    step: 1,
+    message: createToolResultMessage({
+      callId, content: [{ type: 'text', text: '[image artifact]' }], isError: false,
+    }),
+    meta: {
+      format: 'dsh.tool-artifacts',
+      version: 0,
+      artifacts: [{ type: 'image', attachment }],
+      data: { format: 'agent-rp.artifact-stage-intent', version: 0, caption: id },
+    } as unknown as JsonValue,
+  }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+  return { attachment, result }
+}
+
 function tavernState() {
   return initializeTavernHelperState({
     regexScripts: [], tavernHelperScriptNames: [], tavernHelperVariables: {}, tavernHelperScripts: [],
@@ -401,7 +437,7 @@ test('reply-version selection produces the current unified presentation', () => 
   assert.equal(presentation?.current, true)
 })
 
-test('selecting an older reply restores its late branch-local Tavern attachment', async () => {
+test('reply versions restore branch-local state and artifacts together after replay', async () => {
   const session = Session.create(SessionId('presentation-version-attachment'))
   const originalBase = applyTavernHelperMutation(tavernState(), {
     format: 0, scope: 'chat', variables: { marker: 'original-base' },
@@ -410,11 +446,13 @@ test('selecting an older reply restores its late branch-local Tavern attachment'
   const turnPlan = plan(session, [{
     id: 'state:tavern-helper', owner: 'session', revision: originalBase.revision,
   }])
+  const originalArtifact = appendAutoStagedArtifact(session, 1, 'branch-original')
   const original = appendReply(session, 1, '第一版')
   const settlementEvent = settle(session, turnPlan, 1)
   appendRoleplayTurnPresentation(session, compileInitialSessionRoleplayTurnPresentation({
     session, settlementEvent, plans: [{ step: 1, plan: turnPlan }],
   }))
+  const alternativeArtifact = appendAutoStagedArtifact(session, 2, 'branch-alternative')
   const alternative = appendReply(session, 2, '第二版')
   const surface = session.append('assistant/message', {
     turn: 2,
@@ -424,7 +462,7 @@ test('selecting an older reply restores its late branch-local Tavern attachment'
     }),
   }, {
     surfaceOp: { op: 'replace', start: original.seq, end: alternative.seq },
-    sourceEventSeqs: [original.seq, alternative.seq],
+    sourceEventSeqs: session.surface.nodes.slice(session.surface.nodes.indexOf(original.seq)),
   })
   const alternativeState = applyTavernHelperMutation(originalBase, {
     format: 0, scope: 'chat', variables: { marker: 'alternative' },
@@ -438,8 +476,14 @@ test('selecting an older reply restores its late branch-local Tavern attachment'
       format: 0, groupId, operation: 'regenerate', originSeq: original.seq, anchorSeq: original.seq,
       assistantSeqs: [original.seq, alternative.seq],
       versions: [
-        { seq: original.seq, text: '第一版', tavernStateSeq: originalBaseEvent.eventSeq },
-        { seq: alternative.seq, text: '第二版', tavernStateSeq: alternativeStateEvent.eventSeq },
+        {
+          seq: original.seq, text: '第一版', artifactReplySeqs: [original.seq],
+          tavernStateSeq: originalBaseEvent.eventSeq,
+        },
+        {
+          seq: alternative.seq, text: '第二版', artifactReplySeqs: [alternative.seq],
+          tavernStateSeq: alternativeStateEvent.eventSeq,
+        },
       ],
       selectedVersionSeq: alternative.seq,
       surfaceSeq: surface.seq,
@@ -448,6 +492,9 @@ test('selecting an older reply restores its late branch-local Tavern attachment'
   const versionPresentation = compileSessionRoleplayTurnPresentationUpdate(session, generationEvent)
   if (versionPresentation === undefined) throw new Error('missing version presentation fixture')
   appendRoleplayTurnPresentation(session, versionPresentation)
+  assert.deepEqual(versionPresentation.present.artifacts?.map(artifact => artifact.artifactId), [
+    String(alternativeArtifact.attachment.attachmentId),
+  ])
 
   const cause = { format: 0, sessionId: String(session.id), replySeq: original.seq } as const
   const originalLate = applyTavernHelperMutation(originalBase, {
@@ -460,15 +507,45 @@ test('selecting an older reply restores its late branch-local Tavern attachment'
   if (attachmentPresentation === undefined) throw new Error('missing attachment presentation fixture')
   appendRoleplayTurnPresentation(session, attachmentPresentation)
 
-  const result = await executeGenerationCommand({
+  const originalResult = await executeGenerationCommand({
     agent: { session } as never,
     rawInput: JSON.stringify({ operation: 'select', replySeq: original.seq, versionIndex: 0 }),
     signal: new AbortController().signal,
   })
-  const selected = decodeGenerationState(result.text)
+  const originalResultEvent = session.append('command/done', {
+    commandId: CommandId('presentation-version-select-original'), kind: 'success', text: originalResult.text,
+  })
+  const originalPresentation = compileSessionRoleplayTurnPresentationUpdate(session, originalResultEvent)
+  if (originalPresentation === undefined) throw new Error('missing original branch presentation fixture')
+  appendRoleplayTurnPresentation(session, originalPresentation)
+  const selected = decodeGenerationState(originalResult.text)
   assert.equal(selected?.selectedVersionSeq, original.seq)
   assert.equal(selected?.versions[0]?.tavernStateSeq, attachment.eventSeq)
   assert.equal(readTavernHelperState(session.events)?.scopes.chat.marker, 'original-late')
+  assert.deepEqual(originalPresentation.present.artifacts?.map(artifact => artifact.artifactId), [
+    String(originalArtifact.attachment.attachmentId),
+  ])
+
+  const alternativeResult = await executeGenerationCommand({
+    agent: { session } as never,
+    rawInput: JSON.stringify({ operation: 'select', replySeq: original.seq, versionIndex: 1 }),
+    signal: new AbortController().signal,
+  })
+  const alternativeResultEvent = session.append('command/done', {
+    commandId: CommandId('presentation-version-select-alternative'), kind: 'success', text: alternativeResult.text,
+  })
+  const alternativePresentation = compileSessionRoleplayTurnPresentationUpdate(session, alternativeResultEvent)
+  if (alternativePresentation === undefined) throw new Error('missing alternative branch presentation fixture')
+  appendRoleplayTurnPresentation(session, alternativePresentation)
+  assert.equal(readTavernHelperState(session.events)?.scopes.chat.marker, 'alternative')
+  assert.deepEqual(alternativePresentation.present.artifacts?.map(artifact => artifact.artifactId), [
+    String(alternativeArtifact.attachment.attachmentId),
+  ])
+
+  const reopened = Session.create(session.id, session.events)
+  assert.equal(readTavernHelperState(reopened.events)?.scopes.chat.marker, 'alternative')
+  assert.deepEqual(readCurrentRoleplayTurnPresentation(reopened.events)?.present.artifacts
+    ?.map(artifact => artifact.artifactId), [String(alternativeArtifact.attachment.attachmentId)])
 })
 
 test('rejects malformed or non-assistant mutation causes', () => {

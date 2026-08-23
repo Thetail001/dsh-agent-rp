@@ -48,6 +48,9 @@ function cardWithEntries(entries: readonly object[]) {
 
 test('merges tagged and named MVU initializers in lorebook order', () => {
   const card = cardWithEntries([{
+    id: 3, comment: '[Initvar] 初始变量登记', keys: [], content: '',
+    enabled: false, insertion_order: 30, constant: false, extensions: {},
+  }, {
     id: 2, comment: '[initvar] 后续', keys: [], content: '```yaml\r\n角色:\r\n  等级: 2\r\n物品: [新]\r\n```',
     enabled: false, insertion_order: 20, constant: false, extensions: {},
   }, {

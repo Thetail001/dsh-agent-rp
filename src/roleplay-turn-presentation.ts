@@ -252,6 +252,7 @@ export function compileRoleplayReplyVersionPresentation(input: {
   readonly selectedVersionSeq: number
   readonly surfaceSeq: number
   readonly contributions?: readonly RoleplayPresentationContribution[]
+  readonly artifacts?: readonly RoleplayPresentedArtifact[]
 }): RoleplayTurnPresentation | undefined {
   const baseline = readLatestRoleplayPresentationForReply(input.session.events, input.anchorSeq)
   if (baseline === undefined) return undefined
@@ -265,6 +266,7 @@ export function compileRoleplayReplyVersionPresentation(input: {
     baseline.state,
     input.contributions ?? [],
   )
+  const artifacts = input.artifacts ?? baseline.present.artifacts
   return {
     format: 0,
     sessionId: String(input.session.id),
@@ -285,7 +287,7 @@ export function compileRoleplayReplyVersionPresentation(input: {
     },
     present: {
       modules: presented.modules,
-      ...(baseline.present.artifacts === undefined ? {} : { artifacts: baseline.present.artifacts }),
+      ...(artifacts === undefined || artifacts.length === 0 ? {} : { artifacts }),
     },
   }
 }

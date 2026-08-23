@@ -50,6 +50,8 @@ export interface GenerationStateRecord {
   readonly versions: readonly {
     readonly seq: number
     readonly text: string
+    /** Assistant replies whose tool-stage decisions compose this visible version. */
+    readonly artifactReplySeqs?: readonly number[]
     readonly tavernStateSeq?: number
     readonly mvu?: {
       readonly statData: JsonValue
@@ -138,6 +140,12 @@ function validTavern(value: GenerationStateRecord['tavern']): boolean {
   }
 }
 
+function validArtifactReplySeqs(value: readonly number[] | undefined): boolean {
+  return value === undefined || (value.length > 0
+    && value.every(seq => Number.isSafeInteger(seq) && seq >= 0)
+    && new Set(value).size === value.length)
+}
+
 function parseGenerationState(data: GenerationStateRecord, eventSeq: number): ActiveGenerationGroup {
   const assistantSeqs = uniqueSeqs(data.assistantSeqs, '回复来源序号')
   const versionSeqs = uniqueSeqs(data.versions.map(version => version.seq), '回复版本序号')
@@ -152,6 +160,7 @@ function parseGenerationState(data: GenerationStateRecord, eventSeq: number): Ac
     || data.versions.some(version => typeof version.text !== 'string' || version.text.trim() === '')
     || data.versions.some(version => version.tavernStateSeq !== undefined
       && (!Number.isSafeInteger(version.tavernStateSeq) || version.tavernStateSeq < 0))
+    || data.versions.some(version => !validArtifactReplySeqs(version.artifactReplySeqs))
     || data.versions.some(version => !validMvu(version.mvu))
     || !validMvu(data.baseMvu) || !validMvu(data.mvu) || !validTavern(data.tavern)
     || versionSeqs[0] !== data.originSeq
@@ -183,6 +192,9 @@ export function readGenerationGroups(events: readonly SessionEvent[]): readonly 
     const group = parseGenerationState(data, event.seq)
     for (const seq of [...group.assistantSeqs, ...group.versions.map(version => version.seq), group.anchorSeq, group.surfaceSeq]) {
       if (seq >= event.seq || events[seq]?.type !== 'assistant/message') throw new Error('回复版本引用了不存在的助手消息')
+    }
+    for (const seq of group.versions.flatMap(version => version.artifactReplySeqs ?? [])) {
+      if (seq >= event.seq || events[seq]?.type !== 'assistant/message') throw new Error('回复版本引用了不存在的产物来源')
     }
     for (const seq of [group.baseTavernStateSeq, ...group.versions.map(version => version.tavernStateSeq)]) {
       if (seq === undefined) continue
@@ -407,6 +419,7 @@ export async function executeGenerationCommand(invocation: {
   const versions = [...(existing?.versions ?? [{
     seq: originSeq,
     text: visibleText(assistantEvent(events, originSeq)),
+    artifactReplySeqs: [originSeq],
   }])].map(version => version.seq !== current.selectedSeq ? version : {
     ...version,
     ...(currentTavern === undefined ? {} : { tavernStateSeq: currentTavern.eventSeq }),
@@ -488,6 +501,11 @@ export async function executeGenerationCommand(invocation: {
       versions.push({
         seq: selectedSeq,
         text: content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim(),
+        artifactReplySeqs: [...new Set([
+          ...(versions.find(version => version.seq === current.selectedSeq)?.artifactReplySeqs
+            ?? [current.selectedSeq]),
+          generatedSeq,
+        ])],
         ...(currentTavern === undefined ? {} : { tavernStateSeq: currentTavern.eventSeq }),
         ...(continuedMvu === undefined ? {} : { mvu: continuedMvu }),
       })
@@ -498,6 +516,7 @@ export async function executeGenerationCommand(invocation: {
       versions.push({
         seq: selectedSeq,
         text: visibleText(generated),
+        artifactReplySeqs: [generatedSeq],
         ...(generatedTavern === undefined ? {} : { tavernStateSeq: generatedTavern.eventSeq }),
         ...(generatedMvu === undefined ? {} : { mvu: generatedMvu }),
       })

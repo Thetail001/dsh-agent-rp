@@ -7,6 +7,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { AttachmentStore, ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JsonValue, Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type { RoleplayPresentedArtifact } from './roleplay-turn-presentation-types.ts'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   DEFAULT_TOOL_GUIDANCE,
@@ -772,6 +773,23 @@ export function readStagedRoleplayArtifacts(
     results.set(event.seq, event)
   }
   return staged
+}
+
+/** Project validated stage decisions into the immutable player-facing artifact shape. */
+export function readPresentedRoleplayArtifacts(
+  events: readonly SessionEvent[],
+  turn: number,
+  beforeSeq = Number.POSITIVE_INFINITY,
+): readonly RoleplayPresentedArtifact[] {
+  return readStagedRoleplayArtifacts(events, turn, beforeSeq).map(staged => ({
+    type: staged.artifact.type,
+    artifactId: String(staged.artifact.attachment.attachmentId),
+    attachment: staged.artifact.attachment,
+    sourceResultSeq: staged.sourceResultSeq,
+    sourceCallId: staged.sourceCallId,
+    sourceToolName: staged.sourceToolName,
+    ...(staged.caption === undefined ? {} : { caption: staged.caption }),
+  }))
 }
 
 /** Minimal Agent shape documented for capability tests and embedders. */

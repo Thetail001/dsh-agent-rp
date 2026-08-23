@@ -56,7 +56,9 @@ function initializerContents(card: ImportedCharacterCard): string[] {
     .flatMap(entry => {
       const tagged = /<initvar>[\s\S]*?<\/initvar>/iu.test(entry.content)
       const named = /\[initvar\]/iu.test(`${entry.comment ?? ''}\n${entry.name ?? ''}`)
-      return tagged || named ? [unwrapInitializer(entry.content)] : []
+      if (!tagged && !named) return []
+      const content = unwrapInitializer(entry.content).trim()
+      return content === '' ? [] : [content]
     })
 }
 

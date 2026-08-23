@@ -1,7 +1,12 @@
-- id: agent-rp-character
-  name: '@dsh-external/dsh-agent-rp'
+- id: agent-rp-runtime
+  name: cordis:group
+  isolate:
+    agentRp.actorRevisions: true
   config:
-    mode: character
+    - id: agent-rp-character
+      name: '@dsh-external/dsh-agent-rp'
+      config:
+        mode: character
 
 # Roleplay may need current public information, but it must not inherit the
 # coding preset's shell, filesystem, subagents, or other workspace authority.

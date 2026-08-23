@@ -16,11 +16,12 @@ import {
   roleplayPresentedState,
 } from './roleplay-turn-presentation-state.ts'
 import type {
+  RoleplayPresentedArtifact,
   RoleplayPresentationContribution,
   RoleplayTurnPresentation,
 } from './roleplay-turn-presentation-types.ts'
 import type { BoundRoleplayTurnPlan } from './roleplay-turn-settlement.ts'
-import { readStagedRoleplayArtifacts } from './roleplay-artifact.ts'
+import { readPresentedRoleplayArtifacts } from './roleplay-artifact.ts'
 import {
   decodeTavernHelperStateAttachment,
   decodeTavernHelperState,
@@ -100,19 +101,11 @@ export function compileInitialSessionRoleplayTurnPresentation(input: {
   readonly plans?: readonly BoundRoleplayTurnPlan[]
 }): RoleplayTurnPresentation {
   const tavern = initialTavernContribution(input)
-  const artifacts = readStagedRoleplayArtifacts(
+  const artifacts = readPresentedRoleplayArtifacts(
     input.session.events,
     input.settlementEvent.data.turn,
     input.settlementEvent.seq,
-  ).map(staged => ({
-    type: staged.artifact.type,
-    artifactId: String(staged.artifact.attachment.attachmentId),
-    attachment: staged.artifact.attachment,
-    sourceResultSeq: staged.sourceResultSeq,
-    sourceCallId: staged.sourceCallId,
-    sourceToolName: staged.sourceToolName,
-    ...(staged.caption === undefined ? {} : { caption: staged.caption }),
-  }))
+  )
   return compileInitialRoleplayTurnPresentation({
     ...input,
     ...(tavern === undefined ? {} : { contributions: [tavern] }),
@@ -124,6 +117,29 @@ function selectedGenerationVersion(generation: GenerationStateRecord): void {
   if (!generation.versions.some(version => version.seq === generation.selectedVersionSeq)) {
     throw new Error('Roleplay reply version has no selected reply')
   }
+}
+
+function generationArtifacts(
+  session: Session,
+  generation: GenerationStateRecord,
+): readonly RoleplayPresentedArtifact[] | undefined {
+  const selected = generation.versions.find(version => version.seq === generation.selectedVersionSeq)
+  if (selected?.artifactReplySeqs === undefined) {
+    return readLatestRoleplayPresentationForReply(session.events, generation.selectedVersionSeq)?.present.artifacts
+  }
+  const artifacts = new Map<string, RoleplayPresentedArtifact>()
+  for (const replySeq of selected.artifactReplySeqs) {
+    const reply = eventAt(session.events, replySeq)
+    if (reply?.type !== 'assistant/message') throw new Error('Roleplay artifact source reply is missing')
+    const closing = session.events.find(event => event.seq > reply.seq
+      && event.type === 'turn/end' && event.data.turn === reply.data.turn)
+    for (const artifact of readPresentedRoleplayArtifacts(
+      session.events,
+      reply.data.turn,
+      closing === undefined ? Number.POSITIVE_INFINITY : closing.seq + 1,
+    )) artifacts.set(artifact.artifactId, artifact)
+  }
+  return [...artifacts.values()]
 }
 
 function presentationForGeneration(
@@ -165,6 +181,7 @@ function presentationForGeneration(
       }],
     })
   }
+  const artifacts = generationArtifacts(session, generation)
   return compileRoleplayReplyVersionPresentation({
     session,
     eventSeq: event.seq,
@@ -173,6 +190,7 @@ function presentationForGeneration(
     selectedVersionSeq: generation.selectedVersionSeq,
     surfaceSeq: generation.surfaceSeq,
     contributions,
+    ...(artifacts === undefined ? {} : { artifacts }),
   })
 }
 

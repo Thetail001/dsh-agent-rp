@@ -241,6 +241,12 @@ test('regenerates from pre-reply script state and restores each swipe state', as
   assert.deepEqual(decodeGenerationState(regenerated.text)?.mvu, {
     statData: { 角色: { 等级: 4 } }, updateCount: 2,
   })
+  const regeneratedState = decodeGenerationState(regenerated.text)
+  const replacementReplySeq = regeneratedState?.assistantSeqs.at(-1)
+  if (replacementReplySeq === undefined) throw new Error('missing regenerated reply fixture')
+  assert.deepEqual(regeneratedState?.versions.map(version => version.artifactReplySeqs), [
+    [original.seq], [replacementReplySeq],
+  ])
   assert.deepEqual(readTavernHelperState(session.events)?.scopes.message, { stat_data: { marker: 'before-reply' } })
 
   const accepted = scriptState('replacement-reply', 'replacement-context')
@@ -335,9 +341,13 @@ test('continues from the selected MVU checkpoint without applying its old patch 
     signal: new AbortController().signal,
   })
 
-  assert.deepEqual(decodeGenerationState(result.text)?.mvu, {
+  const continued = decodeGenerationState(result.text)
+  const continuationReplySeq = continued?.assistantSeqs.at(-1)
+  if (continuationReplySeq === undefined) throw new Error('missing continuation reply fixture')
+  assert.deepEqual(continued?.mvu, {
     statData: { 角色: { 等级: 4 } }, updateCount: 2,
   })
+  assert.deepEqual(continued?.versions.at(-1)?.artifactReplySeqs, [original.seq, continuationReplySeq])
   assert.deepEqual(readCurrentSessionMvuState(card, session), {
     statData: { 角色: { 等级: 4 } }, updateCount: 2,
   })
