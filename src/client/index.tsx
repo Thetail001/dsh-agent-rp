@@ -284,7 +284,10 @@ import {
 import type { RoleplayActorResourceDetail } from '../roleplay-resource-catalog-protocol.ts'
 import { characterLibraryRoleplayResourceId } from '../roleplay-resource-library-ids.ts'
 import {
+  characterExperienceSelection,
   characterExperienceLaunchRequest,
+  experiencePreflightResources,
+  sceneExperienceSelection,
   sceneExperienceLaunchRequest,
 } from './roleplay-experience-request.ts'
 import {
@@ -4702,6 +4705,7 @@ function useTavernLaunchPreflight(input: {
   readonly permissionOwnerId?: string
   readonly characterId?: string
   readonly presetId?: string
+  readonly resources?: readonly import('../roleplay-resource-catalog-protocol.ts').RoleplayResourceSelection[]
 }) {
   const [approvedScripts, setApprovedScripts] = useState(readApprovedTavernScriptOrigins)
   const [approvedImages, setApprovedImages] = useState(readApprovedTavernScriptImages)
@@ -4712,8 +4716,9 @@ function useTavernLaunchPreflight(input: {
   const approvals = input.permissionOwnerId === undefined ? []
     : tavernPreflightApprovals(approvedScripts, input.permissionOwnerId, input.presetId)
   const selectionKey = !input.expected || input.permissionOwnerId === undefined
-    || (input.characterId === undefined && input.presetId === undefined) ? undefined : JSON.stringify([
-      input.permissionOwnerId, input.characterId ?? null, input.presetId ?? null, approvals,
+    || (input.resources === undefined && input.characterId === undefined && input.presetId === undefined)
+    || input.resources?.length === 0 ? undefined : JSON.stringify([
+      input.permissionOwnerId, input.resources ?? null, input.characterId ?? null, input.presetId ?? null, approvals,
     ])
   const current = loadState?.selectionKey === selectionKey ? loadState : undefined
   const result = current?.status === 'ready' ? current.result : undefined
@@ -4726,12 +4731,13 @@ function useTavernLaunchPreflight(input: {
     }
     const controller = new AbortController()
     setLoadState({ selectionKey, status: 'loading' })
-    void fetchTavernPreflight({
-      format: 0,
+    const request = input.resources === undefined ? {
+      format: 0 as const,
       ...(input.characterId === undefined ? {} : { characterId: input.characterId }),
       ...(input.presetId === undefined ? {} : { presetId: input.presetId }),
       scriptApprovals: approvals,
-    }, controller.signal).then(value => {
+    } : { format: 1 as const, resources: input.resources, scriptApprovals: approvals }
+    void fetchTavernPreflight(request, controller.signal).then(value => {
       if (!controller.signal.aborted) setLoadState({ selectionKey, status: 'ready', result: value })
     }, reason => {
       if (!controller.signal.aborted) setLoadState({
@@ -5054,6 +5060,22 @@ function RoleplayLaunchComposer({
   }, [mode, primaryWorldInfoId, selectedWorldInfoIds])
 
   const effectiveCharacter = mode === 'character' ? character : undefined
+  const experienceSelection = mode === 'character'
+    ? characterId === '' ? undefined : characterExperienceSelection({
+      characterId,
+      greetingIndex,
+      ...(selectedPersona === undefined ? {} : { persona: selectedPersona }),
+      ...(selectedPresetId === undefined ? {} : { presetId: selectedPresetId }),
+      worldInfoIds: selectedWorldInfoIds ?? [],
+    })
+    : primaryWorldInfoId === '' ? undefined : sceneExperienceSelection({
+      primaryWorldInfoId,
+      ...(selectedPersona === undefined ? {} : { persona: selectedPersona }),
+      ...(selectedPresetId === undefined ? {} : { presetId: selectedPresetId }),
+      supportingWorldInfoIds: selectedWorldInfoIds ?? [],
+    })
+  const experienceResources = experienceSelection === undefined
+    ? undefined : experiencePreflightResources(experienceSelection)
   const expectsTavernPreflight = (effectiveCharacter?.tavernHelper?.enabledScriptCount ?? 0) > 0
     || (selectedPresetId !== undefined
       && (presets === undefined || (selectedPreset?.tavernHelper?.enabledScriptCount ?? 0) > 0))
@@ -5064,6 +5086,7 @@ function RoleplayLaunchComposer({
     permissionOwnerId: effectiveCharacter?.id ?? DEFAULT_AGENT_RP_CHARACTER_NAME,
     ...(effectiveCharacter === undefined ? {} : { characterId: effectiveCharacter.id }),
     ...(selectedPresetId === undefined ? {} : { presetId: selectedPresetId }),
+    ...(experienceResources === undefined ? {} : { resources: experienceResources }),
   })
   const pendingScriptResources = launchPreflight.pending
   const pendingCardResources = effectiveCharacter === undefined

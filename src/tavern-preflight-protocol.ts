@@ -1,5 +1,7 @@
 /** Browser-safe protocol for preflighting static Tavern Helper resources before Session launch. */
 
+import type { RoleplayResourceSelection } from './roleplay-resource-catalog-protocol.ts'
+
 /** Same-origin endpoint that inspects selected launch resources without executing them. */
 export const TAVERN_PREFLIGHT_PATH = '/api/agent-rp/tavern-preflight'
 
@@ -16,13 +18,23 @@ export interface TavernPreflightScriptApproval {
   readonly origins: readonly string[]
 }
 
-/** Model-free request to inspect every enabled script selected for a future Session. */
-export interface TavernPreflightRequest {
+/** Legacy model-free request retained for chat migration and older launch surfaces. */
+export interface TavernLegacyPreflightRequest {
   readonly format: 0
   readonly characterId?: string
   readonly presetId?: string
   readonly scriptApprovals: readonly TavernPreflightScriptApproval[]
 }
+
+/** Source-neutral request to inspect the complete resource selection for one future experience. */
+export interface TavernExperiencePreflightRequest {
+  readonly format: 1
+  readonly resources: readonly RoleplayResourceSelection[]
+  readonly scriptApprovals: readonly TavernPreflightScriptApproval[]
+}
+
+/** Every supported model-free launch preflight request. */
+export type TavernPreflightRequest = TavernLegacyPreflightRequest | TavernExperiencePreflightRequest
 
 /** Stable static-resolution state for one enabled script. */
 export type TavernPreflightStatus = 'ready' | 'permission-required' | 'resolution-error'

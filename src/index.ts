@@ -1285,7 +1285,9 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         const tavernExecutionPlans = new TavernExecutionPlanCache(undefined, 64, {
           persistentRoot: dshHomePath('agent-rp', 'cache', 'tavern-execution-plans'),
         })
-        installTavernPreflightHttp(webCtx, characterLibrary, presetLibrary, server, tavernExecutionPlans)
+        installTavernPreflightHttp(
+          webCtx, characterLibrary, presetLibrary, resourceCatalog, server, tavernExecutionPlans,
+        )
         installTavernExecutionHttp(webCtx, characterLibrary, presetLibrary, server, tavernExecutionPlans)
         installSillyTavernChatHttp(webCtx, chatLibrary, server)
         installSillyTavernChatExportHttp(webCtx, ctx, server)

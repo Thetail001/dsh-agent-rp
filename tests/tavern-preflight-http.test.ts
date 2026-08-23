@@ -10,6 +10,7 @@ import type { CharacterLibrary } from '../src/character-library.ts'
 import type { AgentRpHttpServer } from '../src/host-http.ts'
 import type { ImportedTavernHelperScript } from '../src/import/types.ts'
 import type { PresetLibrary } from '../src/preset-library.ts'
+import { RoleplayResourceCatalog } from '../src/roleplay-resource-catalog.ts'
 import { TavernExecutionPlanCache } from '../src/tavern-preflight.ts'
 import { installTavernExecutionHttp, installTavernPreflightHttp } from '../src/tavern-preflight-http.ts'
 import { TAVERN_EXECUTION_PATH, TAVERN_PREFLIGHT_PATH } from '../src/tavern-preflight-protocol.ts'
@@ -71,9 +72,35 @@ function testLibraries(
   return { characters, presets }
 }
 
+function testResourceCatalog(): RoleplayResourceCatalog {
+  const catalog = new RoleplayResourceCatalog()
+  catalog.register({
+    id: 'agent-rp:character-library',
+    list: () => [{
+      kind: 'actor', id: 'character:library:character-ok', name: '测试角色', availability: 'available',
+    }],
+  })
+  catalog.register({
+    id: 'agent-rp:preset-library',
+    list: () => [{
+      kind: 'prompt-policy', id: 'preset:library:preset-ok', name: '测试预设', availability: 'available',
+    }],
+  })
+  catalog.register({
+    id: 'test:peer-resources',
+    list: () => [{
+      kind: 'persona', id: 'persona-ok', name: '测试身份', availability: 'available',
+    }, {
+      kind: 'world', id: 'standalone:library:world-ok', name: '测试世界', availability: 'available',
+    }],
+  })
+  return catalog
+}
+
 function registeredRoute(
   libraries: { readonly characters: CharacterLibrary; readonly presets: PresetLibrary } = testLibraries(),
   plans = new TavernExecutionPlanCache(),
+  resources = testResourceCatalog(),
 ): RegisteredRoute {
   let route: RegisteredRoute | undefined
   const ctx = {
@@ -85,7 +112,7 @@ function registeredRoute(
       return () => {}
     },
   }
-  installTavernPreflightHttp(ctx, libraries.characters, libraries.presets, server, plans)
+  installTavernPreflightHttp(ctx, libraries.characters, libraries.presets, resources, server, plans)
   assert.ok(route)
   assert.equal(route.kind, 'exact')
   assert.equal(route.path, TAVERN_PREFLIGHT_PATH)
@@ -170,6 +197,15 @@ async function invoke(route: RegisteredRoute, options: InvokeOptions = {}): Prom
 
 function request(overrides: Readonly<Record<string, unknown>> = {}): string {
   return JSON.stringify({ format: 0, characterId: 'character-ok', scriptApprovals: [], ...overrides })
+}
+
+function experienceRequest(overrides: Readonly<Record<string, unknown>> = {}): string {
+  return JSON.stringify({
+    format: 1,
+    resources: [{ kind: 'actor', id: 'character:library:character-ok', variant: 'greeting:0' }],
+    scriptApprovals: [],
+    ...overrides,
+  })
 }
 
 function executionRequest(overrides: Readonly<Record<string, unknown>> = {}): string {
@@ -541,6 +577,73 @@ test('preflights and executes a preset without requiring a character card', asyn
   })
   assert.equal(execution.status, 200)
   assert.equal((execution.json as { readonly format: number }).format, 0)
+})
+
+test('preflights one native experience through its complete source-neutral resource selection', async () => {
+  const result = await invoke(registeredRoute(), {
+    body: experienceRequest({
+      resources: [
+        { kind: 'actor', id: 'character:library:character-ok', variant: 'greeting:2' },
+        { kind: 'persona', id: 'persona-ok' },
+        { kind: 'world', id: 'standalone:library:world-ok' },
+        { kind: 'prompt-policy', id: 'preset:library:preset-ok' },
+      ],
+    }),
+  })
+  assert.equal(result.status, 200)
+  assert.deepEqual(result.json, {
+    format: 0,
+    scripts: 2,
+    ready: 2,
+    permissionRequired: 0,
+    failed: 0,
+    entries: [{
+      scope: 'character', scriptId: 'character-script', scriptName: 'script-character-script',
+      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+    }, {
+      scope: 'preset', scriptId: 'preset-script', scriptName: 'script-preset-script',
+      status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFrameOrigins: [],
+    }],
+  })
+})
+
+test('rejects malformed, duplicate, unavailable, and mismatched experience resources', async () => {
+  const route = registeredRoute()
+  const cases = [{
+    body: experienceRequest({ resources: [] }), error: '权限预检请求无效',
+  }, {
+    body: experienceRequest({ resources: [
+      { kind: 'actor', id: 'character:library:character-ok' },
+      { kind: 'actor', id: 'character:library:other' },
+    ] }), error: '权限预检包含多个 actor 资源',
+  }, {
+    body: experienceRequest({ resources: [
+      { kind: 'world', id: 'standalone:library:world-ok' },
+      { kind: 'world', id: 'standalone:library:world-ok' },
+    ] }), error: '权限预检包含重复资源',
+  }, {
+    body: experienceRequest({ resources: Array.from({ length: 17 }, (_, index) => ({
+      kind: 'world', id: `standalone:library:world-${index}`,
+    })) }), error: '权限预检包含过多 world 资源',
+  }, {
+    body: experienceRequest({ resources: [
+      { kind: 'world', id: 'standalone:library:missing' },
+    ] }), error: '体验资源不可用：world',
+  }, {
+    body: experienceRequest({
+      resources: [{ kind: 'world', id: 'standalone:library:world-ok' }],
+      scriptApprovals: [{ scope: 'preset', scriptId: 'preset-script', origins: [] }],
+    }), error: '脚本授权 1 不属于所选资源',
+  }, {
+    body: experienceRequest({ resources: [{
+      kind: 'actor', id: 'character:library:character-ok', privateField: true,
+    }] }), error: '体验资源 1 无效',
+  }]
+  for (const item of cases) {
+    const result = await invoke(route, { body: item.body })
+    assert.equal(result.status, 400)
+    assert.deepEqual(result.json, { error: item.error })
+  }
 })
 
 test('rejects empty preflight selections and approvals outside the selected resources', async () => {

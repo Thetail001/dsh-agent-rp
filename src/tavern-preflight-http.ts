@@ -10,6 +10,11 @@ import {
   type AgentRpHttpServer,
 } from './host-http.ts'
 import { PresetLibrary } from './preset-library.ts'
+import type { RoleplayResourceCatalog, LocatedRoleplayResource } from './roleplay-resource-catalog.ts'
+import {
+  ROLEPLAY_RESOURCE_KINDS,
+  type RoleplayResourceSelection,
+} from './roleplay-resource-catalog-protocol.ts'
 import { inspectTavernPreflight, TavernExecutionPlanCache } from './tavern-preflight.ts'
 import {
   TAVERN_EXECUTION_PATH, TAVERN_PREFLIGHT_PATH, type TavernExecutionBatchRequest, type TavernExecutionRequest,
@@ -21,6 +26,7 @@ import {
 
 const MAX_PREFLIGHT_REQUEST_BYTES = 64 * 1024
 const MAX_PREFLIGHT_APPROVALS = 256
+const MAX_PREFLIGHT_RESOURCES = 19
 const MAX_ORIGINS_PER_SCRIPT = 32
 const MAX_EXECUTION_BATCH_ENTRIES = 64
 
@@ -100,15 +106,33 @@ function safeScope(value: unknown): TavernPreflightScope {
   return value
 }
 
-function parseRequest(value: unknown): TavernPreflightRequest {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalidRequest('权限预检请求无效')
-  const request = value as Record<string, unknown>
-  if (request.format !== 0 || !Array.isArray(request.scriptApprovals)
-    || request.scriptApprovals.length > MAX_PREFLIGHT_APPROVALS) invalidRequest('权限预检请求无效')
-  const characterId = request.characterId === undefined ? undefined : safeLibraryId(request.characterId, '角色卡 id')
-  const presetId = request.presetId === undefined ? undefined : safeLibraryId(request.presetId, '预设 id')
-  if (characterId === undefined && presetId === undefined) invalidRequest('权限预检没有可检查的资源')
-  const scriptApprovals: TavernPreflightScriptApproval[] = request.scriptApprovals.map((candidate, index) => {
+function safeResourceSelection(value: unknown, index: number): RoleplayResourceSelection {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    invalidRequest(`体验资源 ${index + 1} 无效`)
+  }
+  const selection = value as Record<string, unknown>
+  if (!ROLEPLAY_RESOURCE_KINDS.includes(selection.kind as never)
+    || typeof selection.id !== 'string' || selection.id.length < 1 || selection.id.length > 512
+    || selection.id.trim() !== selection.id || /\s/u.test(selection.id)
+    || (selection.variant !== undefined && (typeof selection.variant !== 'string'
+      || selection.variant.length < 1 || selection.variant.length > 256
+      || selection.variant.trim() !== selection.variant || /\s/u.test(selection.variant)))
+    || Object.keys(selection).some(key => key !== 'kind' && key !== 'id' && key !== 'variant')) {
+    invalidRequest(`体验资源 ${index + 1} 无效`)
+  }
+  return {
+    kind: selection.kind as RoleplayResourceSelection['kind'],
+    id: selection.id,
+    ...(typeof selection.variant === 'string' ? { variant: selection.variant } : {}),
+  }
+}
+
+function parseApprovals(
+  value: unknown,
+  scopes: ReadonlySet<TavernPreflightScope>,
+): readonly TavernPreflightScriptApproval[] {
+  if (!Array.isArray(value) || value.length > MAX_PREFLIGHT_APPROVALS) invalidRequest('权限预检请求无效')
+  return value.map((candidate, index) => {
     if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
       invalidRequest(`脚本授权 ${index + 1} 无效`)
     }
@@ -117,21 +141,86 @@ function parseRequest(value: unknown): TavernPreflightRequest {
       invalidRequest(`脚本授权 ${index + 1} 无效`)
     }
     const scope = safeScope(approval.scope)
-    if ((scope === 'character' && characterId === undefined) || (scope === 'preset' && presetId === undefined)) {
-      invalidRequest(`脚本授权 ${index + 1} 不属于所选资源`)
-    }
+    if (!scopes.has(scope)) invalidRequest(`脚本授权 ${index + 1} 不属于所选资源`)
     return {
       scope,
       scriptId: safeScriptId(approval.scriptId, `脚本授权 ${index + 1} id`),
       origins: [...new Set(approval.origins.map(safeOrigin))].sort(),
     }
   })
+}
+
+function parseRequest(value: unknown): TavernPreflightRequest {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalidRequest('权限预检请求无效')
+  const request = value as Record<string, unknown>
+  if (request.format === 1) {
+    if (!Array.isArray(request.resources) || request.resources.length < 1
+      || request.resources.length > MAX_PREFLIGHT_RESOURCES
+      || Object.keys(request).some(key => !['format', 'resources', 'scriptApprovals'].includes(key))) {
+      invalidRequest('权限预检请求无效')
+    }
+    const resources = request.resources.map(safeResourceSelection)
+    const identities = new Set<string>()
+    const singleKinds = new Set<string>()
+    for (const resource of resources) {
+      const identity = JSON.stringify([resource.kind, resource.id])
+      if (identities.has(identity)) invalidRequest('权限预检包含重复资源')
+      identities.add(identity)
+      if (resource.kind !== 'world') {
+        if (singleKinds.has(resource.kind)) invalidRequest(`权限预检包含多个 ${resource.kind} 资源`)
+        singleKinds.add(resource.kind)
+      }
+    }
+    if (resources.filter(resource => resource.kind === 'world').length > 16) {
+      invalidRequest('权限预检包含过多 world 资源')
+    }
+    const scopes = new Set<TavernPreflightScope>()
+    if (resources.some(resource => resource.kind === 'actor')) scopes.add('character')
+    if (resources.some(resource => resource.kind === 'prompt-policy')) scopes.add('preset')
+    return { format: 1, resources, scriptApprovals: parseApprovals(request.scriptApprovals, scopes) }
+  }
+  if (request.format !== 0 || Object.keys(request).some(key => ![
+    'format', 'characterId', 'presetId', 'scriptApprovals',
+  ].includes(key))) invalidRequest('权限预检请求无效')
+  const characterId = request.characterId === undefined ? undefined : safeLibraryId(request.characterId, '角色卡 id')
+  const presetId = request.presetId === undefined ? undefined : safeLibraryId(request.presetId, '预设 id')
+  if (characterId === undefined && presetId === undefined) invalidRequest('权限预检没有可检查的资源')
+  const scopes = new Set<TavernPreflightScope>()
+  if (characterId !== undefined) scopes.add('character')
+  if (presetId !== undefined) scopes.add('preset')
+  const scriptApprovals = parseApprovals(request.scriptApprovals, scopes)
   return {
     format: 0,
     ...(characterId === undefined ? {} : { characterId }),
     ...(presetId === undefined ? {} : { presetId }),
     scriptApprovals,
   }
+}
+
+function selectedResource(
+  catalog: RoleplayResourceCatalog,
+  selection: RoleplayResourceSelection,
+): LocatedRoleplayResource {
+  let located: LocatedRoleplayResource | undefined
+  try {
+    located = catalog.locate(selection.kind, selection.id)
+  } catch (error: unknown) {
+    invalidRequest('体验资源引用无效', { cause: error })
+  }
+  if (located === undefined || located.descriptor.availability !== 'available') {
+    invalidRequest(`体验资源不可用：${selection.kind}`)
+  }
+  return located
+}
+
+function libraryResourceId(
+  located: LocatedRoleplayResource,
+  providerId: string,
+  prefix: string,
+): string | undefined {
+  if (located.providerId !== providerId || !located.descriptor.id.startsWith(prefix)
+    || located.descriptor.id.length === prefix.length) return undefined
+  return safeLibraryId(located.descriptor.id.slice(prefix.length), `${located.descriptor.kind} 资源 id`)
 }
 
 function parseExecutionRequest(value: unknown): TavernExecutionRequest {
@@ -195,6 +284,7 @@ export function installTavernPreflightHttp(
   ctx: Context,
   characters: CharacterLibrary,
   presets: PresetLibrary,
+  resources: RoleplayResourceCatalog,
   server: AgentRpHttpServer,
   plans: TavernExecutionPlanCache,
 ): void {
@@ -213,29 +303,45 @@ export function installTavernPreflightHttp(
       }
       try {
         const input = parseRequest(await readJson(request))
+        let characterId: string | undefined
+        let presetId: string | undefined
+        if (input.format === 0) {
+          characterId = input.characterId
+          presetId = input.presetId
+        } else {
+          for (const selection of input.resources) {
+            const located = selectedResource(resources, selection)
+            if (selection.kind === 'actor') characterId = libraryResourceId(
+              located, 'agent-rp:character-library', 'character:library:',
+            )
+            if (selection.kind === 'prompt-policy') presetId = libraryResourceId(
+              located, 'agent-rp:preset-library', 'preset:library:',
+            )
+          }
+        }
         let character: ReturnType<CharacterLibrary['resolve']> | undefined
-        if (input.characterId !== undefined) {
+        if (characterId !== undefined) {
           try {
-            character = characters.resolve(input.characterId)
+            character = characters.resolve(characterId)
           } catch (error: unknown) {
             invalidRequest('角色卡不可用', { cause: error })
           }
         }
         let preset: ReturnType<PresetLibrary['get']> | undefined
-        if (input.presetId !== undefined) {
+        if (presetId !== undefined) {
           try {
-            preset = presets.get(input.presetId)
+            preset = presets.get(presetId)
           } catch (error: unknown) {
             invalidRequest('预设不可用', { cause: error })
           }
         }
         const result = await inspectTavernPreflight([
           {
-            scope: 'character', ownerId: input.characterId ?? '',
+            scope: 'character', ownerId: characterId ?? '',
             scripts: character?.card.frontend.tavernHelperScripts ?? [],
           },
           {
-            scope: 'preset', ownerId: input.presetId ?? '',
+            scope: 'preset', ownerId: presetId ?? '',
             scripts: preset?.preset.tavernHelperScripts ?? [],
           },
         ], input.scriptApprovals, AbortSignal.timeout(30_000), plans)

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   characterExperienceLaunchRequest,
+  experiencePreflightResources,
   sceneExperienceLaunchRequest,
 } from '../src/client/roleplay-experience-request.ts'
 import { parseRoleplayResourceDetailResponse } from '../src/client/roleplay-resource-detail.ts'
@@ -38,6 +39,12 @@ test('maps browser library choices to a content-free character experience reques
     promptPolicy: { kind: 'prompt-policy', id: 'preset:library:imported-0123456789abcdef' },
   })
   assert.equal(JSON.stringify(request).includes('完整 Persona 正文'), false)
+  assert.deepEqual(experiencePreflightResources(request), [
+    request.actor,
+    request.participant,
+    ...request.worlds!,
+    request.promptPolicy,
+  ])
 })
 
 test('keeps the primary scene world first in a source-neutral request', () => {
