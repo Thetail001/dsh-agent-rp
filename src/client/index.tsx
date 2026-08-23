@@ -2899,7 +2899,8 @@ const settingsFieldStyle = {
 } as const
 
 function nextImageProfileName(profiles: readonly ImageGenerationProfile[], provider: ImageGenerationSettings['provider']): string {
-  const base = provider === 'openai' ? 'OpenAI 配置' : provider === 'novelai' ? 'NovelAI 配置'
+  const base = provider === 'openai' ? 'OpenAI 配置' : provider === 'dashscope' ? '百炼配置'
+    : provider === 'novelai' ? 'NovelAI 配置'
     : provider === 'a1111' ? 'A1111 配置' : 'ComfyUI 配置'
   const names = new Set(profiles.map(profile => profile.name.toLowerCase()))
   if (!names.has(base.toLowerCase())) return base
@@ -3059,6 +3060,7 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
         editDraft(current => ({ ...current, provider: event.target.value as ImageGenerationSettings['provider'] }))
       }} style={settingsFieldStyle}>
         <option value="openai">OpenAI Images / 兼容接口</option>
+        <option value="dashscope">阿里云百炼 / 千问图片</option>
         <option value="novelai">NovelAI V4.5</option>
         <option value="a1111">A1111 / Forge</option>
         <option value="comfyui">ComfyUI</option>
@@ -3086,6 +3088,68 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
           <option value="1536x1024">1536 × 1024（横图）</option>
         </select>
       </label>
+    </div> : draft.provider === 'dashscope' ? <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', marginTop: '12px' }}>
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>同步接口地址
+        <input value={draft.dashscope.endpoint} disabled={!writable}
+          placeholder="https://你的业务空间ID.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+          onChange={event => {
+            editDraft(current => ({ ...current, dashscope: { ...current.dashscope, endpoint: event.target.value } }))
+          }} style={settingsFieldStyle} />
+      </label>
+      <label style={labelStyle}>模型
+        <select value={draft.dashscope.model} disabled={!writable} onChange={event => {
+          editDraft(current => ({ ...current, dashscope: {
+            ...current.dashscope,
+            model: event.target.value as ImageGenerationSettings['dashscope']['model'],
+          } }))
+        }} style={settingsFieldStyle}>
+          <option value="qwen-image-3.0">千问图片 3.0</option>
+          <option value="qwen-image-3.0-pro">千问图片 3.0 Pro</option>
+        </select>
+      </label>
+      <label style={labelStyle}>尺寸
+        <select value={draft.dashscope.size} disabled={!writable} onChange={event => {
+          editDraft(current => ({ ...current, dashscope: {
+            ...current.dashscope,
+            size: event.target.value as ImageGenerationSettings['dashscope']['size'],
+          } }))
+        }} style={settingsFieldStyle}>
+          <option value="auto">自动</option>
+          <option value="1024*1024">1024 × 1024（方形）</option>
+          <option value="1024*1536">1024 × 1536（竖图）</option>
+          <option value="1536*1024">1536 × 1024（横图）</option>
+        </select>
+      </label>
+      <label style={labelStyle}>提示词扩写方式
+        <select value={draft.dashscope.promptExtendMode} disabled={!writable || !draft.dashscope.promptExtend}
+          onChange={event => {
+            editDraft(current => ({ ...current, dashscope: {
+              ...current.dashscope,
+              promptExtendMode: event.target.value as ImageGenerationSettings['dashscope']['promptExtendMode'],
+            } }))
+          }} style={settingsFieldStyle}>
+          <option value="direct">直接扩写（更快）</option>
+          <option value="agent">智能扩写（更充分）</option>
+        </select>
+      </label>
+      <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>默认负面提示词（可留空）
+        <textarea value={draft.dashscope.negativePrompt} disabled={!writable} rows={3} onChange={event => {
+          editDraft(current => ({ ...current, dashscope: { ...current.dashscope, negativePrompt: event.target.value } }))
+        }} style={{ ...settingsFieldStyle, resize: 'vertical' }} />
+      </label>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px 18px', gridColumn: '1 / -1' }}>
+        {([['提示词扩写', 'promptExtend'], ['思考模式', 'enableThinking'], ['添加水印', 'watermark']] as const)
+          .map(([label, field]) => <label key={field}
+            style={{ alignItems: 'center', display: 'flex', fontSize: '12px', gap: '7px' }}>
+            <input type="checkbox" checked={draft.dashscope[field]} disabled={!writable} onChange={event => {
+              editDraft(current => ({ ...current, dashscope: { ...current.dashscope, [field]: event.target.checked } }))
+            }} />{label}
+          </label>)}
+      </div>
+      <p style={{ fontSize: '11px', gridColumn: '1 / -1', lineHeight: 1.6, margin: '-2px 0 0', opacity: .58 }}>
+        接口地址、API Key 和模型必须属于同一地域。推荐从百炼业务空间复制专属接口；生成结果会立即保存到本机，
+        不依赖百炼仅保留 24 小时的临时图片链接。
+      </p>
     </div> : draft.provider === 'novelai' ? <div style={{ display: 'grid', gap: '11px', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', marginTop: '12px' }}>
       <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>NovelAI 图片接口
         <input value={draft.novelai.endpoint} disabled={!writable} onChange={event => {
@@ -3203,11 +3267,13 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
       </p>
     </div>}
     <div style={{ alignItems: 'end', display: 'grid', gap: '9px', gridTemplateColumns: 'minmax(0, 1fr) auto', marginTop: '15px' }}>
-      <label style={labelStyle}>{draft.provider === 'novelai' ? 'NovelAI Access Token' : '服务密钥'}（按图片服务独立保存）
+      <label style={labelStyle}>{draft.provider === 'dashscope' ? '百炼 API Key'
+        : draft.provider === 'novelai' ? 'NovelAI Access Token' : '服务密钥'}（按图片服务独立保存）
         <input type="password" autoComplete="new-password" value={credentialValue}
           placeholder={credential?.configured === true ? `已配置${credential.source === undefined ? '' : ` · ${credential.source}`}`
             : draft.provider === 'openai' ? 'OpenAI / 兼容接口密钥'
-              : draft.provider === 'novelai' ? 'NovelAI Access Token（必填）' : '无鉴权可留空'}
+              : draft.provider === 'dashscope' ? '与接口地址相同地域的百炼 API Key'
+                : draft.provider === 'novelai' ? 'NovelAI Access Token（必填）' : '无鉴权可留空'}
           disabled={credentialBusy || credential?.writable === false} onChange={event => { setCredentialValue(event.target.value) }}
           style={settingsFieldStyle} />
       </label>
@@ -3222,7 +3288,8 @@ function ImageGenerationSettingsPanel({ settings, writable, onSave }: {
     </div>
     <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '14px' }}>
       <button type="button" disabled={!writable || testBusy
-        || ((draft.provider === 'openai' || draft.provider === 'novelai') && credential?.configured !== true)}
+        || ((draft.provider === 'openai' || draft.provider === 'dashscope' || draft.provider === 'novelai')
+          && credential?.configured !== true)}
         onClick={testConnection} style={secondaryButtonStyle}>{testBusy ? '正在测试…' : '测试连接'}</button>
       {dirty && <button type="button" disabled={!writable} onClick={restoreProfile} style={secondaryButtonStyle}>还原</button>}
       <button type="button" disabled={!writable || !dirty} onClick={saveProfile} style={primaryButtonStyle}>保存当前档案</button>

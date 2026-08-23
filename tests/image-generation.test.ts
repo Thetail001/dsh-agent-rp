@@ -33,6 +33,7 @@ test('validates image command requests and persists a completed asset', (t) => {
 
 test('keeps image provider credentials in independent Host slots', () => {
   assert.equal(imageCredentialRefName('openai'), 'DSH_AGENT_RP_IMAGE_API_KEY')
+  assert.equal(imageCredentialRefName('dashscope'), 'DSH_AGENT_RP_DASHSCOPE_API_KEY')
   assert.equal(imageCredentialRefName('novelai'), 'DSH_AGENT_RP_NOVELAI_API_KEY')
   assert.equal(imageCredentialRefName('a1111'), 'DSH_AGENT_RP_A1111_API_KEY')
   assert.equal(imageCredentialRefName('comfyui'), 'DSH_AGENT_RP_COMFYUI_API_KEY')
@@ -61,6 +62,65 @@ test('reads a base64 image from an OpenAI-compatible response', async () => {
       model: 'gpt-image-1', prompt: request.prompt, n: 1, size: '1024x1024',
     })
     assert.deepEqual(stages, ['正在连接 OpenAI Images', '正在接收图片'])
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('submits a Qwen Image 3.0 request and saves its temporary image URL', async () => {
+  const original = globalThis.fetch
+  let submitted: {
+    readonly url: string
+    readonly authorization: string | null
+    readonly body: Record<string, unknown>
+  } | undefined
+  const imageUrl = 'https://example.aliyuncs.com/generated/scene.png'
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input) === imageUrl) {
+      return new Response(png, { status: 200, headers: { 'content-type': 'image/png' } })
+    }
+    submitted = {
+      url: String(input),
+      authorization: new Headers(init?.headers).get('authorization'),
+      body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+    }
+    return new Response(JSON.stringify({
+      output: { choices: [{ message: { content: [{ image: imageUrl }] } }] },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    const settings = {
+      ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,
+      provider: 'dashscope' as const,
+      dashscope: {
+        ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration.dashscope,
+        endpoint: 'https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+        size: '1024*1536' as const,
+        negativePrompt: '模糊，变形',
+      },
+    }
+    const stages: string[] = []
+    const result = await generateImage(
+      settings, 'dashscope-key', request.prompt, new AbortController().signal,
+      (_progress, phase) => { stages.push(phase) },
+    )
+    assert.deepEqual(result.data, png)
+    assert.equal(submitted?.url, settings.dashscope.endpoint)
+    assert.equal(submitted?.authorization, 'Bearer dashscope-key')
+    assert.deepEqual(submitted?.body, {
+      model: 'qwen-image-3.0',
+      input: { messages: [{ role: 'user', content: [{ text: request.prompt }] }] },
+      parameters: {
+        prompt_extend: true,
+        prompt_extend_mode: 'direct',
+        enable_thinking: true,
+        n: 1,
+        size: '1024*1536',
+        negative_prompt: '模糊，变形',
+        watermark: false,
+      },
+    })
+    assert.deepEqual(stages, ['正在提交阿里云百炼图片任务', '正在保存百炼图片到本机'])
   } finally {
     globalThis.fetch = original
   }
@@ -154,6 +214,38 @@ test('checks OpenAI-compatible credentials without generating an image', async (
     assert.deepEqual(result, { status: 'verified', detail: '图片服务和密钥均可用；测试没有生成图片' })
     assert.deepEqual(requested, {
       url: 'https://api.openai.com/v1/models', method: 'GET', authorization: 'Bearer test-key',
+    })
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('checks a DashScope workspace and model without generating an image', async () => {
+  const original = globalThis.fetch
+  let requested: { readonly url: string; readonly authorization: string | null } | undefined
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    requested = { url: String(input), authorization: new Headers(init?.headers).get('authorization') }
+    return new Response(JSON.stringify({
+      success: true,
+      output: { total: 1, page_no: 1, page_size: 1, models: [{ model: 'qwen-image-3.0' }] },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    const settings = {
+      ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,
+      provider: 'dashscope' as const,
+      dashscope: {
+        ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration.dashscope,
+        endpoint: 'https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+      },
+    }
+    const result = await testImageProvider(settings, 'dashscope-key', new AbortController().signal)
+    assert.deepEqual(result, {
+      status: 'verified', detail: '百炼 API Key、地域和图片模型均可用；测试没有生成图片',
+    })
+    assert.deepEqual(requested, {
+      url: 'https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/models?model=qwen-image-3.0&capabilities=IG&page_no=1&page_size=1&language=zh-CN',
+      authorization: 'Bearer dashscope-key',
     })
   } finally {
     globalThis.fetch = original

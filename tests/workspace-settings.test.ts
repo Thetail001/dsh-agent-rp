@@ -127,6 +127,50 @@ test('normalizes NovelAI V4.5 image settings', () => {
   }), /64 的倍数/u)
 })
 
+test('normalizes DashScope image settings and migrates older provider records', () => {
+  const settings = normalizeAgentRpSettings({
+    workspaceMode: 'all',
+    workspaceIds: [],
+    imageGeneration: {
+      ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,
+      provider: 'dashscope',
+      dashscope: {
+        ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration.dashscope,
+        endpoint: 'https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+        model: 'qwen-image-3.0-pro',
+        size: '1024*1536',
+        promptExtendMode: 'agent',
+        negativePrompt: '模糊',
+      },
+    },
+  })
+  assert.equal(settings.imageGeneration.provider, 'dashscope')
+  assert.equal(settings.imageGeneration.dashscope.model, 'qwen-image-3.0-pro')
+  assert.equal(settings.imageGeneration.dashscope.size, '1024*1536')
+  assert.equal(settings.imageGeneration.dashscope.promptExtendMode, 'agent')
+
+  const legacyImageGeneration = Object.fromEntries(
+    Object.entries(DEFAULT_AGENT_RP_SETTINGS.imageGeneration).filter(([key]) => key !== 'dashscope'),
+  )
+  const migrated = normalizeAgentRpSettings({ workspaceMode: 'all', workspaceIds: [], imageGeneration: legacyImageGeneration })
+  assert.deepEqual(migrated.imageGeneration.dashscope, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.dashscope)
+})
+
+test('rejects unsafe or unsupported DashScope image settings', () => {
+  const invalid = (dashscope: Record<string, unknown>): unknown => ({
+    workspaceMode: 'all', workspaceIds: [],
+    imageGeneration: {
+      ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,
+      provider: 'dashscope',
+      dashscope: { ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration.dashscope, ...dashscope },
+    },
+  })
+  assert.throws(() => normalizeAgentRpSettings(invalid({ endpoint: 'http://dashscope.aliyuncs.com' })), /https/u)
+  assert.throws(() => normalizeAgentRpSettings(invalid({ model: 'qwen-image-plus' })), /模型无效/u)
+  assert.throws(() => normalizeAgentRpSettings(invalid({ size: '2048*2048' })), /尺寸无效/u)
+  assert.throws(() => normalizeAgentRpSettings(invalid({ promptExtendMode: 'unknown' })), /扩写模式无效/u)
+})
+
 test('uses the selected image profile and rejects ambiguous profile lists', () => {
   const local = {
     ...DEFAULT_AGENT_RP_SETTINGS.imageGeneration,

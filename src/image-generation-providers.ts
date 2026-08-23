@@ -74,6 +74,18 @@ function openAiModelsEndpoint(value: string): URL {
   return url
 }
 
+function dashscopeModelsEndpoint(value: string, model: string): URL {
+  const url = endpoint(value, '/api/v1/services/aigc/multimodal-generation/generation')
+  url.pathname = '/api/v1/models'
+  url.search = ''
+  url.searchParams.set('model', model)
+  url.searchParams.set('capabilities', 'IG')
+  url.searchParams.set('page_no', '1')
+  url.searchParams.set('page_size', '1')
+  url.searchParams.set('language', 'zh-CN')
+  return url
+}
+
 async function fetchConnection(provider: string, url: URL, init: RequestInit): Promise<Response> {
   try {
     return await fetch(url, init)
@@ -101,6 +113,35 @@ export async function testImageProvider(
     if (!response.ok) throw providerError('图片服务连接测试', response.status, await response.text())
     await discard(response)
     return { status: 'verified', detail: '图片服务和密钥均可用；测试没有生成图片' }
+  }
+  if (settings.provider === 'dashscope') {
+    if (apiKey === undefined) throw new Error('请先保存阿里云百炼 API Key')
+    const value = settings.dashscope
+    const response = await fetchConnection(
+      '阿里云百炼',
+      dashscopeModelsEndpoint(value.endpoint, value.model),
+      { headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' }, signal },
+    )
+    if (response.status === 404 || response.status === 405) {
+      await discard(response)
+      return { status: 'reachable', detail: '百炼服务可以连接，但此域名没有提供模型列表；密钥与地域尚未验证' }
+    }
+    const body = await response.text()
+    if (!response.ok) throw providerError('百炼连接测试', response.status, body)
+    let models: unknown
+    try {
+      models = (JSON.parse(body) as { readonly output?: { readonly models?: unknown } }).output?.models
+    } catch {
+      return { status: 'reachable', detail: '百炼服务可以连接，但模型列表格式无法识别；测试没有生成图片' }
+    }
+    if (!Array.isArray(models)) {
+      return { status: 'reachable', detail: '百炼服务可以连接，但模型列表格式无法识别；测试没有生成图片' }
+    }
+    if (!models.some(item => typeof item === 'object' && item !== null
+      && (item as { readonly model?: unknown }).model === value.model)) {
+      return { status: 'reachable', detail: `API Key 可以连接，但当前地域没有返回模型 ${value.model}` }
+    }
+    return { status: 'verified', detail: '百炼 API Key、地域和图片模型均可用；测试没有生成图片' }
   }
   if (settings.provider === 'novelai') {
     if (apiKey === undefined) throw new Error('请先保存 NovelAI Access Token')
@@ -216,6 +257,64 @@ async function generateOpenAi(
   if (typeof image?.b64_json === 'string') return decodeBase64Image(image.b64_json)
   if (typeof image?.url === 'string') return readRemoteImage(image.url, signal)
   throw new Error('OpenAI Images 没有返回图片')
+}
+
+async function generateDashscope(
+  settings: ImageGenerationSettings,
+  apiKey: string | undefined,
+  prompt: string,
+  signal: AbortSignal,
+  progress: ImageGenerationProgress,
+): Promise<GeneratedImageAsset> {
+  if (apiKey === undefined) throw new Error('请先在 Agent RP 设置中填写阿里云百炼 API Key')
+  const value = settings.dashscope
+  const parameters = {
+    prompt_extend: value.promptExtend,
+    prompt_extend_mode: value.promptExtendMode,
+    enable_thinking: value.enableThinking,
+    n: 1,
+    ...(value.size === 'auto' ? {} : { size: value.size }),
+    ...(value.negativePrompt.trim() === '' ? {} : { negative_prompt: value.negativePrompt }),
+    watermark: value.watermark,
+  }
+  progress(0.08, '正在提交阿里云百炼图片任务')
+  const response = await fetchConnection('阿里云百炼', endpoint(
+    value.endpoint,
+    '/api/v1/services/aigc/multimodal-generation/generation',
+  ), {
+    method: 'POST', signal,
+    headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: value.model,
+      input: { messages: [{ role: 'user', content: [{ text: prompt }] }] },
+      parameters,
+    }),
+  })
+  const body = await response.text()
+  if (!response.ok) throw providerError('阿里云百炼图片生成', response.status, body)
+  let parsed: { readonly output?: { readonly choices?: readonly unknown[] } }
+  try {
+    parsed = JSON.parse(body) as typeof parsed
+  } catch {
+    throw new Error('阿里云百炼返回了无法识别的结果')
+  }
+  const choices = parsed.output?.choices
+  if (!Array.isArray(choices)) throw new Error('阿里云百炼没有返回图片')
+  for (const choice of choices) {
+    if (typeof choice !== 'object' || choice === null) continue
+    const message = (choice as { readonly message?: unknown }).message
+    if (typeof message !== 'object' || message === null) continue
+    const content = (message as { readonly content?: unknown }).content
+    if (!Array.isArray(content)) continue
+    for (const item of content) {
+      if (typeof item !== 'object' || item === null) continue
+      const image = (item as { readonly image?: unknown }).image
+      if (typeof image !== 'string') continue
+      progress(0.9, '正在保存百炼图片到本机')
+      return readRemoteImage(image, signal)
+    }
+  }
+  throw new Error('阿里云百炼没有返回图片')
 }
 
 async function generateNovelAi(
@@ -563,6 +662,7 @@ export function generateImage(
   progress: ImageGenerationProgress,
 ): Promise<GeneratedImageAsset> {
   if (settings.provider === 'openai') return generateOpenAi(settings, apiKey, prompt, signal, progress)
+  if (settings.provider === 'dashscope') return generateDashscope(settings, apiKey, prompt, signal, progress)
   if (settings.provider === 'novelai') return generateNovelAi(settings, apiKey, prompt, signal, progress)
   if (settings.provider === 'comfyui') return generateComfyUi(settings, apiKey, prompt, signal, progress)
   return generateA1111(settings, apiKey, prompt, signal, progress)

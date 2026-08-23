@@ -18,7 +18,7 @@ export const AGENT_RP_WORKSPACE_EXCLUDED_IDS_FIELD = 'workspaceExcludedIds'
 export const AGENT_RP_WORKSPACE_MODES = ['all', 'selected'] as const
 
 /** Image providers available for explicit roleplay illustrations. */
-export const AGENT_RP_IMAGE_PROVIDERS = ['openai', 'novelai', 'a1111', 'comfyui'] as const satisfies readonly ImageGenerationProvider[]
+export const AGENT_RP_IMAGE_PROVIDERS = ['openai', 'dashscope', 'novelai', 'a1111', 'comfyui'] as const satisfies readonly ImageGenerationProvider[]
 
 /** Durable image provider settings; credentials are stored separately. */
 export interface ImageGenerationSettings {
@@ -27,6 +27,16 @@ export interface ImageGenerationSettings {
     readonly endpoint: string
     readonly model: string
     readonly size: '1024x1024' | '1024x1536' | '1536x1024'
+  }
+  readonly dashscope: {
+    readonly endpoint: string
+    readonly model: 'qwen-image-3.0' | 'qwen-image-3.0-pro'
+    readonly size: 'auto' | '1024*1024' | '1024*1536' | '1536*1024'
+    readonly promptExtend: boolean
+    readonly promptExtendMode: 'direct' | 'agent'
+    readonly enableThinking: boolean
+    readonly negativePrompt: string
+    readonly watermark: boolean
   }
   readonly novelai: {
     readonly endpoint: string
@@ -96,6 +106,16 @@ const DEFAULT_IMAGE_GENERATION_SETTINGS: ImageGenerationSettings = {
     model: 'gpt-image-1',
     size: '1024x1024',
   },
+  dashscope: {
+    endpoint: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+    model: 'qwen-image-3.0',
+    size: '1024*1024',
+    promptExtend: true,
+    promptExtendMode: 'direct',
+    enableThinking: true,
+    negativePrompt: '',
+    watermark: false,
+  },
   novelai: {
     endpoint: 'https://image.novelai.net/ai/generate-image',
     model: 'nai-diffusion-4-5-full',
@@ -163,6 +183,12 @@ function endpoint(value: unknown, fallback: string, label: string): string {
   return candidate
 }
 
+function httpsEndpoint(value: unknown, fallback: string, label: string): string {
+  const candidate = endpoint(value, fallback, label)
+  if (new URL(candidate).protocol !== 'https:') throw new Error(`${label}必须使用 https`)
+  return candidate
+}
+
 function integer(value: unknown, fallback: number, min: number, max: number, label: string): number {
   const candidate = value === undefined ? fallback : value
   if (!Number.isSafeInteger(candidate) || Number(candidate) < min || Number(candidate) > max) throw new Error(`${label}无效`)
@@ -199,6 +225,8 @@ export function normalizeImageGenerationSettings(value: unknown): ImageGeneratio
   }
   const openai = typeof record.openai === 'object' && record.openai !== null && !Array.isArray(record.openai)
     ? record.openai as Record<string, unknown> : {}
+  const dashscope = typeof record.dashscope === 'object' && record.dashscope !== null && !Array.isArray(record.dashscope)
+    ? record.dashscope as Record<string, unknown> : {}
   const novelai = typeof record.novelai === 'object' && record.novelai !== null && !Array.isArray(record.novelai)
     ? record.novelai as Record<string, unknown> : {}
   const a1111 = typeof record.a1111 === 'object' && record.a1111 !== null && !Array.isArray(record.a1111)
@@ -207,6 +235,20 @@ export function normalizeImageGenerationSettings(value: unknown): ImageGeneratio
     ? record.comfyui as Record<string, unknown> : {}
   const size = openai.size ?? DEFAULT_AGENT_RP_SETTINGS.imageGeneration.openai.size
   if (size !== '1024x1024' && size !== '1024x1536' && size !== '1536x1024') throw new Error('OpenAI 图片尺寸无效')
+  const dashscopeModel = dashscope.model ?? DEFAULT_AGENT_RP_SETTINGS.imageGeneration.dashscope.model
+  if (dashscopeModel !== 'qwen-image-3.0' && dashscopeModel !== 'qwen-image-3.0-pro') {
+    throw new Error('百炼图片模型无效')
+  }
+  const dashscopeSize = dashscope.size ?? DEFAULT_AGENT_RP_SETTINGS.imageGeneration.dashscope.size
+  if (dashscopeSize !== 'auto' && dashscopeSize !== '1024*1024'
+    && dashscopeSize !== '1024*1536' && dashscopeSize !== '1536*1024') {
+    throw new Error('百炼图片尺寸无效')
+  }
+  const dashscopePromptExtendMode = dashscope.promptExtendMode
+    ?? DEFAULT_AGENT_RP_SETTINGS.imageGeneration.dashscope.promptExtendMode
+  if (dashscopePromptExtendMode !== 'direct' && dashscopePromptExtendMode !== 'agent') {
+    throw new Error('百炼提示词扩写模式无效')
+  }
   const novelAiModel = novelai.model ?? DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.model
   if (novelAiModel !== 'nai-diffusion-4-5-full' && novelAiModel !== 'nai-diffusion-4-5-curated') {
     throw new Error('NovelAI 图片模型无效')
@@ -217,6 +259,32 @@ export function normalizeImageGenerationSettings(value: unknown): ImageGeneratio
       endpoint: endpoint(openai.endpoint, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.openai.endpoint, 'OpenAI 图片服务地址'),
       model: text(openai.model, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.openai.model, 200, 'OpenAI 图片模型'),
       size,
+    },
+    dashscope: {
+      endpoint: httpsEndpoint(
+        dashscope.endpoint,
+        DEFAULT_AGENT_RP_SETTINGS.imageGeneration.dashscope.endpoint,
+        '百炼图片服务地址',
+      ),
+      model: dashscopeModel,
+      size: dashscopeSize,
+      promptExtend: bool(
+        dashscope.promptExtend,
+        DEFAULT_AGENT_RP_SETTINGS.imageGeneration.dashscope.promptExtend,
+        '百炼提示词扩写',
+      ),
+      promptExtendMode: dashscopePromptExtendMode,
+      enableThinking: bool(
+        dashscope.enableThinking,
+        DEFAULT_AGENT_RP_SETTINGS.imageGeneration.dashscope.enableThinking,
+        '百炼思考模式',
+      ),
+      negativePrompt: text(dashscope.negativePrompt, '', 8_000, '百炼负面提示词'),
+      watermark: bool(
+        dashscope.watermark,
+        DEFAULT_AGENT_RP_SETTINGS.imageGeneration.dashscope.watermark,
+        '百炼图片水印',
+      ),
     },
     novelai: {
       endpoint: endpoint(novelai.endpoint, DEFAULT_AGENT_RP_SETTINGS.imageGeneration.novelai.endpoint, 'NovelAI 图片服务地址'),

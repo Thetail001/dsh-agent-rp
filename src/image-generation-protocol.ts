@@ -9,6 +9,7 @@ export const AGENT_RP_IMAGE_API_KEY_REF = 'DSH_AGENT_RP_IMAGE_API_KEY'
 /** Provider-specific credential references keep unrelated image services isolated. */
 export const AGENT_RP_IMAGE_CREDENTIAL_REFS = {
   openai: AGENT_RP_IMAGE_API_KEY_REF,
+  dashscope: 'DSH_AGENT_RP_DASHSCOPE_API_KEY',
   novelai: 'DSH_AGENT_RP_NOVELAI_API_KEY',
   a1111: 'DSH_AGENT_RP_A1111_API_KEY',
   comfyui: 'DSH_AGENT_RP_COMFYUI_API_KEY',
