@@ -281,6 +281,10 @@ import {
   type AgentRpSessionLaunchResponse,
 } from '../session-launch-protocol.ts'
 import {
+  characterExperienceLaunchRequest,
+  sceneExperienceLaunchRequest,
+} from './roleplay-experience-request.ts'
+import {
   WORLD_INFO_LIBRARY_PATH,
   type WorldInfoLibraryListResponse,
   type WorldInfoLibraryLaunchRequest,
@@ -11761,6 +11765,17 @@ export function apply(ctx: ClientContext): void {
     memory?: 'copy-active',
     resourcePermissions?: AgentRpSessionResourcePermissions,
   ): Promise<void> => {
+    if (memory === undefined && worldInfoIds !== undefined) {
+      await launchRoleplaySession(characterExperienceLaunchRequest({
+        sourceSessionId: sessionId,
+        characterId: character.id,
+        greetingIndex,
+        ...(persona === undefined ? {} : { persona }),
+        ...(presetId === undefined ? {} : { presetId }),
+        worldInfoIds,
+      }), resourcePermissions)
+      return
+    }
     await launchRoleplaySession({
       format: 0,
       sourceSessionId: sessionId,
@@ -11781,6 +11796,16 @@ export function apply(ctx: ClientContext): void {
     worldInfoIds?: readonly string[],
     resourcePermissions?: AgentRpSessionResourcePermissions,
   ): Promise<void> => {
+    if (worldInfoIds !== undefined) {
+      await launchRoleplaySession(sceneExperienceLaunchRequest({
+        sourceSessionId: sessionId,
+        primaryWorldInfoId: worldInfo.id,
+        ...(persona === undefined ? {} : { persona }),
+        ...(presetId === undefined ? {} : { presetId }),
+        supportingWorldInfoIds: worldInfoIds,
+      }), resourcePermissions)
+      return
+    }
     await launchRoleplaySession({
       format: 0,
       sourceSessionId: sessionId,

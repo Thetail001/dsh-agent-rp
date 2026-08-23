@@ -14,28 +14,28 @@ import type {
   RoleplayResourceProvider,
 } from './roleplay-resource-catalog.ts'
 import type { RoleplayResourceDescriptor } from './roleplay-resource-catalog-protocol.ts'
+import {
+  characterLibraryRoleplayResourceId,
+  presetLibraryRoleplayResourceId,
+  worldInfoLibraryRoleplayResourceId,
+} from './roleplay-resource-library-ids.ts'
 import type {} from './session-persona.ts'
 import type { WorldInfoLibrary } from './world-info-library.ts'
 
-/** Exact opaque actor reference written by a library-backed Character Session seed. */
-export function characterLibraryRoleplayResourceId(libraryId: string): string {
-  return `character:library:${libraryId}`
-}
-
-/** Exact opaque prompt-policy reference written by a library-backed preset seed. */
-export function presetLibraryRoleplayResourceId(libraryId: string): string {
-  return `preset:library:${libraryId}`
-}
-
-/** Exact opaque world reference written by a library-backed World Info seed. */
-export function worldInfoLibraryRoleplayResourceId(libraryId: string): string {
-  return `standalone:library:${libraryId}`
-}
+export {
+  characterLibraryRoleplayResourceId,
+  presetLibraryRoleplayResourceId,
+  worldInfoLibraryRoleplayResourceId,
+} from './roleplay-resource-library-ids.ts'
 
 function available(
   value: Omit<RoleplayResourceDescriptor, 'availability'>,
 ): RoleplayResourceDescriptor {
   return { ...value, availability: 'available' }
+}
+
+function boundedPreview(value: string): { readonly preview: string; readonly truncated: boolean } {
+  return { preview: value.slice(0, 2000), truncated: value.length > 2000 }
 }
 
 function libraryId(resourceId: string, prefix: string): string {
@@ -106,6 +106,17 @@ export function roleplayLibraryResourceProviders(libraries: {
       availability: entry.archived ? 'archived' as const : 'available' as const,
       updatedAt: entry.updatedAt,
     })),
+    inspect: descriptor => {
+      const resolved = libraries.characters.resolve(libraryId(descriptor.id, 'character:library:'))
+      return {
+        kind: 'actor',
+        openings: resolved.detail.greetings.slice(0, 1024).map((greeting, index) => ({
+          id: `greeting:${index}`,
+          label: index === 0 ? '默认开场' : `备选开场 ${index}`,
+          ...boundedPreview(resolved.detail.renderedGreetings[index] ?? greeting),
+        })),
+      }
+    },
     materialize: input => {
       if (input.events.length !== 0) throw new Error('角色资源必须是体验中的第一个日志快照')
       const id = libraryId(input.selection.id, 'character:library:')
@@ -143,6 +154,10 @@ export function roleplayLibraryResourceProviders(libraries: {
       name: entry.name,
       updatedAt: entry.updatedAt,
     })),
+    inspect: descriptor => ({
+      kind: 'persona',
+      description: libraries.personas.get(descriptor.id).description,
+    }),
     materialize: input => {
       noVariant(input)
       const persona = libraries.personas.get(input.selection.id)
@@ -167,6 +182,14 @@ export function roleplayLibraryResourceProviders(libraries: {
       name: entry.name,
       updatedAt: entry.updatedAt,
     })),
+    inspect: descriptor => {
+      const preset = libraries.presets.get(libraryId(descriptor.id, 'preset:library:'))
+      return {
+        kind: 'prompt-policy',
+        moduleCount: preset.promptCount,
+        enabledModuleCount: preset.enabledCount,
+      }
+    },
     materialize: input => {
       noVariant(input)
       const preset = libraries.presets.get(libraryId(input.selection.id, 'preset:library:'))
@@ -181,6 +204,12 @@ export function roleplayLibraryResourceProviders(libraries: {
       kind: 'world',
       name: entry.name,
     })),
+    inspect: descriptor => ({
+      kind: 'world',
+      entryCount: libraries.worldInfos.resolve(
+        libraryId(descriptor.id, 'standalone:library:'),
+      ).upload.entryCount,
+    }),
     materialize: input => {
       noVariant(input)
       const world = libraries.worldInfos.asset(libraryId(input.selection.id, 'standalone:library:'))

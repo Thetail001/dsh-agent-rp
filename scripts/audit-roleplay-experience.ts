@@ -39,6 +39,11 @@ export interface RoleplayExperienceAuditResult {
   readonly catalog: {
     readonly entries: number
     readonly kinds: Readonly<Record<string, number>>
+    readonly actorOpenings: number
+    readonly personaDescriptionChars: number
+    readonly worldEntries: number
+    readonly promptModules: number
+    readonly enabledPromptModules: number
   }
   readonly session: {
     readonly events: number
@@ -114,6 +119,14 @@ export function auditRoleplayExperience(input: RoleplayExperienceAuditInput): Ro
     }).snapshot
     const selection = readRoleplayExperienceSelection(reopened.events)
     const entries = catalog.list()
+    const actorDetail = catalog.inspect('actor', actorId)
+    const participantDetail = catalog.inspect('persona', participant.id)
+    const worldDetail = catalog.inspect('world', worldId)
+    const promptPolicyDetail = catalog.inspect('prompt-policy', promptPolicyId)
+    if (actorDetail.kind !== 'actor' || participantDetail.kind !== 'persona'
+      || worldDetail.kind !== 'world' || promptPolicyDetail.kind !== 'prompt-policy') {
+      throw new Error('Roleplay experience audit resource detail kinds do not match')
+    }
     return {
       audit: 'roleplay-experience-materialization-v1',
       ok: true,
@@ -122,7 +135,15 @@ export function auditRoleplayExperience(input: RoleplayExperienceAuditInput): Ro
         presetBytes: presetBytes.byteLength,
         worldInfoBytes: worldInfoBytes.byteLength,
       },
-      catalog: { entries: entries.length, kinds: counts(entries) },
+      catalog: {
+        entries: entries.length,
+        kinds: counts(entries),
+        actorOpenings: actorDetail.openings.length,
+        personaDescriptionChars: participantDetail.description.length,
+        worldEntries: worldDetail.entryCount,
+        promptModules: promptPolicyDetail.moduleCount,
+        enabledPromptModules: promptPolicyDetail.enabledModuleCount,
+      },
       session: {
         events: reopened.events.length,
         selectionRecorded: selection !== undefined,

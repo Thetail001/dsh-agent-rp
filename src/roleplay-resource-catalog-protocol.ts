@@ -19,6 +19,42 @@ export interface RoleplayResourceSelection extends RoleplayResourceReference {
   readonly variant?: string
 }
 
+/** One selectable actor opening; preview is bounded presentation text, not the durable snapshot. */
+export interface RoleplayActorOpeningDetail {
+  readonly id: string
+  readonly label: string
+  readonly preview: string
+  readonly truncated: boolean
+}
+
+export interface RoleplayActorResourceDetail {
+  readonly kind: 'actor'
+  readonly openings: readonly RoleplayActorOpeningDetail[]
+}
+
+export interface RoleplayPersonaResourceDetail {
+  readonly kind: 'persona'
+  readonly description: string
+}
+
+export interface RoleplayWorldResourceDetail {
+  readonly kind: 'world'
+  readonly entryCount: number
+}
+
+export interface RoleplayPromptPolicyResourceDetail {
+  readonly kind: 'prompt-policy'
+  readonly moduleCount: number
+  readonly enabledModuleCount: number
+}
+
+/** Source-neutral, kind-specific information needed to configure one selection. */
+export type RoleplayResourceDetail =
+  | RoleplayActorResourceDetail
+  | RoleplayPersonaResourceDetail
+  | RoleplayWorldResourceDetail
+  | RoleplayPromptPolicyResourceDetail
+
 /** Stable reference and presentation metadata without source-format payloads. */
 export interface RoleplayResourceDescriptor extends RoleplayResourceReference {
   readonly name: string
@@ -30,4 +66,11 @@ export interface RoleplayResourceDescriptor extends RoleplayResourceReference {
 export interface RoleplayResourceCatalogResponse {
   readonly format: 0
   readonly entries: readonly RoleplayResourceDescriptor[]
+}
+
+/** Explicit detail read for one resource; the collection endpoint remains content-free. */
+export interface RoleplayResourceDetailResponse {
+  readonly format: 0
+  readonly descriptor: RoleplayResourceDescriptor
+  readonly detail: RoleplayResourceDetail
 }

@@ -114,6 +114,18 @@ test('dispatches materialization to the owner while enforcing append-only Sessio
   ), /must only append/u)
 })
 
+test('rejects provider detail payloads that try to escape the bounded protocol', () => {
+  const catalog = new RoleplayResourceCatalog()
+  catalog.register({
+    id: 'fixture:leaky-details',
+    list: () => [{ id: 'actor:leaky', kind: 'actor', name: '泄漏角色', availability: 'available' }],
+    inspect: () => ({
+      kind: 'actor', openings: [], rawCharacterCard: { secret: true },
+    } as unknown as import('../src/roleplay-resource-catalog-protocol.ts').RoleplayResourceDetail),
+  })
+  assert.throws(() => catalog.inspect('actor', 'actor:leaky'), /invalid openings/u)
+})
+
 test('maps all reusable Host libraries onto the exact references written into a Session', (context) => {
   const root = fixtureRoot(context)
   const characters = new CharacterLibrary({ root: join(root, 'characters') })
@@ -195,6 +207,19 @@ test('maps all reusable Host libraries onto the exact references written into a 
   assert.equal(catalog.get('persona', runtime.participant!.id)?.name, persona.name)
   assert.equal(catalog.get('prompt-policy', runtime.prompt.resource!.id)?.name, preset.name)
   assert.equal(catalog.get('world', worldInfoLibraryRoleplayResourceId(world.id))?.name, world.name)
+  assert.deepEqual(catalog.inspect('actor', characterLibraryRoleplayResourceId(card.id)), {
+    kind: 'actor',
+    openings: [{ id: 'greeting:0', label: '默认开场', preview: '门还没锁。', truncated: false }],
+  })
+  assert.deepEqual(catalog.inspect('persona', persona.id), {
+    kind: 'persona', description: '刚到海城的旅人。',
+  })
+  assert.deepEqual(catalog.inspect('prompt-policy', presetLibraryRoleplayResourceId(preset.id)), {
+    kind: 'prompt-policy', moduleCount: 1, enabledModuleCount: 1,
+  })
+  assert.deepEqual(catalog.inspect('world', worldInfoLibraryRoleplayResourceId(world.id)), {
+    kind: 'world', entryCount: 1,
+  })
 
   characters.archive(card.id)
   assert.equal(catalog.get('actor', characterLibraryRoleplayResourceId(card.id))?.availability, 'archived')
@@ -214,10 +239,11 @@ async function invoke(
   route: RegisteredRoute,
   method = 'GET',
   headers: IncomingHttpHeaders = {},
+  url = ROLEPLAY_RESOURCE_CATALOG_PATH,
 ): Promise<{ readonly status: number; readonly body: unknown; readonly headers: Readonly<Record<string, string>> }> {
   const request = Object.assign(Readable.from([]), {
     method,
-    url: ROLEPLAY_RESOURCE_CATALOG_PATH,
+    url,
     headers: {
       host: '127.0.0.1:3091', origin: 'http://127.0.0.1:3091', 'sec-fetch-site': 'same-origin',
       ...headers,
@@ -258,6 +284,10 @@ test('serves only a same-origin content-free catalog snapshot', async () => {
     list: () => [{
       id: 'actor:http', kind: 'actor', name: 'HTTP 角色', availability: 'available',
     }],
+    inspect: () => ({
+      kind: 'actor',
+      openings: [{ id: 'opening:default', label: '默认开场', preview: '你好。', truncated: false }],
+    }),
   })
   const route = catalogRoute(catalog)
   const result = await invoke(route)
@@ -266,6 +296,25 @@ test('serves only a same-origin content-free catalog snapshot', async () => {
     id: 'actor:http', kind: 'actor', name: 'HTTP 角色', availability: 'available',
   }] })
   assert.equal(result.headers['cache-control'], 'no-store')
+  assert.deepEqual((await invoke(
+    route,
+    'GET',
+    {},
+    `${ROLEPLAY_RESOURCE_CATALOG_PATH}?kind=actor&id=actor%3Ahttp`,
+  )).body, {
+    format: 0,
+    descriptor: { id: 'actor:http', kind: 'actor', name: 'HTTP 角色', availability: 'available' },
+    detail: {
+      kind: 'actor',
+      openings: [{ id: 'opening:default', label: '默认开场', preview: '你好。', truncated: false }],
+    },
+  })
+  assert.equal((await invoke(
+    route,
+    'GET',
+    {},
+    `${ROLEPLAY_RESOURCE_CATALOG_PATH}?kind=world&id=world%3Amissing`,
+  )).status, 404)
   assert.equal((await invoke(route, 'POST')).status, 405)
   assert.equal((await invoke(route, 'GET', {
     origin: 'https://example.test', 'sec-fetch-site': 'cross-site',

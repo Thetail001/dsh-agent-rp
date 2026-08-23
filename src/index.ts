@@ -170,12 +170,24 @@ export {
   ROLEPLAY_RESOURCE_KINDS,
 } from './roleplay-resource-catalog-protocol.ts'
 export type {
+  RoleplayActorOpeningDetail,
+  RoleplayActorResourceDetail,
+  RoleplayPersonaResourceDetail,
+  RoleplayPromptPolicyResourceDetail,
   RoleplayResourceCatalogResponse,
   RoleplayResourceDescriptor,
+  RoleplayResourceDetail,
+  RoleplayResourceDetailResponse,
   RoleplayResourceKind,
   RoleplayResourceReference,
   RoleplayResourceSelection,
+  RoleplayWorldResourceDetail,
 } from './roleplay-resource-catalog-protocol.ts'
+export {
+  characterLibraryRoleplayResourceId,
+  presetLibraryRoleplayResourceId,
+  worldInfoLibraryRoleplayResourceId,
+} from './roleplay-resource-library-ids.ts'
 export { prepareRoleplayExperienceSession } from './roleplay-experience-materialization.ts'
 export {
   appendRoleplayExperienceSelection,
