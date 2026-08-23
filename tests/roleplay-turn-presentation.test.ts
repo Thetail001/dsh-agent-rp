@@ -76,6 +76,7 @@ function plan(session: Session, state: RoleplayRuntimeSnapshot['state'] = []): R
       transforms: { actorName: snapshot.experience.name, operations: [] },
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
+    act: { responseRepairs: [] },
     stateReads: snapshot.state,
     memory: { ...snapshot.memory, reads: [], contextText: '' },
     generation: {},

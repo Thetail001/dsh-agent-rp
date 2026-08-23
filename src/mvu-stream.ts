@@ -1,4 +1,4 @@
-/** Host-side completion for Character Card replies that omit their MVU patch. */
+/** Host-side completion for prepared Roleplay replies that omit a requested MVU patch. */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -11,21 +11,38 @@ import {
   type TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
-import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
 import {
+  MVU_ROLEPLAY_MODULE_ID,
+  MVU_ROLEPLAY_STATE_ID,
   normalizeChoiceSupplement,
   normalizeMvuSupplement,
-  readCurrentSessionMvuState,
-  renderChoiceInstructions,
-  renderMvuUpdateInstructions,
 } from './mvu.ts'
 import type { RoleplayTurnPlan } from './roleplay-turn-plan.ts'
 
-/** A prepared turn explicitly opts MVU into settlement only through its runtime modules and state reads. */
-export function roleplayMvuSettlementEnabled(plan: RoleplayTurnPlan | undefined): boolean {
-  if (plan === undefined) return true
-  return plan.runtime.modules.some(module => module.id === 'adapter:mvu' && module.phases.includes('settle'))
-    && plan.stateReads.some(state => state.id === 'state:mvu')
+export interface PreparedMvuResponseRepair {
+  readonly current: JsonValue
+  readonly updateInstructions?: string
+  readonly choiceInstructions?: string
+}
+
+/** Resolve exactly one MVU repair from the already prepared act plan and state read. */
+export function preparedMvuResponseRepair(plan: RoleplayTurnPlan | undefined): PreparedMvuResponseRepair | undefined {
+  if (plan === undefined) return undefined
+  const programs = plan.act.responseRepairs.filter(program => program.engine === 'mvu-v0')
+  if (programs.length !== 1) return undefined
+  const program = programs[0]!
+  const owned = plan.runtime.modules.some(module => module.id === program.moduleId
+    && module.phases.includes('act') && module.stateIds?.includes(program.stateId) === true)
+  if (!owned || program.moduleId !== MVU_ROLEPLAY_MODULE_ID || program.stateId !== MVU_ROLEPLAY_STATE_ID) {
+    return undefined
+  }
+  const state = plan.stateReads.find(read => read.id === program.stateId)
+  if (state?.value === undefined) return undefined
+  return {
+    current: state.value,
+    ...(program.updateInstructions === undefined ? {} : { updateInstructions: program.updateInstructions }),
+    ...(program.choiceInstructions === undefined ? {} : { choiceInstructions: program.choiceInstructions }),
+  }
 }
 
 function textFromChunks(chunks: readonly StreamChunk[]): string {
@@ -109,14 +126,11 @@ export function installMvuStreamCompletion(
   ctx.on('llm/stream', (options, next) => {
     const agent = options.sessionId === undefined ? undefined : agentForSession(String(options.sessionId))
     if (agent === undefined) return next()
-    if (!roleplayMvuSettlementEnabled(planForAgent(agent))) return next()
-    const active = readActiveSessionCharacter(agent.session.events)
-    if (active === undefined) return next()
-    const card = cardFromImportMeta(active.meta)
-    const current = readCurrentSessionMvuState(card, agent.session)
-    if (current === undefined) return next()
-    const mvuRules = renderMvuUpdateInstructions(card, current.statData)
-    const choiceRules = renderChoiceInstructions(card)
+    const prepared = preparedMvuResponseRepair(planForAgent(agent))
+    if (prepared === undefined) return next()
+    const current = prepared.current
+    const mvuRules = prepared.updateInstructions
+    const choiceRules = prepared.choiceInstructions
     if (mvuRules === undefined && choiceRules === undefined) return next()
 
     return (async function* (): AsyncIterable<StreamChunk> {
@@ -143,13 +157,13 @@ export function installMvuStreamCompletion(
         const supplemental = await requestSupplement(
           ctx,
           options,
-          current.statData,
+          current,
           missingMvu ? mvuRules : undefined,
           missingChoices ? choiceRules : undefined,
           reply,
         )
         const additions = supplemental.text === undefined ? [] : [
-          ...(missingMvu ? [normalizeMvuSupplement(current.statData, supplemental.text)] : []),
+          ...(missingMvu ? [normalizeMvuSupplement(current, supplemental.text)] : []),
           ...(missingChoices ? [normalizeChoiceSupplement(supplemental.text)] : []),
         ].filter((value): value is string => value !== undefined)
         if (additions.length > 0) {

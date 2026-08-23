@@ -46,6 +46,7 @@ function plan(session: Session, snapshot = runtime()): RoleplayTurnPlan {
       transforms: { actorName: snapshot.experience.name, operations: [] },
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
+    act: { responseRepairs: [] },
     stateReads: snapshot.state,
     memory: { ...snapshot.memory, reads: [], contextText: '' },
     generation: {},

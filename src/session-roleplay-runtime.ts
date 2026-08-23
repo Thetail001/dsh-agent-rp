@@ -219,7 +219,7 @@ export function resolveSessionRoleplayRuntime(input: {
     ...(lorebooks.length === 0 ? [] : [runtimeModule(ROLEPLAY_WORLD_MODULE_ID, 'native', ['recall'])]),
     ...(preset === undefined ? [] : [runtimeModule(ROLEPLAY_PROMPT_ADAPTER_MODULE_ID, 'adapter', ['prepare'])]),
     ...(mvu === undefined ? [] : [runtimeModule(
-      MVU_ROLEPLAY_MODULE_ID, 'adapter', ['prepare', 'settle'], [MVU_ROLEPLAY_STATE_ID],
+      MVU_ROLEPLAY_MODULE_ID, 'adapter', ['prepare', 'act', 'settle'], [MVU_ROLEPLAY_STATE_ID],
     )]),
     ...(tavern === undefined ? [] : [runtimeModule(
       TAVERN_HELPER_ROLEPLAY_MODULE_ID,

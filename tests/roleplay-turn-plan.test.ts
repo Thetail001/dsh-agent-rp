@@ -86,7 +86,7 @@ function worldAsset(id: string, name: string, content: string) {
   }
 }
 
-function cardFixture(regexScripts: readonly ImportedRegexScript[] = []) {
+function cardFixture(regexScripts: readonly ImportedRegexScript[] = [], includeMvuRules = false) {
   return parseCharacterCardJson(JSON.stringify({
     spec: 'chara_card_v2',
     spec_version: '2.0',
@@ -138,6 +138,20 @@ function cardFixture(regexScripts: readonly ImportedRegexScript[] = []) {
             use_regex: false,
             extensions: {},
           },
+          ...(includeMvuRules ? [{
+            id: 3,
+            keys: ['__mvu_rules__'],
+            secondary_keys: [],
+            content: '变量更新规则：回复末尾输出 <UpdateVariable>。',
+            enabled: true,
+            insertion_order: 3,
+            constant: false,
+            selective: false,
+            position: 'after_char',
+            name: '变量更新规则',
+            use_regex: false,
+            extensions: {},
+          }] : []),
         ],
       },
     },
@@ -510,7 +524,7 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
     scriptName: '角色输出净化', findRegex: '/raw/gu', replaceString: 'clean', trimStrings: [],
     placement: [2], disabled: false, markdownOnly: false, promptOnly: false,
     runOnEdit: false, substituteRegex: 0, minDepth: null, maxDepth: 4,
-  }])
+  }], true)
   const persona = {
     id: 'persona-00000000-0000-4000-8000-000000000020',
     name: '小满',
@@ -631,6 +645,16 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
         identitySubstitution: 'none', maxDepth: 4,
       },
     ],
+  })
+  assert.deepEqual(plan.act, {
+    responseRepairs: [{
+      engine: 'mvu-v0', moduleId: 'adapter:mvu', stateId: 'state:mvu',
+      updateInstructions: '变量更新规则：回复末尾输出 <UpdateVariable>。',
+    }],
+  })
+  assert.deepEqual(plan.stateReads.find(read => read.id === 'state:mvu'), {
+    id: 'state:mvu', owner: 'session', adapter: 'sillytavern:mvu', revision: 2,
+    writerModuleId: 'adapter:mvu', value: { 关系: { 信任: 4 } },
   })
   assert.match(plan.prompt.beforeHistory.map(item => item.content).join('\n'), /主提示：白露\/浓雾/u)
   assert.match(plan.prompt.beforeHistory.map(item => item.content).join('\n'), /海城今晚有雾。[\s\S]*浓雾中的钟楼/u)

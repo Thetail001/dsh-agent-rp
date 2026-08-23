@@ -1,10 +1,20 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { CommandId } from '@deepseek-ai/dsh-commands'
-import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
+import {
+  createAssistantMessage,
+  createUserMessage,
+  type GenerateOptions,
+  type StreamChunk,
+} from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { appendMvuState, readCurrentMvuState, readCurrentSessionMvuState, readInitialMvuState } from '../src/mvu.ts'
+import { installMvuStreamCompletion } from '../src/mvu-stream.ts'
+import { ROLEPLAY_TURN_PHASES } from '../src/roleplay-runtime.ts'
+import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
 import {
   applyTavernHelperMutation,
   encodeTavernHelperState,
@@ -135,4 +145,89 @@ test('replays an exact MVU version checkpoint before applying the new visible re
   assert.deepEqual(readCurrentSessionMvuState(card, Session.create(session.id, session.events)), {
     statData: { 角色: { 等级: 4 } }, updateCount: 1,
   })
+})
+
+test('repairs a missing MVU block from only the frozen act plan in a cardless Session', async () => {
+  type StreamHandler = (
+    options: GenerateOptions,
+    next: () => AsyncIterable<StreamChunk>,
+  ) => AsyncIterable<StreamChunk>
+  const session = Session.create(SessionId('mvu-frozen-act-plan'))
+  const plan: RoleplayTurnPlan = {
+    format: 0,
+    input: { sessionId: String(session.id), sessionSeq: 0, pendingMessageIds: [] },
+    runtime: {
+      format: 0,
+      lifecycle: ROLEPLAY_TURN_PHASES,
+      experience: { id: 'fixture', name: '测试角色', owner: 'session', mode: 'character' },
+      world: { bindings: [] },
+      prompt: { strategy: 'native' },
+      state: [{ id: 'state:mvu', owner: 'session', revision: 3 }],
+      memory: { read: true, write: false },
+      modules: [{
+        id: 'adapter:mvu', source: 'adapter', phases: ['prepare', 'act', 'settle'], stateIds: ['state:mvu'],
+      }],
+    },
+    world: {
+      engine: 'native-v0', resources: [], inChat: [], experienceBeforeActor: [], actorBefore: [], actorAfter: [],
+      experienceAfterActor: [], approximateTokens: 0,
+    },
+    prompt: {
+      beforeHistory: [], afterHistory: [], inChat: [], includeHistory: true, systemPromptText: '',
+      transforms: { actorName: '测试角色', operations: [] },
+      diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
+    },
+    act: { responseRepairs: [{
+      engine: 'mvu-v0', moduleId: 'adapter:mvu', stateId: 'state:mvu', updateInstructions: '只用冻结规则',
+    }] },
+    stateReads: [{
+      id: 'state:mvu', owner: 'session', revision: 3, writerModuleId: 'adapter:mvu', value: { score: 7 },
+    }],
+    memory: { read: true, write: false, reads: [], contextText: '' },
+    generation: {},
+    prepare: { modules: [] },
+    recall: { modules: [] },
+  }
+  let handler: StreamHandler | undefined
+  let supplementalRequest: GenerateOptions | undefined
+  const ctx = {
+    on(_event: string, callback: StreamHandler) { handler = callback },
+    llm: {
+      stream(options: GenerateOptions) {
+        supplementalRequest = options
+        return (async function* (): AsyncIterable<StreamChunk> {
+          const text = '<UpdateVariable><Analysis>无变化</Analysis><JSONPatch>[]</JSONPatch></UpdateVariable>'
+          yield { type: 'block-start', index: 0, blockType: 'text' }
+          yield { type: 'text-delta', index: 0, text }
+          yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    },
+    logger: { warn() {} },
+  } as unknown as Context
+  const agent = { session } as Agent
+  installMvuStreamCompletion(ctx, id => id === String(session.id) ? agent : undefined, () => plan)
+  assert.ok(handler)
+  const options = Object.freeze({
+    provider: 'fixture', model: 'fixture', sessionId: session.id,
+    messages: [createUserMessage({
+      source: { kind: 'user' }, content: [{ type: 'text', text: '继续' }],
+    })],
+  }) as GenerateOptions
+  const output: StreamChunk[] = []
+  const original = async function* (): AsyncIterable<StreamChunk> {
+    yield { type: 'block-start', index: 0, blockType: 'text' }
+    yield { type: 'text-delta', index: 0, text: '原始回复' }
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: '原始回复' } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+  for await (const chunk of handler(options, original)) output.push(chunk)
+
+  const requestText = supplementalRequest?.messages.flatMap(message => message.content
+    .flatMap(block => block.type === 'text' ? [block.text] : [])).join('\n') ?? ''
+  assert.match(requestText, /"score":7/u)
+  assert.match(requestText, /只用冻结规则/u)
+  assert.match(output.flatMap(chunk => chunk.type === 'text-delta' ? [chunk.text] : []).join(''),
+    /<UpdateVariable>/u)
 })

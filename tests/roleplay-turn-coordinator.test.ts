@@ -28,6 +28,7 @@ function plan(label: string, sessionSeq = 0): RoleplayTurnPlan {
       transforms: { actorName: label, operations: [] },
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
+    act: { responseRepairs: [] },
     stateReads: [],
     memory: { ...runtime.memory, reads: [], contextText: '' },
     generation: {},

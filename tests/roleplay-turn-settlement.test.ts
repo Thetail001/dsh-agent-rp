@@ -3,7 +3,7 @@ import test from 'node:test'
 import { CallId, createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { prepareAgentRpMemory, type AgentRpMemoryRecord } from '../src/memory.ts'
-import { roleplayMvuSettlementEnabled } from '../src/mvu-stream.ts'
+import { preparedMvuResponseRepair } from '../src/mvu-stream.ts'
 import { ROLEPLAY_TURN_PHASES, type RoleplayRuntimeSnapshot } from '../src/roleplay-runtime.ts'
 import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
 import {
@@ -54,6 +54,7 @@ function turnPlan(input: {
       transforms: { actorName: snapshot.experience.name, operations: [] },
       diagnostics: { enabledModules: 0, unsupportedMacros: 0, templateFailures: 0 },
     },
+    act: { responseRepairs: [] },
     stateReads: snapshot.state,
     memory: { read: true, write: input.memoryWrite ?? true, reads: [], contextText: '' },
     generation: {},
@@ -317,7 +318,7 @@ test('keeps each tool-loop step plan and the final visible reply', () => {
   const { preparedPlanSha256, preparedPlanSectionsSha256, ...firstReceipt } = settlement.plans[0]!.receipt!
   assert.match(preparedPlanSha256 ?? '', /^[a-f0-9]{64}$/u)
   assert.deepEqual(Object.keys(preparedPlanSectionsSha256 ?? {}), [
-    'format', 'input', 'runtime', 'world', 'prompt', 'stateReads', 'memory', 'generation', 'prepare', 'recall',
+    'format', 'input', 'runtime', 'world', 'prompt', 'act', 'stateReads', 'memory', 'generation', 'prepare', 'recall',
   ])
   assert.deepEqual(firstReceipt, {
     runtime: {
@@ -479,21 +480,36 @@ test('appends only one replayable settlement for a turn', () => {
   assert.deepEqual(readRoleplayTurnSettlements(reopened.events), [settlement])
 })
 
-test('gates MVU completion through the prepared settle module while preserving the legacy fallback', () => {
-  assert.equal(roleplayMvuSettlementEnabled(undefined), true)
+test('resolves MVU completion only from one prepared act program and its frozen state read', () => {
+  assert.equal(preparedMvuResponseRepair(undefined), undefined)
   const enabled = turnPlan({
     sessionId: 'mvu-enabled', sessionSeq: 0,
     state: [{ id: 'state:mvu', owner: 'session', revision: 0 }],
     modules: [{
-      id: 'adapter:mvu', source: 'adapter', phases: ['prepare', 'settle'], stateIds: ['state:mvu'],
+      id: 'adapter:mvu', source: 'adapter', phases: ['prepare', 'act', 'settle'], stateIds: ['state:mvu'],
     }],
   })
-  assert.equal(roleplayMvuSettlementEnabled(enabled), true)
-  assert.equal(roleplayMvuSettlementEnabled({ ...enabled, stateReads: [] }), false)
-  assert.equal(roleplayMvuSettlementEnabled({
+  const repair = {
+    engine: 'mvu-v0' as const,
+    moduleId: 'adapter:mvu',
+    stateId: 'state:mvu',
+    updateInstructions: '冻结规则',
+  }
+  const prepared = {
     ...enabled,
-    runtime: runtime(enabled.runtime.state, [{ id: 'adapter:mvu', source: 'adapter', phases: ['prepare'] }]),
-  }), false)
+    act: { responseRepairs: [repair] },
+    stateReads: [{ ...enabled.stateReads[0]!, value: { score: 1 } }],
+  }
+  assert.deepEqual(preparedMvuResponseRepair(prepared), {
+    current: { score: 1 }, updateInstructions: '冻结规则',
+  })
+  assert.equal(preparedMvuResponseRepair({ ...prepared, stateReads: [] }), undefined)
+  assert.equal(preparedMvuResponseRepair({
+    ...prepared,
+    runtime: runtime(prepared.runtime.state, [{
+      id: 'adapter:mvu', source: 'adapter', phases: ['prepare', 'settle'], stateIds: ['state:mvu'],
+    }]),
+  }), undefined)
 })
 
 test('attributes arbitrary runtime state through declared module ownership', () => {

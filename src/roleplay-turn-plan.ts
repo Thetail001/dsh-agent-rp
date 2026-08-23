@@ -1,6 +1,6 @@
 /** Pure, provider-neutral plan compiled for one Roleplay turn. */
 
-import type { JsonValue, Session, UserMessage } from '@deepseek-ai/dsh-session'
+import { snapshotJsonValue, type JsonValue, type Session, type UserMessage } from '@deepseek-ai/dsh-session'
 import type { ResolvedConfig } from './config.ts'
 import {
   createEjsWorldInfoBooks,
@@ -11,7 +11,12 @@ import type { LorebookActivationReason } from './import/lorebook.ts'
 import { presetRegexScripts } from './import/sillytavern-preset.ts'
 import type { ImportedRegexScript } from './import/types.ts'
 import { readAgentRpMemoryHistory } from './memory.ts'
-import { MVU_ROLEPLAY_MODULE_ID } from './mvu.ts'
+import {
+  MVU_ROLEPLAY_MODULE_ID,
+  MVU_ROLEPLAY_STATE_ID,
+  renderChoiceInstructions,
+  renderMvuUpdateInstructions,
+} from './mvu.ts'
 import {
   renderActiveMemoryContext,
   renderCharacterPrompt,
@@ -159,6 +164,22 @@ export interface RoleplayTurnPromptPlan extends RoleplayProviderPromptPlan {
   }
 }
 
+/** Adapter-owned response repair prepared before the actor request begins. */
+export interface RoleplayMvuResponseRepairPlan {
+  readonly engine: 'mvu-v0'
+  readonly moduleId: string
+  readonly stateId: string
+  readonly updateInstructions?: string
+  readonly choiceInstructions?: string
+}
+
+export type RoleplayResponseRepairPlan = RoleplayMvuResponseRepairPlan
+
+/** Source-neutral act-phase programs frozen for one concrete model step. */
+export interface RoleplayTurnActPlan {
+  readonly responseRepairs: readonly RoleplayResponseRepairPlan[]
+}
+
 /** Exact state value and log boundary consumed while preparing this turn. */
 export interface RoleplayStateRead extends RoleplayStateBinding {
   readonly eventSeq?: number
@@ -185,6 +206,7 @@ export interface RoleplayTurnPlan {
   readonly runtime: RoleplayRuntimeSnapshot
   readonly world: RoleplayWorldPlan
   readonly prompt: RoleplayTurnPromptPlan
+  readonly act: RoleplayTurnActPlan
   readonly stateReads: readonly RoleplayStateRead[]
   readonly memory: RoleplayMemoryPlan
   readonly generation: RoleplayGenerationPolicy
@@ -499,15 +521,37 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     transforms,
     diagnostics: { enabledModules, unsupportedMacros, templateFailures },
   }
+  const mvuUpdateInstructions = resolved.card === undefined || resolved.mvu === undefined
+    ? undefined : renderMvuUpdateInstructions(resolved.card, resolved.mvu.statData)
+  const choiceInstructions = resolved.card === undefined || resolved.mvu === undefined
+    ? undefined : renderChoiceInstructions(resolved.card)
+  const act: RoleplayTurnActPlan = {
+    responseRepairs: resolved.mvu === undefined
+      || (mvuUpdateInstructions === undefined && choiceInstructions === undefined)
+      ? []
+      : [{
+          engine: 'mvu-v0',
+          moduleId: MVU_ROLEPLAY_MODULE_ID,
+          stateId: MVU_ROLEPLAY_STATE_ID,
+          ...(mvuUpdateInstructions === undefined ? {} : { updateInstructions: mvuUpdateInstructions }),
+          ...(choiceInstructions === undefined ? {} : { choiceInstructions }),
+        }],
+  }
   const nativeStatesById = new Map(resolved.nativeStates.map(state => [state.id, state]))
   const stateReads: RoleplayStateRead[] = snapshot.state.map((binding) => {
     const nativeState = nativeStatesById.get(binding.id)
-    return nativeState === undefined ? binding : {
+    if (nativeState !== undefined) return {
       ...binding,
       eventSeq: nativeState.eventSeq,
       writerModuleId: nativeState.writerModuleId,
       value: nativeState.value,
     }
+    if (binding.id === MVU_ROLEPLAY_STATE_ID && resolved.mvu !== undefined) return {
+      ...binding,
+      writerModuleId: MVU_ROLEPLAY_MODULE_ID,
+      value: snapshotJsonValue(resolved.mvu.statData) as JsonValue,
+    }
+    return binding
   })
   const memoryHistory = readAgentRpMemoryHistory(input.session.events)
   const memory: RoleplayMemoryPlan = {
@@ -600,6 +644,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     runtime: snapshot,
     world,
     prompt,
+    act,
     stateReads,
     memory,
     generation: { ...(resolved.preset?.preset.generation ?? {}) },

@@ -4,6 +4,8 @@ import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
+import { parseCharacterCardJson } from '../src/import/character-card.ts'
+import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import { createPresetSessionSeed } from '../src/import/session-preset.ts'
 import type { ImportedSillyTavernPreset } from '../src/import/sillytavern-preset.ts'
 import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
@@ -204,6 +206,60 @@ test('replays a cardless prompt-policy transform from the exact Session prefix',
     deployment,
   }), plan)
   assert.doesNotMatch(JSON.stringify(stored), /secret|safe/u)
+})
+
+test('replays frozen MVU response repair rules and state without copying either into the receipt', () => {
+  const card = parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: {
+      name: 'MVU 回放角色', description: '', personality: '', scenario: '', first_mes: '', mes_example: '',
+      creator_notes: '', system_prompt: '', post_history_instructions: '', alternate_greetings: [], tags: [],
+      creator: 'fixture', character_version: '1', extensions: {},
+      character_book: {
+        recursive_scanning: false,
+        extensions: {},
+        entries: [{
+          id: 1, comment: '[initvar]', keys: [], content: 'score: 7', enabled: false,
+          insertion_order: 1, constant: false, extensions: {},
+        }, {
+          id: 2, comment: 'repair', keys: ['__repair__'],
+          content: '变量更新规则：只使用冻结规则 sentinel-mvu-rule。', enabled: true,
+          insertion_order: 2, constant: false, extensions: {},
+        }],
+      },
+    },
+  }))
+  const seed = createCharacterCardSessionSeed(card, {
+    kind: 'file',
+    attachmentId: AttachmentId('sha256:turn-plan-mvu-repair'),
+    bytes: 100,
+    name: 'mvu-replay.json',
+    mediaType: 'application/json',
+  }, 0, '')
+  const session = Session.create(SessionId('turn-plan-mvu-repair'), seed)
+  session.append('turn/start', { turn: 1 })
+  const message = pending()
+  const resolved = resolveSessionRoleplayRuntime({ session, deployment })
+  const plan = prepareRoleplayTurn({ session, pendingMessages: [message], deployment, resolved })
+  assert.deepEqual(plan.act.responseRepairs, [{
+    engine: 'mvu-v0', moduleId: 'adapter:mvu', stateId: 'state:mvu',
+    updateInstructions: '变量更新规则：只使用冻结规则 sentinel-mvu-rule。',
+  }])
+  assert.deepEqual(plan.stateReads.find(read => read.id === 'state:mvu')?.value, { score: 7 })
+  session.append('step/start', { turn: 1, step: 1 })
+  session.append('user/message', message, { surfaceOp: 'append' })
+  const record = appendSessionRoleplayTurnPlan(session, 1, 1, plan)
+
+  const reopened = Session.create(session.id, session.events)
+  const stored = reopened.events[record.seq]
+  assert.equal(stored?.type, 'agent-rp/turn-plan')
+  assert.deepEqual(replaySessionRoleplayTurnPlan({
+    session: reopened,
+    record: stored as typeof record,
+    deployment,
+  }), plan)
+  assert.doesNotMatch(JSON.stringify(stored), /sentinel-mvu-rule|"score":7/u)
 })
 
 test('recovers a cold-closed turn and folds a late causal browser state into presentation', () => {

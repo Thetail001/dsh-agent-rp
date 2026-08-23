@@ -257,6 +257,7 @@ test('mounts commands when public DSH omits prompt extension gateways', async (c
     'rp-chat-import',
     'rp-persona',
     'rp-memory',
+    'rp-state',
     'rp-preset-configure',
     'rp-preset-library',
     'rp-generation',
