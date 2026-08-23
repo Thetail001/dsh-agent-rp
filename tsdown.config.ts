@@ -83,6 +83,7 @@ const client: UserConfig = {
 
 export default defineConfig([
   host({ index: 'src/index.ts' }),
+  { ...host({ 'extension-v0': 'src/extension-v0.ts' }), dts: true },
   host({ 'repair-session': 'src/session-repair-cli.ts' }),
   client,
 ])

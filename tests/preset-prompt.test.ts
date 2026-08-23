@@ -99,6 +99,38 @@ test('assembles markers and nested variables on the correct side of chat history
   assert.equal(assembled.templateFailureCount, 0)
 })
 
+test('keeps marker content when a preset intentionally leaves wrapper formats empty', () => {
+  const prompts: ImportedSillyTavernPreset['prompts'] = [
+    { identifier: 'worldInfoBefore', name: '世界书前', role: 'system', content: '', marker: true, systemPrompt: true, forbidOverrides: false },
+    { identifier: 'charPersonality', name: '性格', role: 'system', content: '', marker: true, systemPrompt: true, forbidOverrides: false },
+    { identifier: 'scenario', name: '场景', role: 'system', content: '', marker: true, systemPrompt: true, forbidOverrides: false },
+    { identifier: 'chatHistory', name: '历史', role: 'system', content: '', marker: true, systemPrompt: true, forbidOverrides: false },
+  ]
+  const preset: ImportedSillyTavernPreset = {
+    format: 0,
+    name: '空格式预设',
+    prompts,
+    order: prompts.map(prompt => ({ identifier: prompt.identifier, enabled: true })),
+    generation: {},
+    formats: { worldInfo: '', scenario: '', personality: '' },
+    regexScripts: [],
+    extensionSummary: { regexScriptCount: 0, hasSPreset: false, hasTavernHelper: false },
+  }
+
+  const assembled = assembleSillyTavernPreset(preset, {
+    card,
+    userName: '宝宝',
+    worldInfoBefore: ['海城终年多雾。'],
+    worldInfoAfter: [],
+    session: Session.create(SessionId('preset-empty-formats')),
+  })
+  const beforeText = assembled.beforeHistory.map(prompt => prompt.content).join('\n')
+
+  assert.match(beforeText, /海城终年多雾。/u)
+  assert.match(beforeText, /安静但敏锐。/u)
+  assert.match(beforeText, /宝宝刚刚推门进来。/u)
+})
+
 test('assembles a standalone World Info preset without inventing character-card marker text', () => {
   const prompts: ImportedSillyTavernPreset['prompts'] = [
     { identifier: 'main', name: '主提示', role: 'user', content: '{{char}}回应{{user}}', marker: false, systemPrompt: true, forbidOverrides: false },

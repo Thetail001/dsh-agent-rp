@@ -252,6 +252,7 @@ export {
   readRoleplayArtifactStageRecord,
   readStagedRoleplayArtifacts,
   readToolArtifactPresentationMeta,
+  roleplayToolArtifactPresentationMeta,
   ROLEPLAY_ARTIFACT_AUTO_STAGE_FORMAT,
   ROLEPLAY_ARTIFACT_PUBLISH_FORMAT,
   ROLEPLAY_ARTIFACT_PUBLISH_TOOL,

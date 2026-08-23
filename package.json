@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-agent-rp",
-  "version": "0.0.0-rc.238",
+  "version": "0.0.0-rc.239",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -11,11 +11,17 @@
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
+    "./extension/v0": {
+      "types": "./lib/extension-v0.d.ts",
+      "import": "./lib/extension-v0.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "LICENSE",
     "lib/index.js",
+    "lib/extension-v0.js",
+    "lib/extension-v0.d.ts",
     "lib/repair-session.js",
     "lib/client.js",
     "lib/client.js.map",

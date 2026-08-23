@@ -116,7 +116,8 @@ export function readToolArtifactPresentationMeta(
   }
 }
 
-function toolArtifactPresentationMeta(
+/** Create the canonical DSH artifact envelope consumed by Agent RP and other capable clients. */
+export function roleplayToolArtifactPresentationMeta(
   artifacts: readonly RoleplayToolImageArtifact[],
   data?: JsonValue,
 ): JsonValue {
@@ -639,7 +640,7 @@ export function installRoleplayArtifactCapability(
         type: 'text',
         text: `Published ${value.artifacts.length} durable roleplay image${value.artifacts.length === 1 ? '' : 's'} for this turn.`,
       }],
-      presentationMeta: (_args, value) => toolArtifactPresentationMeta(
+      presentationMeta: (_args, value) => roleplayToolArtifactPresentationMeta(
         value.artifacts as unknown as RoleplayToolImageArtifact[], {
         format: ROLEPLAY_ARTIFACT_AUTO_STAGE_FORMAT,
         version: 0,

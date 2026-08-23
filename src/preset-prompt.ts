@@ -112,6 +112,9 @@ function applyFormat(
   valueResolved = false,
 ): string {
   if (value.trim() === '') return ''
+  // SillyTavern treats an empty wrapper format as a raw marker insertion.
+  // Some community presets intentionally clear these fields instead of using {0}.
+  if (format.trim() === '') return valueResolved ? value : macros.expand(value)
   const inserted = valueResolved ? RESOLVED_FORMAT_VALUE : value
   const expanded = macros.expand(format.replaceAll(`{{${variable}}}`, inserted).replaceAll('{0}', inserted))
   return valueResolved ? expanded.replaceAll(RESOLVED_FORMAT_VALUE, value) : expanded

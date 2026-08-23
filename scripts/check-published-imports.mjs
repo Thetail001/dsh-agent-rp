@@ -15,7 +15,7 @@ function packageName(specifier) {
   return specifier.split('/')[0]
 }
 
-for (const file of ['../lib/index.js', '../lib/repair-session.js', '../lib/client.js']) {
+for (const file of ['../lib/index.js', '../lib/extension-v0.js', '../lib/repair-session.js', '../lib/client.js']) {
   const source = readFileSync(new URL(file, import.meta.url), 'utf8')
   const specifiers = [
     ...source.matchAll(/\bfrom\s+["']([^"']+)["']/gu),
@@ -34,6 +34,19 @@ for (const file of ['../lib/index.js', '../lib/repair-session.js', '../lib/clien
     locations.push(file.slice(3))
     missing.set(dependency, locations)
   }
+}
+
+const extension = await import('@dsh-external/dsh-agent-rp/extension/v0')
+for (const name of [
+  'AGENT_RP_EXTENSION_API_VERSION',
+  'registerRoleplayResourceProvider',
+  'registerRoleplayRuntimeExtension',
+  'roleplayToolArtifactPresentationMeta',
+]) {
+  if (!(name in extension)) throw new Error(`Published extension/v0 export is missing ${name}`)
+}
+if (extension.AGENT_RP_EXTENSION_API_VERSION !== 0) {
+  throw new Error('Published extension/v0 reports the wrong API version')
 }
 
 if (clientBuiltins.size > 0) {
