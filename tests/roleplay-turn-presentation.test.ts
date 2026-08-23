@@ -229,6 +229,66 @@ test('binds only explicitly staged durable artifacts to the settled reply', () =
   assert.equal(presentation.selectedReply?.surfaceSeq, reply.seq)
 })
 
+test('binds Thetail-compatible automatic publication artifacts to the settled reply', () => {
+  const session = Session.create(SessionId('presentation-publish-compat'))
+  session.append('turn/start', { turn: 1 })
+  const turnPlan = plan(session)
+  const attachment: ImageAttachmentRef = {
+    attachmentId: AttachmentId('sha256:presentation-publish-compat'),
+    mediaType: 'image/png',
+    bytes: 68,
+    width: 1,
+    height: 1,
+  }
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' },
+      content: [{
+        type: 'tool-call', id: CallId('image-publish'), name: 'publish_roleplay_image', arguments: '{}',
+      }],
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  const publishCall = session.append('tool/call', {
+    turn: 1, step: 1, callId: CallId('image-publish'), name: 'publish_roleplay_image', arguments: '{}',
+  })
+  const publishResult = session.append('tool/result', {
+    turn: 1,
+    step: 1,
+    message: createToolResultMessage({
+      callId: CallId('image-publish'), content: [{ type: 'text', text: 'published' }], isError: false,
+    }),
+    meta: {
+      format: 'dsh.tool-artifacts',
+      version: 0,
+      artifacts: [{ type: 'image', attachment }],
+      data: {
+        format: 'agent-rp.artifact-stage-intent',
+        version: 0,
+        caption: '钟楼外的雨夜。',
+      },
+    } as unknown as JsonValue,
+  }, { surfaceOp: 'append', sourceEventSeqs: [publishCall.seq] })
+  const reply = appendReply(session, 1, '雨还没有停。')
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const settlementEvent = settle(session, turnPlan, 1)
+  const presentation = compileInitialSessionRoleplayTurnPresentation({
+    session, settlementEvent, plans: [{ step: 1, plan: turnPlan }],
+  })
+
+  assert.deepEqual(presentation.present.artifacts, [{
+    type: 'image',
+    artifactId: String(attachment.attachmentId),
+    attachment,
+    sourceResultSeq: publishResult.seq,
+    sourceCallId: 'image-publish',
+    sourceToolName: 'publish_roleplay_image',
+    caption: '钟楼外的雨夜。',
+  }])
+  assert.equal(presentation.selectedReply?.surfaceSeq, reply.seq)
+})
+
 test('records a blocked turn without inventing a selected reply', () => {
   const session = Session.create(SessionId('presentation-no-reply'))
   const turnPlan = plan(session)

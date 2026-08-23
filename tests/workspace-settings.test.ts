@@ -53,6 +53,39 @@ test('normalizes duplicate workspace ids and rejects malformed settings', () => 
   }))
 })
 
+test('retains Thetail tool guidance settings without importing provider-specific defaults', () => {
+  const settings = normalizeAgentRpSettings({
+    workspaceMode: 'all',
+    workspaceIds: [],
+    toolGuidance: {
+      enabled: true,
+      includeFramework: false,
+      includeAgentRp: true,
+      imageMode: 'always',
+      custom: [{ id: 'community-image-mcp', text: 'Use the configured community image tool.' }],
+    },
+  })
+  assert.deepEqual(settings.toolGuidance, {
+    enabled: true,
+    includeFramework: false,
+    includeAgentRp: true,
+    imageMode: 'always',
+    custom: [{
+      id: 'community-image-mcp',
+      enabled: true,
+      text: 'Use the configured community image tool.',
+    }],
+  })
+  assert.deepEqual(normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [],
+  }).toolGuidance, DEFAULT_AGENT_RP_SETTINGS.toolGuidance)
+  assert.equal(JSON.stringify(DEFAULT_AGENT_RP_SETTINGS.toolGuidance).includes('Comfy'), false)
+  assert.throws(() => normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [],
+    toolGuidance: { imageMode: 'sometimes' },
+  }), /imageMode/u)
+})
+
 test('updates one workspace through the active policy list', () => {
   const excluded = setAgentRpWorkspaceEntry(DEFAULT_AGENT_RP_SETTINGS, 'workspace-a', false)
   assert.deepEqual(excluded.workspaceExcludedIds, ['workspace-a'])

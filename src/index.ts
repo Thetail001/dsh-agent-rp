@@ -161,7 +161,10 @@ import {
   RoleplayActorRevisionRegistry,
 } from './roleplay-actor-revision.ts'
 import { characterLibraryActorRevisionProvider } from './character-library-actor-revision.ts'
-import { installRoleplayArtifactCapability } from './roleplay-artifact.ts'
+import {
+  installRoleplayArtifactCapability,
+  renderRoleplayArtifactToolGuidance,
+} from './roleplay-artifact.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -238,15 +241,33 @@ export {
 } from './roleplay-actor-revision.ts'
 export {
   installRoleplayArtifactCapability,
+  renderRoleplayArtifactToolGuidance,
+  readRoleplayArtifactAutoStageIntent,
   readRoleplayArtifactStageRecord,
   readStagedRoleplayArtifacts,
   readToolArtifactPresentationMeta,
+  ROLEPLAY_ARTIFACT_AUTO_STAGE_FORMAT,
+  ROLEPLAY_ARTIFACT_PUBLISH_FORMAT,
+  ROLEPLAY_ARTIFACT_PUBLISH_TOOL,
+  ROLEPLAY_ARTIFACT_PUBLISH_VALUE_SCHEMA,
   ROLEPLAY_ARTIFACT_STAGE_FORMAT,
   ROLEPLAY_ARTIFACT_STAGE_TOOL,
   ROLEPLAY_ARTIFACT_STAGE_VALUE_SCHEMA,
   TOOL_ARTIFACT_PRESENTATION_FORMAT,
 } from './roleplay-artifact.ts'
+export {
+  DEFAULT_TOOL_GUIDANCE,
+  normalizeToolGuidanceConfig,
+} from './roleplay-tool-guidance.ts'
 export type {
+  AgentRpImageMode,
+  ResolvedToolGuidanceConfig,
+  ToolGuidanceEntryConfig,
+} from './roleplay-tool-guidance.ts'
+export type {
+  RoleplayArtifactAutoStageIntent,
+  RoleplayArtifactPublishArgs,
+  RoleplayArtifactPublishValue,
   RoleplayArtifactStageRecord,
   RoleplayToolImageArtifact,
   ToolArtifactPresentationMeta,
@@ -719,7 +740,7 @@ export function installAgentRp(
       return selected === undefined ? undefined : { kind: 'actor', id: selected.id }
     },
   })
-  installRoleplayArtifactCapability(ctx)
+  installRoleplayArtifactCapability(ctx, { toolGuidance: () => workspaceSettings.get().toolGuidance })
 
   commands.register({
     name: 'rp-tavern-variables',
@@ -1028,6 +1049,13 @@ export function installAgentRp(
       const agent = agentsByScope.get(scope)
       return agent === undefined ? '' : turnCoordinator.current(agent)?.memory.contextText ?? ''
     },
+  })
+  ctx.systemPrompt.context({
+    name: 'agent-rp:artifact-tools',
+    order: 71,
+    text: ({ scope }) => scope !== undefined && agentsByScope.get(scope) !== undefined
+      ? renderRoleplayArtifactToolGuidance(workspaceSettings.get().toolGuidance)
+      : '',
   })
   ctx.on('agent/request', async ({ agent, turn, step }, next) => {
     const activePlan = agentsByScope.get(agent) === agent

@@ -1,14 +1,24 @@
 /** Durable tool-artifact discovery and explicit Roleplay staging. */
 
+import { readFile, realpath, stat } from 'node:fs/promises'
+import { basename, isAbsolute, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import type { AttachmentStore, ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JsonValue, Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import {
+  DEFAULT_TOOL_GUIDANCE,
+  type ResolvedToolGuidanceConfig,
+} from './roleplay-tool-guidance.ts'
 
 export const ROLEPLAY_ARTIFACT_STAGE_TOOL = 'stage_roleplay_artifact'
+export const ROLEPLAY_ARTIFACT_PUBLISH_TOOL = 'publish_roleplay_image'
 export const TOOL_ARTIFACT_PRESENTATION_FORMAT = 'dsh.tool-artifacts'
 export const ROLEPLAY_ARTIFACT_STAGE_FORMAT = 'agent-rp.staged-artifact'
+export const ROLEPLAY_ARTIFACT_AUTO_STAGE_FORMAT = 'agent-rp.artifact-stage-intent'
+export const ROLEPLAY_ARTIFACT_PUBLISH_FORMAT = 'agent-rp.published-artifacts'
 
 const IMAGE_MEDIA_TYPES = new Set<ImageMediaType>([
   'image/png',
@@ -39,6 +49,29 @@ export interface RoleplayArtifactStageRecord {
   readonly sourceResultSeq: number
   readonly sourceCallId: string
   readonly sourceToolName: string
+  readonly caption?: string
+}
+
+/** Tool-owned data inside the canonical DSH artifact envelope that requests immediate RP staging. */
+export interface RoleplayArtifactAutoStageIntent {
+  readonly format: typeof ROLEPLAY_ARTIFACT_AUTO_STAGE_FORMAT
+  readonly version: 0
+  readonly sourceResultSeq?: number
+  readonly caption?: string
+}
+
+/** Compatibility result of Thetail's public publication tool name. */
+export interface RoleplayArtifactPublishValue {
+  readonly format: typeof ROLEPLAY_ARTIFACT_PUBLISH_FORMAT
+  readonly version: 0
+  readonly artifacts: RoleplayToolImageArtifact[]
+  readonly sourceResultSeq?: number
+  readonly caption?: string
+}
+
+/** Arguments retained for compatibility with `Thetail001/dsh-agent-rp`. */
+export interface RoleplayArtifactPublishArgs {
+  readonly path?: string
   readonly caption?: string
 }
 
@@ -83,6 +116,36 @@ export function readToolArtifactPresentationMeta(
   }
 }
 
+function toolArtifactPresentationMeta(
+  artifacts: readonly RoleplayToolImageArtifact[],
+  data?: JsonValue,
+): JsonValue {
+  return {
+    format: TOOL_ARTIFACT_PRESENTATION_FORMAT,
+    version: 0,
+    artifacts: [...artifacts],
+    ...(data === undefined ? {} : { data }),
+  } as unknown as JsonValue
+}
+
+/** Parse producer-owned automatic stage intent without trusting arbitrary tool metadata. */
+export function readRoleplayArtifactAutoStageIntent(
+  value: JsonValue | undefined,
+): RoleplayArtifactAutoStageIntent | undefined {
+  const record = plainRecord(value)
+  if (record?.format !== ROLEPLAY_ARTIFACT_AUTO_STAGE_FORMAT || record.version !== 0
+    || (record.sourceResultSeq !== undefined && (typeof record.sourceResultSeq !== 'number'
+      || !Number.isSafeInteger(record.sourceResultSeq) || record.sourceResultSeq < 0))
+    || (record.caption !== undefined && (typeof record.caption !== 'string'
+      || record.caption === '' || record.caption.length > 500))) return undefined
+  return {
+    format: ROLEPLAY_ARTIFACT_AUTO_STAGE_FORMAT,
+    version: 0,
+    ...(record.sourceResultSeq === undefined ? {} : { sourceResultSeq: record.sourceResultSeq }),
+    ...(record.caption === undefined ? {} : { caption: record.caption }),
+  }
+}
+
 /** Validate one replayed stage decision before it reaches presentation state. */
 export function readRoleplayArtifactStageRecord(
   value: JsonValue | undefined,
@@ -121,10 +184,18 @@ function currentStageCall(
   session: Session,
   callId: string,
 ): Extract<SessionEvent, { readonly type: 'tool/call' }> {
+  return currentToolCall(session, callId, ROLEPLAY_ARTIFACT_STAGE_TOOL)
+}
+
+function currentToolCall(
+  session: Session,
+  callId: string,
+  toolName: string,
+): Extract<SessionEvent, { readonly type: 'tool/call' }> {
   const event = session.events.findLast(candidate => candidate.type === 'tool/call'
     && String(candidate.data.callId) === callId)
-  if (event?.type !== 'tool/call' || event.data.name !== ROLEPLAY_ARTIFACT_STAGE_TOOL) {
-    throw new Error('stage_roleplay_artifact has no matching durable tool call')
+  if (event?.type !== 'tool/call' || event.data.name !== toolName) {
+    throw new Error(`${toolName} has no matching durable tool call`)
   }
   return event
 }
@@ -177,6 +248,157 @@ function boundedCaption(value: string | undefined): string | undefined {
   return caption
 }
 
+function imagesFromContent(content: readonly ContentBlock[]): readonly RoleplayToolImageArtifact[] {
+  return content.flatMap(block => {
+    if (block.type === 'image') return [{ type: 'image' as const, attachment: block.attachment }]
+    if (block.type === 'tool-result') return imagesFromContent(block.content)
+    return []
+  })
+}
+
+function uniqueArtifacts(artifacts: readonly RoleplayToolImageArtifact[]): readonly RoleplayToolImageArtifact[] {
+  const seen = new Set<string>()
+  return artifacts.filter(artifact => {
+    const id = String(artifact.attachment.attachmentId)
+    if (seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
+}
+
+function legacyPublishedCaption(value: JsonValue | undefined): string | undefined {
+  const record = plainRecord(value)
+  if (record?.format !== 0 || record.version !== 0 || record.caption === undefined) return undefined
+  if (typeof record.caption !== 'string' || record.caption === '' || record.caption.length > 500) return undefined
+  return record.caption
+}
+
+function stagedSourceSeqs(events: readonly SessionEvent[], turn: number): ReadonlySet<number> {
+  const staged = new Set<number>()
+  for (const event of events) {
+    if (event.type !== 'tool/result' || event.data.turn !== turn || resultFailed(event)) continue
+    const explicit = readRoleplayArtifactStageRecord(event.data.meta)
+    if (explicit !== undefined) staged.add(explicit.sourceResultSeq)
+    const meta = readToolArtifactPresentationMeta(event.data.meta)
+    const autoStage = readRoleplayArtifactAutoStageIntent(meta?.data)
+    if (autoStage !== undefined) {
+      staged.add(event.seq)
+      staged.add(autoStage.sourceResultSeq ?? event.seq)
+    }
+  }
+  return staged
+}
+
+function latestPublishableArtifacts(
+  session: Session,
+  call: Extract<SessionEvent, { readonly type: 'tool/call' }>,
+): { readonly artifacts: readonly RoleplayToolImageArtifact[]; readonly sourceResultSeq: number } | undefined {
+  const alreadyStaged = stagedSourceSeqs(session.events, call.data.turn)
+  for (let index = session.events.length - 1; index >= 0; index -= 1) {
+    const event = session.events[index]
+    if (event === undefined || event.seq >= call.seq || event.type !== 'tool/result'
+      || event.data.turn !== call.data.turn || resultFailed(event) || alreadyStaged.has(event.seq)) continue
+    const durable = readToolArtifactPresentationMeta(event.data.meta)?.artifacts
+    const legacy = imagesFromContent(event.data.message.content)
+    const artifacts = uniqueArtifacts(durable === undefined ? legacy : [...durable, ...legacy])
+    if (artifacts.length > 0) return { artifacts, sourceResultSeq: event.seq }
+  }
+  return undefined
+}
+
+function inferredImageMediaType(data: Uint8Array): ImageMediaType | undefined {
+  if (data.length >= 8
+    && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47
+    && data[4] === 0x0d && data[5] === 0x0a && data[6] === 0x1a && data[7] === 0x0a) return 'image/png'
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return 'image/jpeg'
+  if (data.length >= 6) {
+    const signature = String.fromCharCode(...data.subarray(0, 6))
+    if (signature === 'GIF87a' || signature === 'GIF89a') return 'image/gif'
+  }
+  if (data.length >= 12
+    && String.fromCharCode(...data.subarray(0, 4)) === 'RIFF'
+    && String.fromCharCode(...data.subarray(8, 12)) === 'WEBP') return 'image/webp'
+  return undefined
+}
+
+function insideWorkspace(workspace: string, candidate: string): boolean {
+  const child = relative(workspace, candidate)
+  return child !== '' && child !== '..'
+    && !child.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(child)
+}
+
+async function saveWorkspaceArtifact(
+  store: AttachmentStore,
+  agent: Agent,
+  requestedPath: string,
+  signal: AbortSignal,
+): Promise<RoleplayToolImageArtifact> {
+  const cwd = agent.session.header.cwd
+  if (cwd === undefined) throw new Error('publish_roleplay_image(path) requires this Session to have a workspace cwd')
+  const requested = requestedPath.trim()
+  if (requested === '') throw new Error('path must contain non-whitespace text')
+  if (requested.length > 4_000) throw new Error('path is too long')
+  if (/^[a-z][a-z\d+.-]*:\/\//iu.test(requested)) {
+    throw new Error('path must be a local image inside the Session workspace, not a URL or data URI')
+  }
+  signal.throwIfAborted()
+  const workspace = await realpath(cwd)
+  const candidate = await realpath(resolve(workspace, requested))
+  if (!insideWorkspace(workspace, candidate)) {
+    throw new Error('path must resolve to an image file inside the Session workspace')
+  }
+  const file = await stat(candidate)
+  if (!file.isFile()) throw new Error('path must resolve to a regular image file')
+  if (file.size > store.imageLimits.maxImageBytes) {
+    throw new Error(`image exceeds the configured ${store.imageLimits.maxImageBytes}-byte limit`)
+  }
+  const data = await readFile(candidate, { signal })
+  const mediaType = inferredImageMediaType(data)
+  if (mediaType === undefined) throw new Error('path is not a supported PNG, JPEG, WebP, or GIF image')
+  if (!store.imageLimits.mediaTypes.includes(mediaType)) {
+    throw new Error(`${mediaType} images are disabled by the attachment policy`)
+  }
+  return {
+    type: 'image',
+    attachment: await store.saveImage({ data, mediaType, name: basename(candidate) }),
+  }
+}
+
+const PUBLISH_NO_SOURCE_GUIDANCE = 'No image can be published yet. No same-turn tool returned a durable image artifact and no workspace path was provided. Do not retry the same call. First make the image tool return a native image artifact, or materialize its output as a real image file inside the Session workspace and pass that path. Otherwise continue the roleplay reply without an image.'
+
+async function preparePublishedArtifacts(
+  store: AttachmentStore,
+  agent: Agent,
+  callId: string,
+  args: RoleplayArtifactPublishArgs,
+  signal: AbortSignal,
+): Promise<RoleplayArtifactPublishValue> {
+  const call = currentToolCall(agent.session, callId, ROLEPLAY_ARTIFACT_PUBLISH_TOOL)
+  const caption = boundedCaption(args.caption)
+  const requestedPath = args.path?.trim() === '' ? undefined : args.path
+  const selected = requestedPath === undefined
+    ? latestPublishableArtifacts(agent.session, call)
+    : { artifacts: [await saveWorkspaceArtifact(store, agent, requestedPath, signal)] }
+  if (selected === undefined) throw new Error(PUBLISH_NO_SOURCE_GUIDANCE)
+  const artifacts = selected.artifacts
+  if (artifacts.length > store.imageLimits.maxImagesPerMessage) {
+    throw new Error(`image tool returned ${artifacts.length} images; at most ${store.imageLimits.maxImagesPerMessage} may be published together`)
+  }
+  for (const artifact of artifacts) {
+    const stored = await store.readImage(artifact.attachment, signal)
+    if (String(stored.ref.attachmentId) !== String(artifact.attachment.attachmentId)) {
+      throw new Error('stored artifact identity changed during verification')
+    }
+  }
+  return {
+    format: ROLEPLAY_ARTIFACT_PUBLISH_FORMAT,
+    version: 0,
+    artifacts: [...artifacts],
+    ...('sourceResultSeq' in selected ? { sourceResultSeq: selected.sourceResultSeq } : {}),
+    ...(caption === undefined ? {} : { caption }),
+  }
+}
+
 export const ROLEPLAY_ARTIFACT_STAGE_VALUE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -219,8 +441,139 @@ export const ROLEPLAY_ARTIFACT_STAGE_VALUE_SCHEMA = {
   },
 } as const
 
+export const ROLEPLAY_ARTIFACT_PUBLISH_VALUE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    format: { type: 'string', required: true, const: ROLEPLAY_ARTIFACT_PUBLISH_FORMAT },
+    version: { type: 'integer', required: true, const: 0 },
+    artifacts: {
+      type: 'array',
+      required: true,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          type: { type: 'string', required: true, const: 'image' },
+          attachment: {
+            type: 'object',
+            required: true,
+            additionalProperties: false,
+            properties: {
+              attachmentId: { type: 'string', required: true },
+              mediaType: { type: 'string', required: true, enum: [...IMAGE_MEDIA_TYPES] },
+              bytes: { type: 'integer', required: true },
+              width: { type: 'integer', required: true },
+              height: { type: 'integer', required: true },
+              name: { type: 'string' },
+              originalDimensions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  width: { type: 'integer', required: true },
+                  height: { type: 'integer', required: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    sourceResultSeq: { type: 'integer' },
+    caption: { type: 'string' },
+  },
+} as const
+
+function roleplayImageModeGuidance(mode: ResolvedToolGuidanceConfig['imageMode']): string {
+  if (mode === 'never') return '图像工具策略：禁止调用生图或角色插图发布工具。'
+  if (mode === 'always') {
+    return '图像工具策略：每个普通角色扮演回合至多尝试一条生图与发布链；工具不可用或失败时继续正常回复，不循环重试。'
+  }
+  return '图像工具策略：按需使用。用户明确要求图片，或当前场景确实受益于插图时可以调用；普通对话无需生图。'
+}
+
+/** Fixed provider-neutral guidance appended only to active Agent RP scopes. */
+export function renderRoleplayArtifactToolGuidance(
+  config: ResolvedToolGuidanceConfig = DEFAULT_TOOL_GUIDANCE,
+): string {
+  if (!config.enabled) return ''
+  return [
+    '【Agent RP durable artifacts】',
+    ...(config.includeFramework ? [
+      '只有用户明确要求长期记住时才使用持久记忆工具；显式导入角色卡、世界书或预设时使用对应的导入工具。',
+    ] : []),
+    ...(config.includeAgentRp && config.imageMode !== 'never' ? [
+      'Image tools may return non-model-visible durable artifacts with stable artifact ids.',
+      'To show one such image after this turn\'s final roleplay reply, call stage_roleplay_artifact with the exact id reported by the producing tool.',
+      'For compatibility with existing image toolchains, publish_roleplay_image may be used instead: omit path to select the latest unused same-turn image, or pass a real image path inside the Session workspace.',
+      'Use exactly one of these publication tools for an image. Never pass a URL, data URI, base64 payload, temporary link, or guessed path, and never repeat an unchanged failed publication call.',
+    ] : []),
+    ...config.custom.filter(entry => entry.enabled).map(entry => `自定义工具指导（${entry.id}）：\n${entry.text}`),
+    roleplayImageModeGuidance(config.imageMode),
+  ].join('\n')
+}
+
+export interface InstallRoleplayArtifactCapabilityOptions {
+  /** Read current settings at request and execution time so WebUI changes need no restart. */
+  readonly toolGuidance?: () => ResolvedToolGuidanceConfig
+}
+
 /** Install the provider-neutral bridge from durable DSH artifacts to RP stage intent. */
-export function installRoleplayArtifactCapability(ctx: Context): void {
+export function installRoleplayArtifactCapability(
+  ctx: Context,
+  options: InstallRoleplayArtifactCapabilityOptions = {},
+): void {
+  const currentGuidance = options.toolGuidance ?? (() => DEFAULT_TOOL_GUIDANCE)
+  const publishFailures = new WeakMap<Agent, { readonly turn: number; readonly count: number }>()
+  const failureRestrictions = new Map<Agent, { readonly turn: number; readonly dispose: () => void }>()
+  const policyRestrictions = new Map<Agent, () => void>()
+  const disposeRestriction = (agent: Agent, restrictions: Map<Agent, () => void>): void => {
+    const dispose = restrictions.get(agent)
+    restrictions.delete(agent)
+    dispose?.()
+  }
+  const disposeFailureRestriction = (agent: Agent): void => {
+    const restriction = failureRestrictions.get(agent)
+    failureRestrictions.delete(agent)
+    restriction?.dispose()
+  }
+  ctx.on('agent/pre-step', async ({ agent, turn }, next) => {
+    const failed = failureRestrictions.get(agent)
+    if (failed !== undefined && failed.turn !== turn) {
+      disposeFailureRestriction(agent)
+      publishFailures.delete(agent)
+    }
+    const guidance = currentGuidance()
+    const disabled = !guidance.enabled || !guidance.includeAgentRp || guidance.imageMode === 'never'
+    const restricted = policyRestrictions.has(agent)
+    if (disabled && !restricted) {
+      policyRestrictions.set(agent, agent.ctx.tools.restrict({ deny: [ROLEPLAY_ARTIFACT_PUBLISH_TOOL] }))
+    } else if (!disabled && restricted) {
+      disposeRestriction(agent, policyRestrictions)
+    }
+    return await next()
+  })
+  ctx.on('agent/disposed', ({ agent }) => {
+    publishFailures.delete(agent)
+    disposeFailureRestriction(agent)
+    disposeRestriction(agent, policyRestrictions)
+  })
+  ctx.effect(() => () => {
+    for (const { dispose } of failureRestrictions.values()) dispose()
+    failureRestrictions.clear()
+    for (const dispose of policyRestrictions.values()) dispose()
+    policyRestrictions.clear()
+  }, 'agent-rp: artifact publication restrictions')
+  const recordPublishFailure = (agent: Agent, turn: number): void => {
+    const previous = publishFailures.get(agent)
+    const count = previous?.turn === turn ? previous.count + 1 : 1
+    publishFailures.set(agent, { turn, count })
+    if (count < 2 || failureRestrictions.has(agent)) return
+    failureRestrictions.set(agent, {
+      turn,
+      dispose: agent.ctx.tools.restrict({ deny: [ROLEPLAY_ARTIFACT_PUBLISH_TOOL] }),
+    })
+  }
   ctx.effect(() => ctx.tools.register(defineTool({
     name: ROLEPLAY_ARTIFACT_STAGE_TOOL,
     description: 'Place one durable artifact from an earlier tool result in this turn onto the roleplay stage. Pass the exact artifact id shown by the producing tool. This chooses presentation only: it does not generate, download, or modify the artifact.',
@@ -267,6 +620,62 @@ export function installRoleplayArtifactCapability(ctx: Context): void {
     }),
     isConcurrencySafe: () => false,
   })), 'agent-rp: stage durable tool artifacts')
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: ROLEPLAY_ARTIFACT_PUBLISH_TOOL,
+    description: 'Compatibility publisher for roleplay image tools. Omit path to publish the latest unused durable image returned earlier in this turn. Otherwise pass a real PNG, JPEG, WebP, or GIF path inside the Session workspace. This stores one canonical DSH artifact and places it after the final roleplay reply; never pass a URL, data URI, base64 payload, or guessed path.',
+    parameters: {
+      path: {
+        type: 'string',
+        description: 'Optional real image path inside the current Session workspace. Omit when an earlier same-turn tool returned a native image artifact.',
+      },
+      caption: {
+        type: 'string',
+        description: 'Optional short player-facing caption. Omit when the image should stand on its own.',
+      },
+    },
+    output: {
+      schema: ROLEPLAY_ARTIFACT_PUBLISH_VALUE_SCHEMA,
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Published ${value.artifacts.length} durable roleplay image${value.artifacts.length === 1 ? '' : 's'} for this turn.`,
+      }],
+      presentationMeta: (_args, value) => toolArtifactPresentationMeta(
+        value.artifacts as unknown as RoleplayToolImageArtifact[], {
+        format: ROLEPLAY_ARTIFACT_AUTO_STAGE_FORMAT,
+        version: 0,
+        ...(value.sourceResultSeq === undefined ? {} : { sourceResultSeq: value.sourceResultSeq }),
+        ...(value.caption === undefined ? {} : { caption: value.caption }),
+      }),
+    },
+    async execute(args, exec) {
+      if (exec.agent === undefined) throw new Error('publish_roleplay_image requires an Agent Session')
+      if (exec.parent !== undefined) {
+        throw new Error('publish_roleplay_image must be a top-level tool call so its stage decision is replayable')
+      }
+      const guidance = currentGuidance()
+      if (!guidance.enabled || !guidance.includeAgentRp || guidance.imageMode === 'never') {
+        throw new Error('publish_roleplay_image is disabled by the current Agent RP tool settings')
+      }
+      try {
+        return await preparePublishedArtifacts(ctx.attachments, exec.agent, String(exec.callId), args, exec.signal)
+      } catch (error) {
+        const call = currentToolCall(exec.agent.session, String(exec.callId), ROLEPLAY_ARTIFACT_PUBLISH_TOOL)
+        recordPublishFailure(exec.agent, call.data.turn)
+        throw error
+      }
+    },
+    presentCall: args => ({
+      card: 'generic',
+      title: '发布角色插图',
+      kind: 'other',
+      ...(args.caption === undefined ? {} : { rawInput: args.caption }),
+    }),
+    presentResult: (_args, result) => ({
+      card: 'generic',
+      title: result.isError ? '角色插图发布失败' : '角色插图已发布',
+    }),
+    isConcurrencySafe: () => false,
+  })), 'agent-rp: publish image compatibility artifacts')
 }
 
 /** Read every validated stage decision in one turn before a durable boundary. */
@@ -276,6 +685,17 @@ export function readStagedRoleplayArtifacts(
   beforeSeq = Number.POSITIVE_INFINITY,
 ): readonly RoleplayArtifactStageRecord[] {
   const staged: RoleplayArtifactStageRecord[] = []
+  const stagedIndex = new Map<string, number>()
+  const accept = (record: RoleplayArtifactStageRecord): void => {
+    const id = String(record.artifact.attachment.attachmentId)
+    const previous = stagedIndex.get(id)
+    if (previous === undefined) {
+      stagedIndex.set(id, staged.length)
+      staged.push(record)
+    } else {
+      staged[previous] = record
+    }
+  }
   const calls = new Map<string, Extract<SessionEvent, { readonly type: 'tool/call' }>>()
   const results = new Map<number, Extract<SessionEvent, { readonly type: 'tool/result' }>>()
   for (const event of events) {
@@ -288,6 +708,45 @@ export function readStagedRoleplayArtifacts(
     if (event.data.turn !== turn || resultFailed(event)) {
       results.set(event.seq, event)
       continue
+    }
+    const artifactMeta = readToolArtifactPresentationMeta(event.data.meta)
+    const autoStage = readRoleplayArtifactAutoStageIntent(artifactMeta?.data)
+    const artifactCallId = resultCallId(event)
+    const artifactCall = artifactCallId === undefined ? undefined : calls.get(artifactCallId)
+    if (artifactMeta !== undefined && autoStage !== undefined && artifactCallId !== undefined
+      && artifactCall !== undefined) {
+      for (const artifact of artifactMeta.artifacts) {
+        accept({
+          format: ROLEPLAY_ARTIFACT_STAGE_FORMAT,
+          version: 0,
+          artifact,
+          sourceResultSeq: event.seq,
+          sourceCallId: artifactCallId,
+          sourceToolName: artifactCall.data.name,
+          ...(autoStage.caption === undefined ? {} : { caption: autoStage.caption }),
+        })
+      }
+      results.set(event.seq, event)
+      continue
+    }
+    if (artifactCall?.data.name === ROLEPLAY_ARTIFACT_PUBLISH_TOOL && artifactCallId !== undefined) {
+      const legacyArtifacts = uniqueArtifacts(imagesFromContent(event.data.message.content))
+      if (legacyArtifacts.length > 0) {
+        const caption = legacyPublishedCaption(event.data.meta)
+        for (const artifact of legacyArtifacts) {
+          accept({
+            format: ROLEPLAY_ARTIFACT_STAGE_FORMAT,
+            version: 0,
+            artifact,
+            sourceResultSeq: event.seq,
+            sourceCallId: artifactCallId,
+            sourceToolName: ROLEPLAY_ARTIFACT_PUBLISH_TOOL,
+            ...(caption === undefined ? {} : { caption }),
+          })
+        }
+        results.set(event.seq, event)
+        continue
+      }
     }
     const stageCallId = resultCallId(event)
     const stageCall = stageCallId === undefined ? undefined : calls.get(stageCallId)
@@ -308,7 +767,7 @@ export function readStagedRoleplayArtifacts(
       results.set(event.seq, event)
       continue
     }
-    staged.push(record)
+    accept(record)
     results.set(event.seq, event)
   }
   return staged

@@ -1,18 +1,28 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { AttachmentId, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import { AttachmentId, type ImageAttachmentRef, type SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { CallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type JsonValue } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRegistry from '@deepseek-ai/dsh-tools'
 import {
   installRoleplayArtifactCapability,
+  readRoleplayArtifactAutoStageIntent,
   readRoleplayArtifactStageRecord,
   readStagedRoleplayArtifacts,
+  readToolArtifactPresentationMeta,
+  renderRoleplayArtifactToolGuidance,
+  ROLEPLAY_ARTIFACT_AUTO_STAGE_FORMAT,
+  ROLEPLAY_ARTIFACT_PUBLISH_TOOL,
   ROLEPLAY_ARTIFACT_STAGE_TOOL,
 } from '../src/roleplay-artifact.ts'
+
+const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])
 
 const IMAGE: ImageAttachmentRef = {
   attachmentId: AttachmentId('sha256:roleplay-artifact-fixture'),
@@ -23,8 +33,48 @@ const IMAGE: ImageAttachmentRef = {
   name: 'scene.png',
 }
 
-function openSession(id: string): { readonly session: Session; readonly agent: Agent } {
-  const session = Session.create(SessionId(id))
+test('guides every image producer through one provider-neutral publication path', () => {
+  const guidance = renderRoleplayArtifactToolGuidance()
+  assert.match(guidance, /stage_roleplay_artifact/u)
+  assert.match(guidance, /publish_roleplay_image/u)
+  assert.match(guidance, /exactly one/u)
+  assert.match(guidance, /never repeat/u)
+  assert.doesNotMatch(guidance, /Comfy|MCP|DashScope|OpenAI/u)
+
+  const custom = renderRoleplayArtifactToolGuidance({
+    enabled: true,
+    includeFramework: false,
+    includeAgentRp: true,
+    imageMode: 'always',
+    custom: [{ id: 'fixture-provider', enabled: true, text: 'CALL_FIXTURE_IMAGE_TOOL' }],
+  })
+  assert.match(custom, /CALL_FIXTURE_IMAGE_TOOL/u)
+  assert.match(custom, /每个普通角色扮演回合/u)
+  assert.doesNotMatch(custom, /持久记忆工具/u)
+
+  const never = renderRoleplayArtifactToolGuidance({
+    enabled: true,
+    includeFramework: true,
+    includeAgentRp: true,
+    imageMode: 'never',
+    custom: [],
+  })
+  assert.match(never, /禁止调用/u)
+  assert.doesNotMatch(never, /stage_roleplay_artifact|publish_roleplay_image/u)
+  assert.equal(renderRoleplayArtifactToolGuidance({
+    enabled: false,
+    includeFramework: true,
+    includeAgentRp: true,
+    imageMode: 'auto',
+    custom: [],
+  }), '')
+})
+
+function openSession(id: string, cwd?: string): { readonly session: Session; readonly agent: Agent } {
+  const sessionId = SessionId(id)
+  const session = cwd === undefined
+    ? Session.create(sessionId)
+    : Session.create(sessionId, [], { version: 0, id: sessionId, createdAt: 0, cwd })
   session.append('turn/start', { turn: 1 })
   session.append('step/start', { turn: 1, step: 1 })
   return { session, agent: { session } as Agent }
@@ -45,13 +95,14 @@ function appendResult(
   callId: string,
   callSeq: number,
   meta: JsonValue | undefined,
+  content: Parameters<typeof createToolResultMessage>[0]['content'] = [{ type: 'text', text: 'ok' }],
 ): number {
   return session.append('tool/result', {
     turn: 1,
     step: 1,
     message: createToolResultMessage({
       callId: CallId(callId),
-      content: [{ type: 'text', text: 'ok' }],
+      content,
       isError: false,
     }),
     ...(meta === undefined ? {} : { meta }),
@@ -61,7 +112,22 @@ function appendResult(
 async function mounted(): Promise<Context> {
   const ctx = new Context()
   ctx.provide('attachments' as never, {
-    readImage: (ref: ImageAttachmentRef) => Promise.resolve({ ref, data: new Uint8Array(IMAGE.bytes) }),
+    imageLimits: {
+      maxImageBytes: 1_000_000,
+      maxImagesPerMessage: 4,
+      maxMessageImageBytes: 4_000_000,
+      maxImagePixels: 10_000_000,
+      mediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
+    },
+    saveImage: (input: SaveImageAttachment) => Promise.resolve({
+      attachmentId: AttachmentId('sha256:published-workspace-image'),
+      mediaType: input.mediaType,
+      bytes: input.data.byteLength,
+      width: 1,
+      height: 1,
+      ...(input.name === undefined ? {} : { name: input.name }),
+    }),
+    readImage: (ref: ImageAttachmentRef) => Promise.resolve({ ref, data: new Uint8Array(ref.bytes) }),
   } as never)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRegistry)
@@ -106,6 +172,129 @@ test('stages one explicit same-turn durable artifact and replays its provenance'
   })
   const stageResultSeq = appendResult(session, 'stage-1', stageCallSeq, result.meta)
   assert.deepEqual(readStagedRoleplayArtifacts(session.events, 1, stageResultSeq + 1), [record])
+})
+
+test('accepts Thetail publish_roleplay_image calls over legacy native image results', async (context) => {
+  const ctx = await mounted()
+  context.after(async () => { await ctx.fiber.dispose() })
+  const { session, agent } = openSession('publish-the-tail')
+  const sourceCallSeq = appendCall(session, 'mcp-image-1', 'mcp__image__generate', { prompt: '雨夜钟楼' })
+  const sourceResultSeq = appendResult(
+    session, 'mcp-image-1', sourceCallSeq, undefined, [{ type: 'image', attachment: IMAGE }],
+  )
+  const publishCallSeq = appendCall(session, 'publish-1', ROLEPLAY_ARTIFACT_PUBLISH_TOOL, {
+    caption: '雨落在钟楼外。',
+  })
+
+  const result = await ctx.tools.execute({
+    callId: CallId('publish-1'),
+    name: ROLEPLAY_ARTIFACT_PUBLISH_TOOL,
+    arguments: { caption: '  雨落在钟楼外。  ' },
+    agent,
+    signal: new AbortController().signal,
+  })
+
+  assert.equal(result.isError, false)
+  if (result.isError) throw new Error('publication unexpectedly failed')
+  const meta = readToolArtifactPresentationMeta(result.meta)
+  assert.deepEqual(meta?.artifacts, [{ type: 'image', attachment: IMAGE }])
+  assert.deepEqual(readRoleplayArtifactAutoStageIntent(meta?.data), {
+    format: ROLEPLAY_ARTIFACT_AUTO_STAGE_FORMAT,
+    version: 0,
+    sourceResultSeq,
+    caption: '雨落在钟楼外。',
+  })
+  const publishResultSeq = appendResult(session, 'publish-1', publishCallSeq, result.meta)
+  assert.deepEqual(readStagedRoleplayArtifacts(session.events, 1, publishResultSeq + 1), [{
+    format: 'agent-rp.staged-artifact',
+    version: 0,
+    artifact: { type: 'image', attachment: IMAGE },
+    sourceResultSeq: publishResultSeq,
+    sourceCallId: 'publish-1',
+    sourceToolName: ROLEPLAY_ARTIFACT_PUBLISH_TOOL,
+    caption: '雨落在钟楼外。',
+  }])
+
+  appendCall(session, 'publish-duplicate', ROLEPLAY_ARTIFACT_PUBLISH_TOOL, {})
+  const duplicate = await ctx.tools.execute({
+    callId: CallId('publish-duplicate'),
+    name: ROLEPLAY_ARTIFACT_PUBLISH_TOOL,
+    arguments: {},
+    agent,
+    signal: new AbortController().signal,
+  })
+  assert.equal(duplicate.isError, true)
+  assert.match(duplicate.content[0]?.type === 'text' ? duplicate.content[0].text : '', /No image can be published/u)
+})
+
+test('replays early Thetail publication results that carried a native image block', () => {
+  const { session } = openSession('publish-the-tail-history')
+  const publishCallSeq = appendCall(session, 'publish-history', ROLEPLAY_ARTIFACT_PUBLISH_TOOL, {})
+  const publishResultSeq = appendResult(
+    session,
+    'publish-history',
+    publishCallSeq,
+    {
+      format: 0,
+      version: 0,
+      sourceEventSeq: publishCallSeq,
+      images: [IMAGE],
+      caption: '旧会话里的雨夜。',
+    } as unknown as JsonValue,
+    [{ type: 'text', text: 'published' }, { type: 'image', attachment: IMAGE }],
+  )
+
+  assert.deepEqual(readStagedRoleplayArtifacts(session.events, 1, publishResultSeq + 1), [{
+    format: 'agent-rp.staged-artifact',
+    version: 0,
+    artifact: { type: 'image', attachment: IMAGE },
+    sourceResultSeq: publishResultSeq,
+    sourceCallId: 'publish-history',
+    sourceToolName: ROLEPLAY_ARTIFACT_PUBLISH_TOOL,
+    caption: '旧会话里的雨夜。',
+  }])
+})
+
+test('publishes a real workspace image through the compatibility tool without accepting outside paths', async (context) => {
+  const ctx = await mounted()
+  context.after(async () => { await ctx.fiber.dispose() })
+  const root = await mkdtemp(join(tmpdir(), 'agent-rp-publish-compat-'))
+  const workspace = join(root, 'workspace')
+  await mkdir(workspace)
+  await writeFile(join(workspace, 'scene.png'), PNG)
+  await writeFile(join(root, 'outside.png'), PNG)
+  context.after(async () => { await rm(root, { recursive: true, force: true }) })
+  const { session, agent } = openSession('publish-workspace', workspace)
+  const publishCallSeq = appendCall(session, 'publish-path', ROLEPLAY_ARTIFACT_PUBLISH_TOOL, {
+    path: 'scene.png',
+  })
+
+  const result = await ctx.tools.execute({
+    callId: CallId('publish-path'),
+    name: ROLEPLAY_ARTIFACT_PUBLISH_TOOL,
+    arguments: { path: 'scene.png' },
+    agent,
+    signal: new AbortController().signal,
+  })
+
+  assert.equal(result.isError, false)
+  if (result.isError) throw new Error('workspace publication unexpectedly failed')
+  const meta = readToolArtifactPresentationMeta(result.meta)
+  assert.equal(meta?.artifacts[0]?.attachment.name, 'scene.png')
+  assert.equal(meta?.artifacts[0]?.attachment.mediaType, 'image/png')
+  const publishResultSeq = appendResult(session, 'publish-path', publishCallSeq, result.meta)
+  assert.equal(readStagedRoleplayArtifacts(session.events, 1, publishResultSeq + 1).length, 1)
+
+  appendCall(session, 'publish-outside', ROLEPLAY_ARTIFACT_PUBLISH_TOOL, { path: join(root, 'outside.png') })
+  const outside = await ctx.tools.execute({
+    callId: CallId('publish-outside'),
+    name: ROLEPLAY_ARTIFACT_PUBLISH_TOOL,
+    arguments: { path: join(root, 'outside.png') },
+    agent,
+    signal: new AbortController().signal,
+  })
+  assert.equal(outside.isError, true)
+  assert.match(outside.content[0]?.type === 'text' ? outside.content[0].text : '', /inside the Session workspace/u)
 })
 
 test('rejects paths, old-turn ids, and unrecorded artifacts instead of guessing', async (context) => {
