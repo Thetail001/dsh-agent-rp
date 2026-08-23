@@ -18,6 +18,12 @@ import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import { WorkspaceSettingsStore } from './workspace-settings-store.ts'
 import { installWorkspaceSettingsHttp } from './workspace-settings-http.ts'
 import {
+  ROLEPLAY_RESOURCE_CATALOG_KEY,
+  RoleplayResourceCatalog,
+} from './roleplay-resource-catalog.ts'
+import { roleplayLibraryResourceProviders } from './roleplay-resource-library-providers.ts'
+import { installRoleplayResourceCatalogHttp } from './roleplay-resource-catalog-http.ts'
+import {
   Config,
   resolveConfig,
   type Config as AgentRpConfig,
@@ -147,6 +153,21 @@ import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
 export { Config }
+export {
+  registerRoleplayResourceProvider,
+  ROLEPLAY_RESOURCE_CATALOG_KEY,
+  RoleplayResourceCatalog,
+} from './roleplay-resource-catalog.ts'
+export type { RoleplayResourceProvider } from './roleplay-resource-catalog.ts'
+export {
+  ROLEPLAY_RESOURCE_CATALOG_PATH,
+  ROLEPLAY_RESOURCE_KINDS,
+} from './roleplay-resource-catalog-protocol.ts'
+export type {
+  RoleplayResourceCatalogResponse,
+  RoleplayResourceDescriptor,
+  RoleplayResourceKind,
+} from './roleplay-resource-catalog-protocol.ts'
 export {
   registerRoleplayRuntimeExtension,
   ROLEPLAY_RUNTIME_EXTENSIONS_KEY,
@@ -1199,6 +1220,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
   if (resolved.mode === 'host') {
     const runtimeExtensions = new RoleplayRuntimeExtensionRegistry()
     ctx.provide(ROLEPLAY_RUNTIME_EXTENSIONS_KEY, runtimeExtensions)
+    const resourceCatalog = new RoleplayResourceCatalog()
     const worldbookCharacters = createWorldbookCharacterContextRegistry()
     ctx.provide(WORLDBOOK_CHARACTER_CONTEXT_KEY as never, worldbookCharacters as never)
     installWorldbookSnapshotCoalescing(ctx)
@@ -1210,6 +1232,16 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
     const worldInfoLibrary = new WorldInfoLibrary()
     const workspaceSettings = new WorkspaceSettingsStore()
     const generatedImageLibrary = new GeneratedImageLibrary()
+    for (const provider of roleplayLibraryResourceProviders({
+      characters: characterLibrary,
+      personas: personaLibrary,
+      presets: presetLibrary,
+      worldInfos: worldInfoLibrary,
+    })) ctx.effect(
+      () => resourceCatalog.register(provider),
+      `agent-rp: built-in resource provider ${provider.id}`,
+    )
+    ctx.provide(ROLEPLAY_RESOURCE_CATALOG_KEY, resourceCatalog)
     let mountedServer: AgentRpHttpServer | undefined
     const mountHost = (serviceName: 'httpServer' | 'webServer'): void => {
       ctx.inject([serviceName, 'credentials', 'agents', 'llm', 'systemPrompt'], webCtx => {
@@ -1235,6 +1267,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         installSessionLaunchHttp(webCtx, ctx, characterLibrary, chatLibrary, presetLibrary, worldInfoLibrary, server)
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
+        installRoleplayResourceCatalogHttp(webCtx, resourceCatalog, server)
         installNativeIdentityHttp(webCtx, new NativeIdentityStore(webCtx.credentials), server)
         installImageGenerationHttp(webCtx, generatedImageLibrary, webCtx.credentials, server)
         installTavernGenerationHttp(webCtx, server)
