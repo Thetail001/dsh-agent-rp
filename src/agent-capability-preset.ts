@@ -37,11 +37,12 @@ export interface AgentPresetGateway {
  * source check keeps unrelated coding presets out of the RP picker.
  */
 export function isAgentRpCapabilityComposition(source: string): boolean {
-  const packageRow = /(?:^|\n)[ \t]*name:[ \t]*(?:['"])?@dsh-external\/dsh-agent-rp(?:['"])?[ \t]*(?:#.*)?(?:\n|$)/u.exec(source)
+  const normalized = source.replace(/\r\n?|\n/gu, '\n')
+  const packageRow = /(?:^|\n)[ \t]*name:[ \t]*(?:['"])?@dsh-external\/dsh-agent-rp(?:['"])?[ \t]*(?:#.*)?(?:\n|$)/u.exec(normalized)
   if (packageRow === null) return false
-  const runtimeTail = source.slice(packageRow.index, packageRow.index + 2_000)
+  const runtimeTail = normalized.slice(packageRow.index, packageRow.index + 2_000)
   return /(?:^|\n)[ \t]*mode:[ \t]*character[ \t]*(?:#.*)?(?:\n|$)/u.test(runtimeTail)
-    && /(?:^|\n)[ \t]*agentRp\.actorRevisions:[ \t]*true[ \t]*(?:#.*)?(?:\n|$)/u.test(source)
+    && /(?:^|\n)[ \t]*agentRp\.actorRevisions:[ \t]*true[ \t]*(?:#.*)?(?:\n|$)/u.test(normalized)
 }
 
 export function agentHasAgentRpRuntime(

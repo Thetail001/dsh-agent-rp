@@ -10,6 +10,7 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { CharacterCardAttachmentRef, FileAttachmentRef } from '../src/import/session-character.ts'
 import { readActiveSessionCharacter } from '../src/import/session-character.ts'
+import { isAgentRpCapabilityComposition } from '../src/agent-capability-preset.ts'
 import { resolveConfig } from '../src/config.ts'
 import {
   installAgentRp,
@@ -35,6 +36,11 @@ test('roleplay preset exposes search without inheriting coding authority', () =>
   assert.match(composition, /name: '@deepseek-ai\/dsh-tool-web'/u)
   assert.doesNotMatch(composition, /dsh-tool-(?:bash|fs|skill|subagent)/u)
   assert.match(readFileSync('preset/preset.yml', 'utf8'), /受控联网搜索/u)
+})
+
+test('discovers the managed Agent preset with Windows line endings', () => {
+  const composition = readFileSync('preset/agent.cordis.yml', 'utf8')
+  assert.equal(isAgentRpCapabilityComposition(composition.replaceAll('\n', '\r\n')), true)
 })
 
 function temporaryRoot(): string {
