@@ -188,6 +188,75 @@ test('regenerates without exposing the rejected reply to the replacement request
   ])
 })
 
+test('keeps adapter replay state only while reply content remains exact', async () => {
+  const replay = (id: string) => ({ kind: 'fixture-replay', id })
+  const appendReplayAssistant = (session: Session, turn: number, text: string, id: string) => session.append(
+    'assistant/message',
+    {
+      turn,
+      step: 1,
+      message: createAssistantMessage({
+        content: [{ type: 'text', text }],
+        source: { provider: 'fixture', model: 'fixture', replayState: replay(id) },
+      }),
+    },
+    { surfaceOp: 'append' },
+  )
+
+  const regenerateSession = Session.create(SessionId('generation-replay-regenerate'))
+  regenerateSession.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '重新写。' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  const rejected = appendReplayAssistant(regenerateSession, 1, '旧回复', 'old')
+  let placeholderReplay: unknown = replay('not-observed')
+  const regenerateAgent = {
+    session: regenerateSession,
+    status: 'idle',
+    inbox: { hasPending: false },
+    followup(message: ReturnType<typeof createUserMessage>) {
+      regenerateSession.append('user/message', message, { surfaceOp: 'append' })
+      const placeholder = regenerateSession.deriveMessages().findLast(item => item.role === 'assistant')
+      placeholderReplay = placeholder?.source.kind === 'model' ? placeholder.source.replayState : undefined
+      appendReplayAssistant(regenerateSession, 2, '新回复', 'new')
+    },
+    whenIdle: async () => {},
+    cancel: () => {},
+  }
+  await executeGenerationCommand({
+    agent: regenerateAgent as never,
+    rawInput: JSON.stringify({ operation: 'regenerate', replySeq: rejected.seq }),
+    signal: new AbortController().signal,
+  })
+  assert.equal(placeholderReplay, undefined)
+  const regenerated = regenerateSession.deriveMessages().findLast(item => item.role === 'assistant')
+  assert.deepEqual(regenerated?.source.kind === 'model' ? regenerated.source.replayState : undefined, replay('new'))
+
+  const continueSession = Session.create(SessionId('generation-replay-continue'))
+  continueSession.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '继续写。' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  const first = appendReplayAssistant(continueSession, 1, '第一段', 'first')
+  const continueAgent = {
+    session: continueSession,
+    status: 'idle',
+    inbox: { hasPending: false },
+    followup(message: ReturnType<typeof createUserMessage>) {
+      continueSession.append('user/message', message, { surfaceOp: 'append' })
+      appendReplayAssistant(continueSession, 2, '第二段', 'second')
+    },
+    whenIdle: async () => {},
+    cancel: () => {},
+  }
+  await executeGenerationCommand({
+    agent: continueAgent as never,
+    rawInput: JSON.stringify({ operation: 'continue', replySeq: first.seq }),
+    signal: new AbortController().signal,
+  })
+  const continued = continueSession.deriveMessages().findLast(item => item.role === 'assistant')
+  assert.equal(continued?.source.kind === 'model' ? continued.source.replayState : undefined, undefined)
+  assert.equal(continued?.content[0]?.type === 'text' ? continued.content[0].text : '', '第一段第二段')
+})
+
 test('regenerates from pre-reply script state and restores each swipe state', async () => {
   const { card, session } = mvuCardSession('generation-script-state')
   session.append('user/message', createUserMessage({

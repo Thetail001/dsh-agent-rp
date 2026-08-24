@@ -218,7 +218,14 @@ function visibleText(event: Extract<SessionEvent, { type: 'assistant/message' }>
 
 function replacementMessage(message: AssistantMessage, content: ContentBlock[] = message.content): AssistantMessage {
   const { kind: _kind, ...source } = message.source
-  return createAssistantMessage({ content, source })
+  if (JSON.stringify(content) === JSON.stringify(message.content)) {
+    return createAssistantMessage({ content, source })
+  }
+  // Adapter replay metadata describes the exact provider response. Regeneration placeholders and
+  // continued replies change that response, so retaining the old state would pair one provider's
+  // signatures/block map with different durable content on the next model request.
+  const { replayState: _replayState, ...portableSource } = source
+  return createAssistantMessage({ content, source: portableSource })
 }
 
 function continuedContent(before: readonly ContentBlock[], continuation: readonly ContentBlock[]): ContentBlock[] {
