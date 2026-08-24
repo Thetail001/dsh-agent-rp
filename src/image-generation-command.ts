@@ -9,6 +9,8 @@ import {
   encodeImageGenerationRecord,
   imageCredentialRefName,
   parseImageGenerationRequest,
+  type GeneratedImageJob,
+  type ImageGenerationRequest,
 } from './image-generation-protocol.ts'
 import { WorkspaceSettingsStore } from './workspace-settings-store.ts'
 
@@ -17,6 +19,45 @@ const activeJobs = new Map<string, AbortController>()
 function abortError(error: unknown, signal: AbortSignal): boolean {
   return signal.aborted || (error instanceof DOMException && error.name === 'AbortError')
     || (error instanceof Error && error.name === 'AbortError')
+}
+
+/** Run one configured image job for either a player command or a model tool. */
+export async function executeConfiguredImageGeneration(
+  library: GeneratedImageLibrary,
+  settingsStore: WorkspaceSettingsStore,
+  credentials: CredentialProvider,
+  request: ImageGenerationRequest,
+  signal: AbortSignal,
+): Promise<GeneratedImageJob> {
+  const normalized = parseImageGenerationRequest(request)
+  const settings = settingsStore.get().imageGeneration
+  library.begin(normalized, settings.provider)
+  const controller = new AbortController()
+  const relayAbort = (): void => { controller.abort(signal.reason) }
+  signal.addEventListener('abort', relayAbort, { once: true })
+  activeJobs.set(normalized.jobId, controller)
+  try {
+    const credential = await credentials.resolve(credentialRef(imageCredentialRefName(settings.provider)))
+    const asset = await generateImage(
+      settings,
+      credential?.value,
+      normalized.prompt,
+      controller.signal,
+      (progress, phase) => { library.progress(normalized.jobId, progress, phase) },
+    )
+    return library.complete(normalized.jobId, asset)
+  } catch (error: unknown) {
+    if (abortError(error, controller.signal)) {
+      library.cancelled(normalized.jobId)
+      throw new Error('图片生成已取消')
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    library.fail(normalized.jobId, message)
+    throw new Error(message)
+  } finally {
+    signal.removeEventListener('abort', relayAbort)
+    activeJobs.delete(normalized.jobId)
+  }
 }
 
 /** Abort one currently running image job in this Host process. */
@@ -45,32 +86,12 @@ export async function executeImageGenerationCommand(
     || String(source.data.commandId) !== String(invocation.commandId)) {
     throw new Error('图片生成命令不是当前 Session 事件')
   }
-  const settings = settingsStore.get().imageGeneration
-  library.begin(request, settings.provider)
-  const controller = new AbortController()
-  const relayAbort = (): void => { controller.abort(invocation.signal.reason) }
-  invocation.signal.addEventListener('abort', relayAbort, { once: true })
-  activeJobs.set(request.jobId, controller)
-  try {
-    const credential = await credentials.resolve(credentialRef(imageCredentialRefName(settings.provider)))
-    const asset = await generateImage(
-      settings,
-      credential?.value,
-      request.prompt,
-      controller.signal,
-      (progress, phase) => { library.progress(request.jobId, progress, phase) },
-    )
-    return { kind: 'success', text: encodeImageGenerationRecord(library.complete(request.jobId, asset)) }
-  } catch (error: unknown) {
-    if (abortError(error, controller.signal)) {
-      library.cancelled(request.jobId)
-      throw new Error('图片生成已取消')
-    }
-    const message = error instanceof Error ? error.message : String(error)
-    library.fail(request.jobId, message)
-    throw new Error(message)
-  } finally {
-    invocation.signal.removeEventListener('abort', relayAbort)
-    activeJobs.delete(request.jobId)
-  }
+  const job = await executeConfiguredImageGeneration(
+    library,
+    settingsStore,
+    credentials,
+    request,
+    invocation.signal,
+  )
+  return { kind: 'success', text: encodeImageGenerationRecord(job) }
 }

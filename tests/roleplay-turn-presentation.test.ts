@@ -204,16 +204,15 @@ test('binds only explicitly staged durable artifacts to the settled reply', () =
     width: 1,
     height: 1,
   }
-  session.append('assistant/message', {
+  const reply = session.append('assistant/message', {
     turn: 1,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
-      content: [{
-        type: 'tool-call', id: CallId('image-source'), name: 'generate_image', arguments: '{}',
-      }, {
-        type: 'tool-call', id: CallId('image-stage'), name: 'stage_roleplay_artifact', arguments: '{}',
-      }],
+      content: [
+        { type: 'text', text: '雨还没有停。' },
+        { type: 'tool-call', id: CallId('image-source'), name: 'generate_image', arguments: '{}' },
+      ],
     }),
   }, { surfaceOp: 'append', sourceEventSeqs: [] })
   const sourceCall = session.append('tool/call', {
@@ -229,6 +228,16 @@ test('binds only explicitly staged durable artifacts to the settled reply', () =
       format: 'dsh.tool-artifacts', version: 0, artifacts: [{ type: 'image', attachment }],
     } as unknown as JsonValue,
   }, { surfaceOp: 'append', sourceEventSeqs: [sourceCall.seq] })
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' },
+      content: [{
+        type: 'tool-call', id: CallId('image-stage'), name: 'stage_roleplay_artifact', arguments: '{}',
+      }],
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [] })
   const stageCall = session.append('tool/call', {
     turn: 1, step: 1, callId: CallId('image-stage'), name: 'stage_roleplay_artifact', arguments: '{}',
   })
@@ -248,7 +257,6 @@ test('binds only explicitly staged durable artifacts to the settled reply', () =
       caption: '钟楼外的雨夜。',
     } as unknown as JsonValue,
   }, { surfaceOp: 'append', sourceEventSeqs: [stageCall.seq] })
-  const reply = appendReply(session, 1, '雨还没有停。')
   session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
   const settlementEvent = settle(session, turnPlan, 1)
   const presentation = compileInitialSessionRoleplayTurnPresentation({

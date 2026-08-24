@@ -7,7 +7,7 @@ function isHostExternal(id: string): boolean {
     || id === '@jitl/quickjs-singlefile-mjs-release-sync'
 }
 
-function host(entry: Readonly<Record<string, string>>): UserConfig {
+export function host(entry: Readonly<Record<string, string>>): UserConfig {
   return {
     entry,
     outDir: 'lib',

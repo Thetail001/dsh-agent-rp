@@ -56,6 +56,7 @@
     "check:tavern-vendor": "node scripts/generate-tavern-vendor-sources.mjs --check",
     "smoke:compat": "tsdown --config tsdown.smoke.config.ts && node .smoke-dist/smoke-card-compat.mjs",
     "build": "tsdown",
+    "build:host": "tsdown --config tsdown.host.config.ts",
     "check:published-imports": "node scripts/check-published-imports.mjs",
     "prepack": "pnpm run check:tavern-vendor && pnpm run build && pnpm run check:published-imports",
     "test:external-window": "tsdown tests/external-window.test.ts --no-config --format esm --platform node --target es2024 --out-dir .test-external-window --clean && node --test .test-external-window/external-window.test.mjs",

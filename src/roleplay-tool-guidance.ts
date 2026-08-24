@@ -127,7 +127,7 @@ export function prepareRoleplayToolPolicy(
       '只有玩家明确要求长期记住时才使用持久记忆工具；显式导入角色卡、世界书或预设时使用对应的导入工具。',
     ] : []),
     ...(artifactPresentation ? [
-      '生图工具可能返回不会直接显示在正文中的持久图片产物。',
+      '本机已配置图片服务时，可以在完成本轮可见正文后调用一次 generate_roleplay_image；它会返回不会自动显示在正文中的持久图片产物。',
       '要把产物放在本轮最终角色回复之后，优先以其准确 artifact id 调用 stage_roleplay_artifact；兼容旧工具链时可以改用 publish_roleplay_image。',
       '一次图片只使用一种发布方式；不得传入 URL、data URI、base64、临时链接或猜测的路径，发布失败后不得原样重复调用。',
     ] : []),

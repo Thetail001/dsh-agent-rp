@@ -361,6 +361,8 @@ function latestTurnReply(
   events: readonly SessionEvent[],
   turn: number,
 ): RoleplayTurnSettlement['reply'] | undefined {
+  const hasVisibleText = (event: Extract<SessionEvent, { readonly type: 'assistant/message' }>): boolean =>
+    event.data.message.content.some(block => block.type === 'text' && block.text.trim() !== '')
   const surface = new Set<number>()
   for (const event of events) {
     if (event.type === 'user/message' || event.type === 'assistant/message' || event.type === 'tool/result') {
@@ -381,11 +383,10 @@ function latestTurnReply(
     if (intent === undefined || intent.turn !== turn) return []
     const assistant = events[intent.assistantEventSeq]
     if (assistant?.type !== 'assistant/message' || !surface.has(assistant.seq)) return []
-    const hasText = assistant.data.message.content.some(block => block.type === 'text' && block.text.trim() !== '')
-    return hasText ? [assistant] : []
+    return hasVisibleText(assistant) ? [assistant] : []
   })
   const reply = actionReplies.at(-1) ?? events.findLast(event => event.type === 'assistant/message'
-    && event.data.turn === turn && surface.has(event.seq))
+    && event.data.turn === turn && surface.has(event.seq) && hasVisibleText(event))
   return reply?.type === 'assistant/message'
     ? { eventSeq: reply.seq, messageId: String(reply.data.message.id) }
     : undefined

@@ -173,6 +173,7 @@ import {
   detectRoleplayArtifactFollowup,
   installRoleplayArtifactCapability,
 } from './roleplay-artifact.ts'
+import { installRoleplayImageGenerationTool } from './roleplay-image-generation-tool.ts'
 import { installAgentRpCapabilityPresetHttp } from './agent-capability-preset.ts'
 
 /** Cordis plugin identity. */
@@ -781,6 +782,15 @@ export function installAgentRp(
       ? turnCoordinator.current(agent)?.tools
       : undefined,
   })
+  const roleplayImageGenerationCapability = installRoleplayImageGenerationTool(ctx, {
+    attachments: ctx.attachments,
+    credentials: ctx.credentials,
+    library: generatedImageLibrary,
+    settings: workspaceSettings,
+    toolPolicy: agent => agentsByScope.get(agent) === agent
+      ? turnCoordinator.current(agent)?.tools
+      : undefined,
+  })
   ctx.on('tools/result', (exec, result) => {
     const agent = exec.agent
     if (agent === undefined || exec.parent !== undefined || agentsByScope.get(agent) !== agent
@@ -788,7 +798,10 @@ export function installAgentRp(
     const plan = turnCoordinator.current(agent)
     if (plan?.tools.capability.artifactPresentation !== true) return
     const followup = detectRoleplayArtifactFollowup(agent.session.events, String(exec.callId), result)
-    if (followup !== undefined) turnCoordinator.enterArtifactHandoff(agent, followup.turn)
+    if (followup !== undefined) {
+      turnCoordinator.enterArtifactHandoff(agent, followup.turn)
+      roleplayImageGenerationCapability.prepare(agent, undefined)
+    }
   })
   installRoleplayStateActionTool(ctx)
 
@@ -1130,6 +1143,7 @@ export function installAgentRp(
     })
     turnCoordinator.prepare(agent, plan)
     roleplayArtifactCapability.prepare(agent, plan.tools)
+    roleplayImageGenerationCapability.prepare(agent, plan.tools)
     // Inbox claims are published synchronously before SystemPrompt assembly.
     // The restriction must be settled here so the same assembly sees the tool schema.
     // Agent mode settles state after the visible reply at turn-stopping; the
