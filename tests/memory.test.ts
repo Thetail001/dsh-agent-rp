@@ -60,12 +60,12 @@ function appendRememberResult(
   })
 }
 
-function runMemoryCommand(agent: Agent, rawInput: string, sequence: number): void {
+function runMemoryCommand(agent: Agent, rawInput: string, sequence: number, recordInput = false): void {
   const commandId = CommandId(`memory-command-${sequence}`)
   agent.session.append('command/run', {
     commandId,
     name: 'rp-memory',
-    args: rawInput,
+    ...(recordInput ? { args: rawInput } : {}),
     source: { kind: 'user' },
   })
   const result = executeAgentRpMemoryCommand({ commandId, agent, rawInput })
@@ -161,7 +161,7 @@ test('lets the user correct and forget active memory without invoking the model'
     text: '用户希望红茶不要加柠檬',
   } as const
   assert.deepEqual(parseAgentRpMemoryCommandRequest(JSON.stringify(correction)), correction)
-  runMemoryCommand(agent, JSON.stringify(correction), 1)
+  runMemoryCommand(agent, JSON.stringify(correction), 1, true)
 
   const corrected = readAgentRpMemoryHistory(agent.session.events)
   assert.equal(corrected.all.length, 2)

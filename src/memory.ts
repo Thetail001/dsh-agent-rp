@@ -369,8 +369,15 @@ function applyCommandRecord(
     || source.data.name !== 'rp-memory' || String(source.data.commandId) !== String(done.data.commandId)) {
     throw new Error('记忆操作结果没有对应的命令来源')
   }
-  const request = parseAgentRpMemoryCommandRequest(source.data.args ?? '')
-  if (!memoryCommandMatches(request, command)) throw new Error('记忆操作结果与请求不一致')
+  // rp-memory deliberately sets recordInput:false, so the Host normally omits
+  // command/run.args. The canonical command/done record remains replayable;
+  // only perform the additional request/result comparison when an older or
+  // explicitly recorded source actually carries the raw input.
+  if (source.data.args !== undefined) {
+    if (typeof source.data.args !== 'string') throw new Error('记忆操作请求记录无效')
+    const request = parseAgentRpMemoryCommandRequest(source.data.args)
+    if (!memoryCommandMatches(request, command)) throw new Error('记忆操作结果与请求不一致')
+  }
   if (command.operation === 'add') {
     const conflict = findAgentRpMemorySubjectConflict([...active.values()], command.subject)
     if (conflict !== undefined) throw new Error(`记忆操作新增了重复主题 ${JSON.stringify(command.subject)}`)
