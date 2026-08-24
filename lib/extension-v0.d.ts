@@ -599,6 +599,8 @@ interface TavernHelperState {
   readonly scriptTrees?: Readonly<Partial<Record<TavernScriptTreeScope, readonly TavernScriptTree[]>>>;
   /** Script-authored prompts retained for subsequent model requests in this chat. */
   readonly injectedPrompts?: readonly TavernInjectedPrompt[];
+  /** Script-owned, replayable session panels translated from the isolated compatibility DOM. */
+  readonly statusPanels?: readonly TavernStatusPanel[];
   /** Contiguous transcript prefix excluded from the Session surface but retained for Tavern APIs. */
   readonly hiddenPrefix?: readonly TavernHiddenMessage[];
   /** Script-authored books and full replacements of imported books, keyed by visible name. */
@@ -607,7 +609,7 @@ interface TavernHelperState {
   readonly deletedWorldbookNames?: readonly string[];
   readonly worldbookBindings?: TavernWorldbookBindings;
   readonly lastMutation?: {
-    readonly scope: TavernVariableScope | 'worldbook' | 'injection' | 'script-tree';
+    readonly scope: TavernVariableScope | 'worldbook' | 'injection' | 'script-tree' | 'presentation';
     readonly scriptScope?: TavernScriptTreeScope;
     readonly scriptId?: string; /** Stable Host identity of the assistant reply whose browser event caused this write. */
     readonly cause?: TavernMutationCause;
@@ -646,6 +648,19 @@ interface TavernInjectedPrompt {
   readonly content: string;
   readonly shouldScan: boolean;
   readonly once: boolean;
+}
+/** One bounded status panel slot owned by an authenticated Tavern Helper script. */
+interface TavernStatusPanel {
+  readonly format: 0;
+  readonly owner: {
+    readonly scriptScope: TavernScriptTreeScope;
+    readonly scriptId: string;
+  };
+  readonly target: {
+    readonly kind: 'session';
+  };
+  /** Sanitized later at presentation time; null durably records an explicit withdrawal. */
+  readonly html: string | null;
 }
 /** One authoritative state revision written to the Session log. */
 interface RoleplayStateRecord {

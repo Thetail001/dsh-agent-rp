@@ -180,6 +180,8 @@ export interface TavernHelperState {
   readonly scriptTrees?: Readonly<Partial<Record<TavernScriptTreeScope, readonly TavernScriptTree[]>>>
   /** Script-authored prompts retained for subsequent model requests in this chat. */
   readonly injectedPrompts?: readonly TavernInjectedPrompt[]
+  /** Script-owned, replayable session panels translated from the isolated compatibility DOM. */
+  readonly statusPanels?: readonly TavernStatusPanel[]
   /** Contiguous transcript prefix excluded from the Session surface but retained for Tavern APIs. */
   readonly hiddenPrefix?: readonly TavernHiddenMessage[]
   /** Script-authored books and full replacements of imported books, keyed by visible name. */
@@ -188,7 +190,7 @@ export interface TavernHelperState {
   readonly deletedWorldbookNames?: readonly string[]
   readonly worldbookBindings?: TavernWorldbookBindings
   readonly lastMutation?: {
-    readonly scope: TavernVariableScope | 'worldbook' | 'injection' | 'script-tree'
+    readonly scope: TavernVariableScope | 'worldbook' | 'injection' | 'script-tree' | 'presentation'
     readonly scriptScope?: TavernScriptTreeScope
     readonly scriptId?: string
     /** Stable Host identity of the assistant reply whose browser event caused this write. */
@@ -239,6 +241,18 @@ export interface TavernInjectedPrompt {
   readonly once: boolean
 }
 
+/** One bounded status panel slot owned by an authenticated Tavern Helper script. */
+export interface TavernStatusPanel {
+  readonly format: 0
+  readonly owner: {
+    readonly scriptScope: TavernScriptTreeScope
+    readonly scriptId: string
+  }
+  readonly target: { readonly kind: 'session' }
+  /** Sanitized later at presentation time; null durably records an explicit withdrawal. */
+  readonly html: string | null
+}
+
 /** Browser request replacing one Tavern Helper variable namespace. */
 export type TavernHelperVariableMutationRequest =
   | {
@@ -279,6 +293,15 @@ export interface TavernInjectionMutationRequest {
   readonly prompts: readonly Omit<TavernInjectedPrompt, 'scriptId' | 'scriptScope'>[]
 }
 
+/** Replace or remove the single session panel owned by one script. */
+export interface TavernStatusPanelMutationRequest {
+  readonly format: 0
+  readonly operation: 'replace-script-status-panel'
+  readonly scriptScope: TavernScriptTreeScope
+  readonly scriptId: string
+  readonly html: string | null
+}
+
 type WithTavernMutationCause<Request> = Request extends unknown
   ? Request & { readonly cause?: TavernMutationCause }
   : never
@@ -286,7 +309,7 @@ type WithTavernMutationCause<Request> = Request extends unknown
 /** One validated mutation sent by an isolated Tavern Helper script. */
 export type TavernHelperMutationRequest = WithTavernMutationCause<TavernHelperVariableMutationRequest
   | TavernWorldbookMutationRequest | TavernChatMutationRequest | TavernInjectionMutationRequest
-  | TavernScriptTreeMutationRequest>
+  | TavernScriptTreeMutationRequest | TavernStatusPanelMutationRequest>
 
 const STATE_PREFIX = 'agent-rp-tavern-helper-v0:'
 const STATE_ATTACHMENT_PREFIX = 'agent-rp-tavern-helper-attachment-v0:'
@@ -301,6 +324,8 @@ const MAX_CHAT_MESSAGES = 10_000
 const MAX_INJECTED_PROMPTS = 256
 const MAX_INJECTED_PROMPT_CHARS = 256 * 1024
 const MAX_SCRIPT_TREES = 512
+const MAX_STATUS_PANELS = 64
+const MAX_STATUS_PANEL_CHARS = 256 * 1024
 
 function record(value: unknown, name: string): JsonRecord {
   const snapshot = snapshotJsonValue(value) as JsonValue | undefined
@@ -659,6 +684,55 @@ function injectedPrompts(
   return prompts
 }
 
+function statusPanelOwner(value: unknown, label: string): TavernStatusPanel['owner'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${label} owner is invalid`)
+  }
+  const owner = value as Record<string, unknown>
+  if (typeof owner.scriptId !== 'string' || owner.scriptId === '' || owner.scriptId.length > 512) {
+    throw new Error(`${label} owner is invalid`)
+  }
+  return {
+    scriptScope: tavernScriptScope(owner.scriptScope, `${label} owner scriptScope`),
+    scriptId: owner.scriptId,
+  }
+}
+
+function statusPanelHtml(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_STATUS_PANEL_CHARS) {
+    throw new Error(`${label} HTML is invalid`)
+  }
+  return value
+}
+
+function statusPanels(value: unknown): readonly TavernStatusPanel[] {
+  if (!Array.isArray(value) || value.length > MAX_STATUS_PANELS) {
+    throw new Error('Tavern Helper status panels are invalid')
+  }
+  const panels = value.map((candidate, index): TavernStatusPanel => {
+    if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
+      throw new Error(`Tavern Helper status panel[${index}] is invalid`)
+    }
+    const panel = candidate as Record<string, unknown>
+    if (panel.format !== 0 || typeof panel.target !== 'object' || panel.target === null
+      || Array.isArray(panel.target) || (panel.target as Record<string, unknown>).kind !== 'session') {
+      throw new Error(`Tavern Helper status panel[${index}] is invalid`)
+    }
+    return {
+      format: 0,
+      owner: statusPanelOwner(panel.owner, `Tavern Helper status panel[${index}]`),
+      target: { kind: 'session' },
+      html: panel.html === null ? null : statusPanelHtml(panel.html, `Tavern Helper status panel[${index}]`),
+    }
+  })
+  if (new Set(panels.map(panel => tavernScriptIdentity(
+    panel.owner.scriptScope, panel.owner.scriptId,
+  ))).size !== panels.length) {
+    throw new Error('Tavern Helper status panel owners must be unique')
+  }
+  return panels
+}
+
 /** Create the script state for one active card while retaining Session-wide namespaces. */
 export function initializeTavernHelperState(
   frontend: ImportedCharacterFrontend,
@@ -691,6 +765,14 @@ export function initializeTavernHelperState(
   const prompts = previous?.injectedPrompts?.filter(prompt => scriptIds.has(
     tavernScriptIdentity(prompt.scriptScope, prompt.scriptId),
   ))
+  const activePanelScripts = new Set([
+    ...activeGlobalScripts.filter(script => script.enabled).map(script => tavernScriptIdentity('global', script.id)),
+    ...(previous?.presetScriptIds ?? []).map(id => tavernScriptIdentity('preset', id)),
+    ...activeCharacterScripts.filter(script => script.enabled).map(script => tavernScriptIdentity('character', script.id)),
+  ])
+  const panels = previous?.statusPanels?.filter(panel => activePanelScripts.has(
+    tavernScriptIdentity(panel.owner.scriptScope, panel.owner.scriptId),
+  ))
   const scriptTrees = previous?.scriptTrees === undefined ? undefined : {
     ...(previous.scriptTrees.global === undefined ? {} : { global: previous.scriptTrees.global }),
     ...(previous.scriptTrees.preset === undefined ? {} : { preset: previous.scriptTrees.preset }),
@@ -713,6 +795,7 @@ export function initializeTavernHelperState(
     scripts,
     ...(scriptTrees === undefined ? {} : { scriptTrees }),
     ...(prompts === undefined ? {} : { injectedPrompts: prompts }),
+    ...(panels === undefined ? {} : { statusPanels: panels }),
     ...(previous?.worldbooks === undefined ? {} : { worldbooks: previous.worldbooks }),
     ...(previous?.deletedWorldbookNames === undefined ? {} : { deletedWorldbookNames: previous.deletedWorldbookNames }),
     ...(previous?.worldbookBindings === undefined ? {} : { worldbookBindings: previous.worldbookBindings }),
@@ -742,6 +825,7 @@ export function initializeTavernHelperPresetState(
     ])),
   }
   const scriptIds = new Set(Object.keys(nextScripts))
+  const activePresetIds = new Set(activePresetScripts.filter(script => script.enabled).map(script => script.id))
   const scriptTrees = state.scriptTrees === undefined ? undefined : samePreset
     ? state.scriptTrees
     : Object.fromEntries(Object.entries(state.scriptTrees).filter(([scope]) => scope !== 'preset'))
@@ -756,6 +840,10 @@ export function initializeTavernHelperPresetState(
       ? {} : { injectedPrompts: state.injectedPrompts.filter(prompt => scriptIds.has(
           tavernScriptIdentity(prompt.scriptScope, prompt.scriptId),
         )) }),
+    ...(state.statusPanels === undefined ? {} : {
+      statusPanels: state.statusPanels.filter(panel => panel.owner.scriptScope !== 'preset'
+        || activePresetIds.has(panel.owner.scriptId)),
+    }),
   }
 }
 
@@ -806,6 +894,18 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
       operation: value.operation,
       owner: messageAnnotationOwner(value.owner),
       messages: messageAnnotationReplacements(value.messages),
+    }, cause)
+  }
+  if (value.format === 0 && value.operation === 'replace-script-status-panel') {
+    if (typeof value.scriptId !== 'string' || value.scriptId === '' || value.scriptId.length > 512) {
+      throw new Error('Tavern Helper status panel requires a scriptId')
+    }
+    return withMutationCause({
+      format: 0,
+      operation: value.operation,
+      scriptScope: tavernScriptScope(value.scriptScope, 'Tavern Helper status panel scriptScope'),
+      scriptId: value.scriptId,
+      html: value.html === null ? null : statusPanelHtml(value.html, 'Tavern Helper status panel'),
     }, cause)
   }
   if (value.format === 0 && value.operation === 'set-chat-messages') {
@@ -930,6 +1030,26 @@ export function applyTavernHelperMutation(
 ): TavernHelperState {
   if ('operation' in request) {
     if (request.operation === 'replace-message-annotations') return state
+    if (request.operation === 'replace-script-status-panel') {
+      const owner = tavernScriptIdentity(request.scriptScope, request.scriptId)
+      if (!(owner in state.scripts)) throw new Error('Tavern Helper status panel has an unknown scriptId')
+      const retained = (state.statusPanels ?? []).filter(panel => tavernScriptIdentity(
+        panel.owner.scriptScope, panel.owner.scriptId,
+      ) !== owner)
+      return {
+        ...state,
+        revision: state.revision + 1,
+        statusPanels: [...retained, {
+          format: 0,
+          owner: { scriptScope: request.scriptScope, scriptId: request.scriptId },
+          target: { kind: 'session' },
+          html: request.html,
+        }],
+        lastMutation: lastMutation(request, {
+          scope: 'presentation', scriptScope: request.scriptScope, scriptId: request.scriptId,
+        }),
+      }
+    }
     if (request.operation === 'set-chat-messages' || request.operation === 'create-chat-messages'
       || request.operation === 'delete-chat-messages' || request.operation === 'rotate-chat-messages'
       || request.operation === 'set-chat-hidden') {
@@ -952,6 +1072,8 @@ export function applyTavernHelperMutation(
         [...scopeIds[scope]].map(id => tavernScriptIdentity(scope, id)),
       ))
       const scripts = Object.fromEntries(Object.entries(state.scripts).filter(([id]) => activeIds.has(id)))
+      const activePanelIds = new Set(flattenedTavernScripts(request.trees)
+        .filter(script => script.enabled).map(script => script.id))
       for (const script of flattenedTavernScripts(request.trees)) {
         scripts[tavernScriptIdentity(request.scope, script.id)] = script.data
       }
@@ -965,6 +1087,10 @@ export function applyTavernHelperMutation(
           ? {} : { injectedPrompts: state.injectedPrompts.filter(prompt => activeIds.has(
               tavernScriptIdentity(prompt.scriptScope, prompt.scriptId),
             )) }),
+        ...(state.statusPanels === undefined ? {} : {
+          statusPanels: state.statusPanels.filter(panel => panel.owner.scriptScope !== request.scope
+            || activePanelIds.has(panel.owner.scriptId)),
+        }),
         lastMutation: lastMutation(request, { scope: 'script-tree' }),
       }
     }
@@ -1097,6 +1223,12 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
   if (parsedInjectedPrompts?.some(prompt => !hasParsedScript(prompt.scriptScope, prompt.scriptId)) === true) {
     throw new Error('Tavern Helper injected prompts reference an unknown scriptId')
   }
+  const parsedStatusPanels = parsed.statusPanels === undefined ? undefined : statusPanels(parsed.statusPanels)
+  if (parsedStatusPanels?.some(panel => !hasParsedScript(
+    panel.owner.scriptScope, panel.owner.scriptId,
+  )) === true) {
+    throw new Error('Tavern Helper status panels reference an unknown scriptId')
+  }
   const deletedWorldbookNames = parsed.deletedWorldbookNames === undefined
     ? undefined : stringArray(parsed.deletedWorldbookNames, 'Tavern Helper deleted worldbook names').map(worldbookName)
   let hiddenPrefix: readonly TavernHiddenMessage[] | undefined
@@ -1142,7 +1274,8 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     const value = mutation as Record<string, unknown>
     if (value.scope !== 'global' && value.scope !== 'preset' && value.scope !== 'character'
       && value.scope !== 'chat' && value.scope !== 'message' && value.scope !== 'script'
-      && value.scope !== 'worldbook' && value.scope !== 'injection' && value.scope !== 'script-tree') {
+      && value.scope !== 'worldbook' && value.scope !== 'injection' && value.scope !== 'script-tree'
+      && value.scope !== 'presentation') {
       throw new Error('Tavern Helper last mutation scope is invalid')
     }
     if (value.scriptId !== undefined && typeof value.scriptId !== 'string') {
@@ -1169,6 +1302,7 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     scripts: parsedScripts,
     ...(parsedScriptTrees === undefined ? {} : { scriptTrees: parsedScriptTrees }),
     ...(parsedInjectedPrompts === undefined ? {} : { injectedPrompts: parsedInjectedPrompts }),
+    ...(parsedStatusPanels === undefined ? {} : { statusPanels: parsedStatusPanels }),
     ...(hiddenPrefix === undefined ? {} : { hiddenPrefix }),
     ...(parsedWorldbooks === undefined ? {} : { worldbooks: parsedWorldbooks }),
     ...(deletedWorldbookNames === undefined ? {} : { deletedWorldbookNames }),

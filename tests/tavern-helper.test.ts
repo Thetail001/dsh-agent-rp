@@ -808,6 +808,48 @@ test('persists isolated Tavern Helper variable namespaces', () => {
   assert.deepEqual(decoded?.lastMutation, { scope: 'message' })
 })
 
+test('replays one bounded status panel per Tavern Helper script owner', () => {
+  const initial = initializeTavernHelperState({
+    regexScripts: [],
+    tavernHelperScriptNames: ['状态栏'],
+    tavernHelperVariables: {},
+    tavernHelperScripts: [{
+      id: 'status', name: '状态栏', content: '', info: '', enabled: true,
+      buttonEnabled: false, buttons: [], data: {},
+    }],
+  }, 'card-status-panel')
+  const created = applyTavernHelperMutation(initial, parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0,
+    operation: 'replace-script-status-panel',
+    scriptScope: 'character',
+    scriptId: 'status',
+    html: '<style>.hp{color:red}</style><div class="hp">12 / 20</div>',
+  })))
+  const replayed = decodeTavernHelperState(encodeTavernHelperState(created))
+  assert.deepEqual(replayed?.statusPanels, [{
+    format: 0,
+    owner: { scriptScope: 'character', scriptId: 'status' },
+    target: { kind: 'session' },
+    html: '<style>.hp{color:red}</style><div class="hp">12 / 20</div>',
+  }])
+  assert.deepEqual(replayed?.lastMutation, {
+    scope: 'presentation', scriptScope: 'character', scriptId: 'status',
+  })
+  const removed = applyTavernHelperMutation(replayed!, parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0,
+    operation: 'replace-script-status-panel',
+    scriptScope: 'character',
+    scriptId: 'status',
+    html: null,
+  })))
+  assert.deepEqual(decodeTavernHelperState(encodeTavernHelperState(removed))?.statusPanels, [{
+    format: 0,
+    owner: { scriptScope: 'character', scriptId: 'status' },
+    target: { kind: 'session' },
+    html: null,
+  }])
+})
+
 test('keeps shared and script variable scopes distinct at the Tavern capability limit', () => {
   let state = initializeTavernHelperState({
     regexScripts: [],

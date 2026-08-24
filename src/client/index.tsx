@@ -8643,12 +8643,15 @@ function tavernScriptSnapshot(
   const characterBook = projection.worldInfo.books.find(book => book.source === 'character')
   const importedGlobalBooks = projection.worldInfo.books
     .filter(book => book.source === 'standalone' && !book.id.startsWith('script:')).map(book => book.name)
+  const statusPanel = state?.statusPanels?.find(panel => panel.owner.scriptScope === scriptScope
+    && panel.owner.scriptId === script.id)
   return {
     scriptScope,
     scriptId: script.id,
     scriptName: script.name,
     scriptInfo: script.info,
     buttons: script.buttons,
+    ...(statusPanel === undefined ? {} : { statusPanelHtml: statusPanel.html }),
     characterName: projection.characterName,
     characterId: projection.tavern?.characterSourceId ?? projection.avatarLibraryId ?? projection.characterName,
     ...(projection.characterCardRaw === undefined ? {} : { characterCard: projection.characterCardRaw }),
@@ -8925,6 +8928,57 @@ function TavernScriptToast({ toast, onClose }: {
     <span style={{ fontSize: '10px', opacity: .58 }}>{toast.scriptName || '酒馆脚本'}</span>
     <span style={{ fontSize: '12px', lineHeight: 1.45, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>{toast.value}</span>
   </button>
+}
+
+function tavernStatusPanelDocument(html: string, token: string, nonce: string): string {
+  const sanitized = String(DOMPurify.sanitize(html, {
+    FORBID_TAGS: ['base', 'embed', 'form', 'iframe', 'meta', 'object', 'script'],
+    FORBID_ATTR: ['srcdoc'],
+  }))
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{background:transparent;color:inherit;color-scheme:dark;margin:0;max-width:100%;min-width:0;padding:0}body{box-sizing:border-box;overflow:auto}</style></head><body>${sanitized}<script nonce="${nonce}">(()=>{'use strict';const token=${JSON.stringify(token)};let queued=false;const report=()=>{queued=false;const root=document.documentElement,body=document.body;parent.postMessage({source:'dsh-agent-rp-status-panel',token,height:Math.max(root.scrollHeight,body.scrollHeight)},'*')};const queue=()=>{if(queued)return;queued=true;requestAnimationFrame(report)};addEventListener('load',queue);new MutationObserver(queue).observe(document.documentElement,{attributes:true,characterData:true,childList:true,subtree:true});if(window.ResizeObserver)new ResizeObserver(queue).observe(document.documentElement);queue()})()</script></body></html>`
+}
+
+function TavernStatusPanelFrame({ html, owner }: {
+  readonly html: string
+  readonly owner: string
+}) {
+  const frameRef = useRef<HTMLIFrameElement | null>(null)
+  const [height, setHeight] = useState(72)
+  const token = useMemo(() => crypto.randomUUID(), [owner])
+  const nonce = useMemo(() => crypto.randomUUID().replaceAll('-', ''), [owner])
+  const documentSource = useMemo(() => tavernStatusPanelDocument(html, token, nonce), [html, nonce, token])
+  useEffect(() => {
+    const receive = (event: MessageEvent<unknown>): void => {
+      if (event.source !== frameRef.current?.contentWindow || typeof event.data !== 'object' || event.data === null) return
+      const message = event.data as { readonly source?: unknown; readonly token?: unknown; readonly height?: unknown }
+      if (message.source !== 'dsh-agent-rp-status-panel' || message.token !== token
+        || typeof message.height !== 'number' || !Number.isFinite(message.height)) return
+      setHeight(Math.max(48, Math.min(360, Math.ceil(message.height))))
+    }
+    window.addEventListener('message', receive)
+    return () => { window.removeEventListener('message', receive) }
+  }, [token])
+  return <iframe ref={frameRef} title="角色状态面板" sandbox="allow-scripts" srcDoc={documentSource} style={{
+    background: 'transparent', border: 0, colorScheme: 'dark', display: 'block', height: `${height}px`,
+    maxWidth: '100%', width: '100%',
+  }} />
+}
+
+function TavernStatusPanels({ projection }: { readonly projection: AgentRpProjection }) {
+  const panels = (projection.tavern?.statusPanels ?? []).filter(
+    (panel): panel is typeof panel & { readonly html: string } => panel.html !== null,
+  )
+  if (panels.length === 0) return null
+  return <section data-agent-rp-status-panels data-agent-rp-status-panel-count={panels.length} style={{
+    background: 'var(--dsw-alias-bg-base, #15161a)', border: '1px solid var(--dsw-alias-border-l2, #363840)',
+    borderRadius: '12px', boxShadow: '0 10px 32px rgba(0,0,0,.24)', display: 'grid', gap: '8px',
+    maxHeight: 'min(46vh, 520px)', minWidth: 0, overflow: 'auto', padding: '8px', width: '100%',
+  }}>
+    {panels.map(panel => {
+      const owner = tavernScriptIdentity(panel.owner.scriptScope, panel.owner.scriptId)
+      return <TavernStatusPanelFrame key={owner} owner={owner} html={panel.html} />
+    })}
+  </section>
 }
 
 function TavernScriptRuntime({
@@ -9748,6 +9802,32 @@ function TavernScriptRuntime({
         if (messageId >= 0 && messageId < (projectionRef.current.tavern?.messages.length ?? 0)) {
           onDisplayOverride(entry.key, messageId, message.value)
         }
+        return
+      }
+      if (message.action === 'status-panel-replace'
+        && (message.value === null || (typeof message.value === 'string'
+          && message.value.length > 0 && message.value.length <= 256 * 1024))) {
+        const request: Extract<TavernHelperMutationRequest, { operation: 'replace-script-status-panel' }> = {
+          format: 0,
+          operation: 'replace-script-status-panel',
+          scriptScope: entry.scope,
+          scriptId: entry.script.id,
+          html: message.value,
+          ...requestCause,
+        }
+        mutationQueue.current = mutationQueue.current.then(() => runMutation(sessionId, request)).catch((reason: unknown) => {
+          const detail = boundedAgentRpCapabilityResultError(
+            'session.variables.replace', 'tavern-script-frame-v0', reason, '状态面板保存失败',
+          )
+          ctx.logger.warn(`agent-rp: Tavern Helper status panel ${JSON.stringify(entry.script.name)} failed: ${detail}`)
+          const toast: TavernToastMessage = {
+            id: ++toastSequence.current,
+            scriptName: entry.script.name,
+            level: 'warning',
+            value: detail,
+          }
+          setRuntimeToasts(current => [...current, toast].slice(-4))
+        })
         return
       }
       if (message.action === 'surface' && typeof message.visible === 'boolean') {
@@ -10950,6 +11030,7 @@ function roleplayComposerDockComponent(
   const approvedCardNativeIdentitiesRef = useRef(approvedCardNativeIdentities)
   approvedCardNativeIdentitiesRef.current = approvedCardNativeIdentities
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const [statusPanelHost, setStatusPanelHost] = useState<HTMLElement>()
   const cardExternalWindowBrokers = useRef(new Map<string, ExternalWindowBroker>())
   const cardFramesByTokenRef = useRef(new Map<string, HTMLIFrameElement>())
   const cardFrameDiagnosticSourcesRef = useRef(new Map<string, AgentRpRuntimeDiagnosticSource>())
@@ -11053,6 +11134,21 @@ function roleplayComposerDockComponent(
     }
   }, [runtimeDiagnostics, sessionId])
   useLayoutEffect(() => {
+    const dock = rootRef.current?.closest<HTMLElement>('[data-slot="conversation.composer.dock"]')
+    const inputRoot = dock?.parentElement
+    if (dock == null || inputRoot == null) return
+    const host = document.createElement('div')
+    host.dataset.agentRpStatusPanelDock = 'true'
+    host.style.cssText = 'box-sizing:border-box;min-width:0;padding:0 0 8px;width:100%;'
+    const card = inputRoot.querySelector<HTMLElement>('[data-composer-card]')
+    inputRoot.insertBefore(host, card ?? dock)
+    setStatusPanelHost(host)
+    return () => {
+      setStatusPanelHost(current => current === host ? undefined : current)
+      host.remove()
+    }
+  }, [sessionId])
+  useLayoutEffect(() => {
     const scroll = rootRef.current?.closest<HTMLElement>('[data-conversation-scroll]')
     if (scroll == null || background === undefined || projection?.avatarLibraryId === undefined || viewMode !== 'immersive') return
     const previous = {
@@ -11152,7 +11248,8 @@ function roleplayComposerDockComponent(
         if (element.tagName !== 'BUTTON' && !ownsMenuButton) hide(element)
       }
       for (const element of Array.from(inputRoot.children)) {
-        if (element !== card && element !== dock) hide(element)
+        if (element !== card && element !== dock
+          && (element as HTMLElement).dataset.agentRpStatusPanelDock !== 'true') hide(element)
       }
     }
     if (viewMode !== 'debug') dock.dataset.agentRpInput = ''
@@ -11948,6 +12045,7 @@ function roleplayComposerDockComponent(
     data-agent-rp-world-engine-template-unsupported={worldEngineFailures.templateUnsupported}
     data-agent-rp-world-engine-template-error={worldEngineFailures.templateError}
     style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
+    {statusPanelHost !== undefined && createPortal(<TavernStatusPanels projection={projection} />, statusPanelHost)}
     {cardExternalWindowPermissionOpen && <div role="dialog" aria-modal aria-label="轻前端权限"
       data-agent-rp-surface="card-permissions" onMouseDown={event => {
       if (event.target === event.currentTarget) setCardExternalWindowPermissionOpen(false)
