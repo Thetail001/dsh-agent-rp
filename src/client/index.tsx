@@ -1917,6 +1917,10 @@ const agentRpResponsiveStyle = `
   color: var(--dsw-alias-label-tertiary);
 }
 [data-agent-rp-generation-action] svg { flex: 0 0 auto; }
+[data-conversation-scroll][data-agent-rp-session][data-agent-rp-view='immersive']
+  [data-variant='think'] {
+  display: none !important;
+}
 [data-conversation-scroll][data-agent-rp-session][data-agent-rp-assistant-contrast='dark']
   [data-chat-flow-kind='assistant-step'] {
   --dsw-alias-label-primary: #17181d;
@@ -11077,6 +11081,7 @@ function roleplayComposerDockComponent(
     const scroll = rootRef.current?.closest<HTMLElement>('[data-conversation-scroll]')
     if (scroll == null) return
     scroll.dataset.agentRpSession = 'true'
+    scroll.dataset.agentRpView = viewMode
     const applyContrastContract = (): void => {
       const scrollStyle = getComputedStyle(scroll)
       const foreground = scrollStyle.getPropertyValue('--dsw-alias-label-primary').trim() || scrollStyle.color
@@ -11112,6 +11117,7 @@ function roleplayComposerDockComponent(
       window.cancelAnimationFrame(queued)
       observer.disconnect()
       delete scroll.dataset.agentRpSession
+      delete scroll.dataset.agentRpView
       delete scroll.dataset.agentRpAssistantContrast
     }
   }, [background?.index, sessionId, viewMode])
@@ -11727,11 +11733,6 @@ function roleplayComposerDockComponent(
               activeCompatibilityMarkers,
             )
             continue
-          }
-        }
-        if (activeViewMode === 'immersive') {
-          for (const element of item.querySelectorAll<HTMLElement>('[data-variant="think"]')) {
-            hideTranscriptDetail(element)
           }
         }
         if (!hasDisplayRules || frontend === undefined) continue

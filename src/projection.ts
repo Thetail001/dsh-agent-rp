@@ -685,6 +685,7 @@ type AgentRpProjectionDefinition = ProjectionDefinition<'agentRp', AgentRpProjec
 /** Build one projection definition with an optional isolated EJS evaluator. */
 export function createAgentRpProjectionDefinition(
   ejsTemplateEngine?: EjsTemplateEngine,
+  sessionEventsAvailable: () => boolean = hostSupportsAgentRpSessionEvents,
 ): AgentRpProjectionDefinition {
   const definition: ProjectionDefinition<'agentRp', AgentRpProjectionState> & {
     readonly wire: NonNullable<ProjectionDefinition<'agentRp', AgentRpProjectionState>['wire']>
@@ -1153,7 +1154,7 @@ export function createAgentRpProjectionDefinition(
   wire: {
   viewSchema: projectionSchema as NonNullable<ProjectionDefinition<'agentRp', AgentRpProjectionState>['wire']>['viewSchema'],
   view: state => {
-    const sessionEvents = hostSupportsAgentRpSessionEvents()
+    const sessionEvents = sessionEventsAvailable()
     const worldInfo = worldInfoProjection(state, ejsTemplateEngine)
     const auxiliaryGenerations = summarizeTavernAuxiliaryGenerationReplay(state.auxiliaryGenerations)
     const tavernMessageAnnotations = indexTavernMessageAnnotations(state.tavernMessageAnnotations)

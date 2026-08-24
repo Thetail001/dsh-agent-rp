@@ -1560,7 +1560,11 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
     mountHost('httpServer')
     mountHost('webServer')
     ctx.inject(['sessionProjections'], projectionCtx => {
-      projectionCtx.sessionProjections.register(createAgentRpProjectionDefinition(ejsTemplateEngine))
+      const agents = ctx.get('agents') as Context['agents'] | undefined
+      projectionCtx.sessionProjections.register(createAgentRpProjectionDefinition(
+        ejsTemplateEngine,
+        () => agents?.list().some(agent => supportsAgentRpSessionEvents(agent.session)) ?? false,
+      ))
     })
     installBundledAgentRpPreset()
     return
