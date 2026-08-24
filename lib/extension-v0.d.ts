@@ -620,7 +620,7 @@ interface TavernInjectedPrompt {
   readonly id: string;
   readonly scriptScope: TavernScriptTreeScope;
   readonly scriptId: string;
-  readonly position: 'in_chat' | 'none';
+  readonly position: 'before' | 'after' | 'in_chat' | 'none';
   readonly depth: number;
   readonly role: 'system' | 'assistant' | 'user';
   readonly content: string;
