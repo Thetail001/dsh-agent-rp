@@ -26,6 +26,16 @@ export interface AgentRpCapabilityDefinition {
 
 /** Host capabilities that have completed request validation and runtime integration. */
 export const AGENT_RP_CAPABILITIES = {
+  'chat.send': {
+    version: 0,
+    runtimePolicies: { 'card-frame-v0': { requestBytes: 64 * 1024, resultBytes: 4096 } },
+    effect: 'model-request',
+    approval: 'player-action',
+    approvalPersistence: 'none',
+    statePersistence: 'session',
+    stateOwner: 'session',
+    modelVisible: true,
+  },
   'greeting.select': {
     version: 0,
     runtimePolicies: { 'card-frame-v0': { requestBytes: 1024, resultBytes: 1024 } },
@@ -224,6 +234,7 @@ export const CARD_FRONTEND_CAPABILITY_MANIFEST = {
   format: 0,
   runtime: 'card-frame-v0',
   requirements: [
+    { capability: 'chat.send', version: 0, optional: false },
     { capability: 'session.variables.replace', version: 0, optional: false },
     { capability: 'ui.external-window.open', version: 0, optional: false },
     { capability: 'identity.native.attest', version: 0, optional: true },

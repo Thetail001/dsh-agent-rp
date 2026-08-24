@@ -85,11 +85,11 @@ test('aggregates independent runtime plans without treating user activation as a
     summarizeAgentRpCapabilityPlan(resolveAgentRpCapabilityPlan(TAVERN_LEGACY_ADAPTER_MANIFEST)),
   ])
   assert.deepEqual(summary, {
-    requirements: 17,
+    requirements: 18,
     requiredUnavailable: 0,
     optionalUnavailable: 0,
     resolutions: {
-      available: 17,
+      available: 18,
       'approval-required': 0,
       unsupported: 0,
       'version-mismatch': 0,
@@ -99,6 +99,15 @@ test('aggregates independent runtime plans without treating user activation as a
 })
 
 test('publishes truthful Session variable ownership and runtime-specific payload limits', () => {
+  const chatSend = AGENT_RP_CAPABILITIES['chat.send']
+  assert.equal(chatSend.effect, 'model-request')
+  assert.equal(chatSend.approval, 'player-action')
+  assert.equal(chatSend.approvalPersistence, 'none')
+  assert.equal(chatSend.statePersistence, 'session')
+  assert.deepEqual(chatSend.runtimePolicies, {
+    'card-frame-v0': { requestBytes: 64 * 1024, resultBytes: 4096 },
+  })
+
   const variables = AGENT_RP_CAPABILITIES['session.variables.replace']
   assert.equal(variables.stateOwner, 'session')
   assert.equal(variables.statePersistence, 'session')

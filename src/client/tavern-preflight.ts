@@ -111,10 +111,16 @@ export async function fetchCachedTavernExecutions(
     body: JSON.stringify(request),
     signal,
   })
-  if (response.status === 409) return undefined
   const value = await response.json() as Partial<TavernExecutionBatchResult> & { readonly error?: string }
-  if (!response.ok || value.format !== 1 || !Array.isArray(value.entries)
-    || value.entries.length !== request.entries.length) {
+  if (!response.ok || value.format !== 1 || (value.status !== 'hit' && value.status !== 'miss')
+    || !Array.isArray(value.entries)) {
+    throw new Error(value.error ?? `批量脚本执行计划读取失败（${response.status}）`)
+  }
+  if (value.status === 'miss') {
+    if (value.entries.length !== 0) throw new Error('批量脚本执行计划响应无效')
+    return undefined
+  }
+  if (value.entries.length !== request.entries.length) {
     throw new Error(value.error ?? `批量脚本执行计划读取失败（${response.status}）`)
   }
   const expected = new Set(request.entries.map(entry => JSON.stringify([entry.scope, entry.scriptId])))

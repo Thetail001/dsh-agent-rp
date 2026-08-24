@@ -130,7 +130,7 @@ import {
 } from './character-library-client.ts'
 import { CharacterContentEditor } from './character-content-editor.tsx'
 import {
-  parseCardCapabilityRequest, parseCardExternalWindowCapabilityRequest,
+  parseCardCapabilityRequest, parseCardChatSendCapabilityRequest, parseCardExternalWindowCapabilityRequest,
   parseCardExternalWindowControlRequest, parseCardExternalWindowDeliveryReport,
   parseCardNativeIdentityCapabilityRequest,
   parseCardResourceBlockedReport, parseCardRuntimeReport,
@@ -6384,6 +6384,7 @@ function CharacterLibraryDialog({
     ...pendingPreflightScriptResources.map(item => new URL(item.origin).hostname),
     ...pendingCardResources.map(resource => new URL(resource.origin).hostname),
   ])].sort()
+  const failedPreflightEntries = tavernPreflight?.entries.filter(entry => entry.status === 'resolution-error') ?? []
   const preflightLaunchPhase = tavernPreflightLaunchPhase({
     expected: expectsResourcePreflight,
     loading: tavernPreflightLoading,
@@ -6741,8 +6742,12 @@ function CharacterLibraryDialog({
                       : '自动允许这张卡的隔离界面加载 HTTPS 资源'}
                 </div>
               </>}
-              {(tavernPreflight?.failed ?? 0) > 0 && <div style={{ color: 'var(--dsw-alias-state-warning, #d5a64c)', marginTop: '5px' }}>
-                {tavernPreflight!.failed} 个脚本无法完成静态解析，开聊后也不会执行
+              {failedPreflightEntries.length > 0 && <div style={{ color: 'var(--dsw-alias-state-warning, #d5a64c)', marginTop: '5px' }}>
+                <div>{failedPreflightEntries.length} 个脚本无法准备，开聊后也不会执行</div>
+                {failedPreflightEntries.map(entry => <div key={`${entry.scope}:${entry.scriptId}`} title={entry.scriptName}
+                  style={{ marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {entry.scriptName}：{entry.detail ?? '脚本无法完成静态解析'}
+                </div>)}
               </div>}
               <div style={{ marginTop: '5px', opacity: .46 }}>模型调用与外部 API 仍在实际触发时单独确认</div>
             </div>}
@@ -11057,6 +11062,7 @@ function roleplayComposerDockComponent(
       signature: string
     }>()
     const pendingCardMutations = new WeakSet<Window>()
+    const pendingCardSends = new WeakSet<Window>()
     const cardVariableMutationQueues = new WeakMap<Window, Promise<void>>()
     const hiddenTranscriptDetails = new Map<HTMLElement, { readonly display: string; readonly priority: string }>()
     const legacyConversationNotices = new Set<HTMLElement>()
@@ -11235,6 +11241,39 @@ function roleplayComposerDockComponent(
         return
       }
       const capabilityRequest = parseCardCapabilityRequest(event.data)
+      const chatSendRequest = parseCardChatSendCapabilityRequest(event.data)
+      if (chatSendRequest !== undefined) {
+        const sourceFrame = registeredCardFrame(chatSendRequest.token, event.source)
+        if (sourceFrame === undefined) return
+        sourceFrame.dataset.agentRpCapabilityRequest = chatSendRequest.capability
+        const target = event.source as Window
+        const respond = (ok: boolean, error?: string): void => {
+          target.postMessage({
+            source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'chat.send',
+            requestId: chatSendRequest.requestId, ok, ...(error === undefined ? {} : { error }),
+          }, '*')
+        }
+        const conversation = ctx.sessions.scope(sessionId)?.get('conversation') as IConversation | undefined
+        if (conversation === undefined) {
+          respond(false, '当前角色会话尚未准备好发送消息')
+          return
+        }
+        if (pendingCardSends.has(target)) {
+          respond(false, '上一条卡片消息仍在发送')
+          return
+        }
+        pendingCardSends.add(target)
+        const variableWrites = cardVariableMutationQueues.get(target) ?? Promise.resolve()
+        void variableWrites.catch(() => undefined).then(() => conversation.send(chatSendRequest.value)).then(() => {
+          respond(true)
+        }, reason => {
+          ctx.logger.warn(`agent-rp: card chat send failed: ${String(reason)}`)
+          respond(false, '消息发送失败')
+        }).finally(() => {
+          pendingCardSends.delete(target)
+        })
+        return
+      }
       if (capabilityRequest !== undefined) {
         const sourceFrame = registeredCardFrame(capabilityRequest.token, event.source)
         if (sourceFrame === undefined) return

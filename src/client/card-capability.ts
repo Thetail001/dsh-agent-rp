@@ -30,11 +30,14 @@ export type CardRuntimePhase = typeof CARD_RUNTIME_PHASES[number]
 
 /** One registered light-frontend capability and its fixed security policy. */
 export const CARD_CAPABILITIES = {
+  'chat.send': AGENT_RP_CAPABILITIES['chat.send'],
   'greeting.select': AGENT_RP_CAPABILITIES['greeting.select'],
   'ui.external-window.open': AGENT_RP_CAPABILITIES['ui.external-window.open'],
   'identity.native.attest': AGENT_RP_CAPABILITIES['identity.native.attest'],
 } as const
 
+const CARD_CHAT_SEND_REQUEST_BYTES = AGENT_RP_CAPABILITIES['chat.send']
+  .runtimePolicies['card-frame-v0'].requestBytes
 const CARD_VARIABLE_REQUEST_BYTES = AGENT_RP_CAPABILITIES['session.variables.replace']
   .runtimePolicies['card-frame-v0'].requestBytes
 const CARD_EXTERNAL_WINDOW_REQUEST_BYTES = AGENT_RP_CAPABILITIES['ui.external-window.open']
@@ -50,6 +53,16 @@ export interface CardGreetingSelectRequest {
   readonly token: string
   readonly requestId: string
   readonly greetingIndex: number
+}
+
+/** One player-triggered user message emitted by a registered light frontend. */
+export interface CardChatSendRequest {
+  readonly source: 'dsh-agent-rp-card'
+  readonly action: 'capability-request'
+  readonly capability: 'chat.send'
+  readonly token: string
+  readonly requestId: string
+  readonly value: string
 }
 
 /** One external HTTPS window request from a registered light frontend. */
@@ -112,6 +125,30 @@ export interface CardRuntimeReport {
   readonly action: 'runtime-monitor'
   readonly token: string
   readonly value: CardRuntimePhase
+}
+
+/** Parse one bounded player-triggered chat send request. */
+export function parseCardChatSendCapabilityRequest(value: unknown): CardChatSendRequest | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const fields = new Set(['source', 'action', 'capability', 'token', 'requestId', 'value'])
+  if (Object.keys(record).some(key => !fields.has(key))
+    || record.source !== 'dsh-agent-rp-card' || record.action !== 'capability-request'
+    || record.capability !== 'chat.send'
+    || typeof record.token !== 'string' || !/^[\w:-]{1,128}$/u.test(record.token)
+    || typeof record.requestId !== 'string' || !/^card-chat-send-[1-9]\d{0,8}$/u.test(record.requestId)
+    || typeof record.value !== 'string' || record.value.trim() === '') return undefined
+  try {
+    const serialized = JSON.stringify(record)
+    if (serialized === undefined
+      || new TextEncoder().encode(serialized).byteLength > CARD_CHAT_SEND_REQUEST_BYTES) return undefined
+  } catch {
+    return undefined
+  }
+  return {
+    source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'chat.send',
+    token: record.token, requestId: record.requestId, value: record.value,
+  }
 }
 
 /** Parse a bounded light-frontend capability request without accepting extra operations. */

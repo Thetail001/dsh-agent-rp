@@ -5,6 +5,7 @@ import type { ImportedTavernHelperScript } from './import/types.ts'
 import { TavernExecutionDiskCache, type TavernExecutionDiskCacheOptions } from './tavern-execution-disk-cache.ts'
 import {
   BUILT_IN_TAVERN_SCRIPT_ORIGINS, resolveTavernScriptExecution, TavernScriptOriginApprovalError,
+  TavernScriptResourceLimitError,
   type TavernScriptExecution,
 } from './tavern-script-resolver.ts'
 import {
@@ -138,6 +139,16 @@ function approvalKey(scope: TavernPreflightScope, scriptId: string): string {
   return JSON.stringify([scope, scriptId])
 }
 
+function safeResolutionFailure(reason: unknown): {
+  readonly failure: 'remote-script-too-large' | 'remote-scripts-too-large' | 'script-resolution-failed'
+  readonly detail: string
+} {
+  if (reason instanceof TavernScriptResourceLimitError) {
+    return { failure: reason.code, detail: reason.message }
+  }
+  return { failure: 'script-resolution-failed', detail: '脚本无法完成静态解析' }
+}
+
 /** Inspect static module, image, stylesheet, and child-frame origins without evaluating script code. */
 export async function inspectTavernPreflight(
   sources: readonly TavernPreflightSource[],
@@ -173,12 +184,13 @@ export async function inspectTavernPreflight(
         remoteFrameOrigins: execution.remoteFrameOrigins ?? [],
       }
     } catch (reason: unknown) {
+      const permission = reason instanceof TavernScriptOriginApprovalError ? reason : undefined
       return {
         scope: source.scope,
         scriptId: script.id,
         scriptName: script.name,
-        status: reason instanceof TavernScriptOriginApprovalError ? 'permission-required' : 'resolution-error',
-        ...(reason instanceof TavernScriptOriginApprovalError ? { requestedScriptOrigin: reason.origin } : {}),
+        status: permission === undefined ? 'resolution-error' : 'permission-required',
+        ...(permission === undefined ? safeResolutionFailure(reason) : { requestedScriptOrigin: permission.origin }),
         remoteImageOrigins: [],
         remoteStyleOrigins: [],
         remoteFontOrigins: [],

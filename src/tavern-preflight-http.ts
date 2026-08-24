@@ -26,6 +26,7 @@ import {
 } from './tavern-preflight-protocol.ts'
 import {
   TavernScriptOriginApprovalError,
+  TavernScriptResourceLimitError,
 } from './tavern-script-resolver.ts'
 
 const MAX_PREFLIGHT_REQUEST_BYTES = 64 * 1024
@@ -386,7 +387,7 @@ export function installTavernExecutionHttp(
             if (execution === undefined) throw new TavernExecutionBatchCacheMiss()
             return { scope: entry.scope, scriptId: entry.scriptId, execution }
           })
-          json(response, 200, { format: 1, entries })
+          json(response, 200, { format: 1, status: 'hit', entries })
           return
         }
         const input = parseExecutionRequest(value)
@@ -426,11 +427,15 @@ export function installTavernExecutionHttp(
       } catch (error: unknown) {
         if (response.destroyed) return
         if (error instanceof TavernExecutionBatchCacheMiss) {
-          json(response, 409, { error: '批量脚本计划需要逐项解析' })
+          json(response, 200, { format: 1, status: 'miss', entries: [] })
           return
         }
         if (error instanceof TavernScriptOriginApprovalError) {
           json(response, 409, { error: '脚本来源需要授权', requestedOrigin: error.origin })
+          return
+        }
+        if (error instanceof TavernScriptResourceLimitError) {
+          json(response, 422, { error: error.message, failure: error.code })
           return
         }
         const known = error instanceof TavernPreflightHttpError ? error : undefined

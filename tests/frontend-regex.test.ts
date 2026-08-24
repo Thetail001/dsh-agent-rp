@@ -969,6 +969,27 @@ test('retries a shared dependency after its previous request fails', async () =>
   }
 })
 
+test('accepts the deployed MVU-offline bundle size within the bounded remote plan', async () => {
+  const originalFetch = globalThis.fetch
+  const dependency = 'https://testingcf.jsdelivr.net/gh/NLKASHEI/MVU-offline@v1.0.1/mvu_bundle_full.js'
+  const bytes = 2_598_263
+  const prefix = 'window.__largeMvu=true;/*'
+  const suffix = '*/'
+  const body = `${prefix}${'x'.repeat(bytes - prefix.length - suffix.length)}${suffix}`
+  globalThis.fetch = async input => {
+    assert.equal(String(input), dependency)
+    return new Response(body, { headers: { 'content-length': String(bytes) } })
+  }
+  try {
+    const plan = await resolveTavernScriptExecution(
+      `import '${dependency}';`, AbortSignal.timeout(10_000),
+    )
+    assert.equal(new TextEncoder().encode(plan.inlineDependencies?.[0]).byteLength, bytes)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('adapts the public MagVarUpdate side-effect bundle to the Host Mvu capability', async () => {
   const plan = await resolveTavernScriptExecution([
     "import 'https://cdn.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate@beta/artifact/bundle.js';",
@@ -1034,7 +1055,8 @@ test('preflights selected character and preset resources without executing scrip
       remoteFrameOrigins: ['https://panel.example.test'],
     }, {
       scope: 'preset', scriptId: 'invalid-ui', scriptName: 'invalid-ui',
-      status: 'resolution-error', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
+      status: 'resolution-error', failure: 'script-resolution-failed', detail: '脚本无法完成静态解析',
+      remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }],
   })
 

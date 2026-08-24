@@ -9,7 +9,7 @@ import {
   blockedCardFrameResources, compileCardFrameDocument, compileCardFrames,
 } from '../src/client/card-frame.ts'
 import {
-  parseCardCapabilityRequest, parseCardExternalWindowCapabilityRequest,
+  parseCardCapabilityRequest, parseCardChatSendCapabilityRequest, parseCardExternalWindowCapabilityRequest,
   parseCardExternalWindowControlRequest, parseCardExternalWindowDeliveryReport,
   parseCardNativeIdentityCapabilityRequest,
   parseCardResourceBlockedReport, parseCardRuntimeReport,
@@ -132,7 +132,8 @@ test('keeps application greetings isolated while redirecting only known Host fac
   assert.doesNotMatch(frame.srcDoc, /window\.parent\s*\|\|\s*window/u)
   assert.match(frame.srcDoc, /window\.getChatMessages\(\)/u)
   assert.match(frame.srcDoc, /window\.getCurrentMessageId\(\)/u)
-  assert.match(frame.srcDoc, /parent\.document\.body/u)
+  assert.match(frame.srcDoc, /window\.document\.body/u)
+  assert.doesNotMatch(frame.srcDoc, /parent\.document/u)
   assert.doesNotMatch(frame.srcDoc, /unsafe-eval/u)
 })
 
@@ -165,6 +166,9 @@ test('exposes only card-owned greeting choices through the isolated chat facade'
   assert.match(source, /var __dshCardGreetingChoices=\{"selected":"封面开场","alternatives":\["封面开场","剧情开场"\]\}/u)
   assert.match(source, /action:'capability-request'/u)
   assert.match(source, /capability:'greeting\.select'/u)
+  assert.match(source, /capability:'chat\.send'/u)
+  assert.match(source, /send\.id='send_but'/u)
+  assert.match(source, /window\.sendMessage=__dshCardSendMessage/u)
   assert.match(source, /action!=='capability-result'/u)
   assert.match(source, /var __dshCardCapabilityToken="registered-frame"/u)
   assert.match(source, /window\.getCurrentMessageId=window\.getLastMessageId/u)
@@ -328,6 +332,18 @@ test('accepts only bounded registered greeting capability requests', () => {
     source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'greeting.select',
     token: 'frame token', requestId: 'card-capability-0', greetingIndex: -1,
   }), undefined)
+})
+
+test('accepts only bounded registered player chat sends', () => {
+  const request = {
+    source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'chat.send',
+    token: 'frame-token:0', requestId: 'card-chat-send-1', value: '签订契约并开始',
+  } as const
+  assert.deepEqual(parseCardChatSendCapabilityRequest(request), request)
+  assert.equal(parseCardChatSendCapabilityRequest({ ...request, value: '' }), undefined)
+  assert.equal(parseCardChatSendCapabilityRequest({ ...request, requestId: 'card-chat-send-0' }), undefined)
+  assert.equal(parseCardChatSendCapabilityRequest({ ...request, value: '猫'.repeat(30_000) }), undefined)
+  assert.equal(parseCardChatSendCapabilityRequest({ ...request, userActivated: true }), undefined)
 })
 
 test('accepts only bounded HTTPS resource reports from registered frame tokens', () => {

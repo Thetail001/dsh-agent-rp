@@ -16,10 +16,22 @@ interface PendingRemoteSource {
 const pendingRemoteSources = new Map<string, PendingRemoteSource>()
 const MAX_REMOTE_CACHE_ENTRIES = 32
 
+/** Stable, browser-safe failures for bounded remote Tavern Helper resources. */
+export class TavernScriptResourceLimitError extends Error {
+  override readonly name = 'TavernScriptResourceLimitError'
+
+  constructor(
+    readonly code: 'remote-script-too-large' | 'remote-scripts-too-large',
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
 /** Script origins trusted by the built-in jsDelivr bundle resolver. */
 export const BUILT_IN_TAVERN_SCRIPT_ORIGINS = ['https://cdn.jsdelivr.net', 'https://testingcf.jsdelivr.net'] as const
-const MAX_REMOTE_SCRIPT_BYTES = 2 * 1024 * 1024
-const MAX_REMOTE_SCRIPTS_BYTES = 4 * 1024 * 1024
+const MAX_REMOTE_SCRIPT_BYTES = 4 * 1024 * 1024
+const MAX_REMOTE_SCRIPTS_BYTES = 8 * 1024 * 1024
 
 /** One authorized fixed-URL module copied into an isolated Tavern Helper execution plan. */
 export interface TavernScriptModuleDependency {
@@ -122,9 +134,13 @@ async function fetchRemoteSource(parsed: URL, signal: AbortSignal): Promise<stri
     throw new Error('远程脚本不能重定向到另一个来源')
   }
   const length = Number(response.headers.get('content-length') ?? 0)
-  if (Number.isFinite(length) && length > MAX_REMOTE_SCRIPT_BYTES) throw new Error('远程脚本超过 2 MiB')
+  if (Number.isFinite(length) && length > MAX_REMOTE_SCRIPT_BYTES) {
+    throw new TavernScriptResourceLimitError('remote-script-too-large', '远程脚本超过 4 MiB')
+  }
   const source = await response.text()
-  if (new TextEncoder().encode(source).byteLength > MAX_REMOTE_SCRIPT_BYTES) throw new Error('远程脚本超过 2 MiB')
+  if (new TextEncoder().encode(source).byteLength > MAX_REMOTE_SCRIPT_BYTES) {
+    throw new TavernScriptResourceLimitError('remote-script-too-large', '远程脚本超过 4 MiB')
+  }
   return source
 }
 
@@ -485,7 +501,9 @@ export async function resolveTavernScriptExecution(
     inlineDependencies.push(dependency)
   }
   const total = sources.reduce((size, source) => size + new TextEncoder().encode(source).byteLength, 0)
-  if (total > MAX_REMOTE_SCRIPTS_BYTES) throw new Error('远程脚本合计超过 4 MiB')
+  if (total > MAX_REMOTE_SCRIPTS_BYTES) {
+    throw new TavernScriptResourceLimitError('remote-scripts-too-large', '远程脚本合计超过 8 MiB')
+  }
   const source = removeSourceRanges(content, adapterRanges)
   const [, , , hasModuleSyntax] = parseModule(source)
   const remainingReferences = hasModuleSyntax ? moduleReferences(source, origins) : []
@@ -494,7 +512,9 @@ export async function resolveTavernScriptExecution(
   for (const [href, entry] of graph.loaded) allRemoteSources.set(href, entry.source)
   const allRemoteBytes = [...allRemoteSources.values()]
     .reduce((size, remote) => size + new TextEncoder().encode(remote).byteLength, 0)
-  if (allRemoteBytes > MAX_REMOTE_SCRIPTS_BYTES) throw new Error('远程脚本合计超过 4 MiB')
+  if (allRemoteBytes > MAX_REMOTE_SCRIPTS_BYTES) {
+    throw new TavernScriptResourceLimitError('remote-scripts-too-large', '远程脚本合计超过 8 MiB')
+  }
   const resolvedSource = replaceModuleReferences(source, remainingReferences, graph.modulesByHref)
   const dependencySources = [...allRemoteSources.values()]
   const dependencySource = [resolvedSource, ...dependencySources].join('\n')

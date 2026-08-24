@@ -40,12 +40,20 @@ export type TavernPreflightRequest = TavernLegacyPreflightRequest | TavernExperi
 /** Stable static-resolution state for one enabled script. */
 export type TavernPreflightStatus = 'ready' | 'permission-required' | 'resolution-error'
 
+/** Browser-safe reason for one script that cannot complete static resolution. */
+export type TavernPreflightFailure =
+  | 'remote-script-too-large'
+  | 'remote-scripts-too-large'
+  | 'script-resolution-failed'
+
 /** Script-specific resource plan containing no source code or prompt content. */
 export interface TavernPreflightEntry {
   readonly scope: TavernPreflightScope
   readonly scriptId: string
   readonly scriptName: string
   readonly status: TavernPreflightStatus
+  readonly failure?: TavernPreflightFailure
+  readonly detail?: string
   readonly requestedScriptOrigin?: string
   readonly remoteImageOrigins: readonly string[]
   readonly remoteStyleOrigins: readonly string[]
@@ -106,5 +114,6 @@ export interface TavernExecutionBatchResultEntry {
 /** Host-resolved plans returned together only after every exact cache key matches. */
 export interface TavernExecutionBatchResult {
   readonly format: 1
+  readonly status: 'hit' | 'miss'
   readonly entries: readonly TavernExecutionBatchResultEntry[]
 }

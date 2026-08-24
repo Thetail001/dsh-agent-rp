@@ -524,6 +524,7 @@ test('returns an exact preflight cache batch through one execution request', asy
   assert.equal(batch.status, 200)
   assert.deepEqual(batch.json, {
     format: 1,
+    status: 'hit',
     entries: [{
       scope: 'character', scriptId: 'first', execution: execution('window.first=true'),
     }, {
@@ -538,8 +539,8 @@ test('returns an exact preflight cache batch through one execution request', asy
       { ...entries[1]!, approvedOrigins: ['https://additional.example'] },
     ]),
   })
-  assert.equal(miss.status, 409)
-  assert.deepEqual(miss.json, { error: '批量脚本计划需要逐项解析' })
+  assert.equal(miss.status, 200)
+  assert.deepEqual(miss.json, { format: 1, status: 'miss', entries: [] })
   assert.equal(resolutions, 2)
 })
 
@@ -988,10 +989,12 @@ test('returns only the static resource plan, never script source, card content, 
       status: 'ready', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }, {
       scope: 'character', scriptId: 'failed-script', scriptName: 'script-failed-script',
-      status: 'resolution-error', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
+      status: 'resolution-error', failure: 'script-resolution-failed', detail: '脚本无法完成静态解析',
+      remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }, {
       scope: 'character', scriptId: 'remote-failed-script', scriptName: 'script-remote-failed-script',
-      status: 'resolution-error', remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
+      status: 'resolution-error', failure: 'script-resolution-failed', detail: '脚本无法完成静态解析',
+      remoteImageOrigins: [], remoteStyleOrigins: [], remoteFontOrigins: [], remoteFrameOrigins: [],
     }],
   })
   for (const privateValue of [PRIVATE_SCRIPT_SOURCE, PRIVATE_CARD_BODY, PRIVATE_PROMPT, resolverError, PRIVATE_PATH]) {
