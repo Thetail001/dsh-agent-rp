@@ -615,6 +615,7 @@ export function installRoleplayArtifactCapability(
       if (String(stored.ref.attachmentId) !== artifactId) {
         throw new Error('stored artifact identity changed during verification')
       }
+      exec.concludeTurn()
       return { ...staged, ...(caption === undefined ? {} : { caption }) }
     },
     presentCall: () => ({ card: 'generic', title: '加入 RP 舞台', kind: 'other' }),
@@ -666,7 +667,15 @@ export function installRoleplayArtifactCapability(
         throw new Error('this prepared turn already published its allowed roleplay image')
       }
       try {
-        return await preparePublishedArtifacts(ctx.attachments, exec.agent, String(exec.callId), args, exec.signal)
+        const published = await preparePublishedArtifacts(
+          ctx.attachments,
+          exec.agent,
+          String(exec.callId),
+          args,
+          exec.signal,
+        )
+        exec.concludeTurn()
+        return published
       } catch (error) {
         recordPublishFailure(exec.agent, call.data.turn)
         throw error

@@ -159,6 +159,7 @@ test('stages one explicit same-turn durable artifact and replays its provenance'
   })
 
   assert.equal(result.isError, false)
+  assert.equal(result.concludesTurn, true)
   if (result.isError) throw new Error('staging unexpectedly failed')
   const record = readRoleplayArtifactStageRecord(result.meta)
   assert.deepEqual(record, {
@@ -195,6 +196,7 @@ test('accepts Thetail publish_roleplay_image calls over legacy native image resu
   })
 
   assert.equal(result.isError, false)
+  assert.equal(result.concludesTurn, true)
   if (result.isError) throw new Error('publication unexpectedly failed')
   const meta = readToolArtifactPresentationMeta(result.meta)
   assert.deepEqual(meta?.artifacts, [{ type: 'image', attachment: IMAGE }])
@@ -274,6 +276,7 @@ test('publishes a real workspace image through the compatibility tool without ac
     signal: new AbortController().signal,
   })
   assert.equal(outside.isError, true)
+  assert.equal(outside.concludesTurn, undefined)
   assert.match(outside.content[0]?.type === 'text' ? outside.content[0].text : '', /inside the Session workspace/u)
 
   const publishCallSeq = appendCall(session, 'publish-path', ROLEPLAY_ARTIFACT_PUBLISH_TOOL, {
