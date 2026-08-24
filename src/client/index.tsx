@@ -4127,10 +4127,14 @@ function RoleplayHeader({
             onClick={() => { setSettingsOpen(false); setWorldInfoOpen(true) }} style={headerMenuItemStyle}>
             世界书{projection.worldInfo.activeCount === 0 ? '' : ` · ${projection.worldInfo.activeCount}`}
           </button>
-          <button type="button" role="menuitem" aria-pressed={viewMode === 'debug'} onClick={() => {
+          <button type="button" role="menuitem" data-agent-rp-action="toggle-debug-view"
+            aria-pressed={viewMode === 'debug'} onClick={() => {
             setSettingsOpen(false)
             setRoleplayViewMode(sessionId, viewMode === 'immersive' ? 'debug' : 'immersive')
-          }} style={headerMenuItemStyle}>{viewMode === 'debug' ? '返回沉浸视图' : '打开调试视图'}</button>
+          }} style={headerMenuItemStyle}>{viewMode === 'debug' ? '返回沉浸视图' : '打开调试视图 · 工具与上下文'}</button>
+          {viewMode === 'immersive' && <p style={{
+            fontSize: '11px', lineHeight: 1.45, margin: '-2px 9px 4px', maxWidth: '230px', opacity: .5,
+          }}>显示模型思考、工具调用，以及其他插件提供的会话页签。</p>}
           {exportError !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '11px', lineHeight: 1.45, margin: '4px 8px 3px', maxWidth: '240px' }}>{exportError}</p>}
           {turnModeError !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '11px', lineHeight: 1.45, margin: '4px 8px 3px', maxWidth: '240px' }}>{turnModeError}</p>}
         </div>, document.body)}
