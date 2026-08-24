@@ -79,7 +79,7 @@ test('World Info launch configures peer resources before creating a Session', ()
   assert.match(source, /if \(tavern !== undefined && !tavern\.ready\)/u)
   assert.match(source, /tavern\?\.permissions === undefined \? undefined : \{ tavern: tavern\.permissions, card: \[\] \}/u)
   assert.match(source, /startWorldInfoSession\(\s+launchSessionId, worldInfo, persona, presetId, worldInfoIds, resourcePermissions/u)
-  assert.match(source, /startWorldInfoSession\(sessionId, worldInfo, persona, presetId, worldInfoIds, resourcePermissions\)/u)
+  assert.match(source, /startWorldInfoSession\(sessionId, worldInfo, persona, presetId, worldInfoIds, resourcePermissions, agentPresetId\)/u)
   assert.match(resourceCenterSource, /onConfigureWorldInfo\(entry\)/u)
 })
 
