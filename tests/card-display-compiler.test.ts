@@ -6,7 +6,7 @@ import {
   normalizeLegacyCardHtml,
 } from '../src/card-display-compiler.ts'
 import {
-  blockedCardFrameResources, compileCardFrameDocument, compileCardFrames,
+  blockedCardFrameResources, cardFrameCompatibilityUrl, compileCardFrameDocument, compileCardFrames,
 } from '../src/client/card-frame.ts'
 import {
   parseCardCapabilityRequest, parseCardChatSendCapabilityRequest, parseCardExternalWindowCapabilityRequest,
@@ -117,7 +117,7 @@ test('distinguishes fenced frontend documents from inline HTML in source order',
   ])
 })
 
-test('keeps application greetings isolated while redirecting only known Host facades', () => {
+test('keeps application greetings isolated while preserving only the bounded parent document', () => {
   const source = '<!doctype html><html><body><script>function getWin(){return window.parent || window}const context=top.SillyTavern.getContext();getWin().Mvu.getMvuData();parent.getChatMessages();parent.getCurrentMessageId();parent.document.body;</script><img src="https://cdn.example.com/cover.webp"></body></html>'
   const frames = compileCardFrames(compileCharacterDisplay(`\`\`\`html\n${source}\n\`\`\``), {
     origin: 'http://127.0.0.1:3091',
@@ -132,9 +132,35 @@ test('keeps application greetings isolated while redirecting only known Host fac
   assert.doesNotMatch(frame.srcDoc, /window\.parent\s*\|\|\s*window/u)
   assert.match(frame.srcDoc, /window\.getChatMessages\(\)/u)
   assert.match(frame.srcDoc, /window\.getCurrentMessageId\(\)/u)
-  assert.match(frame.srcDoc, /window\.document\.body/u)
-  assert.doesNotMatch(frame.srcDoc, /parent\.document/u)
+  assert.match(frame.srcDoc, /parent\.document\.body/u)
+  assert.doesNotMatch(frame.srcDoc, /top\.document/u)
   assert.doesNotMatch(frame.srcDoc, /unsafe-eval/u)
+})
+
+test('wraps legacy parent input controls in a data-origin compatibility shell', () => {
+  const inner = compileCardFrameDocument(`<!doctype html><html><body><button id="forge">发送</button><script>
+    document.getElementById('forge').addEventListener('click', () => {
+      const input = window.parent.document.querySelector('#send_textarea')
+      input.value = '开始剧情'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      window.parent.document.querySelector('#send_but').click()
+    })
+  </script></body></html>`, {
+    origin: 'http://127.0.0.1:3091', capabilityToken: 'registered-frame',
+  })
+  const url = cardFrameCompatibilityUrl(inner, 'registered-frame')
+  const shell = Buffer.from(url.slice(url.indexOf(',') + 1), 'base64').toString('utf8')
+
+  assert.match(url, /^data:text\/html;charset=utf-8;base64,/u)
+  assert.match(shell, /id="chat"/u)
+  assert.match(shell, /id="send_textarea"/u)
+  assert.match(shell, /id="send_but"/u)
+  assert.match(shell, /card\.srcdoc=source/u)
+  assert.match(shell, /parent\.document\.querySelector\('#send_textarea'\)/u)
+  assert.match(shell, /capability:'chat\.send'/u)
+  assert.match(shell, /event\.source===card\.contentWindow/u)
+  assert.match(shell, /event\.source!==parent/u)
+  assert.doesNotMatch(shell, /allow-top-navigation|allow-popups|allow-forms/u)
 })
 
 test('exposes implemented prompt-template support and bounded successful script markers', () => {

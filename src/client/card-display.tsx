@@ -15,6 +15,7 @@ import { substituteSillyTavernIdentityMacros } from '../sillytavern-identity-mac
 import {
   blockedCardFrameResources,
   cardFrameDiagnosticSummary,
+  cardFrameCompatibilityUrl,
   compileCardFrames,
   type CardFrameGreetingChoices,
 } from './card-frame.ts'
@@ -141,8 +142,10 @@ function CardFrameView({
     data-agent-rp-frame-kind={segment.sourceKind}
     data-agent-rp-frame-token={frameToken}
     ref={registerFrame}
-    sandbox={preview ? '' : 'allow-scripts'}
-    srcDoc={segment.srcDoc}
+    sandbox={preview ? '' : 'allow-scripts allow-same-origin'}
+    {...(preview
+      ? { srcDoc: segment.srcDoc }
+      : { src: cardFrameCompatibilityUrl(segment.srcDoc, frameToken) })}
     onLoad={event => {
       const frame = event.currentTarget
       frame.contentWindow?.postMessage({ source: 'dsh-agent-rp-host', action: 'request-resize' }, '*')

@@ -276,7 +276,12 @@ function restrictedSandbox(frame: Element): boolean {
       && frame.getAttribute('src')?.startsWith('data:text/html;charset=utf-8;base64,') === true
       && frame.getAttribute('srcdoc') === null
   }
-  return tokens?.length === 1 && tokens[0] === 'allow-scripts'
+  const directCardFrame = tokens?.length === 1 && tokens[0] === 'allow-scripts'
+  const compatibilityShell = tokens?.length === 2
+    && tokens.includes('allow-scripts') && tokens.includes('allow-same-origin')
+    && frame.getAttribute('src')?.startsWith('data:text/html;charset=utf-8;base64,') === true
+    && frame.getAttribute('srcdoc') === null
+  return directCardFrame || compatibilityShell
 }
 
 /** Assemble one mounted interface from Host facts and DOM checks without copying content-bearing values. */

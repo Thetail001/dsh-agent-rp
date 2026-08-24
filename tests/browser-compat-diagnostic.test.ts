@@ -162,8 +162,8 @@ test('collects one content-free healthy browser snapshot with expected permissio
       new DiagnosticElement({ sandbox: 'allow-scripts allow-same-origin allow-forms', src: 'data:text/html;charset=utf-8;base64,QQ==', 'data-agent-rp-tavern-phase': 'ready', 'data-agent-rp-tavern-script-scope': 'preset' }),
     ],
     'iframe[data-agent-rp-frame]': [new DiagnosticElement({
-      sandbox: 'allow-scripts',
-      src: 'https://private.example/card-name',
+      sandbox: 'allow-scripts allow-same-origin',
+      src: 'data:text/html;charset=utf-8;base64,QQ==',
       'data-private-card-text': 'must not appear',
       'data-agent-rp-frame-registered': 'true',
       'data-agent-rp-resize-received': 'true',

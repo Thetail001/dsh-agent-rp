@@ -337,9 +337,12 @@ function redirectKnownHostFacades(source: string): string {
       /(?:window\s*\.\s*)?(?:parent|top)\s*(?:\|\||\?\?)\s*window\b/gu,
       'window',
     )
+    // The live card renderer supplies a bounded parent document. Preserve
+    // direct parent.document access for legacy input bridges while keeping
+    // top.document away from the real DSH document.
     .replace(
-      /(?:window\s*\.\s*)?(?:parent|top)\s*(?:\?\.\s*|\.\s*)document(?![\w$])/gu,
-      'window.document',
+      /(?:window\s*\.\s*)?top\s*(?:\?\.\s*|\.\s*)document(?![\w$])/gu,
+      'parent.document',
     )
     .replace(
       /(?:window\s*\.\s*)?(?:parent|top)\s*(?:\?\.\s*)?(\[[^\]\r\n]+\])/gu,
@@ -397,6 +400,27 @@ function cardFrameSource(source: string, options: CardFrameCompileOptions): stri
 /** Wrap one already-isolated frontend document with the shared sandbox runtime. */
 export function compileCardFrameDocument(source: string, options: CardFrameCompileOptions): string {
   return cardFrameSource(source, options)
+}
+
+function cardFrameCompatibilityShell(source: string, capabilityToken: string | undefined): string {
+  const cardSource = JSON.stringify(source)
+    .replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
+  const token = JSON.stringify(capabilityToken ?? null)
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body,#chat{background:transparent;border:0;margin:0;min-width:0;padding:0;width:100%}body{overflow:hidden}#agent-rp-card-content{background:transparent;border:0;color-scheme:dark;display:block;height:72px;width:100%}#send_textarea,#send_but{display:none!important}</style></head><body><main id="chat"><iframe id="agent-rp-card-content" title="角色卡界面"></iframe></main><textarea id="send_textarea" aria-hidden="true"></textarea><button id="send_but" type="button" aria-hidden="true"></button><script>(()=>{'use strict';const token=${token};const source=${cardSource};const card=document.getElementById('agent-rp-card-content');const input=document.getElementById('send_textarea');const send=document.getElementById('send_but');let lastHeight=-1;let sendSequence=800000000;let pendingSend;const postHost=message=>parent.postMessage(message,'*');const reportHeight=value=>{const measured=Math.max(72,Math.ceil(Number(value)||0),document.documentElement.scrollHeight,document.body.scrollHeight);if(measured===lastHeight)return;lastHeight=measured;postHost({source:'dsh-agent-rp-card',action:'resize',token,value:measured})};const measureCard=()=>{try{const root=card.contentDocument?.documentElement;const body=card.contentDocument?.body;const height=Math.max(root?.scrollHeight??0,body?.scrollHeight??0);if(height>0)card.style.height=Math.max(72,Math.ceil(height))+'px'}catch{}reportHeight(card.getBoundingClientRect().height)};const installCardObservers=()=>{measureCard();try{const document=card.contentDocument;if(!document)return;if(window.ResizeObserver){const observer=new ResizeObserver(measureCard);if(document.documentElement)observer.observe(document.documentElement);if(document.body)observer.observe(document.body)}if(window.MutationObserver&&document.body)new MutationObserver(measureCard).observe(document.body,{attributes:true,childList:true,subtree:true})}catch{}};input.addEventListener('input',()=>{if(token!==null)postHost({source:'dsh-agent-rp-card',action:'draft',token,value:input.value})});send.addEventListener('click',()=>{const value=String(input.value??'');if(token===null||pendingSend!==undefined||!value.trim())return;if(navigator.userActivation&&navigator.userActivation.isActive!==true){document.documentElement.dataset.agentRpCapabilityState='chat-send-user-activation-required';return}sendSequence=sendSequence>=999999998?800000001:sendSequence+1;pendingSend='card-chat-send-'+sendSequence;document.documentElement.dataset.agentRpCapabilityState='chat-send-pending';postHost({source:'dsh-agent-rp-card',action:'capability-request',capability:'chat.send',token,requestId:pendingSend,value})});addEventListener('message',event=>{const message=event.data;if(event.source===card.contentWindow){if(!message||typeof message!=='object'||message.source!=='dsh-agent-rp-card')return;if(message.action==='resize'&&typeof message.value==='number'&&Number.isFinite(message.value)){card.style.height=Math.max(72,Math.ceil(message.value))+'px';reportHeight(message.value);return}postHost(message);return}if(event.source!==parent||!message||typeof message!=='object'||message.source!=='dsh-agent-rp-host')return;if(message.action==='capability-result'&&message.capability==='chat.send'&&message.requestId===pendingSend){pendingSend=undefined;document.documentElement.dataset.agentRpCapabilityState=message.ok===true?'chat-send-result-ok':'chat-send-result-error';if(message.ok===true){input.value='';if(token!==null)postHost({source:'dsh-agent-rp-card',action:'draft',token,value:''})}}card.contentWindow?.postMessage(message,'*')});card.addEventListener('load',installCardObservers);if(window.ResizeObserver)new ResizeObserver(measureCard).observe(document.getElementById('chat'));if(window.MutationObserver)new MutationObserver(measureCard).observe(document.getElementById('chat'),{attributes:true,childList:true,subtree:true});card.srcdoc=source;setTimeout(measureCard,250);setTimeout(measureCard,2000)})();</script></body></html>`
+}
+
+/**
+ * Place a card document behind a cross-origin data: shell. The shell remains
+ * isolated from DSH while its nested srcdoc can use a bounded parent.document
+ * surface for legacy Tavern input controls.
+ */
+export function cardFrameCompatibilityUrl(source: string, capabilityToken?: string): string {
+  const bytes = new TextEncoder().encode(cardFrameCompatibilityShell(source, capabilityToken))
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  }
+  return `data:text/html;charset=utf-8;base64,${btoa(binary)}`
 }
 
 function inlineCardFrameSource(source: string, options: CardFrameCompileOptions): {
