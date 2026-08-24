@@ -15,6 +15,9 @@ import type {
   RoleplayTurnPresentation,
 } from '../roleplay-turn-presentation-types.ts'
 
+/** DSH requires a Location data key to equal its owning Conversation Definition kind. */
+const ROLEPLAY_PRESENTATION_KIND = 'agent-rp/presentation'
+
 declare module '@deepseek-ai/dsh-client-runtime/client' {
   interface ConversationTurnDataMap {
     /** Latest replayable RP presentation snapshot for this exact Turn. */
@@ -41,7 +44,7 @@ function presentationFromEvent(event: unknown): RoleplayTurnPresentation | undef
 }
 
 const roleplayPresentationDefinition: ConversationNodeDefinition<RoleplayPresentationState> = {
-  kind: 'agent-rp-presentation',
+  kind: ROLEPLAY_PRESENTATION_KIND,
   match: (event) => {
     const presentation = presentationFromEvent(event)
     if (presentation === undefined) return null
@@ -66,7 +69,7 @@ const roleplayPresentationDefinition: ConversationNodeDefinition<RoleplayPresent
     : {
         kind: 'turn',
         turn: context.state.presentation.turn,
-        key: 'agent-rp/presentation',
+        key: ROLEPLAY_PRESENTATION_KIND,
         value: context.state.presentation,
       },
 }
@@ -120,7 +123,7 @@ function RoleplayArtifactImage({ artifact, loadImage }: {
 }
 
 function RoleplayArtifactTail({ owner }: { readonly owner: ArtifactTailOwner }) {
-  const presentation = owner.turn.data.get('agent-rp/presentation')
+  const presentation = owner.turn.data.get(ROLEPLAY_PRESENTATION_KIND)
   const artifacts = presentation?.selectedReply?.surfaceSeq === owner.seq
     ? presentation.present.artifacts ?? []
     : []
@@ -146,7 +149,7 @@ export function installRoleplayArtifactTail(ctx: Context): void {
     name: 'conversation.chat.turnTail',
     priority: 80,
     select: owner => {
-      const presentation = owner.turn.data.get('agent-rp/presentation')
+      const presentation = owner.turn.data.get(ROLEPLAY_PRESENTATION_KIND)
       return presentation?.selectedReply?.surfaceSeq === owner.seq
         && (presentation.present.artifacts?.length ?? 0) > 0
         ? {}
