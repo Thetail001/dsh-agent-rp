@@ -2632,6 +2632,56 @@ window.__injectionReady = Promise.resolve().then(() => {
   ])
 })
 
+test('maps SillyTavern extension prompts and slash injects onto durable script injections', async () => {
+  const script = String.raw`
+const context = SillyTavern.getContext();
+context.setExtensionPrompt(
+  'standing-rules', '常驻规则', context.extension_prompt_types.IN_CHAT, 0, true,
+  context.extension_prompt_roles.SYSTEM,
+);
+window.__slashInjection = triggerSlash('/inject id=scene-rules position=chat depth=2 scan=true role=user ephemeral=true "临时规则"');
+`
+  const html = tavernScriptFrameSource({
+    id: 'legacy-prompt-injector', name: '旧式规则注入', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, script, {
+    scriptScope: 'character',
+    scriptId: 'legacy-prompt-injector', scriptName: '旧式规则注入', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [], presetScriptTrees: [],
+    characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+
+  assert.equal(await context.__slashInjection, 'scene-rules')
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const mutations = (): Record<string, unknown>[] => (context.posted as Record<string, unknown>[])
+    .filter(message => message.action === 'injections-replace')
+  assert.deepEqual(JSON.parse(JSON.stringify(mutations().at(-1)?.prompts)), [{
+    id: 'standing-rules', position: 'in_chat', depth: 0, role: 'system', content: '常驻规则',
+    shouldScan: true, once: false,
+  }, {
+    id: 'script_inject_scene-rules', position: 'in_chat', depth: 2, role: 'user', content: '临时规则',
+    shouldScan: true, once: true,
+  }])
+  assert.equal((context.posted as Record<string, unknown>[])
+    .some(message => message.action === 'trigger-slash'), false)
+
+  const runtimeContext = context.SillyTavern as {
+    setExtensionPrompt: (...args: unknown[]) => void
+    extension_prompt_types: { IN_CHAT: number }
+  }
+  runtimeContext.setExtensionPrompt('standing-rules', '', runtimeContext.extension_prompt_types.IN_CHAT, 0, false, 0)
+  await (context.triggerSlash as (command: string) => Promise<string>)('/flushinject scene-rules')
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.deepEqual(JSON.parse(JSON.stringify(mutations().at(-1)?.prompts)), [])
+})
+
 test('reevaluates Tavern Helper injection filters after variable snapshots change', () => {
   const script = String.raw`
 injectPrompts([{

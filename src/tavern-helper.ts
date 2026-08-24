@@ -220,7 +220,7 @@ export interface TavernInjectedPrompt {
   readonly id: string
   readonly scriptScope: TavernScriptTreeScope
   readonly scriptId: string
-  readonly position: 'in_chat' | 'none'
+  readonly position: 'before' | 'after' | 'in_chat' | 'none'
   readonly depth: number
   readonly role: 'system' | 'assistant' | 'user'
   readonly content: string
@@ -568,7 +568,8 @@ function injectedPrompt(
   const prompt = nested(value)
   const id = text(prompt.id, `injected prompt[${index}].id`).trim()
   if (id === '' || id.length > 512) throw new Error(`injected prompt[${index}].id is invalid`)
-  if (prompt.position !== 'in_chat' && prompt.position !== 'none') {
+  if (prompt.position !== 'before' && prompt.position !== 'after'
+    && prompt.position !== 'in_chat' && prompt.position !== 'none') {
     throw new Error(`injected prompt[${index}].position is invalid`)
   }
   if (prompt.role !== 'system' && prompt.role !== 'assistant' && prompt.role !== 'user') {
@@ -1242,6 +1243,19 @@ export function tavernInjectedInChatPrompts(state: TavernHelperState | undefined
 }[] {
   return (state?.injectedPrompts ?? []).flatMap(prompt => prompt.position === 'in_chat' && prompt.content.trim() !== ''
     ? [{ role: prompt.role, content: prompt.content, depth: prompt.depth, order: 100 }]
+    : [])
+}
+
+/** Project durable non-chat script injections around the provider history boundary. */
+export function tavernInjectedOrderedPrompts(
+  state: TavernHelperState | undefined,
+  position: 'before' | 'after',
+): readonly {
+  readonly role: 'system' | 'assistant' | 'user'
+  readonly content: string
+}[] {
+  return (state?.injectedPrompts ?? []).flatMap(prompt => prompt.position === position && prompt.content.trim() !== ''
+    ? [{ role: prompt.role, content: prompt.content }]
     : [])
 }
 

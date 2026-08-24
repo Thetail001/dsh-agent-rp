@@ -46,6 +46,7 @@ import type { ResolvedSessionRoleplayRuntime } from './session-roleplay-runtime.
 import { renderRoleplayStateContext, ROLEPLAY_STATE_MODULE_ID } from './roleplay-state.ts'
 import {
   tavernInjectedInChatPrompts,
+  tavernInjectedOrderedPrompts,
   tavernInjectedScanText,
   TAVERN_HELPER_ROLEPLAY_MODULE_ID,
   type TavernHelperState,
@@ -469,7 +470,11 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   const experienceAfter = world.experienceAfterActor
   const loreBefore = [...experienceBefore, ...world.actorBefore]
   const loreAfter = [...world.actorAfter, ...experienceAfter]
-  const injectedPrompts = tavernInjectedInChatPrompts(tavern)
+  const injectedPrompts = {
+    beforeHistory: tavernInjectedOrderedPrompts(tavern, 'before'),
+    afterHistory: tavernInjectedOrderedPrompts(tavern, 'after'),
+    inChat: tavernInjectedInChatPrompts(tavern),
+  }
   let providerPrompt = nativeProviderPrompt()
   let systemPromptText = ''
   let enabledModules = 0
@@ -566,7 +571,9 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   const transforms = promptTransforms(resolved, characterName, userName)
   const prompt: RoleplayTurnPromptPlan = {
     ...providerPrompt,
-    inChat: [...providerPrompt.inChat, ...world.inChat, ...injectedPrompts],
+    beforeHistory: [...injectedPrompts.beforeHistory, ...providerPrompt.beforeHistory],
+    afterHistory: [...providerPrompt.afterHistory, ...injectedPrompts.afterHistory],
+    inChat: [...providerPrompt.inChat, ...world.inChat, ...injectedPrompts.inChat],
     systemPromptText: [systemPromptText, renderRoleplayStateContext(resolved.nativeStates)]
       .filter(text => text !== '').join('\n\n'),
     transforms,
@@ -650,8 +657,10 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     }]),
     ...(tavern === undefined ? [] : [{
       moduleId: TAVERN_HELPER_ROLEPLAY_MODULE_ID,
-      outcome: injectedPrompts.length === 0 ? 'idle' as const : 'applied' as const,
-      contributions: injectedPrompts.length,
+      outcome: injectedPrompts.beforeHistory.length + injectedPrompts.afterHistory.length
+        + injectedPrompts.inChat.length === 0 ? 'idle' as const : 'applied' as const,
+      contributions: injectedPrompts.beforeHistory.length + injectedPrompts.afterHistory.length
+        + injectedPrompts.inChat.length,
     }]),
     ...(snapshot.modules.some(module => module.id === ROLEPLAY_EJS_ADAPTER_MODULE_ID) ? [{
       moduleId: ROLEPLAY_EJS_ADAPTER_MODULE_ID,

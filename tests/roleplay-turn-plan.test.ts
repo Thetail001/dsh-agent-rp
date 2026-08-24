@@ -574,10 +574,20 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
     operation: 'replace-script-injections',
     scriptScope: 'character',
     scriptId: 'state',
-    prompts: [{
-      id: 'next-request', position: 'in_chat', depth: 0, role: 'system',
-      content: '脚本本轮注入', shouldScan: true, once: false,
-    }],
+    prompts: [
+      {
+        id: 'before-story', position: 'before', depth: 0, role: 'system',
+        content: '脚本前置注入', shouldScan: false, once: false,
+      },
+      {
+        id: 'next-request', position: 'in_chat', depth: 0, role: 'system',
+        content: '脚本本轮注入', shouldScan: true, once: false,
+      },
+      {
+        id: 'after-story', position: 'after', depth: 0, role: 'system',
+        content: '脚本后置注入', shouldScan: false, once: false,
+      },
+    ],
   })
   appendTavernHelperState(session, state)
   appendMvuState(session, { statData: { 关系: { 信任: 4 } }, updateCount: 2 })
@@ -623,8 +633,14 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
   })
 
   assert.equal(plan.prompt.systemPromptText, '')
-  assert.deepEqual(plan.prompt.beforeHistory, direct.beforeHistory)
-  assert.deepEqual(plan.prompt.afterHistory, direct.afterHistory)
+  assert.deepEqual(plan.prompt.beforeHistory, [
+    { role: 'system', content: '脚本前置注入' },
+    ...direct.beforeHistory,
+  ])
+  assert.deepEqual(plan.prompt.afterHistory, [
+    ...direct.afterHistory,
+    { role: 'system', content: '脚本后置注入' },
+  ])
   assert.deepEqual(plan.prompt.continuation, direct.continuation)
   assert.deepEqual(plan.prompt.inChat.slice(0, direct.inChat.length), direct.inChat)
   assert.deepEqual(plan.prompt.inChat.at(-1), {
@@ -672,7 +688,7 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
     moduleId: 'adapter:mvu', outcome: 'applied', contributions: 1,
   })
   assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === 'adapter:tavern-helper'), {
-    moduleId: 'adapter:tavern-helper', outcome: 'applied', contributions: 1,
+    moduleId: 'adapter:tavern-helper', outcome: 'applied', contributions: 3,
   })
   assert.deepEqual(plan.recall.modules.find(module => module.moduleId === 'adapter:tavern-helper'), {
     moduleId: 'adapter:tavern-helper', outcome: 'applied', contributions: 1,
