@@ -471,8 +471,9 @@ export async function executeGenerationCommand(invocation: {
       const candidateBaseTavern = baseTavernStateSeq === undefined
         ? readTavernHelperStateSnapshot(events, originSeq)?.state
         : readTavernHelperStateSnapshotAt(events, baseTavernStateSeq).state
-      if (candidateBaseTavern !== undefined && !supportsAgentRpSessionEvents(invocation.agent.session)) {
-        throw new Error('当前 DSH Host 无法在重生成前安全切换脚本状态；请更新 DSH 后重试')
+      if ((candidateBaseTavern !== undefined || baseMvu !== undefined)
+        && !supportsAgentRpSessionEvents(invocation.agent.session)) {
+        throw new Error('含状态的回复需更新 DSH 后才能重新生成')
       }
       const selected = assistantEvent(invocation.agent.session.events, current.selectedSeq)
       replacementStartSeq = appendCurrentReplySurface(

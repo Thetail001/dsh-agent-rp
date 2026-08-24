@@ -321,7 +321,7 @@ test('rejects unsafe Tavern regeneration before changing a published-host Sessio
     agent,
     rawInput: JSON.stringify({ operation: 'regenerate', replySeq: original.seq }),
     signal: new AbortController().signal,
-  }), /无法在重生成前安全切换脚本状态/u)
+  }), /含状态的回复需更新 DSH/u)
   assert.equal(followedUp, false)
   assert.deepEqual(session.events, beforeEvents)
   assert.deepEqual(session.surface.nodes, beforeSurface)

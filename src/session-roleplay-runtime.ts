@@ -52,6 +52,7 @@ import {
 } from './roleplay-state.ts'
 import { readRoleplayTurnMode, type RoleplayTurnMode } from './roleplay-turn-mode.ts'
 import { readNativePromptPolicy, type NativePromptPolicySnapshot } from './native-prompt-policy.ts'
+import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
 
 /** One source plus the Session overlay that will be evaluated for this turn. */
 export interface ConfiguredRoleplayLorebook {
@@ -119,7 +120,11 @@ export function resolveSessionRoleplayRuntime(input: {
     throw new Error('Roleplay Session cannot activate imported and native prompt policies together')
   }
   const tavern = readTavernHelperState(events)
-  const turnMode = readRoleplayTurnMode(events)
+  // A recorded Agent preference must not create a half-working turn on an
+  // older Host that cannot persist the plan and settlement receipts.
+  const turnMode = supportsAgentRpSessionEvents(input.session)
+    ? readRoleplayTurnMode(events)
+    : 'conversation'
   const nativeStates = readRoleplayStates(events)
   const worldConfiguration = readWorldInfoConfiguration(events)
   const lorebooks = readActiveSessionLorebookSourcesFromEvents(events).map(source => ({

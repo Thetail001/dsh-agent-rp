@@ -60,6 +60,7 @@ import {
   type RoleplayStateSnapshot,
 } from './roleplay-state.ts'
 import { parseRoleplayTurnModeRecord, type RoleplayTurnMode } from './roleplay-turn-mode.ts'
+import { hostSupportsAgentRpSessionEvents } from './session-event-compat.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -71,6 +72,9 @@ const projectionSchema = {
     const validSource = record?.source === 'character-card'
       || record?.source === 'sillytavern-chat' || record?.source === 'preset'
     if (record === null || typeof record !== 'object'
+      || (record.hostCapabilities !== undefined && (typeof record.hostCapabilities !== 'object'
+        || record.hostCapabilities === null || Array.isArray(record.hostCapabilities)
+        || typeof (record.hostCapabilities as Record<string, unknown>).sessionEvents !== 'boolean'))
       || typeof record.characterName !== 'string'
       || (record.turnMode !== 'conversation' && record.turnMode !== 'agent')
       || (record.originalCharacterName !== undefined && typeof record.originalCharacterName !== 'string')
@@ -134,7 +138,7 @@ type ImportCall = 'character-card' | 'world-info' | 'preset'
 
 interface AgentRpProjectionState {
   readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'worldInfo' | 'presetLibrary' | 'lastRequest'
-  | 'generations' | 'auxiliaryGenerations' | 'presentation' | 'nativeStates' | 'turnMode'>
+  | 'generations' | 'auxiliaryGenerations' | 'presentation' | 'nativeStates' | 'turnMode' | 'hostCapabilities'>
   readonly turnMode: RoleplayTurnMode
   readonly cardWorldInfoCount: number
   readonly cardLorebook?: SessionLorebookSource
@@ -1136,6 +1140,7 @@ export function createAgentRpProjectionDefinition(
   wire: {
   viewSchema: projectionSchema as NonNullable<ProjectionDefinition<'agentRp', AgentRpProjectionState>['wire']>['viewSchema'],
   view: state => {
+    const sessionEvents = hostSupportsAgentRpSessionEvents()
     const worldInfo = worldInfoProjection(state, ejsTemplateEngine)
     const auxiliaryGenerations = summarizeTavernAuxiliaryGenerationReplay(state.auxiliaryGenerations)
     const visibleTavernMessages = state.surface.flatMap(({ seq, text, reasoning, role }) => text === undefined || role === undefined
@@ -1144,7 +1149,8 @@ export function createAgentRpProjectionDefinition(
     const hiddenTavernMessages = state.tavern?.hiddenPrefix ?? []
     return {
       ...state.character,
-      turnMode: state.turnMode,
+      hostCapabilities: { sessionEvents },
+      turnMode: sessionEvents ? state.turnMode : 'conversation',
       nativeStates: state.nativeStates.map(stateValue => ({
         id: stateValue.id,
         revision: stateValue.revision,

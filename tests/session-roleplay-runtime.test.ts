@@ -11,6 +11,7 @@ import { createWorldInfoLibrarySessionSeed } from '../src/import/world-info-seed
 import type { ImportedSillyTavernPreset } from '../src/import/sillytavern-preset.ts'
 import { ROLEPLAY_TURN_PHASES } from '../src/roleplay-runtime.ts'
 import { resolveSessionRoleplayRuntime } from '../src/session-roleplay-runtime.ts'
+import { supportsAgentRpSessionEvents } from '../src/session-event-compat.ts'
 
 const deployment = resolveConfig({ characterName: '岚' })
 
@@ -29,6 +30,19 @@ test('describes a fresh deployment character without an import-format dependency
   assert.deepEqual(runtime.snapshot.lifecycle, ROLEPLAY_TURN_PHASES)
   assert.deepEqual(runtime.snapshot.lifecycle, ['prepare', 'recall', 'act', 'settle', 'present'])
   assert.deepEqual(runtime.snapshot.memory, { read: true, write: true })
+})
+
+test('does not execute a recorded Agent preference on a Host that cannot persist its receipts', () => {
+  const session = Session.create(SessionId('runtime-effective-turn-mode'), [{
+    type: 'agent-rp/turn-mode',
+    seq: 0,
+    time: 1,
+    ignorable: true,
+    data: { format: 0, mode: 'agent', source: 'default' },
+  }])
+  const runtime = resolveSessionRoleplayRuntime({ session, deployment })
+
+  assert.equal(runtime.turnMode, supportsAgentRpSessionEvents(session) ? 'agent' : 'conversation')
 })
 
 test('maps card, Persona, world, and preset assets into independent runtime bindings', () => {

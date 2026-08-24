@@ -1055,6 +1055,7 @@ function GenerationTail({
   const [rewriteOpen, setRewriteOpen] = useState(false)
   const group = projection?.generations.find(candidate => candidate.anchorSeq === replySeq)
   if (projection === undefined) return null
+  const sessionEventsAvailable = projection.hostCapabilities?.sessionEvents === true
   const currentReply = projection.currentReplySeq === replySeq
   const sceneNote = replySceneNote(replyText)
   const selectedIndex = group?.versions.findIndex(version => version.seq === group.selectedVersionSeq) ?? 0
@@ -1074,6 +1075,12 @@ function GenerationTail({
   }
   const disabled = running || busy !== undefined
   const unavailableReason = running ? '回复生成期间暂不可用' : busy !== undefined ? '正在处理回复' : undefined
+  const statefulRegenerationUnavailable = !sessionEventsAvailable
+    && (projection.tavern !== undefined || projection.mvu !== undefined)
+  const regenerateDisabled = disabled || statefulRegenerationUnavailable
+  const regenerateUnavailableReason = statefulRegenerationUnavailable
+    ? '更新 DSH 后可重新生成含状态的回复'
+    : unavailableReason
   const previousUnavailable = disabled || selectedIndex <= 0
   const nextUnavailable = disabled || group === undefined || selectedIndex >= group.versions.length - 1
   return <span data-agent-rp-generation-actions>
@@ -1099,10 +1106,10 @@ function GenerationTail({
         </button>
       </Tooltip>
     </span>}
-    {currentReply && <Tooltip label={disabled ? unavailableReason ?? '重新生成' : '重新生成'} side="bottom">
+    {currentReply && <Tooltip label={regenerateDisabled ? regenerateUnavailableReason ?? '重新生成' : '重新生成'} side="bottom">
       <button type="button" data-agent-rp-generation-action aria-label={busy === 'regenerate' ? '正在重新生成' : '重新生成'}
-        aria-disabled={disabled || undefined} data-unavailable={disabled || undefined}
-        onClick={disabled ? undefined : () => { invoke({ operation: 'regenerate', replySeq }) }}>
+        aria-disabled={regenerateDisabled || undefined} data-unavailable={regenerateDisabled || undefined}
+        onClick={regenerateDisabled ? undefined : () => { invoke({ operation: 'regenerate', replySeq }) }}>
         {busy === 'regenerate' ? <IconLoadingOutline16 className="agent-rp-generation-loading" /> : <IconRefreshOutline16 />}
       </button>
     </Tooltip>}
@@ -4026,7 +4033,9 @@ function RoleplayHeader({
               setExportError(reason instanceof Error ? reason.message : String(reason))
             }).finally(() => { setExporting(false) })
           }} style={headerMenuItemStyle}>{exporting ? '正在导出…' : '导出聊天'}</button>
-          <button type="button" role="menuitem" disabled={turnModeSaving} aria-label="切换角色回合方式"
+          <button type="button" role="menuitem"
+            disabled={turnModeSaving || projection.hostCapabilities?.sessionEvents !== true}
+            aria-label="切换角色回合方式"
             onClick={() => {
               setTurnModeSaving(true)
               setTurnModeError(undefined)
@@ -4034,9 +4043,15 @@ function RoleplayHeader({
               void manageTurnMode(sessionId, next).then(() => { setSettingsOpen(false) }, reason => {
                 setTurnModeError(reason instanceof Error ? reason.message : String(reason))
               }).finally(() => { setTurnModeSaving(false) })
-            }} style={headerMenuItemStyle}>
+            }} style={{
+              ...headerMenuItemStyle,
+              ...(projection.hostCapabilities?.sessionEvents === true ? {} : { cursor: 'not-allowed', opacity: .46 }),
+            }}>
             {turnModeSaving ? '正在切换…' : `回合方式 · ${projection.turnMode === 'agent' ? 'Agent' : '纯对话'}`}
           </button>
+          {projection.hostCapabilities?.sessionEvents !== true && <p data-agent-rp-host-capability-note style={{
+            fontSize: '11px', lineHeight: 1.45, margin: '0 9px 4px', opacity: .5,
+          }}>Agent 模式需更新 DSH</p>}
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setMemoryOpen(true) }} style={headerMenuItemStyle}>记忆</button>
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setStateOpen(true) }} style={headerMenuItemStyle}>
             状态数据{projection.nativeStates.length === 0 ? '' : ` · ${projection.nativeStates.length}`}

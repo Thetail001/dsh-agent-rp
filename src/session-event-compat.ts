@@ -1,9 +1,9 @@
 /** Replay-safe admission for Agent RP events owned outside the DSH repository. */
 
-import type {
+import {
   Session,
-  SessionEvent,
-  SessionEventMap,
+  type SessionEvent,
+  type SessionEventMap,
 } from '@deepseek-ai/dsh-session'
 
 /** Complete private event vocabulary owned by Agent RP. */
@@ -38,6 +38,11 @@ interface IgnorableSession extends Session {
     type: T,
     data: SessionEventMap[T],
   ): SessionEvent<T> & { readonly ignorable: true }
+}
+
+/** Whether this Host build exposes the replay-safe plugin-event seam at all. */
+export function hostSupportsAgentRpSessionEvents(): boolean {
+  return typeof (Session.prototype as unknown as Partial<IgnorableSession>).appendIgnorable === 'function'
 }
 
 /** Whether this Host can persist plugin-owned events without poisoning future replay. */
