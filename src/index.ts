@@ -170,12 +170,21 @@ import {
 } from './roleplay-actor-revision.ts'
 import { characterLibraryActorRevisionProvider } from './character-library-actor-revision.ts'
 import {
+  detectRoleplayArtifactFollowup,
   installRoleplayArtifactCapability,
 } from './roleplay-artifact.ts'
 import { installAgentRpCapabilityPresetHttp } from './agent-capability-preset.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
+
+const ROLEPLAY_ARTIFACT_HANDOFF_PROMPT = [
+  '【Agent RP 产物交接】',
+  '本回合的可见正文已经完成，不要续写、改写、总结或重新思考剧情。',
+  '刚才的工具返回了图片。只完成一次呈现交接：若结果明确给出稳定 artifact id，调用 stage_roleplay_artifact；否则调用不带 path 的 publish_roleplay_image。',
+  '不要输出新的正文；调用失败时不要原样重试。',
+].join('\n')
+
 export { Config }
 export {
   registerRoleplayResourceProvider,
@@ -772,6 +781,15 @@ export function installAgentRp(
       ? turnCoordinator.current(agent)?.tools
       : undefined,
   })
+  ctx.on('tools/result', (exec, result) => {
+    const agent = exec.agent
+    if (agent === undefined || exec.parent !== undefined || agentsByScope.get(agent) !== agent
+      || result.isError || turnCoordinator.currentActLane(agent) !== 'narrative') return
+    const plan = turnCoordinator.current(agent)
+    if (plan?.tools.capability.artifactPresentation !== true) return
+    const followup = detectRoleplayArtifactFollowup(agent.session.events, String(exec.callId), result)
+    if (followup !== undefined) turnCoordinator.enterArtifactHandoff(agent, followup.turn)
+  })
   installRoleplayStateActionTool(ctx)
 
   commands.register({
@@ -990,6 +1008,9 @@ export function installAgentRp(
       const agent = scope === undefined ? undefined : agentsByScope.get(scope)
       if (agent === undefined) return renderCharacterPrompt(config)
       pendingMessagesByAgent.delete(agent)
+      if (turnCoordinator.currentActLane(agent) === 'artifact-handoff') {
+        return ROLEPLAY_ARTIFACT_HANDOFF_PROMPT
+      }
       return turnCoordinator.current(agent)?.prompt.systemPromptText ?? renderCharacterPrompt(config)
     },
     complete: true,
@@ -1072,12 +1093,16 @@ export function installAgentRp(
   installPromptRegexStream(
     ctx,
     sessionId => agentsBySession.get(sessionId),
-    agent => turnCoordinator.current(agent)?.prompt,
+    agent => turnCoordinator.currentActLane(agent) === 'narrative'
+      ? turnCoordinator.current(agent)?.prompt
+      : undefined,
   )
   installMvuStreamCompletion(
     ctx,
     sessionId => agentsBySession.get(sessionId),
-    agent => turnCoordinator.current(agent),
+    agent => turnCoordinator.currentActLane(agent) === 'narrative'
+      ? turnCoordinator.current(agent)
+      : undefined,
   )
   ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
     if (agentsByScope.get(agent) !== agent) return
@@ -1125,7 +1150,9 @@ export function installAgentRp(
     text: ({ scope }) => {
       if (scope === undefined) return ''
       const agent = agentsByScope.get(scope)
-      return agent === undefined ? '' : turnCoordinator.current(agent)?.memory.contextText ?? ''
+      return agent === undefined || turnCoordinator.currentActLane(agent) !== 'narrative'
+        ? ''
+        : turnCoordinator.current(agent)?.memory.contextText ?? ''
     },
   })
   ctx.systemPrompt.context({
@@ -1134,10 +1161,13 @@ export function installAgentRp(
     text: ({ scope }) => {
       if (scope === undefined) return ''
       const agent = agentsByScope.get(scope)
-      return agent === undefined ? '' : turnCoordinator.current(agent)?.tools.guidance.contextText ?? ''
+      return agent === undefined || turnCoordinator.currentActLane(agent) !== 'narrative'
+        ? ''
+        : turnCoordinator.current(agent)?.tools.guidance.contextText ?? ''
     },
   })
   ctx.on('agent/request', async ({ agent, turn, step }, next) => {
+    const actLane = turnCoordinator.currentActLane(agent)
     const activePlan = agentsByScope.get(agent) === agent
       ? turnCoordinator.bindStep(agent, turn, step, plan => bindRoleplayExternalContext({
         plan,
@@ -1154,19 +1184,22 @@ export function installAgentRp(
     if (agentsByScope.get(agent) !== agent) return config
     const generation = activePlan?.generation
     if (generation === undefined) return config
-    const requestedEffort = generation.reasoningEffort
+    const requestedEffort = actLane === 'artifact-handoff' ? 'low' : generation.reasoningEffort
     const modelInfo = requestedEffort === undefined || requestedEffort === 'auto'
       ? undefined
       : await ctx.llm.resolveModelInfo(config.provider, config.model)
     const supportedEffort = modelInfo?.reasoning?.efforts.some(effort => effort.id === requestedEffort) === true
       ? requestedEffort
       : undefined
+    const requestedMaxTokens = actLane === 'artifact-handoff'
+      ? Math.min(generation.maxTokens ?? 2_048, 2_048)
+      : generation.maxTokens
     return {
       ...config,
       ...generation.temperature === undefined ? {} : { temperature: generation.temperature },
-      ...generation.maxTokens === undefined
+      ...requestedMaxTokens === undefined
         ? {}
-        : { maxTokens: Math.min(generation.maxTokens, config.maxTokens ?? generation.maxTokens) },
+        : { maxTokens: Math.min(requestedMaxTokens, config.maxTokens ?? requestedMaxTokens) },
       ...supportedEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(supportedEffort) },
     }
   })

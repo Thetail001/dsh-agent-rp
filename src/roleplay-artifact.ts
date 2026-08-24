@@ -78,6 +78,19 @@ export interface RoleplayArtifactPublishArgs {
   readonly caption?: string
 }
 
+/** Successful image result that can move a completed narrative into artifact handoff. */
+export interface RoleplayArtifactFollowup {
+  readonly turn: number
+  readonly step: number
+  readonly artifacts: readonly RoleplayToolImageArtifact[]
+}
+
+interface RoleplayToolResultArtifactSource {
+  readonly isError: boolean
+  readonly content: readonly ContentBlock[]
+  readonly meta?: JsonValue
+}
+
 function plainRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -270,6 +283,47 @@ function uniqueArtifacts(artifacts: readonly RoleplayToolImageArtifact[]): reado
   })
 }
 
+/** Read native or compatibility image artifacts from one settled tool result. */
+export function readRoleplayToolResultArtifacts(
+  result: RoleplayToolResultArtifactSource,
+): readonly RoleplayToolImageArtifact[] {
+  if (result.isError) return []
+  const durable = readToolArtifactPresentationMeta(result.meta)?.artifacts
+  const legacy = imagesFromContent(result.content)
+  return uniqueArtifacts(durable === undefined ? legacy : [...durable, ...legacy])
+}
+
+/**
+ * Detect the only safe prompt-narrowing boundary: this exact model step has
+ * already emitted visible prose and its non-publisher tool returned an image.
+ */
+export function detectRoleplayArtifactFollowup(
+  events: readonly SessionEvent[],
+  callId: string,
+  result: RoleplayToolResultArtifactSource,
+): RoleplayArtifactFollowup | undefined {
+  const artifacts = readRoleplayToolResultArtifacts(result)
+  if (artifacts.length === 0) return undefined
+  const call = events.findLast(event => event.type === 'tool/call'
+    && String(event.data.callId) === callId)
+  if (call?.type !== 'tool/call'
+    || call.data.name === ROLEPLAY_ARTIFACT_STAGE_TOOL
+    || call.data.name === ROLEPLAY_ARTIFACT_PUBLISH_TOOL) return undefined
+  const assistant = events.findLast(event => event.seq < call.seq
+    && event.type === 'assistant/message'
+    && event.data.turn === call.data.turn
+    && event.data.step === call.data.step
+    && event.data.message.content.some(block => block.type === 'tool-call'
+      && String(block.id) === callId))
+  const content = assistant?.type === 'assistant/message' ? assistant.data.message.content : []
+  const callIndex = content.findIndex(block => block.type === 'tool-call' && String(block.id) === callId)
+  const hasVisibleNarrative = callIndex > 0 && content.slice(0, callIndex)
+    .some(block => block.type === 'text' && block.text.trim() !== '')
+  return hasVisibleNarrative
+    ? { turn: call.data.turn, step: call.data.step, artifacts }
+    : undefined
+}
+
 function legacyPublishedCaption(value: JsonValue | undefined): string | undefined {
   const record = plainRecord(value)
   if (record?.format !== 0 || record.version !== 0 || record.caption === undefined) return undefined
@@ -302,9 +356,11 @@ function latestPublishableArtifacts(
     const event = session.events[index]
     if (event === undefined || event.seq >= call.seq || event.type !== 'tool/result'
       || event.data.turn !== call.data.turn || resultFailed(event) || alreadyStaged.has(event.seq)) continue
-    const durable = readToolArtifactPresentationMeta(event.data.meta)?.artifacts
-    const legacy = imagesFromContent(event.data.message.content)
-    const artifacts = uniqueArtifacts(durable === undefined ? legacy : [...durable, ...legacy])
+    const artifacts = readRoleplayToolResultArtifacts({
+      isError: false,
+      content: event.data.message.content,
+      ...(event.data.meta === undefined ? {} : { meta: event.data.meta }),
+    })
     if (artifacts.length > 0) return { artifacts, sourceResultSeq: event.seq }
   }
   return undefined

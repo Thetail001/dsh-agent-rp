@@ -3,6 +3,9 @@
 import type { RoleplayTurnPlan } from './roleplay-turn-plan.ts'
 import type { BoundRoleplayTurnPlan } from './roleplay-turn-settlement.ts'
 
+/** Volatile lane inside the act phase; durable evidence remains in the Session log. */
+export type RoleplayActLane = 'narrative' | 'artifact-handoff'
+
 function positiveInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new Error(`Roleplay ${label} must be a positive integer`)
@@ -17,15 +20,30 @@ function positiveInteger(value: number, label: string): void {
 export class RoleplayTurnCoordinator<Owner extends object> {
   readonly #prepared = new WeakMap<Owner, RoleplayTurnPlan>()
   readonly #turns = new WeakMap<Owner, Map<number, Map<number, RoleplayTurnPlan>>>()
+  readonly #actLanes = new WeakMap<Owner, { readonly turn: number; readonly lane: RoleplayActLane }>()
 
   /** Make one freshly compiled plan available to the next Agent request. */
   prepare(owner: Owner, plan: RoleplayTurnPlan): void {
     this.#prepared.set(owner, plan)
+    this.#actLanes.delete(owner)
   }
 
   /** Return the plan currently exposed to request and stream integrations. */
   current(owner: Owner): RoleplayTurnPlan | undefined {
     return this.#prepared.get(owner)
+  }
+
+  /** Return the prompt/tool lane for the open act phase. */
+  currentActLane(owner: Owner): RoleplayActLane {
+    return this.#actLanes.get(owner)?.lane ?? 'narrative'
+  }
+
+  /** Narrow a bound turn to artifact handoff after its visible narrative already exists. */
+  enterArtifactHandoff(owner: Owner, turn: number): boolean {
+    positiveInteger(turn, 'turn')
+    if (this.#turns.get(owner)?.has(turn) !== true) return false
+    this.#actLanes.set(owner, { turn, lane: 'artifact-handoff' })
+    return true
   }
 
   /** Bind the current plan to one Agent-loop step, preserving the first binding on retries. */
@@ -53,6 +71,8 @@ export class RoleplayTurnCoordinator<Owner extends object> {
     if (prepared === undefined) return undefined
     const finalized = finalize(prepared)
     steps.set(step, finalized)
+    const lane = this.#actLanes.get(owner)
+    if (lane === undefined || lane.turn !== turn) this.#actLanes.set(owner, { turn, lane: 'narrative' })
     if (this.#prepared.get(owner) === prepared) this.#prepared.set(owner, finalized)
     return finalized
   }
@@ -86,6 +106,7 @@ export class RoleplayTurnCoordinator<Owner extends object> {
     if (prepared !== undefined && plans.some(({ plan }) => plan === prepared)) {
       this.#prepared.delete(owner)
     }
+    if (this.#actLanes.get(owner)?.turn === turn) this.#actLanes.delete(owner)
     return plans
   }
 
@@ -93,5 +114,6 @@ export class RoleplayTurnCoordinator<Owner extends object> {
   release(owner: Owner): void {
     this.#prepared.delete(owner)
     this.#turns.delete(owner)
+    this.#actLanes.delete(owner)
   }
 }

@@ -4,13 +4,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { AttachmentId, type ImageAttachmentRef, type SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
-import { CallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { CallId, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type JsonValue } from '@deepseek-ai/dsh-session'
-import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import { createScope } from '@deepseek-ai/dsh-scope'
+import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import ToolRegistry from '@deepseek-ai/dsh-tools'
+import { resolveConfig } from '../src/config.ts'
+import { installAgentRp } from '../src/index.ts'
 import {
+  detectRoleplayArtifactFollowup,
   installRoleplayArtifactCapability,
   readRoleplayArtifactAutoStageIntent,
   readRoleplayArtifactStageRecord,
@@ -175,6 +179,15 @@ test('stages one explicit same-turn durable artifact and replays its provenance'
   assert.deepEqual(readStagedRoleplayArtifacts(session.events, 1, stageResultSeq + 1), [record])
 })
 
+test('keeps the narrative lane when an image tool runs before prose', () => {
+  const toolOnly = openSession('artifact-followup-tool-only').session
+  appendCall(toolOnly, 'image-before-prose', 'mcp__image__generate', { prompt: '雨夜钟楼' })
+  assert.equal(detectRoleplayArtifactFollowup(toolOnly.events, 'image-before-prose', {
+    isError: false,
+    content: [{ type: 'image', attachment: IMAGE }],
+  }), undefined)
+})
+
 test('accepts Thetail publish_roleplay_image calls over legacy native image results', async (context) => {
   const ctx = await mounted()
   context.after(async () => { await ctx.fiber.dispose() })
@@ -324,4 +337,98 @@ test('rejects paths, old-turn ids, and unrecorded artifacts instead of guessing'
   })
   assert.equal(missing.isError, true)
   assert.match(missing.content[0]?.type === 'text' ? missing.content[0].text : '', /not available/u)
+})
+
+test('replaces the full roleplay prompt with a narrow artifact handoff after visible prose', async (context) => {
+  const root = new Context()
+  await root.plugin(SystemPrompt)
+  await root.plugin(ToolRegistry)
+  await root.plugin(AgentRegistry)
+  root.provide('commands' as never, { register: () => () => {} } as never)
+  root.provide('attachments' as never, {} as never)
+  const presetKey = {}
+  const preset = createScope(root, presetKey)
+  const libraryRoot = await mkdtemp(join(tmpdir(), 'agent-rp-artifact-handoff-'))
+  const attachment: ImageAttachmentRef = {
+    ...IMAGE,
+    attachmentId: AttachmentId('sha256:artifact-handoff-integration'),
+  }
+  let agentParentCtx: Context | undefined
+  await preset.ctx.plugin({
+    inject: ['systemPrompt', 'tools'],
+    apply(pluginCtx: Context) {
+      pluginCtx.tools.register({
+        name: 'fixture_generate_image',
+        description: 'Return one durable fixture image.',
+        parameters: {},
+        output: {
+          schema: { type: 'string' },
+          render: () => [{ type: 'image', attachment }],
+        },
+        execute: () => Promise.resolve('generated'),
+      })
+      installAgentRp(pluginCtx, resolveConfig({ characterName: '完整酒馆角色提示' }), {
+        characterLibraryRoot: libraryRoot,
+      })
+      agentParentCtx = pluginCtx
+    },
+  })
+  assert.ok(agentParentCtx)
+
+  const session = Session.create(SessionId('artifact-handoff-integration'))
+  const agent = { id: session.id, session } as Agent
+  const agentScope = createScope(agentParentCtx, agent, { parent: presetKey })
+  Object.assign(agent, { ctx: agentScope.ctx })
+  const disposeAgent = root.agents.register(agent)
+  context.after(async () => {
+    disposeAgent()
+    await agentScope.dispose()
+    await preset.dispose()
+    await root.fiber.dispose()
+    await rm(libraryRoot, { recursive: true, force: true })
+  })
+  session.append('turn/start', { turn: 1 })
+  const pending = createUserMessage({
+    source: { kind: 'user' }, content: [{ type: 'text', text: '写完正文后生成插图。' }],
+  })
+  agentEvents(root, agent).emit('agent/inbox/claimed', { message: pending, turn: 1 })
+  session.append('step/start', { turn: 1, step: 1 })
+  session.append('user/message', pending, { surfaceOp: 'append' })
+  await agentEvents(root, agent).waterfall('agent/request', {
+    turn: 1,
+    step: 1,
+    signal: new AbortController().signal,
+  }, () => Promise.resolve({ provider: 'fixture', model: 'fixture' }))
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' },
+      content: [{ type: 'text', text: '钟楼的雨声淹没了最后一句话。' }, {
+        type: 'tool-call', id: CallId('handoff-image'), name: 'fixture_generate_image', arguments: '{}',
+      }],
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  session.append('tool/call', {
+    turn: 1,
+    step: 1,
+    callId: CallId('handoff-image'),
+    name: 'fixture_generate_image',
+    arguments: '{}',
+  })
+  const result = await root.tools.execute({
+    callId: CallId('handoff-image'),
+    name: 'fixture_generate_image',
+    arguments: {},
+    agent,
+    signal: new AbortController().signal,
+  })
+  assert.equal(result.isError, false)
+
+  const handoff = await root.systemPrompt.assemble({ scope: agent })
+  const prompt = renderPrompt(handoff)
+  assert.match(prompt, /Agent RP 产物交接/u)
+  assert.doesNotMatch(prompt, /完整酒馆角色提示/u)
+  assert.equal(handoff.contexts.find(value => value.name === 'agent-rp:memory')?.text, '')
+  assert.equal(handoff.contexts.find(value => value.name === 'agent-rp:artifact-tools')?.text, '')
 })
