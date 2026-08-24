@@ -521,7 +521,11 @@ export async function resolveTavernScriptExecution(
   const preloads = new Set<TavernScriptPreload>(graph.preloads)
   if (/\bVue\b/u.test(dependencySource)) preloads.add('vue')
   if (/\bYAML\b/u.test(dependencySource)) preloads.add('yaml')
-  if (/\bz\.(?:any|array|boolean|coerce|discriminatedUnion|enum|intersection|lazy|literal|nullable|number|object|optional|preprocess|record|string|tuple|union|unknown)\b/u.test(dependencySource)) preloads.add('zod')
+  if (/\bz\.(?:any|array|boolean|coerce|discriminatedUnion|enum|intersection|lazy|literal|nullable|number|object|optional|preprocess|record|string|tuple|union|unknown)\b/u.test(dependencySource)
+    // Some pre-bundled Tavern modules capture the conventional Zod global before using its methods.
+    || /\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*z\s*[;,]/u.test(dependencySource)) {
+    preloads.add('zod')
+  }
   return {
     source: resolvedSource,
     mode: hasModuleSyntax ? 'module' : 'classic',

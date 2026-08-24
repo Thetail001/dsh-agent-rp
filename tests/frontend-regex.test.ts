@@ -619,7 +619,8 @@ test('preserves authorized ESM imports and plans their required public globals',
   globalThis.fetch = (input: string | URL | Request) => {
     fetched.push(String(input))
     return Promise.resolve(new Response([
-      'export function register() { return z.object({ value: z.string() }).parse(YAML.parse("value: ok")); }',
+      'var schema = z;',
+      'export function register() { return schema.object({ value: schema.string() }).parse(YAML.parse("value: ok")); }',
       'export const panel = Vue.createApp;',
       'try { (window.parent || window).__辅助计算脚本_loaded__ = true; } catch { window.__辅助计算脚本_loaded__ = true; }',
     ].join('\n')))
@@ -1233,6 +1234,10 @@ test('runs module plans through a Blob and reports ready only after evaluation',
     buttonEnabled: false, buttons: [], data: {},
   }, {
     source: 'export const ready = true;', mode: 'module', preloads: ['vue', 'yaml', 'zod'],
+    moduleDependencies: [{
+      id: 'remote-module-0', placeholder: '__dsh_tavern_remote_module_0__', dependencies: [],
+      source: 'window.parent.__dependencyReady = true;',
+    }],
     needsDomPurify: false, needsFuse: false, compatibilityMarkers: ['__远程依赖_loaded__'],
   }, {
     scriptScope: 'character',
@@ -1251,6 +1256,7 @@ test('runs module plans through a Blob and reports ready only after evaluation',
   assert.match(source!, /URL\.createObjectURL\(new Blob/u)
   assert.match(source!, /document\.__dshScriptWindow/u)
   assert.match(source!, /const window=__dshModuleWindow,parent=__dshModuleWindow,top=__dshModuleWindow/u)
+  assert.match(source!, /var value=__dshModuleFacade\+plan\.source/u)
   assert.match(html, /data-dsh-runtime-vendor="jquery"/u)
   assert.match(html, /data-dsh-runtime-vendor="lodash"/u)
   assert.match(html, /data-dsh-runtime-vendor="yaml"/u)

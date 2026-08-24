@@ -4,6 +4,7 @@ import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AgentRpProjection } from '../projection-types.ts'
 import type { CompiledCharacterDisplay } from '../frontend-regex.ts'
+import type { ImportedTavernHelperScript } from '../import/types.ts'
 import {
   type CharacterLibraryDetail,
   type CharacterRemoteResourceApproval,
@@ -160,7 +161,7 @@ function CardFrameView({
 /** Render compiled Markdown and isolated light-frontend segments. */
 export function CharacterDisplay({
   capabilityToken, compilation, statData, characterName, character, compatibilityMarkers, greetingChoices,
-  onFrameRegistration, onReady, preview = false, variableScopes,
+  onFrameRegistration, onReady, preview = false, tavernHelperScripts, variableScopes,
 }: {
   readonly capabilityToken?: string
   readonly compilation: CompiledCharacterDisplay
@@ -169,6 +170,7 @@ export function CharacterDisplay({
   readonly character?: CharacterLibraryDetail
   readonly compatibilityMarkers?: readonly string[]
   readonly greetingChoices?: CardFrameGreetingChoices
+  readonly tavernHelperScripts?: readonly ImportedTavernHelperScript[]
   readonly variableScopes?: NonNullable<AgentRpProjection['tavern']>['scopes']
   readonly onFrameRegistration?: (token: string, frame: HTMLIFrameElement | null) => void
   readonly onReady?: () => void
@@ -180,9 +182,12 @@ export function CharacterDisplay({
     ...(character === undefined ? {} : { character }),
     ...(compatibilityMarkers === undefined ? {} : { compatibilityMarkers }),
     ...(greetingChoices === undefined ? {} : { greetingChoices }),
+    ...(tavernHelperScripts === undefined ? {} : {
+      currentCharacter: { name: characterName, tavernHelperScripts },
+    }),
     ...(variableScopes === undefined ? {} : { variableScopes }),
     ...(capabilityToken === undefined ? {} : { capabilityToken }),
-  }), [capabilityToken, character, compatibilityMarkers, compilation, greetingChoices, statData, variableScopes])
+  }), [capabilityToken, character, characterName, compatibilityMarkers, compilation, greetingChoices, statData, tavernHelperScripts, variableScopes])
   useLayoutEffect(() => { onReady?.() }, [onReady])
   return <div data-agent-rp-character-display data-agent-rp-display-diagnostics={cardFrameDiagnosticSummary(compiled.diagnostics)}
     style={{ display: 'grid', gap: '10px', minWidth: 0 }}>

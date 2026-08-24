@@ -153,6 +153,32 @@ test('exposes implemented prompt-template support and bounded successful script 
   assert.doesNotMatch(source, /invalid marker/u)
 })
 
+test('projects only the current card scripts into the isolated SillyTavern character facade', () => {
+  const source = compileCardFrameDocument(`<!doctype html><html><head><meta name="card-head-marker"></head><body><script>
+    const getGlobal = key => window[key] || window.parent?.[key] || window.top?.[key]
+  </script></body></html>`, {
+    origin: 'http://127.0.0.1:3091',
+    currentCharacter: {
+      name: '投影角色',
+      tavernHelperScripts: [{
+        id: 'schema', name: '状态结构',
+        content: "const StateSchema = z.object({}); const marker = '$__META_EXTENSIBLE__$'",
+        info: '', enabled: true,
+        buttonEnabled: false, buttons: [], data: {},
+      }],
+    },
+  })
+
+  assert.match(source, /var __dshCurrentCharacter=\{"name":"投影角色","tavernHelperScripts":\[/u)
+  assert.match(source, /window\.SillyTavern=\{[^;]*characters:__dshCardCharacters/u)
+  assert.match(source, /Object\.defineProperty\(window,'characters'.*value:__dshCardCharacters/u)
+  assert.match(source, /Object\.defineProperty\(window,'this_chid'.*value:0/u)
+  assert.match(source, /const getGlobal = key => window\[key\] \|\| window\[key\] \|\| window\[key\]/u)
+  assert.doesNotMatch(source, /window\.parent\?\.\[key\]|window\.top\?\.\[key\]/u)
+  assert.doesNotMatch(source, /description|scenario|alternate_greetings/u)
+  assert.equal(source.match(/name="card-head-marker"/gu)?.length, 1)
+})
+
 test('exposes only card-owned greeting choices through the isolated chat facade', () => {
   const source = compileCardFrameDocument('<!doctype html><html><body>panel</body></html>', {
     origin: 'http://127.0.0.1:3091',

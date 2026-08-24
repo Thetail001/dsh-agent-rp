@@ -19,6 +19,7 @@ import {
   cardRemoteResourceApprovalKey,
   cardRemoteResourceRequirements,
 } from '../card-remote-resource.ts'
+import type { ImportedTavernHelperScript } from '../import/types.ts'
 import type { CardVariableScope } from './card-capability.ts'
 import { embeddedNativeIdentityRelayRuntime } from './embedded-identity.ts'
 
@@ -52,6 +53,11 @@ export interface CardFrameCompileOptions {
   readonly compatibilityMarkers?: readonly string[]
   /** Current greeting plus card-owned alternatives exposed without sharing the rest of the transcript. */
   readonly greetingChoices?: CardFrameGreetingChoices
+  /** Read-only current-card projection for frontends that inspect their own Tavern Helper scripts. */
+  readonly currentCharacter?: {
+    readonly name: string
+    readonly tavernHelperScripts: readonly ImportedTavernHelperScript[]
+  }
   /** Session variable namespaces exposed through the bounded Tavern Helper-compatible facade. */
   readonly variableScopes?: Readonly<Record<CardVariableScope, Readonly<Record<string, JsonValue>>>>
   /** Opaque Host registration used to authenticate capability and resize messages from this frame. */
@@ -147,12 +153,15 @@ function mvuFrameRuntime(
   statData: JsonValue | undefined,
   compatibilityMarkers: readonly string[] | undefined,
   greetingChoices: CardFrameGreetingChoices | undefined,
+  currentCharacter: CardFrameCompileOptions['currentCharacter'],
   variableScopes: CardFrameCompileOptions['variableScopes'],
   capabilityToken: string | undefined,
 ): string {
   const json = JSON.stringify(statData ?? {}).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
   const markers = JSON.stringify(boundedCompatibilityMarkers(compatibilityMarkers))
   const greetingJson = JSON.stringify(greetingChoices ?? null)
+    .replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
+  const currentCharacterJson = JSON.stringify(currentCharacter ?? null)
     .replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
   const capabilityTokenJson = JSON.stringify(capabilityToken ?? null)
   const scopesJson = JSON.stringify(variableScopes ?? {
@@ -162,8 +171,21 @@ function mvuFrameRuntime(
 var __dshStatData=${json};
 var __dshCompatibilityMarkers=${markers};
 var __dshCardGreetingChoices=${greetingJson};
+var __dshCurrentCharacter=${currentCharacterJson};
 var __dshCardScopes=${scopesJson};
 var __dshCardCapabilityToken=${capabilityTokenJson};
+function __dshDeepFreezeCardValue(value,seen){
+  if(!value||typeof value!=='object')return value;
+  seen=seen??new Set();if(seen.has(value))return value;seen.add(value);
+  for(var key of Object.keys(value))__dshDeepFreezeCardValue(value[key],seen);
+  return Object.freeze(value);
+}
+var __dshCardCharacters=Object.freeze(__dshCurrentCharacter===null?[]:[__dshDeepFreezeCardValue({
+  name:__dshCurrentCharacter.name,
+  data:{name:__dshCurrentCharacter.name,extensions:{tavern_helper:{scripts:__dshCurrentCharacter.tavernHelperScripts}}}
+})]);
+Object.defineProperty(window,'characters',{configurable:false,enumerable:true,writable:false,value:__dshCardCharacters});
+Object.defineProperty(window,'this_chid',{configurable:false,enumerable:true,writable:false,value:0});
 for(var __dshMarker of __dshCompatibilityMarkers)window[__dshMarker]=true;
 var __dshCardListeners=new Map();
 function __dshCardOn(type,listener){var list=__dshCardListeners.get(String(type))??[];list.push(listener);__dshCardListeners.set(String(type),list);var stop=function(){var current=__dshCardListeners.get(String(type))??[];__dshCardListeners.set(String(type),current.filter(function(value){return value!==listener}))};stop.stop=stop;return stop}
@@ -214,7 +236,7 @@ window.getLastMessageId=function(){return Math.max(-1,__dshCardChat.length-1)};
 window.getCurrentMessageId=window.getLastMessageId;
 window.sendMessage=__dshCardSendMessage;
 window.setChatMessage=function(value,id){var index=Number(id);if(!Number.isSafeInteger(index)||index<0||index>=__dshCardChat.length)index=__dshCardChat.length-1;var text=typeof value==='string'?value:value?.message??value?.mes;if(typeof text!=='string')return Promise.resolve();var greetingIndex=__dshCardGreetingChoices?.alternatives?.indexOf(text)??-1;if(index===0&&greetingIndex>=0&&__dshCardCapabilityToken){if(navigator.userActivation&&navigator.userActivation.isActive!==true){__dshSetCardCapabilityState('greeting-select-user-activation-required');return Promise.reject(new Error('需要点击后才能切换开场'))}return new Promise(function(resolve,reject){var requestId='card-capability-'+(++__dshCardRequestSequence);var timer=setTimeout(function(){if(!__dshCardPending.delete(requestId))return;__dshSetCardCapabilityState('greeting-select-timeout');reject(new Error('开场切换超时，请重试'))},15000);__dshCardPending.set(requestId,{index:index,text:text,resolve:resolve,reject:reject,timer:timer});__dshSetCardCapabilityState('greeting-select-pending');parent.postMessage({source:'dsh-agent-rp-card',action:'capability-request',capability:'greeting.select',token:__dshCardCapabilityToken,requestId:requestId,greetingIndex:greetingIndex},'*')})}__dshSetCardCapabilityState('local-message-update');__dshApplyCardMessage(text,index);return Promise.resolve()};
-window.SillyTavern={chat:__dshCardChat,name1:'用户',name2:'角色',characters:[],this_chid:0,characterId:0,groups:[],groupId:null,chatMetadata:{},chat_metadata:{},extensionSettings:{EjsTemplate:{enabled:true}},eventSource:{on:window.eventOn,once:window.eventOnce,emit:window.eventEmit},getChatMessages:window.getChatMessages,setChatMessage:window.setChatMessage,sendMessage:window.sendMessage,getContext:function(){return this}};
+window.SillyTavern={chat:__dshCardChat,name1:'用户',name2:__dshCurrentCharacter?.name??'角色',characters:__dshCardCharacters,this_chid:0,characterId:0,groups:[],groupId:null,chatMetadata:{},chat_metadata:{},extensionSettings:{EjsTemplate:{enabled:true}},eventSource:{on:window.eventOn,once:window.eventOnce,emit:window.eventEmit},getChatMessages:window.getChatMessages,setChatMessage:window.setChatMessage,sendMessage:window.sendMessage,getContext:function(){return this}};
 window.getContext=function(){return window.SillyTavern.getContext()};
 window.TavernHelper=window;
 window._={
@@ -319,6 +341,10 @@ function redirectKnownHostFacades(source: string): string {
       /(?:window\s*\.\s*)?(?:parent|top)\s*(?:\?\.\s*|\.\s*)document(?![\w$])/gu,
       'window.document',
     )
+    .replace(
+      /(?:window\s*\.\s*)?(?:parent|top)\s*(?:\?\.\s*)?(\[[^\]\r\n]+\])/gu,
+      'window$1',
+    )
   return sandboxFacadeNames.reduce((value, name) => {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
     return value.replace(new RegExp(
@@ -358,9 +384,13 @@ function cardFrameSource(source: string, options: CardFrameCompileOptions): stri
   const styleOrigins = policy('style') === "'none'" ? '' : ` ${policy('style')}`
   const scriptOrigins = policy('script') === "'none'" ? '' : ` ${policy('script')}`
   const unsafeEval = options.character?.remoteResourcePolicy === 'isolated-https' ? " 'unsafe-eval'" : ''
-  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigins}; media-src ${policy('media')}; style-src 'unsafe-inline'${styleOrigins}; script-src 'unsafe-inline'${unsafeEval}${scriptOrigins}; connect-src ${policy('connect')}; font-src ${policy('font')}; frame-src ${policy('frame')};"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<script>${isolatedCardStorageRuntime()}${mvuFrameRuntime(options.statData, options.compatibilityMarkers, options.greetingChoices, options.variableScopes, options.capabilityToken)}${resourceViolationRuntime()}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',token:__dshCardCapabilityToken,value:String(value)},'*')};var __dshLastSize=-1,__dshSizeFrame=0;function __dshReportSize(force){__dshSizeFrame=0;var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);if(!force&&value===__dshLastSize)return;__dshLastSize=value;parent.postMessage({source:'dsh-agent-rp-card',action:'resize',token:__dshCardCapabilityToken,value:value},'*')}function __dshScheduleSize(force){if(__dshSizeFrame)return;__dshSizeFrame=requestAnimationFrame(function(){__dshReportSize(force===true)})}addEventListener('message',function(event){var message=event.data;if(message&&message.source==='dsh-agent-rp-host'&&message.action==='request-resize')__dshScheduleSize(true)});addEventListener('load',function(){__dshScheduleSize(true)});addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',token:__dshCardCapabilityToken,value:input.value},'*')});var send=document.getElementById('send_but');if(!send){send=document.createElement('button');send.id='send_but';send.type='button';send.hidden=true;document.body.appendChild(send)}send.addEventListener('click',function(){void __dshCardSendMessage(input.value).then(function(){input.value='';parent.postMessage({source:'dsh-agent-rp-card',action:'draft',token:__dshCardCapabilityToken,value:''},'*')}).catch(console.error)});__dshScheduleSize(true);if(window.ResizeObserver){var resizeObserver=new ResizeObserver(function(){__dshScheduleSize(false)});resizeObserver.observe(document.documentElement);resizeObserver.observe(document.body)}if(window.MutationObserver)new MutationObserver(function(){__dshScheduleSize(false)}).observe(document.body,{attributes:true,childList:true,subtree:true});setTimeout(function(){__dshScheduleSize(true)},250);setTimeout(function(){__dshScheduleSize(true)},2000)});</script>`
-  if (/<head(?:\s|>)/iu.test(adapted)) return adapted.replace(/<head([^>]*)>/iu, `<head$1>${head}`)
-  if (/<html(?:\s|>)/iu.test(adapted)) return adapted.replace(/<html([^>]*)>/iu, `<html$1><head>${head}</head>`)
+  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigins}; media-src ${policy('media')}; style-src 'unsafe-inline'${styleOrigins}; script-src 'unsafe-inline'${unsafeEval}${scriptOrigins}; connect-src ${policy('connect')}; font-src ${policy('font')}; frame-src ${policy('frame')};"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<script>${isolatedCardStorageRuntime()}${mvuFrameRuntime(options.statData, options.compatibilityMarkers, options.greetingChoices, options.currentCharacter, options.variableScopes, options.capabilityToken)}${resourceViolationRuntime()}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',token:__dshCardCapabilityToken,value:String(value)},'*')};var __dshLastSize=-1,__dshSizeFrame=0;function __dshReportSize(force){__dshSizeFrame=0;var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);if(!force&&value===__dshLastSize)return;__dshLastSize=value;parent.postMessage({source:'dsh-agent-rp-card',action:'resize',token:__dshCardCapabilityToken,value:value},'*')}function __dshScheduleSize(force){if(__dshSizeFrame)return;__dshSizeFrame=requestAnimationFrame(function(){__dshReportSize(force===true)})}addEventListener('message',function(event){var message=event.data;if(message&&message.source==='dsh-agent-rp-host'&&message.action==='request-resize')__dshScheduleSize(true)});addEventListener('load',function(){__dshScheduleSize(true)});addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',token:__dshCardCapabilityToken,value:input.value},'*')});var send=document.getElementById('send_but');if(!send){send=document.createElement('button');send.id='send_but';send.type='button';send.hidden=true;document.body.appendChild(send)}send.addEventListener('click',function(){void __dshCardSendMessage(input.value).then(function(){input.value='';parent.postMessage({source:'dsh-agent-rp-card',action:'draft',token:__dshCardCapabilityToken,value:''},'*')}).catch(console.error)});__dshScheduleSize(true);if(window.ResizeObserver){var resizeObserver=new ResizeObserver(function(){__dshScheduleSize(false)});resizeObserver.observe(document.documentElement);resizeObserver.observe(document.body)}if(window.MutationObserver)new MutationObserver(function(){__dshScheduleSize(false)}).observe(document.body,{attributes:true,childList:true,subtree:true});setTimeout(function(){__dshScheduleSize(true)},250);setTimeout(function(){__dshScheduleSize(true)},2000)});</script>`
+  if (/<head(?:\s|>)/iu.test(adapted)) {
+    return adapted.replace(/<head([^>]*)>/iu, (_matched, attributes: string) => `<head${attributes}>${head}`)
+  }
+  if (/<html(?:\s|>)/iu.test(adapted)) {
+    return adapted.replace(/<html([^>]*)>/iu, (_matched, attributes: string) => `<html${attributes}><head>${head}</head>`)
+  }
   return `<!doctype html><html><head>${head}</head><body>${adapted}</body></html>`
 }
 

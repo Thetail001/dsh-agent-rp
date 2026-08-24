@@ -11402,6 +11402,7 @@ function roleplayComposerDockComponent(
     ): void => {
       const existing = item.querySelector<HTMLElement>(':scope > [data-agent-rp-rendered-display]')
       const greetingChoices = cardFrameGreetingChoices(activeProjection, activeCharacterDetail)
+      const activeCharacterScripts = activeTavernScripts(activeProjection, 'character')
       const signature = JSON.stringify([
         compilation,
         activeProjection.mvu?.statData,
@@ -11414,6 +11415,7 @@ function roleplayComposerDockComponent(
         activeCharacterDetail?.remoteResourcePolicy,
         activeCompatibilityMarkers,
         greetingChoices,
+        activeCharacterScripts,
       ])
       const existingMount = existing === null ? undefined : mounted.get(existing)
       const registerFrame = (token: string, frame: HTMLIFrameElement | null): void => {
@@ -11443,6 +11445,7 @@ function roleplayComposerDockComponent(
           statData={activeProjection.mvu?.statData}
           characterName={activeProjection.characterName}
           compatibilityMarkers={activeCompatibilityMarkers}
+          tavernHelperScripts={activeCharacterScripts}
           {...(activeProjection.tavern === undefined ? {} : { variableScopes: activeProjection.tavern.scopes })}
           {...(greetingChoices === undefined ? {} : { greetingChoices })}
           {...(activeCharacterDetail === undefined ? {} : { character: activeCharacterDetail })}

@@ -82,6 +82,8 @@ export interface EjsTemplateContext {
   readonly characterName: string
   readonly userName: string
   readonly messages: readonly string[]
+  /** Replayable per-turn entropy; omitted contexts keep nondeterministic APIs disabled. */
+  readonly entropy?: string
   readonly transcript?: readonly EjsTemplateMessage[]
   readonly variables?: Readonly<Record<string, JsonValue>>
   readonly variableScopes?: Readonly<Partial<Record<'global' | 'preset' | 'character' | 'chat' | 'message', Readonly<Record<string, JsonValue>>>>>
@@ -176,6 +178,7 @@ function compileTemplate(template: string, context: EjsTemplateContext): string 
     transcriptIsMessagePrefix,
     variables: context.variables ?? {},
     scopes: context.variableScopes ?? {},
+    ...(context.entropy === undefined ? {} : { randomEntropy: JSON.stringify([context.entropy, template]) }),
     ...(context.statData === undefined ? {} : { stat_data: context.statData }),
   })
   const statements = parsed.map(segment => {
@@ -422,7 +425,22 @@ function compileTemplate(template: string, context: EjsTemplateContext): string 
     const getwi = getWorldInfo;
     const print = (...values) => { for (const value of values) __append(value); };
     globalThis.Date = undefined;
-    Math.random = () => { throw new Error('__AGENT_RP_EJS_NONDETERMINISTIC__'); };
+    if (typeof __input.randomEntropy === 'string') {
+      let __randomState = 2166136261;
+      for (let __index = 0; __index < __input.randomEntropy.length; __index += 1) {
+        __randomState ^= __input.randomEntropy.charCodeAt(__index);
+        __randomState = Math.imul(__randomState, 16777619) >>> 0;
+      }
+      Math.random = () => {
+        __randomState = (__randomState + 0x6D2B79F5) >>> 0;
+        let __value = __randomState;
+        __value = Math.imul(__value ^ (__value >>> 15), __value | 1);
+        __value ^= __value + Math.imul(__value ^ (__value >>> 7), __value | 61);
+        return ((__value ^ (__value >>> 14)) >>> 0) / 4294967296;
+      };
+    } else {
+      Math.random = () => { throw new Error('__AGENT_RP_EJS_NONDETERMINISTIC__'); };
+    }
     ${statements}
     return __output;
   })()`

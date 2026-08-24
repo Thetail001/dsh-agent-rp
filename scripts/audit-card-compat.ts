@@ -157,6 +157,7 @@ export async function auditCharacterCardCompatibility(
   const context = {
     characterName: 'Character',
     userName: 'User',
+    entropy: 'agent-rp-private-card-compat-v1',
     messages: ['Synthetic user message', 'Synthetic assistant message'],
     transcript: [
       { role: 'user' as const, content: 'Synthetic user message' },

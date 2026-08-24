@@ -448,6 +448,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   const options = templateOptions(input.templateEngine, {
     characterName,
     userName: userName ?? '用户',
+    entropy: macroContext.entropy,
     messages: [...roleplayVisibleDialogue(input.session, pendingMessages), ...injectedScanText],
     transcript,
     variableScopes: variableScopes(tavern),

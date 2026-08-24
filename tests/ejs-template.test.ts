@@ -243,6 +243,21 @@ test('interrupts non-terminating templates and reports source errors without sou
   }), { ok: false, kind: 'syntax-error' })
 })
 
+test('uses replayable turn entropy for EJS randomness and keeps unseeded renders deterministic', () => {
+  const template = '<%= [Math.random(), Math.random()].join(",") %>'
+  const context = { characterName: '角色', userName: '用户', messages: [], entropy: 'session:1:turn:2' }
+  const first = engine.render(template, context)
+  const replay = engine.render(template, context)
+  const anotherTurn = engine.render(template, { ...context, entropy: 'session:1:turn:3' })
+
+  assert.equal(first.ok, true)
+  assert.deepEqual(replay, first)
+  assert.notDeepEqual(anotherTurn, first)
+  assert.deepEqual(engine.render(template, {
+    characterName: '角色', userName: '用户', messages: [],
+  }), { ok: false, kind: 'runtime-error' })
+})
+
 test('matches World Info regex in one isolated bounded runtime', () => {
   const matcher = engine.createRegexMatcher()
   try {
