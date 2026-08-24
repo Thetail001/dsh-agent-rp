@@ -16,22 +16,7 @@ Character Card、Chat Completion 预设、World Info、MVU、EJS 和 Tavern Help
 
 ## 安装
 
-需要 Node.js 22.19+ 或 24+，以及 pnpm 11。没有 pnpm 时可以先运行 `npm install --global pnpm@11`。无需克隆仓库，桌面端统一使用 pnpm 安装与启动：
-
-```powershell
-pnpm dlx --reporter append-only '@deepseek-ai/dsh@latest' plugin --profile web add 'github:hewzhew/dsh-agent-rp#main'
-pnpm dlx --reporter append-only '@deepseek-ai/dsh@latest' --profile web
-```
-
-以后更新插件时运行：
-
-```powershell
-pnpm dlx --reporter append-only '@deepseek-ai/dsh@latest' plugin --profile web update '@dsh-external/dsh-agent-rp'
-```
-
-`--reporter append-only` 会持续保留下载与安装阶段，不会只剩一个难以判断的旋转符号。这种安装方式也不会依赖某个长期留在原位的本地克隆目录。贡献者需要修改源码时，才应克隆仓库并在仓库根目录运行 `pnpm install`、`pnpm run build` 与 `dsh plugin --profile web add .`。
-
-Windows 也提供带环境检查、阶段提示、安装后验证和重复更新判断的安装器。它会保留 `~\.dsh` 中已有的角色与会话，不会静默安装全局工具：
+需要 Node.js 22.19+ 或 24+，以及 pnpm 11。没有 pnpm 时可以先运行 `npm install --global pnpm@11`。Windows 安装器会准备经过验证的 Agent Host、安装或更新 Agent RP，并保留 `~\.dsh` 中已有的角色与会话；它不会静默安装全局工具：
 
 ```powershell
 $installerPath = Join-Path $env:TEMP 'install-dsh-agent-rp.ps1'
@@ -39,11 +24,21 @@ Invoke-WebRequest 'https://raw.githubusercontent.com/hewzhew/dsh-agent-rp/main/s
 powershell -NoProfile -ExecutionPolicy Bypass -File $installerPath -Start
 ```
 
-国内 npm registry 较慢时，可在最后一行加 `-ChinaMirror`。这个选项只改变本次安装使用的 npm registry；如果进度已经进入「安装 Agent RP」后卡住，访问的是 GitHub，切换 npm 镜像并不能解决那一段网络问题。
+当前 Agent Host 固定在官方 DSH `0.1.1-rc.2`，并通过 pnpm 的可审计补丁机制补上插件私有事件写入能力；依赖版本和补丁哈希都由锁文件约束。官方 DSH 发布等价接口后会移除这层补丁。直接运行官方 `@deepseek-ai/dsh@0.1.1-rc.2` 仍可使用纯对话兼容模式，但不能完整保存 Agent/MVU 回合记录。
+
+以后更新时重新运行同一安装器。若安装后没有选择 `-Start`，可以这样启动：
+
+```powershell
+& "$env:USERPROFILE\.dsh\runners\agent-rp\node_modules\.bin\dsh.cmd" --profile web
+```
+
+国内 npm registry 较慢时，可在安装器最后一行加 `-ChinaMirror`。这个选项只改变本次安装使用的 npm registry；下载 runner 文件或 Agent RP 源码时访问的是 GitHub，切换 npm 镜像不会修复这一段。
+
+贡献者需要修改源码时，才应克隆仓库并在仓库根目录运行 `pnpm install`、`pnpm run build`，再让 Agent Host 的 `dsh plugin --profile web add .` 指向本地目录。
 
 早期安装器写入的版本不会自动迁移。若启动错误中出现 `.dsh\plugins\dsh-agent-rp`，请先把该目录移出 `plugins` 目录作备份，确认 DSH 能启动后，再按上面的 profile 命令安装。不要删除整个 `.dsh`，会话数据与旧插件目录不是一回事。
 
-如果你正在参与 DSH 内测并使用指定 RC 版本，请把上面两处 `@latest` 换成对应版本；不要在 Issue 或日志里公开自己的 NPM Token。
+不要把未验收的 DSH 版本强行套用到当前 Host 补丁，也不要在 Issue 或日志里公开自己的 NPM Token。
 
 ### Android / Termux 预览
 

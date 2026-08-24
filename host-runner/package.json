@@ -1,0 +1,15 @@
+{
+  "name": "@dsh-external/dsh-agent-rp-host-runner",
+  "version": "0.1.1-rc.2.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "dsh": "dsh"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.1-rc.2"
+  }
+}

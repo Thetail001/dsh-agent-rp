@@ -1,0 +1,33 @@
+diff --git a/lib/index.js b/lib/index.js
+index 62fd0fe17593f5b2d52b8a792add164e1f16a4d1..ec4cd2684a93ae7346b4ee3d550b42cecfec44c6 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1443,6 +1443,18 @@ var Session = class Session {
+ 	*/
+ 	append(type, data, ...opts) {
+ 		const surfaceOpts = opts[0];
++		return this.appendAccepted(type, data, surfaceOpts, false);
++	}
++	/**
++	* Append one out-of-repository plugin event as an ignorable log-only record.
++	* Known first-party events continue through append(), and surface events are
++	* rejected because skipping them would change model history.
++	*/
++	appendIgnorable(type, data) {
++		if (KNOWN_SESSION_EVENT_TYPES.has(type)) throw new Error(`known session event "${type}" must use append()`);
++		return this.appendAccepted(type, data, void 0, true);
++	}
++	appendAccepted(type, data, surfaceOpts, ignorable) {
+ 		const surfaceMetadata = {
+ 			...surfaceOpts?.sourceEventSeqs === void 0 ? {} : { sourceEventSeqs: surfaceOpts.sourceEventSeqs },
+ 			...surfaceOpts?.surfaceOp === void 0 ? {} : { surfaceOp: surfaceOpts.surfaceOp }
+@@ -1459,7 +1471,8 @@ var Session = class Session {
+ 			seq: this.log.length,
+ 			time: Date.now(),
+ 			data: dataSnapshot,
+-			...surfaceMetadataSnapshot
++			...surfaceMetadataSnapshot,
++			...ignorable ? { ignorable: true } : {}
+ 		});
+ 		this.surfaceManager.validateNext(event);
+ 		if (entry !== void 0) entry.appending = true;

@@ -1,7 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-  [string]$DshVersion = 'latest',
+  [string]$DshVersion = '0.1.1-rc.2',
   [string]$PluginSource = 'github:hewzhew/dsh-agent-rp#main',
+  [string]$RunnerSourceBase = 'https://raw.githubusercontent.com/hewzhew/dsh-agent-rp/main/host-runner',
   [string]$Registry,
   [switch]$ChinaMirror,
   [switch]$Start
@@ -11,6 +12,13 @@ $ErrorActionPreference = 'Stop'
 $pluginPackageName = '@dsh-external/dsh-agent-rp'
 $minimumPnpmMajor = 11
 $previousRegistry = $env:npm_config_registry
+$agentHostVersion = '0.1.1-rc.2'
+$runnerFiles = @(
+  'package.json',
+  'pnpm-lock.yaml',
+  'pnpm-workspace.yaml',
+  'patches/@deepseek-ai__dsh-session@0.1.1-rc.2.patch'
+)
 
 function Write-Stage {
   param(
@@ -57,12 +65,43 @@ function Get-DependencySpec {
   return [string]$property.Value
 }
 
-function Invoke-PnpmDlx {
-  param([string[]]$Arguments)
-  & pnpm dlx --reporter append-only @Arguments
+function Invoke-PnpmInstall {
+  param([string]$WorkingDirectory)
+  & pnpm --dir $WorkingDirectory install --frozen-lockfile --reporter append-only
   if ($LASTEXITCODE -ne 0) {
-    throw "pnpm 执行失败（退出码 $LASTEXITCODE）"
+    throw "Agent Host 依赖安装失败（退出码 $LASTEXITCODE）"
   }
+}
+
+function Invoke-Dsh {
+  param(
+    [string]$CommandPath,
+    [string[]]$Arguments
+  )
+  & $CommandPath @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "DSH 执行失败（退出码 $LASTEXITCODE）"
+  }
+}
+
+function Sync-RunnerFile {
+  param(
+    [string]$RunnerDirectory,
+    [string]$RelativePath
+  )
+  $localRelativePath = $RelativePath.Replace('/', [IO.Path]::DirectorySeparatorChar)
+  $destination = Join-Path $RunnerDirectory $localRelativePath
+  $destinationDirectory = Split-Path -Parent $destination
+  if (-not (Test-Path -LiteralPath $destinationDirectory)) {
+    New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
+  }
+  $download = "$destination.download"
+  if (Test-Path -LiteralPath $RunnerSourceBase -PathType Container) {
+    Copy-Item -LiteralPath (Join-Path $RunnerSourceBase $localRelativePath) -Destination $download -Force
+  } else {
+    Invoke-WebRequest "$($RunnerSourceBase.TrimEnd('/'))/$RelativePath" -OutFile $download
+  }
+  Move-Item -LiteralPath $download -Destination $destination -Force
 }
 
 try {
@@ -105,6 +144,8 @@ try {
   }
   $profileManifestPath = Join-Path $dshHomePath 'profiles\web\package.json'
   $legacyPluginPath = Join-Path $dshHomePath 'plugins\dsh-agent-rp'
+  $runnerDirectory = Join-Path $dshHomePath 'runners\agent-rp'
+  $runnerCommand = Join-Path $runnerDirectory 'node_modules\.bin\dsh.cmd'
   Write-Host "    Node.js $($nodeVersion.Text) · pnpm $($pnpmVersion.Text)"
   Write-Host "    DSH 数据目录：$dshHomePath"
   if (-not [string]::IsNullOrWhiteSpace($Registry)) {
@@ -117,10 +158,22 @@ try {
   $normalizedDshVersion = $DshVersion.Trim().TrimStart('@')
   if ([string]::IsNullOrWhiteSpace($normalizedDshVersion)) { throw 'DshVersion 不能为空。' }
   if ([string]::IsNullOrWhiteSpace($PluginSource)) { throw 'PluginSource 不能为空。' }
-  $dshRunner = "@deepseek-ai/dsh@$normalizedDshVersion"
+  if ($normalizedDshVersion -ne $agentHostVersion) {
+    throw "Agent Host 目前固定基于 DSH $agentHostVersion；不能把补丁应用到未验收版本 $normalizedDshVersion。"
+  }
 
-  Write-Stage 2 4 "准备 DSH runner（$dshRunner）"
-  Invoke-PnpmDlx @($dshRunner, '--version')
+  Write-Stage 2 4 "准备 Agent Host（DSH $agentHostVersion + 插件事件补丁）"
+  foreach ($runnerFile in $runnerFiles) {
+    Sync-RunnerFile $runnerDirectory $runnerFile
+  }
+  Invoke-PnpmInstall $runnerDirectory
+  if (-not (Test-Path -LiteralPath $runnerCommand -PathType Leaf)) {
+    throw "Agent Host 没有生成 DSH 命令：$runnerCommand"
+  }
+  $reportedDshVersion = (& $runnerCommand --version | Select-Object -Last 1).Trim()
+  if ($LASTEXITCODE -ne 0 -or $reportedDshVersion -ne $agentHostVersion) {
+    throw "Agent Host 版本验证失败：预期 $agentHostVersion，实际 $reportedDshVersion"
+  }
 
   $installedSpec = $null
   if (Test-Path -LiteralPath $profileManifestPath) {
@@ -128,13 +181,13 @@ try {
   }
   if ($null -eq $installedSpec) {
     Write-Stage 3 4 '安装 Agent RP'
-    Invoke-PnpmDlx @($dshRunner, 'plugin', '--profile', 'web', 'add', $PluginSource)
+    Invoke-Dsh $runnerCommand @('plugin', '--profile', 'web', 'add', $PluginSource)
   } elseif ($installedSpec -eq $PluginSource) {
     Write-Stage 3 4 "更新 Agent RP（当前来源：$installedSpec）"
-    Invoke-PnpmDlx @($dshRunner, 'plugin', '--profile', 'web', 'update', $pluginPackageName)
+    Invoke-Dsh $runnerCommand @('plugin', '--profile', 'web', 'update', $pluginPackageName)
   } else {
     Write-Stage 3 4 "同步 Agent RP 来源（当前：$installedSpec）"
-    Invoke-PnpmDlx @($dshRunner, 'plugin', '--profile', 'web', 'add', $PluginSource)
+    Invoke-Dsh $runnerCommand @('plugin', '--profile', 'web', 'add', $PluginSource)
   }
 
   Write-Stage 4 4 '验证 web profile 与插件入口'
@@ -161,14 +214,14 @@ try {
   Write-Host "Agent RP $($installedManifest.version) 已就绪，已有角色卡和会话不会被清空。" -ForegroundColor Green
   if ($Start) {
     Write-Host '正在启动 DSH；关闭这个窗口或按 Ctrl+C 会停止本地服务。' -ForegroundColor Cyan
-    Invoke-PnpmDlx @($dshRunner, '--profile', 'web')
+    Invoke-Dsh $runnerCommand @('--profile', 'web')
   } else {
-    Write-Host "启动命令：pnpm dlx --reporter append-only '$dshRunner' --profile web"
+    Write-Host "启动命令：& '$runnerCommand' --profile web"
   }
 } catch {
   Write-Host "安装失败：$($_.Exception.Message)" -ForegroundColor Red
-  Write-Host '如果卡在“准备 DSH runner”，问题位于 npm registry；可以重试 -ChinaMirror。' -ForegroundColor Yellow
-  Write-Host '如果卡在“安装 Agent RP”，问题通常位于 GitHub 下载；切换 npm 镜像不会修复 GitHub 连通性。' -ForegroundColor Yellow
+  Write-Host '如果卡在“准备 Agent Host”的依赖安装，可以重试 -ChinaMirror；若下载 runner 文件失败，则需要检查 GitHub 连通性。' -ForegroundColor Yellow
+  Write-Host '如果卡在“安装 Agent RP”，访问的是 GitHub；切换 npm 镜像不会修复这一段。' -ForegroundColor Yellow
   exit 1
 } finally {
   if ($null -eq $previousRegistry) {
