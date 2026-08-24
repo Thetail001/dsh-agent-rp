@@ -55,6 +55,17 @@ function visibleMessages(entries: readonly SurfaceEntry[]): readonly VisibleMess
   }).map((message, messageId) => ({ ...message, messageId }))
 }
 
+/** Resolve current Tavern message ids to the durable Session events they display. */
+export function tavernChatMessageSeqs(
+  agent: Agent,
+  hiddenPrefix: readonly TavernHiddenMessage[] = [],
+): readonly number[] {
+  return [
+    ...hiddenPrefix.map(message => message.seq),
+    ...visibleMessages(surfaceEntries(agent)).map(message => message.event.seq),
+  ]
+}
+
 function assistantCoordinates(events: readonly SessionEvent[]): { readonly turn: number; readonly step: number } {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
@@ -331,5 +342,8 @@ export function executeTavernChatMutation(
   if (request.operation === 'create-chat-messages') return createMessages(agent, request, hiddenPrefix)
   if (request.operation === 'delete-chat-messages') return deleteMessages(agent, request, hiddenPrefix)
   if (request.operation === 'rotate-chat-messages') return rotateMessages(agent, request, hiddenPrefix)
+  if (request.operation === 'replace-message-annotations') {
+    throw new Error('Tavern message annotations must use the Session annotation adapter')
+  }
   return setHidden(agent, request, hiddenPrefix)
 }

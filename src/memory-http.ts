@@ -10,6 +10,7 @@ import {
 } from './host-http.ts'
 import { readAgentRpMemoryHistory } from './memory.ts'
 import { AGENT_RP_MEMORY_PATH, type AgentRpMemoryResponse } from './memory-protocol.ts'
+import { agentHasAgentRpRuntime, type AgentPresetGateway } from './agent-capability-preset.ts'
 
 interface AgentRegistryGateway {
   get(sessionId: SessionId): Agent | undefined
@@ -37,7 +38,8 @@ export function installAgentRpMemoryHttp(routeCtx: Context, hostCtx: Context, se
           throw new Error('角色会话编号无效')
         }
         const agent = (hostCtx.get('agents') as AgentRegistryGateway | undefined)?.get(SessionId(sourceSessionId))
-        if (agent === undefined || agent.session.header.agentPreset !== 'agent-rp') throw new Error('角色会话当前不可用')
+        const presets = hostCtx.get('agentPresets') as AgentPresetGateway | undefined
+        if (presets === undefined || !agentHasAgentRpRuntime(presets, agent)) throw new Error('角色会话当前不可用')
         const history = readAgentRpMemoryHistory(agent.session.events)
         const value: AgentRpMemoryResponse = {
           format: 0,

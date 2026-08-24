@@ -471,6 +471,26 @@ declare module '@deepseek-ai/dsh-session' {
 /** Stable Host-owned identities for Tavern Helper scripts. */
 /** Script-tree namespace that owns one Tavern Helper script. */
 type TavernScriptScope = 'global' | 'preset' | 'character';
+type TavernMessageAnnotationValue = Readonly<Record<string, JsonValue>>;
+/** Host-owned script namespace for one set of SillyTavern message root fields. */
+interface TavernMessageAnnotationOwner {
+  readonly scriptScope: TavernScriptScope;
+  readonly scriptId: string;
+}
+/** Complete annotation namespace selected for one durable transcript message. */
+interface TavernMessageAnnotationRecord {
+  readonly format: 0;
+  readonly messageSeq: number;
+  readonly owner: TavernMessageAnnotationOwner;
+  readonly value: TavernMessageAnnotationValue;
+}
+declare module '@deepseek-ai/dsh-session' {
+  interface SessionEventMap {
+    /** @mode event Script-owned SillyTavern message root fields bound to one transcript event. */
+    'agent-rp/tavern-message-annotation': TavernMessageAnnotationRecord;
+  }
+}
+/** Validate one record recovered from an event or fallback command result. */
 /** Tavern Helper variable namespaces supported by the isolated runtime. */
 type TavernVariableScope = 'global' | 'preset' | 'character' | 'chat' | 'message' | 'script';
 type JsonRecord = Readonly<Record<string, JsonValue>>;

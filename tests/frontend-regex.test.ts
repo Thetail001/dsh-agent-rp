@@ -328,7 +328,8 @@ function runtimeAcceptanceContext(preview: readonly unknown[]) {
         })
         return
       }
-      if (message.action === 'worldbook-mutate' || message.action === 'variables-replace') {
+      if (message.action === 'worldbook-mutate' || message.action === 'chat-mutate'
+        || message.action === 'variables-replace') {
         queueMicrotask(() => {
           for (const listener of listeners.get('message') ?? []) listener({
             source: parent,
@@ -690,14 +691,18 @@ test('localizes maintained jsDelivr modules without fetching or duplicating thei
   }
 })
 
-test('resolves nested fixed ESM dependencies into one isolated local module graph', async () => {
+test('resolves required ESM dependencies while preserving optional dynamic failures', async () => {
   const originalFetch = globalThis.fetch
   const fetched: string[] = []
   globalThis.fetch = (input: string | URL | Request) => {
     const url = String(input)
     fetched.push(url)
     if (url.endsWith('/root.js')) {
-      return Promise.resolve(new Response("import { value } from './leaf.js'; export const result = value;"))
+      return Promise.resolve(new Response([
+        "import { value } from './leaf.js';",
+        'export const result = value;',
+        "export async function optional() { try { return await import('./optional.js'); } catch { return undefined; } }",
+      ].join('\n')))
     }
     if (url.endsWith('/leaf.js')) return Promise.resolve(new Response("export const value = 'local';"))
     return Promise.resolve(new Response('', { status: 404 }))
@@ -710,12 +715,15 @@ test('resolves nested fixed ESM dependencies into one isolated local module grap
     assert.deepEqual(fetched, [
       'https://cdn.jsdelivr.net/gh/example/module-graph@1/root.js',
       'https://cdn.jsdelivr.net/gh/example/module-graph@1/leaf.js',
+      'https://cdn.jsdelivr.net/gh/example/module-graph@1/optional.js',
     ])
-    assert.equal(plan.moduleDependencies?.length, 2)
+    assert.equal(plan.moduleDependencies?.length, 3)
     assert.match(plan.source, /__dsh_tavern_remote_module_0__/u)
     assert.match(plan.moduleDependencies?.[0]?.source ?? '', /__dsh_tavern_remote_module_1__/u)
-    assert.deepEqual(plan.moduleDependencies?.[0]?.dependencies, ['remote-module-1'])
+    assert.deepEqual(plan.moduleDependencies?.[0]?.dependencies, ['remote-module-1', 'remote-module-2'])
     assert.deepEqual(plan.moduleDependencies?.[1]?.dependencies, [])
+    assert.match(plan.moduleDependencies?.[2]?.source ?? '', /可选远程模块不可用/u)
+    assert.deepEqual(plan.moduleDependencies?.[2]?.dependencies, [])
     assert.equal(JSON.stringify(plan).includes('https://cdn.jsdelivr.net/gh/example/module-graph'), false)
   } finally {
     globalThis.fetch = originalFetch
@@ -1652,6 +1660,79 @@ window.__lodashSurface = {
     sorted: [1, 2], flattened: [1, 2, 3], some: true, updated: { nested: { value: 8 } },
     nil: [true, true, false], dropped: [1], pulled: { removed: ['a', 'c'], value: ['b'] }, last: 'b',
   })
+})
+
+test('bridges SillyTavern saveChat root fields without letting scripts overwrite Host transcript fields', async () => {
+  const checkpoint = {
+    default: {
+      storageFrame: {
+        revision: 1,
+        checkpoint: { 纪要表: [{ row_id: 'AM0001' }] },
+        operationLog: [],
+      },
+    },
+  }
+  const html = tavernScriptFrameSource({
+    id: 'database', name: '数据库', content: '', info: '', enabled: true,
+    buttonEnabled: false, buttons: [], data: {},
+  }, '', {
+    scriptScope: 'character',
+    scriptId: 'database', scriptName: '数据库', scriptInfo: '', buttons: [],
+    characterName: '角色', characterId: 'character.png', chatId: 'session-test', approvedScriptOrigins: [],
+    scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
+    worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
+    activeWorldbookEntries: [],
+    messages: [
+      { messageId: 0, seq: 4, role: 'user', text: '开始', isHidden: false, data: {}, extra: {} },
+      {
+        messageId: 1, seq: 7, role: 'assistant', text: '回复', isHidden: false, data: {}, extra: {},
+        annotations: { TavernDB_ACU_IsolatedData: checkpoint, TavernDB_ACU_Identity: 'fixture' },
+      },
+    ],
+    characterRegexScripts: [], presetScriptTrees: [], characterScriptTrees: [], displayRegexScripts: [],
+  })
+  const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(source, undefined)
+  const context = runtimeAcceptanceContext([])
+  runInNewContext(source!, context)
+  const sillyTavern = context.SillyTavern as {
+    readonly chat: Record<string, unknown>[]
+    readonly saveChat: () => Promise<void>
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(sillyTavern.chat[1]?.TavernDB_ACU_IsolatedData)), checkpoint)
+
+  ;((sillyTavern.chat[1]!.TavernDB_ACU_IsolatedData as typeof checkpoint)
+    .default.storageFrame).revision = 2
+  sillyTavern.chat[1]!.mes = '脚本不能伪造的正文'
+  sillyTavern.chat[1]!.extra = { forged: true }
+  await sillyTavern.saveChat()
+
+  const posted = context.posted as Record<string, unknown>[]
+  const mutation = posted.findLast(message => message.action === 'chat-mutate') as {
+    readonly request?: unknown
+  } | undefined
+  assert.deepEqual(JSON.parse(JSON.stringify(mutation?.request)), {
+    format: 0,
+    operation: 'replace-message-annotations',
+    messages: [{
+      message_id: 1,
+      value: {
+        TavernDB_ACU_IsolatedData: {
+          default: {
+            storageFrame: {
+              revision: 2,
+              checkpoint: { 纪要表: [{ row_id: 'AM0001' }] },
+              operationLog: [],
+            },
+          },
+        },
+        TavernDB_ACU_Identity: 'fixture',
+      },
+    }],
+  })
+  const saved = posted.filter(message => message.action === 'chat-mutate').length
+  await sillyTavern.saveChat()
+  assert.equal(posted.filter(message => message.action === 'chat-mutate').length, saved)
 })
 
 test('embeds the common Tavern Helper browser libraries without remote startup requests', () => {

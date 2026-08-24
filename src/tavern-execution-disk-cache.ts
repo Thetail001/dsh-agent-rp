@@ -11,7 +11,7 @@ import type {
 
 const CACHE_FORMAT = 0
 /** Bump when resolver output semantics change; ordinary Agent RP releases need not invalidate the cache. */
-const RESOLVER_CACHE_REVISION = 4
+const RESOLVER_CACHE_REVISION = 5
 const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1_000
 const DEFAULT_MAX_ENTRIES = 64
 const DEFAULT_MAX_BYTES = 96 * 1024 * 1024

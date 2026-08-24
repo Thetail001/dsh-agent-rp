@@ -19,6 +19,7 @@ import type {
 } from './roleplay-resource-catalog-protocol.ts'
 import type { RoleplayResourceCatalog } from './roleplay-resource-catalog.ts'
 import { prepareRoleplayExperienceSession } from './roleplay-experience-materialization.ts'
+import { isAgentRpCapabilityPresetId } from './agent-capability-preset-protocol.ts'
 import { SillyTavernChatLibrary } from './sillytavern-chat-library.ts'
 import { WorldInfoLibrary } from './world-info-library.ts'
 
@@ -71,6 +72,14 @@ function parseResourceSelection(
   }
 }
 
+function parseAgentPresetId(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isAgentRpCapabilityPresetId(value) || value.length > 80) {
+    throw new Error('Agent 能力预设字段无效')
+  }
+  return value
+}
+
 /** Validate one same-origin browser request without accepting filesystem paths. */
 export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSessionLaunchRequest {
   const record = object(value, '角色会话启动请求')
@@ -84,11 +93,12 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       || (record.presetId !== undefined
         && (typeof record.presetId !== 'string' || !/^[a-z0-9-]{8,80}$/u.test(record.presetId)))
       || (record.memory !== undefined && record.memory !== 'copy-active')
-      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'characterId', 'greetingIndex', 'persona', 'presetId', 'worldInfoIds', 'memory'].includes(key))) {
+      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'characterId', 'greetingIndex', 'persona', 'presetId', 'agentPresetId', 'worldInfoIds', 'memory'].includes(key))) {
       throw new Error('角色会话启动请求字段无效')
     }
     const persona = record.persona === undefined ? undefined : parseSessionPersona(record.persona)
     const worldInfoIds = parseAdditionalWorldInfoIds(record.worldInfoIds)
+    const agentPresetId = parseAgentPresetId(record.agentPresetId)
     return {
       format: 0,
       sourceSessionId: record.sourceSessionId as string,
@@ -97,6 +107,7 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       greetingIndex: record.greetingIndex,
       ...(persona === undefined ? {} : { persona }),
       ...(typeof record.presetId === 'string' ? { presetId: record.presetId } : {}),
+      ...(agentPresetId === undefined ? {} : { agentPresetId }),
       ...(worldInfoIds === undefined ? {} : { worldInfoIds }),
       ...(record.memory === 'copy-active' ? { memory: 'copy-active' as const } : {}),
     }
@@ -105,11 +116,12 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
     if (typeof record.importId !== 'string' || !worldInfoLibraryIdPattern.test(record.importId)
       || (record.presetId !== undefined
         && (typeof record.presetId !== 'string' || !/^[a-z0-9-]{8,80}$/u.test(record.presetId)))
-      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'importId', 'persona', 'presetId', 'worldInfoIds'].includes(key))) {
+      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'importId', 'persona', 'presetId', 'agentPresetId', 'worldInfoIds'].includes(key))) {
       throw new Error('世界书会话启动请求字段无效')
     }
     const persona = record.persona === undefined ? undefined : parseSessionPersona(record.persona)
     const worldInfoIds = parseAdditionalWorldInfoIds(record.worldInfoIds, record.importId)
+    const agentPresetId = parseAgentPresetId(record.agentPresetId)
     return {
       format: 0,
       sourceSessionId: record.sourceSessionId as string,
@@ -117,6 +129,7 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       importId: record.importId,
       ...(persona === undefined ? {} : { persona }),
       ...(typeof record.presetId === 'string' ? { presetId: record.presetId } : {}),
+      ...(agentPresetId === undefined ? {} : { agentPresetId }),
       ...(worldInfoIds === undefined ? {} : { worldInfoIds }),
     }
   }
@@ -126,9 +139,10 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
         && (typeof record.characterId !== 'string' || !/^card-[a-f0-9]{32}$/u.test(record.characterId)))
       || (record.presetId !== undefined
         && (typeof record.presetId !== 'string' || !/^[a-z0-9-]{8,80}$/u.test(record.presetId)))
-      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'importId', 'characterId', 'presetId'].includes(key))) {
+      || Object.keys(record).some(key => !['format', 'sourceSessionId', 'kind', 'importId', 'characterId', 'presetId', 'agentPresetId'].includes(key))) {
       throw new Error('聊天迁移启动请求字段无效')
     }
+    const agentPresetId = parseAgentPresetId(record.agentPresetId)
     return {
       format: 0,
       sourceSessionId: record.sourceSessionId as string,
@@ -136,6 +150,7 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       importId: record.importId,
       ...(typeof record.characterId === 'string' ? { characterId: record.characterId } : {}),
       ...(typeof record.presetId === 'string' ? { presetId: record.presetId } : {}),
+      ...(agentPresetId === undefined ? {} : { agentPresetId }),
     }
   }
   if (record.kind === 'experience') {
@@ -145,7 +160,7 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       || !Array.isArray(record.worlds) || record.worlds.length > 16
       || (record.mode === 'scene' && record.worlds.length === 0)
       || Object.keys(record).some(key => ![
-        'format', 'sourceSessionId', 'kind', 'mode', 'actor', 'participant', 'worlds', 'promptPolicy',
+        'format', 'sourceSessionId', 'kind', 'mode', 'actor', 'participant', 'worlds', 'promptPolicy', 'agentPresetId',
       ].includes(key))) {
       throw new Error('原生角色体验启动请求字段无效')
     }
@@ -160,6 +175,7 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
     const promptPolicy = record.promptPolicy === undefined
       ? undefined
       : parseResourceSelection(record.promptPolicy, 'prompt-policy', '提示策略资源')
+    const agentPresetId = parseAgentPresetId(record.agentPresetId)
     return {
       format: 0,
       sourceSessionId: record.sourceSessionId as string,
@@ -169,6 +185,7 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       ...(participant === undefined ? {} : { participant }),
       worlds,
       ...(promptPolicy === undefined ? {} : { promptPolicy }),
+      ...(agentPresetId === undefined ? {} : { agentPresetId }),
     }
   }
   if (record.kind === 'rewrite') {

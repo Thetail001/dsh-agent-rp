@@ -235,8 +235,17 @@ test('publishes a source-neutral World Info experience into the source Workspace
   let renamedTitle: string | undefined
   const agents = {
     get: (id: SessionId) => id === sourceId ? sourceAgent : undefined,
-    create: async (options: { readonly sessionId: SessionId; readonly seed: readonly import('@deepseek-ai/dsh-session').SessionEvent[] }) => {
-      createdSession = Session.create(options.sessionId, options.seed)
+    create: async (options: {
+      readonly sessionId: SessionId
+      readonly seed: readonly import('@deepseek-ai/dsh-session').SessionEvent[]
+      readonly meta: { readonly cwd?: string; readonly agentPreset?: string }
+    }) => {
+      createdSession = Session.create(options.sessionId, options.seed, {
+        version: 0,
+        id: options.sessionId,
+        createdAt: 0,
+        ...options.meta,
+      })
       return {
         agent: { id: options.sessionId, session: createdSession },
         dispose: async () => {},
@@ -253,8 +262,20 @@ test('publishes a source-neutral World Info experience into the source Workspace
         },
       }
       if (name === 'agentPresets') return {
-        resolve: async () => ({ id: 'agent-rp' }),
+        resolve: async () => ({ id: 'agent-rp', trust: 'user' }),
+        read: async () => `
+- id: agent-rp-runtime
+  name: cordis:group
+  isolate:
+    agentRp.actorRevisions: true
+  config:
+    - id: agent-rp-character
+      name: '@dsh-external/dsh-agent-rp'
+      config:
+        mode: character
+`,
         mount: async () => {},
+        serviceFor: () => ({}),
       }
       if (name === 'sessionTitle') return {
         get: () => undefined,

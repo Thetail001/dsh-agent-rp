@@ -25,13 +25,14 @@ import { WorldInfoLibrary } from './world-info-library.ts'
 import { appendAgentRpMemorySeed, readAgentRpMemoryHistory } from './memory.ts'
 import { readActiveSessionCharacter } from './import/session-character.ts'
 import type { RoleplayResourceCatalog } from './roleplay-resource-catalog.ts'
+import {
+  agentHasAgentRpRuntime,
+  resolveAgentRpCapabilityPreset,
+  type AgentPresetGateway,
+} from './agent-capability-preset.ts'
+import { AGENT_RP_PRESET_ID } from './preset.ts'
 
 const MAX_REQUEST_BYTES = 32 * 1024
-
-interface AgentPresetGateway {
-  resolve(id?: string): Promise<{ readonly id: string }>
-  mount(agentCtx: Context, id?: string): Promise<unknown>
-}
 
 interface LaunchWorkspace {
   readonly id: string
@@ -115,17 +116,21 @@ export async function launchAgentRpSession(
 
   const agentPresets = ctx.get('agentPresets') as AgentPresetGateway | undefined
   if (agentPresets === undefined) throw new Error('当前 Host 无法挂载角色会话预设')
-  const preset = await agentPresets.resolve('agent-rp')
+  const requestedAgentPreset = request.kind === 'rewrite'
+    ? source.session.header.agentPreset
+    : request.agentPresetId ?? AGENT_RP_PRESET_ID
+  if (requestedAgentPreset === undefined) throw new Error('来源角色会话没有记录 Agent 能力预设')
+  const preset = await resolveAgentRpCapabilityPreset(agentPresets, requestedAgentPreset)
   const titles = ctx.get('sessionTitle') as SessionTitleGateway | undefined
   if (request.kind === 'rewrite') {
-    if (source.session.header.agentPreset !== 'agent-rp') throw new Error('只能改写 Agent RP 角色会话')
+    if (!agentHasAgentRpRuntime(agentPresets, source)) throw new Error('只能改写 Agent RP 角色会话')
     if (source.status !== 'idle' || source.inbox.hasPending) throw new Error('请等待当前回复完成后再改写')
   }
   let prepared = request.kind === 'rewrite'
     ? prepareAgentRpRewriteSession(source.session, request.turn, titles?.get(source.session)?.title)
     : prepareAgentRpSession(characters, chats, presetLibrary, worldInfos, request, resources)
   if (request.kind === 'character' && request.memory === 'copy-active') {
-    if (source.session.header.agentPreset !== 'agent-rp') throw new Error('只能从角色会话继承记忆')
+    if (!agentHasAgentRpRuntime(agentPresets, source)) throw new Error('只能从角色会话继承记忆')
     if (source.status !== 'idle' || source.inbox.hasPending) throw new Error('请等待当前回复完成后再继承记忆')
     const sourceCharacter = readActiveSessionCharacter(source.session.events)
     if (sourceCharacter?.result.libraryId !== request.characterId) throw new Error('只能把记忆带给同一个角色')
@@ -151,6 +156,10 @@ export async function launchAgentRpSession(
     },
     setup: async agentCtx => { await agentPresets.mount(agentCtx, preset.id) },
   })
+  if (!agentHasAgentRpRuntime(agentPresets, handle.agent)) {
+    await handle.dispose()
+    throw new Error('所选 Agent 能力预设没有成功挂载 Agent RP 角色运行时')
+  }
   const selected = await apiProxy.sessions.selectModel({
     rpcId: `agent-rp-select-${randomUUID()}`,
     payload: {

@@ -6,6 +6,7 @@ import { AGENT_RP_CAPABILITIES } from './extension-capability.ts'
 import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import { decodeGenerationCommandResult } from './generation-command-result.ts'
+import type { TavernMessageAnnotationOwner, TavernMessageAnnotationValue } from './tavern-message-annotation.ts'
 import {
   parseTavernScriptIdentity,
   tavernScriptIdentity,
@@ -148,6 +149,16 @@ export type TavernChatMutationRequest =
     readonly end: number
     readonly hidden: boolean
   }
+  | {
+    readonly format: 0
+    readonly operation: 'replace-message-annotations'
+    /** Added by the trusted Host bridge; isolated scripts cannot select another namespace. */
+    readonly owner: TavernMessageAnnotationOwner
+    readonly messages: readonly {
+      readonly message_id: number
+      readonly value: TavernMessageAnnotationValue
+    }[]
+  }
 
 /** Complete durable state written by one Tavern Helper variable mutation. */
 export interface TavernHelperState {
@@ -282,6 +293,7 @@ const STATE_ATTACHMENT_PREFIX = 'agent-rp-tavern-helper-attachment-v0:'
 const MAX_MUTATION_BYTES = Math.max(
   AGENT_RP_CAPABILITIES['session.variables.replace'].runtimePolicies['tavern-script-frame-v0'].requestBytes,
   AGENT_RP_CAPABILITIES['world-info.session.mutate'].runtimePolicies['tavern-script-frame-v0'].requestBytes,
+  AGENT_RP_CAPABILITIES['chat.session.mutate'].runtimePolicies['tavern-script-frame-v0'].requestBytes,
   AGENT_RP_CAPABILITIES['prompt-injection.session.replace'].runtimePolicies['tavern-script-frame-v0'].requestBytes,
 )
 const MAX_WORLDBOOK_ENTRIES = 10_000
@@ -379,6 +391,34 @@ function chatMessage(value: unknown, index: number, creating: boolean): TavernCh
 function chatMessages(value: unknown, creating: boolean): readonly TavernChatMessageInput[] {
   if (!Array.isArray(value) || value.length > MAX_CHAT_MESSAGES) throw new Error('Tavern Helper chat messages are invalid')
   return value.map((message, index) => chatMessage(message, index, creating))
+}
+
+function messageAnnotationOwner(value: unknown): TavernMessageAnnotationOwner {
+  const candidate = nested(value)
+  const scriptScope = tavernScriptScope(candidate.scriptScope, 'Tavern message annotation scriptScope')
+  const scriptId = text(candidate.scriptId, 'Tavern message annotation scriptId').trim()
+  if (scriptId === '' || scriptId.length > 512) throw new Error('Tavern message annotation scriptId is invalid')
+  return { scriptScope, scriptId }
+}
+
+function messageAnnotationReplacements(value: unknown): Extract<
+  TavernChatMutationRequest,
+  { operation: 'replace-message-annotations' }
+>['messages'] {
+  if (!Array.isArray(value) || value.length > MAX_CHAT_MESSAGES) {
+    throw new Error('Tavern message annotation replacements are invalid')
+  }
+  const ids = new Set<number>()
+  return value.map((candidate, index) => {
+    const replacement = nested(candidate)
+    const messageId = integer(replacement.message_id, `message annotation[${index}].message_id`)
+    if (messageId < 0 || ids.has(messageId)) throw new Error(`message annotation[${index}].message_id is invalid`)
+    ids.add(messageId)
+    return {
+      message_id: messageId,
+      value: record(replacement.value, `message annotation[${index}].value`),
+    }
+  })
 }
 
 function scriptTreeId(value: unknown, label: string): string {
@@ -760,6 +800,14 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
   }
   const value = parsed as Record<string, unknown>
   const cause = parseMutationCause(value.cause)
+  if (value.format === 0 && value.operation === 'replace-message-annotations') {
+    return withMutationCause({
+      format: 0,
+      operation: value.operation,
+      owner: messageAnnotationOwner(value.owner),
+      messages: messageAnnotationReplacements(value.messages),
+    }, cause)
+  }
   if (value.format === 0 && value.operation === 'set-chat-messages') {
     const messages = chatMessages(value.messages, false)
     if (messages.some(message => message.message_id === undefined)) throw new Error('set-chat-messages requires message_id')
@@ -881,6 +929,7 @@ export function applyTavernHelperMutation(
   request: TavernHelperMutationRequest,
 ): TavernHelperState {
   if ('operation' in request) {
+    if (request.operation === 'replace-message-annotations') return state
     if (request.operation === 'set-chat-messages' || request.operation === 'create-chat-messages'
       || request.operation === 'delete-chat-messages' || request.operation === 'rotate-chat-messages'
       || request.operation === 'set-chat-hidden') {

@@ -16,6 +16,7 @@ export type TavernMutationCapabilityAction = 'chat-mutate' | 'worldbook-mutate'
 
 const chatOperations = new Set([
   'set-chat-messages', 'create-chat-messages', 'delete-chat-messages', 'rotate-chat-messages', 'set-chat-hidden',
+  'replace-message-annotations',
 ])
 const worldInfoOperations = new Set([
   'replace-worldbook', 'delete-worldbook', 'bind-global-worldbooks', 'bind-character-worldbooks', 'bind-chat-worldbook',

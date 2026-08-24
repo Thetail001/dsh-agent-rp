@@ -30,7 +30,7 @@ export class TavernScriptResourceLimitError extends Error {
 
 /** Script origins trusted by the built-in jsDelivr bundle resolver. */
 export const BUILT_IN_TAVERN_SCRIPT_ORIGINS = ['https://cdn.jsdelivr.net', 'https://testingcf.jsdelivr.net'] as const
-const MAX_REMOTE_SCRIPT_BYTES = 4 * 1024 * 1024
+const MAX_REMOTE_SCRIPT_BYTES = 8 * 1024 * 1024
 const MAX_REMOTE_SCRIPTS_BYTES = 8 * 1024 * 1024
 
 /** One authorized fixed-URL module copied into an isolated Tavern Helper execution plan. */
@@ -135,11 +135,11 @@ async function fetchRemoteSource(parsed: URL, signal: AbortSignal): Promise<stri
   }
   const length = Number(response.headers.get('content-length') ?? 0)
   if (Number.isFinite(length) && length > MAX_REMOTE_SCRIPT_BYTES) {
-    throw new TavernScriptResourceLimitError('remote-script-too-large', '远程脚本超过 4 MiB')
+    throw new TavernScriptResourceLimitError('remote-script-too-large', '远程脚本超过 8 MiB')
   }
   const source = await response.text()
   if (new TextEncoder().encode(source).byteLength > MAX_REMOTE_SCRIPT_BYTES) {
-    throw new TavernScriptResourceLimitError('remote-script-too-large', '远程脚本超过 4 MiB')
+    throw new TavernScriptResourceLimitError('remote-script-too-large', '远程脚本超过 8 MiB')
   }
   return source
 }
@@ -271,7 +271,7 @@ function replaceModuleReferences(
 }
 
 async function loadModuleGraph(
-  roots: readonly URL[],
+  roots: readonly TavernModuleReference[],
   origins: ReadonlySet<string>,
   signal: AbortSignal,
   entrySource: string,
@@ -281,23 +281,57 @@ async function loadModuleGraph(
   readonly preloads: readonly TavernScriptPreload[]
 }> {
   const loaded = new Map<string, LoadedTavernModule>()
-  const scheduled = new Set<string>()
+  const processed = new Map<string, boolean>()
+  const outcomes = new Map<string, { readonly source: string } | { readonly error: unknown }>()
   const preloads = new Set<TavernScriptPreload>()
-  let queue = [...roots]
+  let queue = roots.map(reference => ({ url: reference.url, startupRequired: !reference.dynamic }))
   while (queue.length > 0) {
-    const batch = [...new Map(queue.flatMap(url => scheduled.has(url.href) ? [] : [[url.href, url]])).values()]
+    const pending = new Map<string, { readonly url: URL; readonly startupRequired: boolean }>()
+    for (const candidate of queue) {
+      const prior = processed.get(candidate.url.href)
+      if (prior === true || (prior === false && !candidate.startupRequired)) continue
+      const queued = pending.get(candidate.url.href)
+      pending.set(candidate.url.href, {
+        url: candidate.url,
+        startupRequired: candidate.startupRequired || queued?.startupRequired === true,
+      })
+    }
+    const batch = [...pending.values()]
     queue = []
-    for (const url of batch) scheduled.add(url.href)
-    const localModules = batch.map(localTavernModule)
-    const sources = await Promise.all(batch.map((url, index) =>
-      localModules[index]?.source ?? remoteSource(url, signal)))
-    for (let index = 0; index < batch.length; index += 1) {
-      const url = batch[index]!
-      const source = sources[index]!
-      for (const preload of localModules[index]?.preloads ?? []) preloads.add(preload)
+    const results = await Promise.all(batch.map(async candidate => {
+      const existing = outcomes.get(candidate.url.href)
+      if (existing !== undefined) return { candidate, outcome: existing }
+      const local = localTavernModule(candidate.url)
+      try {
+        const outcome = { source: local?.source ?? await remoteSource(candidate.url, signal) }
+        outcomes.set(candidate.url.href, outcome)
+        return { candidate, outcome }
+      } catch (error) {
+        const outcome = { error }
+        outcomes.set(candidate.url.href, outcome)
+        return { candidate, outcome }
+      }
+    }))
+    for (const { candidate, outcome } of results) {
+      const { url, startupRequired } = candidate
+      processed.set(url.href, startupRequired)
+      if ('error' in outcome) {
+        if (startupRequired) throw outcome.error
+        loaded.set(url.href, {
+          url,
+          source: `throw new Error(${JSON.stringify('可选远程模块不可用')})`,
+          references: [],
+        })
+        continue
+      }
+      const source = outcome.source
+      for (const preload of localTavernModule(url)?.preloads ?? []) preloads.add(preload)
       const references = moduleReferences(source, origins, url)
       loaded.set(url.href, { url, source, references })
-      queue.push(...references.map(reference => reference.url))
+      queue.push(...references.map(reference => ({
+        url: reference.url,
+        startupRequired: startupRequired && !reference.dynamic,
+      })))
     }
   }
   const sources = [entrySource, ...[...loaded.values()].map(module => module.source)]
@@ -478,14 +512,15 @@ export async function resolveTavernScriptExecution(
       adapterRanges.push({ start: imported.ss, end })
       continue
     }
-    urls.push(url)
     let end = imported.se
     while (content[end] === ' ' || content[end] === '\t') end += 1
     if (content[end] === ';') end += 1
-    remoteImports.push({
+    const remoteImport = {
       url, start: imported.ss, end,
       sideEffect: imported.d === -1 && /^\s*import\s*['"]/u.test(content.slice(imported.ss, imported.se)),
-    })
+    }
+    remoteImports.push(remoteImport)
+    if (remoteImport.sideEffect) urls.push(url)
   }
   const uniqueUrls = [...new Map(urls.map(url => [url.href, url])).values()]
   const sources = await Promise.all(uniqueUrls.map(url => localTavernModule(url)?.source ?? remoteSource(url, signal)))
@@ -506,8 +541,8 @@ export async function resolveTavernScriptExecution(
   }
   const source = removeSourceRanges(content, adapterRanges)
   const [, , , hasModuleSyntax] = parseModule(source)
-  const remainingReferences = hasModuleSyntax ? moduleReferences(source, origins) : []
-  const graph = await loadModuleGraph(remainingReferences.map(reference => reference.url), origins, signal, source)
+  const remainingReferences = moduleReferences(source, origins)
+  const graph = await loadModuleGraph(remainingReferences, origins, signal, source)
   const allRemoteSources = new Map(sourceByUrl)
   for (const [href, entry] of graph.loaded) allRemoteSources.set(href, entry.source)
   const allRemoteBytes = [...allRemoteSources.values()]
@@ -528,7 +563,7 @@ export async function resolveTavernScriptExecution(
   }
   return {
     source: resolvedSource,
-    mode: hasModuleSyntax ? 'module' : 'classic',
+    mode: hasModuleSyntax || remainingReferences.length > 0 ? 'module' : 'classic',
     inlineDependencies,
     preloads: [...preloads],
     needsDomPurify: /\bDOMPurify\b/u.test(dependencySource),

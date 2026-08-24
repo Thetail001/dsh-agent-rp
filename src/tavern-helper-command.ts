@@ -11,6 +11,7 @@ import { cardFromImportMeta, readActiveSessionCharacter } from './import/session
 import { readActiveSessionPreset } from './import/session-preset.ts'
 import { presetTavernHelperScripts } from './import/sillytavern-preset.ts'
 import { executeTavernChatMutation } from './tavern-chat.ts'
+import { tavernChatMessageSeqs } from './tavern-chat.ts'
 import {
   applyTavernHelperMutation,
   appendTavernHelperStateAttachment,
@@ -25,6 +26,16 @@ import {
   type TavernMutationCause,
 } from './tavern-helper.ts'
 import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
+import {
+  appendTavernMessageAnnotationRecords,
+  applyTavernMessageAnnotationRecords,
+  encodeTavernMessageAnnotationCommandResult,
+  logicalTavernMessageSeq,
+  readTavernMessageAnnotations,
+  validateTavernMessageAnnotationState,
+  type TavernMessageAnnotationRecord,
+} from './tavern-message-annotation.ts'
+import { tavernScriptIdentity } from './tavern-script-identity.ts'
 
 function latestCausalPresentation(agent: Agent, replySeq: number): RoleplayTurnPresentation | undefined {
   for (let index = agent.session.events.length - 1; index >= 0; index -= 1) {
@@ -95,6 +106,32 @@ export function executeTavernHelperMutation(invocation: {
   const initialized = prepareTavernHelperState(invocation.agent, previous)
   const active = request.cause === undefined || latestVisibleAssistantSeq(invocation.agent)
     === (presentation?.selectedReply?.surfaceSeq ?? request.cause.replySeq)
+  if ('operation' in request && request.operation === 'replace-message-annotations') {
+    if (request.cause !== undefined && !active) {
+      throw new Error('Tavern message annotation mutation belongs to a reply that is no longer selected')
+    }
+    const owner = tavernScriptIdentity(request.owner.scriptScope, request.owner.scriptId)
+    if (!(owner in initialized.scripts)) throw new Error('Tavern message annotations have an unknown scriptId')
+    const messageSeqs = tavernChatMessageSeqs(invocation.agent, initialized.hiddenPrefix)
+    const records: TavernMessageAnnotationRecord[] = request.messages.map(replacement => {
+      const surfaceSeq = messageSeqs[replacement.message_id]
+      if (surfaceSeq === undefined) throw new Error('Tavern message annotation references an unknown message_id')
+      const messageSeq = logicalTavernMessageSeq(invocation.agent.session.events, surfaceSeq)
+      const message = invocation.agent.session.events[messageSeq]
+      if (message?.type !== 'user/message' && message?.type !== 'assistant/message') {
+        throw new Error('Tavern message annotation does not reference a durable transcript message')
+      }
+      return { format: 0, messageSeq, owner: request.owner, value: replacement.value }
+    })
+    const current = readTavernMessageAnnotations(invocation.agent.session.events)
+    validateTavernMessageAnnotationState(applyTavernMessageAnnotationRecords(current, records))
+    if (supportsAgentRpSessionEvents(invocation.agent.session)) {
+      const seqs = appendTavernMessageAnnotationRecords(invocation.agent.session, records)
+      const sourceEventSeq = seqs.at(-1)
+      return { kind: 'success', ...(sourceEventSeq === undefined ? {} : { sourceEventSeq }) }
+    }
+    return { kind: 'success', text: encodeTavernMessageAnnotationCommandResult(records) }
+  }
   const isChatMutation = 'operation' in request && (request.operation === 'set-chat-messages'
     || request.operation === 'create-chat-messages' || request.operation === 'delete-chat-messages'
     || request.operation === 'rotate-chat-messages' || request.operation === 'set-chat-hidden')

@@ -281,6 +281,12 @@ import {
   type AgentRpSessionLaunchRequest,
   type AgentRpSessionLaunchResponse,
 } from '../session-launch-protocol.ts'
+import {
+  AGENT_RP_CAPABILITY_PRESETS_PATH,
+  isAgentRpCapabilityPresetId,
+  type AgentRpCapabilityPresetListResponse,
+  type AgentRpCapabilityPresetSummary,
+} from '../agent-capability-preset-protocol.ts'
 import type { RoleplayActorResourceDetail } from '../roleplay-resource-catalog-protocol.ts'
 import { characterLibraryRoleplayResourceId } from '../roleplay-resource-library-ids.ts'
 import {
@@ -586,8 +592,10 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
     worldInfoIds?: readonly string[],
     memory?: 'copy-active',
     resourcePermissions?: AgentRpSessionResourcePermissions,
+    agentPresetId?: string,
   ) => Promise<void>
   readonly listPresets: () => Promise<readonly PresetLibrarySummary[]>
+  readonly listAgentCapabilityPresets: () => Promise<readonly AgentRpCapabilityPresetSummary[]>
   readonly listPersonas: () => Promise<readonly PersonaLibraryEntry[]>
   readonly savePersona: (request: PersonaLibrarySaveRequest) => Promise<PersonaLibraryEntry>
   readonly deletePersona: (id: string) => Promise<PersonaLibraryEntry>
@@ -814,6 +822,56 @@ function usePresetPreference(
       const entry = await renamePresetLibraryEntry(id, name)
       setEntries(current => (current ?? []).map(candidate => candidate.id === id ? entry : candidate))
       return entry
+    },
+  }
+}
+
+const roleplayAgentCapabilityPresetPreferenceKey = 'dsh.agent-rp.agent-capability-preset'
+
+function readRoleplayAgentCapabilityPresetPreference(): string {
+  const value = localStorage.getItem(roleplayAgentCapabilityPresetPreferenceKey)
+  return isAgentRpCapabilityPresetId(value) ? value : 'agent-rp'
+}
+
+function useAgentCapabilityPresetPreference(
+  listPresets: HeaderProps['listAgentCapabilityPresets'],
+): {
+  readonly entries: readonly AgentRpCapabilityPresetSummary[] | undefined
+  readonly error?: string
+  readonly presetId: string
+  readonly selectPreset: (id: string) => void
+} {
+  const [entries, setEntries] = useState<readonly AgentRpCapabilityPresetSummary[]>()
+  const [error, setError] = useState<string>()
+  const [presetId, setPresetId] = useState(readRoleplayAgentCapabilityPresetPreference)
+  useEffect(() => {
+    let current = true
+    setEntries(undefined)
+    setError(undefined)
+    void listPresets().then(value => {
+      if (!current) return
+      setEntries(value)
+      setPresetId(selected => {
+        const resolved = value.some(entry => entry.id === selected)
+          ? selected : value.find(entry => entry.managed)?.id ?? value[0]?.id ?? 'agent-rp'
+        localStorage.setItem(roleplayAgentCapabilityPresetPreferenceKey, resolved)
+        return resolved
+      })
+    }, reason => {
+      if (!current) return
+      setEntries([])
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { current = false }
+  }, [listPresets])
+  return {
+    entries,
+    ...(error === undefined ? {} : { error }),
+    presetId,
+    selectPreset(id) {
+      if (!isAgentRpCapabilityPresetId(id)) return
+      localStorage.setItem(roleplayAgentCapabilityPresetPreferenceKey, id)
+      setPresetId(id)
     },
   }
 }
@@ -1222,7 +1280,7 @@ function roleplaySummary(
   summary: SessionSummary | undefined,
   projection: AgentRpProjection | undefined,
 ): AgentRpProjection | undefined {
-  if (summary?.agentPreset !== 'agent-rp') return undefined
+  if (!isAgentRpCapabilityPresetId(summary?.agentPreset)) return undefined
   if (projection !== undefined) {
     // Client HMR can briefly pair a newer UI with the previous Host projection.
     // Keep that rolling upgrade usable until the Host process is restarted.
@@ -2584,6 +2642,7 @@ type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
   | 'launchPreparedChatMigration'
   | 'startCharacterSession'
   | 'listPresets'
+  | 'listAgentCapabilityPresets'
   | 'importPresetFile'
   | 'listPersonas'
   | 'savePersona'
@@ -2600,6 +2659,7 @@ type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
     presetId?: string,
     worldInfoIds?: readonly string[],
     resourcePermissions?: AgentRpSessionResourcePermissions,
+    agentPresetId?: string,
   ) => Promise<void>
   readonly renamePreset: (id: string, name: string) => Promise<PresetLibrarySummary>
   readonly workspaceSettings: WorkspaceSettingsSource
@@ -2676,7 +2736,7 @@ function SidebarRoleplayDestination({
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile,
   prepareChatMigration, prepareRpDistributionChatMigration, launchPreparedChatMigration,
   startCharacterSession,
-  listPresets, importPresetFile, listPersonas, savePersona, deletePersona,
+  listPresets, listAgentCapabilityPresets, importPresetFile, listPersonas, savePersona, deletePersona,
   listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo, renamePreset,
   startWorldInfoSession,
   workspaceSettings, workspaceList,
@@ -2749,7 +2809,7 @@ function SidebarRoleplayDestination({
     setResourceCenterOpen(true)
   }
   const openCurrentSessionTools = (): void => {
-    if (currentSessionId === undefined || currentSession?.agentPreset !== 'agent-rp') return
+    if (currentSessionId === undefined || !isAgentRpCapabilityPresetId(currentSession?.agentPreset)) return
     closeWorkbench()
     window.dispatchEvent(new CustomEvent(openRoleplaySessionToolsEvent, { detail: String(currentSessionId) }))
   }
@@ -2835,7 +2895,7 @@ function SidebarRoleplayDestination({
           {accessError !== undefined && <p role="alert" style={{
             color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '11px', margin: '7px 2px 0',
           }}>{accessError}</p>}
-          {currentSession?.agentPreset === 'agent-rp' && <button type="button"
+          {isAgentRpCapabilityPresetId(currentSession?.agentPreset) && <button type="button"
             data-agent-rp-action="open-session-tools" onClick={openCurrentSessionTools} style={{
               alignItems: 'center', background: `color-mix(in srgb, ${color} 10%, transparent)`,
               border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`, borderRadius: '12px',
@@ -2902,6 +2962,7 @@ function SidebarRoleplayDestination({
       readCharacter={readCharacter}
       listWorldInfos={listWorldInfos}
       listPresets={listPresets}
+      listAgentCapabilityPresets={listAgentCapabilityPresets}
       listPersonas={listPersonas}
       onClose={() => { setLaunchComposerOpen(false) }}
       onManageResources={section => {
@@ -2909,11 +2970,11 @@ function SidebarRoleplayDestination({
         setResourceCenterSection(section)
         setResourceCenterOpen(true)
       }}
-      onStartCharacter={(character, greetingIndex, persona, presetId, worldInfoIds, resourcePermissions) => startCharacterSession(
-        launchSessionId, character, greetingIndex, persona, presetId, worldInfoIds, undefined, resourcePermissions,
+      onStartCharacter={(character, greetingIndex, persona, presetId, worldInfoIds, resourcePermissions, agentPresetId) => startCharacterSession(
+        launchSessionId, character, greetingIndex, persona, presetId, worldInfoIds, undefined, resourcePermissions, agentPresetId,
       )}
-      onStartWorldInfo={(worldInfo, persona, presetId, worldInfoIds, resourcePermissions) => startWorldInfoSession(
-        launchSessionId, worldInfo, persona, presetId, worldInfoIds, resourcePermissions,
+      onStartWorldInfo={(worldInfo, persona, presetId, worldInfoIds, resourcePermissions, agentPresetId) => startWorldInfoSession(
+        launchSessionId, worldInfo, persona, presetId, worldInfoIds, resourcePermissions, agentPresetId,
       )}
     />, document.body)}
     {migrationOpen && launchSessionId !== undefined && createPortal(<SillyTavernImportDialog
@@ -5384,7 +5445,7 @@ type RoleplayLaunchMode = 'character' | 'world-info'
 
 /** Compose peer RP resources for one new Session without turning any one library into their owner. */
 function RoleplayLaunchComposer({
-  runtimeDiagnostics, listCharacters, readCharacter, listWorldInfos, listPresets, listPersonas,
+  runtimeDiagnostics, listCharacters, readCharacter, listWorldInfos, listPresets, listAgentCapabilityPresets, listPersonas,
   onClose, onManageResources, onStartCharacter, onStartWorldInfo,
 }: {
   readonly runtimeDiagnostics: AgentRpRuntimeDiagnosticRegistry
@@ -5392,6 +5453,7 @@ function RoleplayLaunchComposer({
   readonly readCharacter: HeaderProps['readCharacter']
   readonly listWorldInfos: HeaderProps['listWorldInfos']
   readonly listPresets: HeaderProps['listPresets']
+  readonly listAgentCapabilityPresets: HeaderProps['listAgentCapabilityPresets']
   readonly listPersonas: HeaderProps['listPersonas']
   readonly onClose: () => void
   readonly onManageResources: (section: 'characters' | 'world-info') => void
@@ -5402,6 +5464,7 @@ function RoleplayLaunchComposer({
     presetId?: string,
     worldInfoIds?: readonly string[],
     resourcePermissions?: AgentRpSessionResourcePermissions,
+    agentPresetId?: string,
   ) => Promise<void>
   readonly onStartWorldInfo: (
     worldInfo: WorldInfoLibraryUpload,
@@ -5409,6 +5472,7 @@ function RoleplayLaunchComposer({
     presetId?: string,
     worldInfoIds?: readonly string[],
     resourcePermissions?: AgentRpSessionResourcePermissions,
+    agentPresetId?: string,
   ) => Promise<void>
 }) {
   const narrow = useNarrowCharacterLibrary()
@@ -5428,8 +5492,15 @@ function RoleplayLaunchComposer({
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string>()
   const { entries: presets, error: presetError, presetId, selectPreset } = usePresetPreference(listPresets)
+  const {
+    entries: agentCapabilityPresets,
+    error: agentCapabilityPresetError,
+    presetId: agentCapabilityPresetId,
+    selectPreset: selectAgentCapabilityPreset,
+  } = useAgentCapabilityPresetPreference(listAgentCapabilityPresets)
   const selectedPresetId = presetId === '' ? undefined : presetId
   const selectedPreset = presets?.find(entry => entry.id === selectedPresetId)
+  const selectedAgentCapabilityPreset = agentCapabilityPresets?.find(entry => entry.id === agentCapabilityPresetId)
   const primaryWorldInfo = worldInfos?.find(entry => entry.id === primaryWorldInfoId)
   const selectedPersona = personas?.find(entry => entry.id === personaId)
 
@@ -5645,7 +5716,7 @@ function RoleplayLaunchComposer({
         if (!approval.ready) return false
         await onStartCharacter(
           approval.character, greetingIndex, persona, selectedPresetId,
-          additionalWorldInfoIds, approval.resourcePermissions,
+          additionalWorldInfoIds, approval.resourcePermissions, agentCapabilityPresetId,
         )
         return true
       }
@@ -5656,6 +5727,7 @@ function RoleplayLaunchComposer({
       await onStartWorldInfo(
         primaryWorldInfo, persona, selectedPresetId, additionalWorldInfoIds,
         tavern?.permissions === undefined ? undefined : { tavern: tavern.permissions, card: [] },
+        agentCapabilityPresetId,
       )
       return true
     })().then(started => {
@@ -5805,6 +5877,29 @@ function RoleplayLaunchComposer({
               {presetError ?? (presets === undefined ? '正在读取预设…' : selectedPreset === undefined
                 ? '使用 Agent RP 的基础提示策略'
                 : `${selectedPreset.enabledCount}/${selectedPreset.promptCount} 个提示模块启用`)}
+            </p>
+          </section>
+
+          <section data-agent-rp-launch-resource="agent-capability" style={{ ...resourcePanelStyle, gridColumn: narrow ? undefined : '1 / -1' }}>
+            <label htmlFor="agent-rp-launch-agent-capability" style={{ display: 'block', fontSize: '12px', fontWeight: 620, marginBottom: '7px' }}>Agent 能力</label>
+            <div style={{ position: 'relative' }}>
+              <select id="agent-rp-launch-agent-capability" value={agentCapabilityPresetId}
+                disabled={agentCapabilityPresets === undefined || agentCapabilityPresets.length === 0}
+                onChange={event => { selectAgentCapabilityPreset(event.target.value) }} style={fieldStyle}>
+                {agentCapabilityPresets?.map(entry => <option key={entry.id} value={entry.id}>
+                  {entry.name}{entry.managed ? '（内置）' : ''}
+                </option>)}
+              </select>
+              <SelectChevron />
+            </div>
+            <p style={{ fontSize: '10px', lineHeight: 1.55, margin: '7px 1px 0', opacity: .48 }}>
+              {agentCapabilityPresetError ?? (agentCapabilityPresets === undefined ? '正在读取 Agent 能力…'
+                : selectedAgentCapabilityPreset === undefined ? '没有可用的 Agent RP 能力预设'
+                  : selectedAgentCapabilityPreset.description
+                    ?? '决定本会话挂载哪些 DSH 工具、MCP 与运行能力；与上面的提示策略相互独立')}
+            </p>
+            <p style={{ fontSize: '10px', lineHeight: 1.55, margin: '4px 1px 0', opacity: .4 }}>
+              在 DSH「设置 → Agent 预设」复制内置“角色会话”后扩展；自定义 ID 使用 agent-rp-*。
             </p>
           </section>
         </div>
@@ -8584,6 +8679,7 @@ function tavernScriptSnapshot(
       ...entry,
       data: index === entries.length - 1 ? message : {},
       extra: tavernReasoningExtra(entry.reasoning),
+      annotations: entry.annotations?.[tavernScriptIdentity(scriptScope, script.id)] ?? {},
     })),
     characterRegexScripts: (projection.frontend?.regexScripts ?? [])
       .map((entry, index) => tavernRegex(entry, index, 'character')),
@@ -10109,8 +10205,12 @@ function TavernScriptRuntime({
           }, '*')
           return
         }
+        const rawRequest = message.request as TavernHelperMutationRequest
         const request = {
-          ...(message.request as TavernHelperMutationRequest),
+          ...rawRequest,
+          ...('operation' in rawRequest && rawRequest.operation === 'replace-message-annotations'
+            ? { owner: { scriptScope: entry.scope, scriptId: entry.script.id } }
+            : {}),
           ...requestCause,
         } as TavernHelperMutationRequest
         mutationQueue.current = mutationQueue.current.then(() => runMutation(sessionId, request)).then(() => {
@@ -10856,7 +10956,7 @@ function roleplayComposerDockComponent(
   const characterDetail = useMemo(() => storedCharacterDetail === undefined ? undefined
     : withAgentRpSessionCardPermissions(storedCharacterDetail, sessionResourcePermissions),
   [sessionResourcePermissions, storedCharacterDetail])
-  const roleplayExpected = summary?.agentPreset === 'agent-rp'
+  const roleplayExpected = isAgentRpCapabilityPresetId(summary?.agentPreset)
   const turnHealthRevision = [
     projection?.lastRequest?.eventSeq,
     projection?.presentation?.settlementSeq,
@@ -12047,11 +12147,11 @@ function importHintComponent(
       : jsonKind === 'world-info' ? '请导入这本世界书'
         : jsonKind === 'preset' ? '请导入这份预设' : undefined
     useEffect(() => {
-      if (summary?.agentPreset === 'agent-rp' && input.draft.trim() === '' && inferredDraft !== undefined) {
+      if (isAgentRpCapabilityPresetId(summary?.agentPreset) && input.draft.trim() === '' && inferredDraft !== undefined) {
         inputActions.setDraft(inferredDraft)
       }
     }, [inferredDraft, input.draft, inputActions, summary?.agentPreset])
-    if (summary?.agentPreset !== 'agent-rp') return null
+    if (!isAgentRpCapabilityPresetId(summary?.agentPreset)) return null
     if (selected === undefined) return null
     const blank = input.draft.trim() === ''
     const chat = selected.kind === 'chat'
@@ -12343,6 +12443,7 @@ export function apply(ctx: ClientContext): void {
     worldInfoIds?: readonly string[],
     memory?: 'copy-active',
     resourcePermissions?: AgentRpSessionResourcePermissions,
+    agentPresetId?: string,
   ): Promise<void> => {
     if (memory === undefined && worldInfoIds !== undefined) {
       await launchRoleplaySession(characterExperienceLaunchRequest({
@@ -12351,6 +12452,7 @@ export function apply(ctx: ClientContext): void {
         greetingIndex,
         ...(persona === undefined ? {} : { persona }),
         ...(presetId === undefined ? {} : { presetId }),
+        ...(agentPresetId === undefined ? {} : { agentPresetId }),
         worldInfoIds,
       }), resourcePermissions)
       return
@@ -12363,6 +12465,7 @@ export function apply(ctx: ClientContext): void {
       greetingIndex,
       ...(persona === undefined ? {} : { persona }),
       ...(presetId === undefined ? {} : { presetId }),
+      ...(agentPresetId === undefined ? {} : { agentPresetId }),
       ...(worldInfoIds === undefined ? {} : { worldInfoIds }),
       ...(memory === undefined ? {} : { memory }),
     }, resourcePermissions)
@@ -12374,6 +12477,7 @@ export function apply(ctx: ClientContext): void {
     presetId?: string,
     worldInfoIds?: readonly string[],
     resourcePermissions?: AgentRpSessionResourcePermissions,
+    agentPresetId?: string,
   ): Promise<void> => {
     if (worldInfoIds !== undefined) {
       await launchRoleplaySession(sceneExperienceLaunchRequest({
@@ -12381,6 +12485,7 @@ export function apply(ctx: ClientContext): void {
         primaryWorldInfoId: worldInfo.id,
         ...(persona === undefined ? {} : { persona }),
         ...(presetId === undefined ? {} : { presetId }),
+        ...(agentPresetId === undefined ? {} : { agentPresetId }),
         supportingWorldInfoIds: worldInfoIds,
       }), resourcePermissions)
       return
@@ -12392,6 +12497,7 @@ export function apply(ctx: ClientContext): void {
       importId: worldInfo.id,
       ...(persona === undefined ? {} : { persona }),
       ...(presetId === undefined ? {} : { presetId }),
+      ...(agentPresetId === undefined ? {} : { agentPresetId }),
       ...(worldInfoIds === undefined ? {} : { worldInfoIds }),
     }, resourcePermissions)
   }
@@ -12412,10 +12518,11 @@ export function apply(ctx: ClientContext): void {
     worldInfoIds?: readonly string[],
     _memory?: 'copy-active',
     resourcePermissions?: AgentRpSessionResourcePermissions,
+    agentPresetId?: string,
   ): Promise<void> => {
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
     if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话选择角色')
-    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId, worldInfoIds, undefined, resourcePermissions)
+    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId, worldInfoIds, undefined, resourcePermissions, agentPresetId)
     await archiveConsumedBlankSession(sessionId)
   }
   const startWorldInfoFromBlankSession = async (
@@ -12425,10 +12532,11 @@ export function apply(ctx: ClientContext): void {
     presetId?: string,
     worldInfoIds?: readonly string[],
     resourcePermissions?: AgentRpSessionResourcePermissions,
+    agentPresetId?: string,
   ): Promise<void> => {
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
     if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话选择世界书剧情')
-    await startWorldInfoSession(sessionId, worldInfo, persona, presetId, worldInfoIds, resourcePermissions)
+    await startWorldInfoSession(sessionId, worldInfo, persona, presetId, worldInfoIds, resourcePermissions, agentPresetId)
     await archiveConsumedBlankSession(sessionId)
   }
   const startCharacterFromCurrentSession = async (
@@ -12440,8 +12548,9 @@ export function apply(ctx: ClientContext): void {
     worldInfoIds?: readonly string[],
     memory?: 'copy-active',
     resourcePermissions?: AgentRpSessionResourcePermissions,
+    agentPresetId?: string,
   ): Promise<void> => {
-    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId, worldInfoIds, memory, resourcePermissions)
+    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId, worldInfoIds, memory, resourcePermissions, agentPresetId)
   }
   const prepareChatMigration = async (
     sourceSessionId: SessionId,
@@ -12552,6 +12661,14 @@ export function apply(ctx: ClientContext): void {
     const response = await fetch(PRESET_LIBRARY_PATH, { headers: { accept: 'application/json' } })
     const value = await response.json() as Partial<PresetLibraryListResponse> & { readonly error?: string }
     if (!response.ok || value.entries === undefined) throw new Error(value.error ?? `预设库请求失败（${response.status}）`)
+    return value.entries
+  }
+  const listAgentCapabilityPresets = async (): Promise<readonly AgentRpCapabilityPresetSummary[]> => {
+    const response = await fetch(AGENT_RP_CAPABILITY_PRESETS_PATH, { headers: { accept: 'application/json' } })
+    const value = await response.json() as Partial<AgentRpCapabilityPresetListResponse> & { readonly error?: string }
+    if (!response.ok || value.format !== 0 || !Array.isArray(value.entries)) {
+      throw new Error(value.error ?? `Agent 能力读取失败（${response.status}）`)
+    }
     return value.entries
   }
   const listWorldInfos = async (): Promise<readonly WorldInfoLibraryUpload[]> => {
@@ -12784,7 +12901,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} runtimeDiagnostics={runtimeDiagnostics} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listWorldInfos={listWorldInfos} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} prepareChatMigration={prepareChatMigration} prepareRpDistributionChatMigration={prepareRpDistributionChatMigration} launchPreparedChatMigration={launchPreparedChatMigration} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} manageState={manageState} manageTurnMode={manageTurnMode} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
+  }, props => <RoleplayHeader {...props} runtimeDiagnostics={runtimeDiagnostics} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listWorldInfos={listWorldInfos} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} prepareChatMigration={prepareChatMigration} prepareRpDistributionChatMigration={prepareRpDistributionChatMigration} launchPreparedChatMigration={launchPreparedChatMigration} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} manageState={manageState} manageTurnMode={manageTurnMode} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listAgentCapabilityPresets={listAgentCapabilityPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -12804,7 +12921,7 @@ export function apply(ctx: ClientContext): void {
     importCharacterFile, prepareChatMigration: prepareChatMigrationFromBlankSession,
     prepareRpDistributionChatMigration: prepareRpDistributionChatMigrationFromBlankSession,
     launchPreparedChatMigration: launchPreparedChatMigrationFromBlankSession,
-    startCharacterSession: startCharacterFromBlankSession, listPresets, importPresetFile,
+    startCharacterSession: startCharacterFromBlankSession, listPresets, listAgentCapabilityPresets, importPresetFile,
     renamePreset: renamePresetLibraryEntry, listPersonas, savePersona, deletePersona,
     listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo,
     startWorldInfoSession: startWorldInfoFromBlankSession,

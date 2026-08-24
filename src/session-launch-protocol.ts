@@ -15,6 +15,8 @@ export interface CharacterSessionLaunchRequest {
   readonly greetingIndex: number
   readonly persona?: SessionPersonaSnapshot
   readonly presetId?: string
+  /** DSH Agent composition providing tools and runtime capabilities. */
+  readonly agentPresetId?: string
   /** Additional retained World Info sources in stable prompt order. */
   readonly worldInfoIds?: readonly string[]
   /** Explicitly copy the source Session's currently active memory for the same character. */
@@ -29,6 +31,8 @@ export interface WorldInfoSessionLaunchRequest {
   readonly importId: string
   readonly persona?: SessionPersonaSnapshot
   readonly presetId?: string
+  /** DSH Agent composition providing tools and runtime capabilities. */
+  readonly agentPresetId?: string
   /** Supporting retained World Info sources after the primary scenario book. */
   readonly worldInfoIds?: readonly string[]
 }
@@ -41,6 +45,8 @@ export interface ChatSessionLaunchRequest {
   readonly importId: string
   readonly characterId?: string
   readonly presetId?: string
+  /** DSH Agent composition providing tools and runtime capabilities. */
+  readonly agentPresetId?: string
 }
 
 /** Start one source-neutral experience from independently selected reusable resources. */
@@ -53,6 +59,8 @@ export interface RoleplayExperienceSessionLaunchRequest {
   readonly participant?: RoleplayResourceSelection
   readonly worlds?: readonly RoleplayResourceSelection[]
   readonly promptPolicy?: RoleplayResourceSelection
+  /** DSH Agent composition providing tools and runtime capabilities. */
+  readonly agentPresetId?: string
 }
 
 /** Start a child Session immediately before one completed user turn. */

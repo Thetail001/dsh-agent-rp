@@ -39,6 +39,8 @@ import { summarizeTavernAuxiliaryGenerations } from '../src/tavern-generation-lo
 import { agentRpProjectionDefinition } from '../src/projection.ts'
 import { tavernScriptIdentity } from '../src/tavern-script-identity.ts'
 import { executeTavernHelperMutation } from '../src/tavern-helper-command.ts'
+import { encodeGenerationState } from '../src/generation.ts'
+import { readTavernMessageAnnotations } from '../src/tavern-message-annotation.ts'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import { inspectLorebook } from '../src/import/lorebook.ts'
@@ -651,6 +653,136 @@ test('persists a causal script mutation through command/done on the published Ho
   assert.deepEqual(readTavernHelperStateSnapshot(session.events)?.state.scopes.chat, { mood: 'calm' })
   const reopened = Session.create(SessionId('published-tavern-command-replay'), session.events)
   assert.deepEqual(readTavernHelperStateSnapshot(reopened.events), readTavernHelperStateSnapshot(session.events))
+})
+
+test('keeps script-owned message annotations across reloads and reply-version selection', () => {
+  const card = parseCharacterCardJson(JSON.stringify({
+    spec: 'chara_card_v2', spec_version: '2.0',
+    data: {
+      name: '数据库验收', description: '', personality: '', scenario: '', first_mes: '', mes_example: '',
+      creator_notes: '', system_prompt: '', post_history_instructions: '', alternate_greetings: [], tags: [],
+      creator: 'fixture', character_version: '1.0',
+      extensions: {
+        tavern_helper: {
+          variables: {},
+          scripts: [{ id: 'database', name: '数据库', content: '', enabled: true, data: {} }],
+        },
+      },
+    },
+  }))
+  const seed = createCharacterCardSessionSeed(card, {
+    kind: 'file', attachmentId: AttachmentId('sha256:tavern-message-annotation'), bytes: 1,
+    name: 'card.json', mediaType: 'application/json',
+  }, 0, '')
+  const session = Session.create(SessionId('tavern-message-annotation'), seed)
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '开始' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  const original = session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      content: [{ type: 'text', text: '原回复' }], source: { provider: 'fixture', model: 'fixture' },
+    }),
+  }, { surfaceOp: 'append' })
+  const annotation = {
+    TavernDB_ACU_IsolatedData: {
+      default: {
+        storageFrame: {
+          revision: 1,
+          checkpoint: { 纪要表: [{ row_id: 'AM0001' }] },
+          operationLog: [],
+        },
+      },
+    },
+    TavernDB_ACU_Identity: 'fixture',
+  } as const
+  const annotationCommand = CommandId('save-tavern-message-annotation')
+  session.append('command/run', {
+    commandId: annotationCommand, name: 'rp-tavern-variables', source: { kind: 'user' },
+  })
+  const persisted = executeTavernHelperMutation({
+    agent: { session } as Agent,
+    rawInput: JSON.stringify({
+      format: 0,
+      operation: 'replace-message-annotations',
+      owner: { scriptScope: 'character', scriptId: 'database' },
+      messages: [{ message_id: 1, value: annotation }],
+    }),
+  })
+  assert.match(persisted.text ?? '', /^agent-rp-tavern-message-annotations-v0:/u)
+  session.append('command/done', { commandId: annotationCommand, ...persisted })
+  assert.deepEqual(Object.values(readTavernMessageAnnotations(session.events)).map(record => record.value), [annotation])
+
+  const project = (source: Session) => {
+    let state = agentRpProjectionDefinition.init()
+    for (const event of source.events) state = agentRpProjectionDefinition.apply(state, event)
+    return agentRpProjectionDefinition.wire.view(state)
+  }
+  const owner = tavernScriptIdentity('character', 'database')
+  assert.deepEqual(project(session).tavern?.messages.at(-1)?.annotations?.[owner], annotation)
+
+  const alternative = session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      content: [{ type: 'text', text: '新回复' }], source: { provider: 'fixture', model: 'fixture' },
+    }),
+  }, {
+    surfaceOp: { op: 'replace', start: original.seq, end: original.seq },
+    sourceEventSeqs: [original.seq],
+  })
+  const groupId = '12345678-1234-4234-8234-123456789abc'
+  const versions = [
+    { seq: original.seq, text: '原回复' },
+    { seq: alternative.seq, text: '新回复' },
+  ] as const
+  const alternativeCommand = CommandId('select-alternative-annotation-branch')
+  session.append('command/run', {
+    commandId: alternativeCommand, name: 'rp-generation', source: { kind: 'user' },
+  })
+  session.append('command/done', {
+    commandId: alternativeCommand,
+    kind: 'success',
+    text: encodeGenerationState({
+      format: 0,
+      groupId,
+      operation: 'regenerate',
+      originSeq: original.seq,
+      anchorSeq: original.seq,
+      assistantSeqs: [original.seq, alternative.seq],
+      versions,
+      selectedVersionSeq: alternative.seq,
+      surfaceSeq: alternative.seq,
+    }),
+  })
+  assert.equal(project(session).tavern?.messages.at(-1)?.annotations, undefined)
+
+  const selectedOriginal = session.append('assistant/message', original.data, {
+    surfaceOp: { op: 'replace', start: alternative.seq, end: alternative.seq },
+    sourceEventSeqs: [alternative.seq, original.seq],
+  })
+  const selectCommand = CommandId('restore-original-annotation-branch')
+  session.append('command/run', {
+    commandId: selectCommand, name: 'rp-generation', source: { kind: 'user' },
+  })
+  session.append('command/done', {
+    commandId: selectCommand,
+    kind: 'success',
+    text: encodeGenerationState({
+      format: 0,
+      groupId,
+      operation: 'select',
+      originSeq: original.seq,
+      anchorSeq: original.seq,
+      assistantSeqs: [original.seq, alternative.seq],
+      versions,
+      selectedVersionSeq: original.seq,
+      surfaceSeq: selectedOriginal.seq,
+    }),
+  })
+  const reopened = Session.create(SessionId('tavern-message-annotation-reopened'), session.events)
+  assert.deepEqual(project(reopened).tavern?.messages.at(-1)?.annotations?.[owner], annotation)
 })
 
 test('persists isolated Tavern Helper variable namespaces', () => {

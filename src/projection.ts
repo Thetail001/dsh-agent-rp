@@ -61,6 +61,11 @@ import {
 } from './roleplay-state.ts'
 import { parseRoleplayTurnModeRecord, type RoleplayTurnMode } from './roleplay-turn-mode.ts'
 import { hostSupportsAgentRpSessionEvents } from './session-event-compat.ts'
+import {
+  applyTavernMessageAnnotationEvent,
+  indexTavernMessageAnnotations,
+  type TavernMessageAnnotationState,
+} from './tavern-message-annotation.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -163,6 +168,7 @@ interface AgentRpProjectionState {
   readonly currentReplySeq?: number
   readonly presentation?: RoleplayTurnPresentation
   readonly tavern?: TavernHelperState
+  readonly tavernMessageAnnotations: TavernMessageAnnotationState
   readonly auxiliaryGenerations: TavernAuxiliaryGenerationReplay
 }
 
@@ -196,6 +202,8 @@ const projectionStateSchema = {
       || typeof record.generations !== 'object' || record.generations === null || Array.isArray(record.generations)
       || (record.presentation !== undefined && (typeof record.presentation !== 'object'
         || record.presentation === null || Array.isArray(record.presentation)))
+      || typeof record.tavernMessageAnnotations !== 'object' || record.tavernMessageAnnotations === null
+      || Array.isArray(record.tavernMessageAnnotations)
       || typeof record.auxiliaryGenerations !== 'object' || record.auxiliaryGenerations === null
       || Array.isArray(record.auxiliaryGenerations)) {
       throw new Error('invalid agentRp projection state')
@@ -698,6 +706,7 @@ export function createAgentRpProjectionDefinition(
     nativeStates: [],
     presetLibrary: [],
     generations: {},
+    tavernMessageAnnotations: {},
     auxiliaryGenerations: EMPTY_TAVERN_AUXILIARY_GENERATION_REPLAY,
   }),
   apply(state, event) {
@@ -706,6 +715,10 @@ export function createAgentRpProjectionDefinition(
     const withSurface = surface === state.surface && auxiliaryGenerations === state.auxiliaryGenerations
       ? state
       : { ...state, surface, auxiliaryGenerations }
+    const tavernMessageAnnotations = applyTavernMessageAnnotationEvent(withSurface.tavernMessageAnnotations, event)
+    if (tavernMessageAnnotations !== withSurface.tavernMessageAnnotations) {
+      return { ...withSurface, tavernMessageAnnotations }
+    }
     if (event.type === 'agent-rp/turn-mode') {
       return { ...withSurface, turnMode: parseRoleplayTurnModeRecord(event.data).mode }
     }
@@ -1143,6 +1156,7 @@ export function createAgentRpProjectionDefinition(
     const sessionEvents = hostSupportsAgentRpSessionEvents()
     const worldInfo = worldInfoProjection(state, ejsTemplateEngine)
     const auxiliaryGenerations = summarizeTavernAuxiliaryGenerationReplay(state.auxiliaryGenerations)
+    const tavernMessageAnnotations = indexTavernMessageAnnotations(state.tavernMessageAnnotations)
     const visibleTavernMessages = state.surface.flatMap(({ seq, text, reasoning, role }) => text === undefined || role === undefined
       ? []
       : [{ seq, role, text, ...(reasoning === undefined ? {} : { reasoning }), isHidden: false as const }])
@@ -1184,13 +1198,22 @@ export function createAgentRpProjectionDefinition(
           messages: [
             ...hiddenTavernMessages.map(message => ({ ...message, isHidden: true as const })),
             ...visibleTavernMessages,
-          ].map((message, messageId) => ({ ...message, messageId })),
+          ].map((message, messageId) => {
+            const selected = Object.values(state.generations)
+              .findLast(generation => generation.surfaceSeq === message.seq)?.selectedVersionSeq ?? message.seq
+            const annotations = tavernMessageAnnotations.get(selected) ?? {}
+            return {
+              ...message,
+              messageId,
+              ...(Object.keys(annotations).length === 0 ? {} : { annotations }),
+            }
+          }),
         },
       }),
     }
   },
   },
-  stateVersion: 15,
+  stateVersion: 16,
   }
   return {
     ...definition,

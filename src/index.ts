@@ -172,6 +172,7 @@ import { characterLibraryActorRevisionProvider } from './character-library-actor
 import {
   installRoleplayArtifactCapability,
 } from './roleplay-artifact.ts'
+import { installAgentRpCapabilityPresetHttp } from './agent-capability-preset.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -1539,6 +1540,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         )
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
+        installAgentRpCapabilityPresetHttp(webCtx, ctx, server)
         installRoleplayResourceCatalogHttp(webCtx, resourceCatalog, server)
         installNativeIdentityHttp(webCtx, new NativeIdentityStore(webCtx.credentials), server)
         installImageGenerationHttp(webCtx, generatedImageLibrary, webCtx.credentials, server)

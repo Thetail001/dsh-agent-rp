@@ -14,6 +14,11 @@ import {
   trustedBrowserRequest,
   type AgentRpHttpServer,
 } from './host-http.ts'
+import {
+  agentHasAgentRpRuntime,
+  resolveAgentRpCapabilityPreset,
+  type AgentPresetGateway,
+} from './agent-capability-preset.ts'
 
 const MAX_COMMAND_BYTES = 4 * 1024 * 1024
 
@@ -30,11 +35,6 @@ interface SessionPersistenceGateway {
   inspect(sessionId: SessionId): Promise<{ readonly meta: { readonly agentPreset?: string } }>
 }
 
-interface AgentPresetGateway {
-  resolve(id?: string): Promise<{ readonly id: string }>
-  mount(agentCtx: Context, id?: string): Promise<unknown>
-}
-
 interface CommandExecution {
   readonly commandId: unknown
 }
@@ -44,8 +44,8 @@ interface CommandGateway {
     | ((agent: Agent, line: string, images: readonly unknown[], signal: AbortSignal) => Promise<CommandExecution | undefined>)
 }
 
-function assertAgentRpAgent(agent: Agent | undefined): Agent {
-  if (agent === undefined || agent.session.header.agentPreset !== 'agent-rp') {
+function assertAgentRpAgent(presets: AgentPresetGateway, agent: Agent | undefined): Agent {
+  if (!agentHasAgentRpRuntime(presets, agent)) {
     throw new Error('角色会话当前不可用')
   }
   return agent
@@ -56,29 +56,30 @@ function createAgentResolver(hostCtx: Context): (sessionId: SessionId, signal: A
   return async (sessionId, signal) => {
     const agents = hostCtx.get('agents') as AgentRegistryGateway | undefined
     if (agents === undefined) throw new Error('当前 Host 无法访问角色会话')
+    const presets = hostCtx.get('agentPresets') as AgentPresetGateway | undefined
+    if (presets === undefined) throw new Error('当前 Host 无法访问角色会话预设')
     const live = agents.get(sessionId)
-    if (live !== undefined) return assertAgentRpAgent(live)
+    if (live !== undefined) return assertAgentRpAgent(presets, live)
 
     const key = String(sessionId)
     let resumption = resumptions.get(key)
     if (resumption === undefined) {
       resumption = (async () => {
         const persistence = hostCtx.get('sessionPersistence') as SessionPersistenceGateway | undefined
-        const presets = hostCtx.get('agentPresets') as AgentPresetGateway | undefined
         if (persistence === undefined || presets === undefined) throw new Error('当前 Host 无法恢复角色会话')
         const inspected = await persistence.inspect(sessionId)
-        if (inspected.meta.agentPreset !== 'agent-rp') throw new Error('该会话不是 Agent RP 角色会话')
-        const preset = await presets.resolve('agent-rp')
+        if (inspected.meta.agentPreset === undefined) throw new Error('该会话没有记录 Agent 能力预设')
+        const preset = await resolveAgentRpCapabilityPreset(presets, inspected.meta.agentPreset)
         try {
           const handle = await agents.resume({
             resumeSessionId: sessionId,
             signal,
             setup: agentCtx => presets.mount(agentCtx, preset.id),
           })
-          return assertAgentRpAgent(handle.agent)
+          return assertAgentRpAgent(presets, handle.agent)
         } catch (error: unknown) {
           const raced = agents.get(sessionId)
-          if (raced !== undefined) return assertAgentRpAgent(raced)
+          if (raced !== undefined) return assertAgentRpAgent(presets, raced)
           throw error
         }
       })().finally(() => { resumptions.delete(key) })

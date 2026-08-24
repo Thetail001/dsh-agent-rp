@@ -14,6 +14,7 @@ import {
 } from './roleplay-turn-health-protocol.ts'
 import { summarizeRoleplayTurnHealth } from './roleplay-turn-health.ts'
 import { readRoleplayTurnRecords } from './roleplay-turn-record.ts'
+import { agentHasAgentRpRuntime, type AgentPresetGateway } from './agent-capability-preset.ts'
 
 interface AgentRegistryGateway {
   get(sessionId: SessionId): Agent | undefined
@@ -45,7 +46,8 @@ export function installRoleplayTurnHealthHttp(routeCtx: Context, hostCtx: Contex
           throw new Error('角色会话编号无效')
         }
         const agent = (hostCtx.get('agents') as AgentRegistryGateway | undefined)?.get(SessionId(sourceSessionId))
-        if (agent === undefined || agent.session.header.agentPreset !== 'agent-rp') {
+        const presets = hostCtx.get('agentPresets') as AgentPresetGateway | undefined
+        if (presets === undefined || !agentHasAgentRpRuntime(presets, agent)) {
           throw new Error('角色会话当前不可用')
         }
         const cached = cache.get(agent.session)

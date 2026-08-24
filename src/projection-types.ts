@@ -122,6 +122,8 @@ export interface AgentRpProjection {
       /** Model reasoning retained for read-only Tavern Helper compatibility. */
       readonly reasoning?: string
       readonly isHidden: boolean
+      /** Root-level SillyTavern compatibility fields, isolated by Host script identity. */
+      readonly annotations?: Readonly<Record<string, Readonly<Record<string, JsonValue>>>>
     }[]
   }
   /** Persistent alternatives for Roleplay replies that have been regenerated or continued. */
