@@ -89,6 +89,7 @@ import {
   type TavernResourceBlockedReport,
   type TavernScriptSnapshot,
 } from './tavern-runtime.ts'
+import { TavernScriptStatusList } from './tavern-script-status.tsx'
 import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
 import type { WorldInfoConfigurationRequest, WorldInfoEditableEntry } from '../world-info-configuration-types.ts'
 import { exportSillyTavernPresetJson } from '../preset-export.ts'
@@ -10770,6 +10771,16 @@ function TavernScriptRuntime({
   const failedScriptCount = [...scriptPhases.values()].filter(
     phase => phase === 'load-error' || phase === 'runtime-error',
   ).length
+  const localScriptStatuses = frames.map(entry => {
+    const error = entry.error ?? runtimeErrors.get(entry.key)
+    return {
+      key: entry.key,
+      name: entry.script.name,
+      scope: entry.scope,
+      phase: scriptPhases.get(entry.key) ?? 'preparing',
+      ...(error === undefined ? {} : { error }),
+    }
+  })
   const scriptPlanReady = scripts.length === 0 || (scriptPhases.size === scripts.length
     && [...scriptPhases.values()].every(phase => phase !== 'preparing'))
   const scriptRuntimeSettled = permissionSummary.startup === 0
@@ -11006,6 +11017,7 @@ function TavernScriptRuntime({
             background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '20px', padding: '2px 6px',
           }}>×</button>
         </header>}
+        {panelOpen && <TavernScriptStatusList entries={localScriptStatuses} />}
         {frames.flatMap(entry => entry.source === undefined || entry.src === undefined ? [] : [<iframe
           key={entry.key}
           title={entry.script.name || '酒馆脚本'}
@@ -11026,23 +11038,7 @@ function TavernScriptRuntime({
         />])}
         {panelOpen && panelFrames.length === 0 && <div style={{
           alignItems: 'center', display: 'flex', flex: '1 1 auto', justifyContent: 'center', minHeight: 0, padding: '24px',
-        }}><div style={{ maxWidth: '520px', width: '100%' }}>
-          <p style={{ fontSize: '13px', margin: '0 0 12px', opacity: .72 }}>这些脚本在后台运行，没有单独界面。</p>
-          {frames.map(entry => {
-            const error = entry.error ?? runtimeErrors.get(entry.key)
-            return <div key={entry.key} style={{
-              alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #35373d)', display: 'flex',
-              gap: '10px', padding: '9px 2px',
-            }}><span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {entry.script.name || '未命名脚本'}
-            </span><span style={{ color: error === undefined ? 'inherit' : 'var(--dsw-alias-state-warning, #d5a64c)', fontSize: '11px', opacity: .66 }}>
-              {error === undefined ? (readyScriptIds.has(entry.key) ? '运行中' : '启动中') : '运行失败'}
-            </span></div>
-          })}
-        </div></div>}
-        {panelOpen && frames.find(entry => entry.key === activePanelScriptId)?.error !== undefined && <p style={{
-          margin: 'auto', maxWidth: '720px', padding: '20px',
-        }}>{frames.find(entry => entry.key === activePanelScriptId)?.error}</p>}
+        }}><p style={{ fontSize: '13px', margin: 0, opacity: .72 }}>这些脚本在后台运行，没有单独界面。</p></div>}
       </section>
     </div>
     {mobileFrame !== undefined && <button type="button" title="打开小手机" data-agent-rp-action="open-mobile-surface" onClick={() => {
