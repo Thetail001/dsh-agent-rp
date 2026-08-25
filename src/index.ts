@@ -175,6 +175,7 @@ import {
 } from './roleplay-artifact.ts'
 import { installRoleplayImageGenerationTool } from './roleplay-image-generation-tool.ts'
 import { installAgentRpCapabilityPresetHttp } from './agent-capability-preset.ts'
+import { roleplayToolCallFollowsVisibleReply } from './roleplay-tool-continuation.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -1281,7 +1282,7 @@ export function installAgentRp(
   ctx.systemPrompt.context({ name: 'approval:policy', order: 0, text: '' })
   ctx.tools.register(defineTool({
     name: 'remember',
-    description: 'Persist one confirmed fact, promise, preference, relationship change, or shared event for later turns in this Session. Do not repeat information already covered. When this topic already exists, use supersedes with its active memory id instead of adding another record.',
+    description: 'Persist one confirmed fact, promise, preference, relationship change, or shared event for later turns in this Session. When the player explicitly asks to remember something, finish the visible roleplay reply first and call this once at the end; a successful save then ends the turn. Do not repeat information already covered. When this topic already exists, use supersedes with its active memory id instead of adding another record.',
     parameters: {
       kind: {
         type: 'string',
@@ -1312,6 +1313,9 @@ export function installAgentRp(
       if (exec.agent === undefined) throw new Error('remember requires an Agent Session')
       if (exec.parent !== undefined) throw new Error('remember must be called directly by the character Agent')
       const record = prepareAgentRpMemory(exec.agent.session, String(exec.callId), args)
+      if (roleplayToolCallFollowsVisibleReply(exec.agent.session.events, String(exec.callId))) {
+        exec.concludeTurn()
+      }
       return Promise.resolve(record)
     },
     presentCall: args => rememberCall(args.subject, args.text),

@@ -15,6 +15,7 @@ import {
   type RoleplayToolPolicyPlan,
   type ResolvedToolGuidanceConfig,
 } from './roleplay-tool-guidance.ts'
+import { roleplayToolCallFollowsVisibleReply } from './roleplay-tool-continuation.ts'
 
 export const ROLEPLAY_ARTIFACT_STAGE_TOOL = 'stage_roleplay_artifact'
 export const ROLEPLAY_ARTIFACT_PUBLISH_TOOL = 'publish_roleplay_image'
@@ -309,17 +310,7 @@ export function detectRoleplayArtifactFollowup(
   if (call?.type !== 'tool/call'
     || call.data.name === ROLEPLAY_ARTIFACT_STAGE_TOOL
     || call.data.name === ROLEPLAY_ARTIFACT_PUBLISH_TOOL) return undefined
-  const assistant = events.findLast(event => event.seq < call.seq
-    && event.type === 'assistant/message'
-    && event.data.turn === call.data.turn
-    && event.data.step === call.data.step
-    && event.data.message.content.some(block => block.type === 'tool-call'
-      && String(block.id) === callId))
-  const content = assistant?.type === 'assistant/message' ? assistant.data.message.content : []
-  const callIndex = content.findIndex(block => block.type === 'tool-call' && String(block.id) === callId)
-  const hasVisibleNarrative = callIndex > 0 && content.slice(0, callIndex)
-    .some(block => block.type === 'text' && block.text.trim() !== '')
-  return hasVisibleNarrative
+  return roleplayToolCallFollowsVisibleReply(events, callId)
     ? { turn: call.data.turn, step: call.data.step, artifacts }
     : undefined
 }

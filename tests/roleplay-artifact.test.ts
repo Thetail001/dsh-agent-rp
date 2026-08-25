@@ -346,6 +346,7 @@ test('replaces the full roleplay prompt with a narrow artifact handoff after vis
   await root.plugin(AgentRegistry)
   root.provide('commands' as never, { register: () => () => {} } as never)
   root.provide('attachments' as never, {} as never)
+  root.provide('credentials' as never, {} as never)
   const presetKey = {}
   const preset = createScope(root, presetKey)
   const libraryRoot = await mkdtemp(join(tmpdir(), 'agent-rp-artifact-handoff-'))
