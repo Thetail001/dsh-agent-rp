@@ -1563,7 +1563,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         webCtx.effect(() => () => {
           if (mountedServer === server) mountedServer = undefined
         }, `agent-rp: release ${serviceName}`)
-        installCharacterLibraryHttp(webCtx, characterLibrary, server)
+        installCharacterLibraryHttp(webCtx, ctx, characterLibrary, server)
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
         installPresetLibraryHttp(webCtx, presetLibrary, server)
         const tavernExecutionPlans = new TavernExecutionPlanCache(undefined, 64, {

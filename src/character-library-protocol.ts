@@ -177,6 +177,12 @@ export interface CharacterLibraryRuntimeDetail {
   readonly displayRegexScripts: readonly ImportedRegexScript[]
 }
 
+/** Confirmation returned after an archived Character Card is permanently removed. */
+export interface CharacterLibraryDeleteResponse {
+  readonly format: 0
+  readonly id: string
+}
+
 /** What changed when one local card file was added to the library. */
 export type CharacterLibraryImportOutcome = 'created' | 'existing' | 'restored'
 

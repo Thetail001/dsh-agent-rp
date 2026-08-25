@@ -3,6 +3,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from './character-library.ts'
 import {
   CHARACTER_LIBRARY_PATH, type CharacterLibraryDetail, type CharacterLibraryEditRequest,
@@ -16,6 +17,51 @@ import {
   type AgentRpHttpServer,
 } from './host-http.ts'
 import { MAX_CHARACTER_CARD_FILE_BYTES } from './import/character-card.ts'
+import { decodeCharacterLibraryLaunch } from './import/session-character.ts'
+
+interface SessionPersistenceGateway {
+  listSnapshots(): Promise<readonly {
+    readonly header: { readonly id: SessionId }
+    readonly revision: unknown
+  }[]>
+  inspect(id: SessionId): Promise<{ readonly events: readonly SessionEvent[] }>
+}
+
+class CharacterLibraryConflictError extends Error {}
+
+function snapshotSignature(snapshots: readonly {
+  readonly header: { readonly id: SessionId }
+  readonly revision: unknown
+}[]): string {
+  return JSON.stringify(snapshots.map(snapshot => [String(snapshot.header.id), String(snapshot.revision)]).sort())
+}
+
+function sessionReferencesCharacter(events: readonly SessionEvent[], id: string): boolean {
+  for (const event of events) {
+    if (event.type === 'agent-rp/character-card-seed'
+      && 'characterLibraryId' in event.data.source
+      && event.data.source.characterLibraryId === id) return true
+    if (event.type === 'command/done' && event.data.kind === 'success'
+      && decodeCharacterLibraryLaunch(event.data.text)?.libraryId === id) return true
+  }
+  return false
+}
+
+async function referencingSessions(hostCtx: Context, id: string): Promise<readonly SessionId[]> {
+  const persistence = hostCtx.get('sessionPersistence') as SessionPersistenceGateway | undefined
+  if (persistence === undefined) throw new Error('当前 Host 无法核对角色卡的历史会话引用')
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const before = await persistence.listSnapshots()
+    const references: SessionId[] = []
+    for (const snapshot of before) {
+      const session = await persistence.inspect(snapshot.header.id)
+      if (sessionReferencesCharacter(session.events, id)) references.push(snapshot.header.id)
+    }
+    const after = await persistence.listSnapshots()
+    if (snapshotSignature(before) === snapshotSignature(after)) return references
+  }
+  throw new CharacterLibraryConflictError('会话正在变化，暂时不能安全删除角色卡；请稍后重试')
+}
 
 function fail(response: ServerResponse, status: number, message: string): void {
   json(response, status, { error: message })
@@ -67,8 +113,13 @@ function pathParts(request: IncomingMessage): readonly string[] {
   return pathname.slice(CHARACTER_LIBRARY_PATH.length + 1).split('/').map(decodeURIComponent)
 }
 
-/** Register local library reads plus reversible archive operations for the Roleplay UI. */
-export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibrary, server: AgentRpHttpServer): void {
+/** Register local library reads plus reversible archive and guarded delete operations for the Roleplay UI. */
+export function installCharacterLibraryHttp(
+  ctx: Context,
+  hostCtx: Context,
+  library: CharacterLibrary,
+  server: AgentRpHttpServer,
+): void {
   ctx.effect(() => server.register({
     kind: 'prefix',
     path: CHARACTER_LIBRARY_PATH,
@@ -93,6 +144,19 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
         }
         if (request.method === 'GET' && parts.length === 1 && parts[0] !== undefined) {
           json(response, 200, { format: 0, entry: library.overview(parts[0]) })
+          return
+        }
+        if (request.method === 'DELETE' && parts.length === 1 && parts[0] !== undefined) {
+          const entry = library.overview(parts[0])
+          if (!entry.archived) throw new Error('请先把角色移入收纳箱，再永久删除')
+          const references = await referencingSessions(hostCtx, entry.id)
+          if (references.length > 0) {
+            throw new CharacterLibraryConflictError(
+              `仍有 ${references.length} 个历史会话使用角色「${entry.displayName}」，不能永久删除`,
+            )
+          }
+          library.deleteArchived(entry.id)
+          json(response, 200, { format: 0, id: entry.id })
           return
         }
         if (request.method === 'GET' && parts.length === 2 && parts[0] !== undefined
@@ -305,15 +369,16 @@ export function installCharacterLibraryHttp(ctx: Context, library: CharacterLibr
           response.end(image.data)
           return
         }
-        if (request.method !== 'GET' && request.method !== 'POST') {
-          response.setHeader('allow', 'GET, POST')
+        if (request.method !== 'GET' && request.method !== 'POST' && request.method !== 'DELETE') {
+          response.setHeader('allow', 'GET, POST, DELETE')
           fail(response, 405, 'method not allowed')
           return
         }
         fail(response, 404, 'not found')
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)
-        fail(response, /角色库中没有/u.test(message) ? 404 : /过大/u.test(message) ? 413 : 400, message)
+        fail(response, error instanceof CharacterLibraryConflictError ? 409
+          : /角色库中没有/u.test(message) ? 404 : /过大/u.test(message) ? 413 : 400, message)
       }
     },
   }), 'agent-rp: character library HTTP')

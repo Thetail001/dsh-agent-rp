@@ -241,6 +241,7 @@ import {
   CHARACTER_LIBRARY_PATH,
   characterLibraryImageUrl,
   type CharacterLibraryCollection,
+  type CharacterLibraryDeleteResponse,
   type CharacterLibraryDetail,
   type CharacterLibraryImportResult,
   type CharacterLibraryRegexScript,
@@ -566,6 +567,7 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly listCharacters: (collection?: CharacterLibraryCollection) => Promise<readonly CharacterLibrarySummary[]>
   readonly readCharacter: (id: string) => Promise<CharacterLibraryDetail>
   readonly setCharacterArchived: (id: string, archived: boolean) => Promise<CharacterLibraryDetail>
+  readonly deleteCharacter: (id: string) => Promise<void>
   readonly importCharacterFile: (file: File) => Promise<CharacterLibraryImportResult>
   readonly prepareChatMigration: (sessionId: SessionId, chatFile: File, cardFile?: File) => Promise<PreparedChatMigration>
   readonly prepareRpDistributionChatMigration: (
@@ -889,8 +891,10 @@ function useAgentCapabilityPresetPreference(
 }
 
 interface CharacterRuntimeDetail {
-  readonly detail: CharacterLibraryDetail
-  readonly displayRegexScripts: readonly ImportedRegexScript[]
+  readonly status: 'loading' | 'ready' | 'error'
+  readonly detail?: CharacterLibraryDetail
+  readonly displayRegexScripts?: readonly ImportedRegexScript[]
+  readonly error?: string
 }
 
 function useCharacterDetail(libraryId: string | undefined): CharacterRuntimeDetail | undefined {
@@ -898,18 +902,23 @@ function useCharacterDetail(libraryId: string | undefined): CharacterRuntimeDeta
   useEffect(() => {
     let current = true
     let revision = 0
-    if (libraryId === undefined) return () => { current = false }
+    if (libraryId === undefined) {
+      setLoaded(undefined)
+      return () => { current = false }
+    }
     const load = (): void => {
       const requestedRevision = ++revision
+      setLoaded({ status: 'loading' })
       void fetchCharacterRuntimeDetail(libraryId).then(value => {
         if (current && requestedRevision === revision) {
-          setLoaded({ detail: value.entry, displayRegexScripts: value.displayRegexScripts })
+          setLoaded({ status: 'ready', detail: value.entry, displayRegexScripts: value.displayRegexScripts })
         }
-      }, () => {
-        if (current && requestedRevision === revision) setLoaded(undefined)
+      }, reason => {
+        if (current && requestedRevision === revision) {
+          setLoaded({ status: 'error', error: reason instanceof Error ? reason.message : String(reason) })
+        }
       })
     }
-    setLoaded(undefined)
     load()
     const changed = (event: Event): void => {
       const id = (event as CustomEvent<{ readonly id?: unknown }>).detail?.id
@@ -2652,6 +2661,7 @@ type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
   | 'listCharacters'
   | 'readCharacter'
   | 'setCharacterArchived'
+  | 'deleteCharacter'
   | 'importCharacterFile'
   | 'prepareChatMigration'
   | 'prepareRpDistributionChatMigration'
@@ -2750,7 +2760,7 @@ function SidebarRoleplayFooterAction(props: SidebarRoleplayFooterActionProps) {
 function SidebarRoleplayDestination({
   wide, width, useSessions,
   runtimeDiagnostics,
-  listCharacters, readCharacter, setCharacterArchived, importCharacterFile,
+  listCharacters, readCharacter, setCharacterArchived, deleteCharacter, importCharacterFile,
   prepareChatMigration, prepareRpDistributionChatMigration, launchPreparedChatMigration,
   startCharacterSession,
   listPresets, listAgentCapabilityPresets, importPresetFile, listPersonas, savePersona, deletePersona,
@@ -3011,6 +3021,7 @@ function SidebarRoleplayDestination({
       initialSection={resourceCenterSection}
       listCharacters={listCharacters}
       setCharacterArchived={setCharacterArchived}
+      deleteCharacter={deleteCharacter}
       importCharacterFile={importCharacterFile}
       listWorldInfos={listWorldInfos}
       importWorldInfoFile={importWorldInfoFile}
@@ -11114,7 +11125,7 @@ function roleplayComposerDockComponent(
   }>(() => ({ sessionId }))
   const currentStartupTiming = startupTiming.sessionId === sessionId ? startupTiming : { sessionId }
   const waitingForCharacter = projection !== undefined && projection.avatarLibraryId !== undefined
-    && storedCharacterDetail === undefined
+    && (storedCharacterRuntime === undefined || storedCharacterRuntime.status === 'loading')
   const startupActive = roleplayExpected && (projection === undefined || waitingForCharacter)
   const liveStartupElapsed = useLiveStartupElapsed(startupStartedAt, startupActive)
   useEffect(() => {
@@ -11138,11 +11149,13 @@ function roleplayComposerDockComponent(
     : currentStartupTiming.characterMs ?? currentStartupTiming.projectionMs ?? liveStartupElapsed
   const displayStateRef = useRef({
     chat, characterDetail, compatibilityMarkers, displayOverrides,
+    characterStatus: storedCharacterRuntime?.status,
     displayRegexScripts: storedCharacterRuntime?.displayRegexScripts, projection, viewMode,
   })
   const scanDisplayRef = useRef<() => void>(() => undefined)
   displayStateRef.current = {
     chat, characterDetail, compatibilityMarkers, displayOverrides,
+    characterStatus: storedCharacterRuntime?.status,
     displayRegexScripts: storedCharacterRuntime?.displayRegexScripts, projection, viewMode,
   }
   const backgroundChoice = useRoleplayBackground(sessionId)
@@ -11740,6 +11753,7 @@ function roleplayComposerDockComponent(
       const {
         chat: activeChat,
         characterDetail: activeCharacterDetail,
+        characterStatus: activeCharacterStatus,
         compatibilityMarkers: activeCompatibilityMarkers,
         displayOverrides: activeDisplayOverrides,
         displayRegexScripts: activeCharacterDisplayRegexScripts,
@@ -11747,7 +11761,8 @@ function roleplayComposerDockComponent(
         viewMode: activeViewMode,
       } = displayStateRef.current
       if (activeProjection === undefined) return
-      if (activeProjection.avatarLibraryId !== undefined && activeCharacterDetail === undefined) return
+      if (activeProjection.avatarLibraryId !== undefined && activeCharacterDetail === undefined
+        && activeCharacterStatus !== 'error') return
       const frontend = activeProjection.frontend === undefined ? undefined
         : withCurrentCharacterDisplayScripts(activeProjection.frontend, activeCharacterDisplayRegexScripts)
       const hasDisplayRules = activeViewMode === 'immersive' && frontend !== undefined
@@ -11946,7 +11961,8 @@ function roleplayComposerDockComponent(
     }
   }, [runtimeDiagnostics, sessionId, viewMode, projection !== undefined])
   useEffect(() => { scanDisplayRef.current() }, [
-    chat, characterDetail, compatibilityMarkers, displayOverrides, projection, storedCharacterRuntime?.displayRegexScripts,
+    chat, characterDetail, compatibilityMarkers, displayOverrides, projection,
+    storedCharacterRuntime?.displayRegexScripts, storedCharacterRuntime?.status,
   ])
   const hasTavernVariableSurface = projection !== undefined
     && (['global', 'preset', 'character'] as const).some(scope =>
@@ -12030,6 +12046,8 @@ function roleplayComposerDockComponent(
   return <div ref={rootRef} data-agent-rp-status
     data-agent-rp-startup data-agent-rp-startup-phase={startupPhase}
     data-agent-rp-startup-elapsed-ms={startupElapsed}
+    data-agent-rp-character-library={projection.avatarLibraryId === undefined
+      ? 'not-used' : storedCharacterRuntime?.status ?? 'loading'}
     {...(currentStartupTiming.projectionMs === undefined
       ? {} : { 'data-agent-rp-startup-projection-ms': currentStartupTiming.projectionMs })}
     {...(currentStartupTiming.characterMs === undefined
@@ -12094,6 +12112,10 @@ function roleplayComposerDockComponent(
     data-agent-rp-world-engine-template-error={worldEngineFailures.templateError}
     style={{ alignItems: 'center', display: 'flex', gap: '4px', minWidth: 0 }}>
     {statusPanelHost !== undefined && createPortal(<TavernStatusPanels projection={projection} />, statusPanelHost)}
+    {storedCharacterRuntime?.status === 'error' && <span role="status"
+      title={storedCharacterRuntime.error} style={{
+        color: 'var(--dsw-alias-state-warning, #d6a955)', fontSize: '11px', lineHeight: 1.45, padding: '3px 6px',
+      }}>角色库资源已缺失；正文仍可继续，头像与角色库附加资源不可用</span>}
     {cardExternalWindowPermissionOpen && <div role="dialog" aria-modal aria-label="轻前端权限"
       data-agent-rp-surface="card-permissions" onMouseDown={event => {
       if (event.target === event.currentTarget) setCardExternalWindowPermissionOpen(false)
@@ -12502,6 +12524,16 @@ export function apply(ctx: ClientContext): void {
     const value = await response.json() as { readonly error?: string; readonly format?: 0; readonly entry?: CharacterLibraryDetail }
     if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `角色库请求失败（${response.status}）`)
     return value.entry
+  }
+  const deleteCharacter = async (id: string): Promise<void> => {
+    const response = await fetch(`${CHARACTER_LIBRARY_PATH}/${encodeURIComponent(id)}`, {
+      method: 'DELETE', headers: { accept: 'application/json' },
+    })
+    const value = await response.json() as Partial<CharacterLibraryDeleteResponse> & { readonly error?: string }
+    if (!response.ok || value.format !== 0 || value.id !== id) {
+      throw new Error(value.error ?? `角色卡删除失败（${response.status}）`)
+    }
+    notifyCharacterLibraryChanged(id)
   }
   const importCharacterFile = async (file: File): Promise<CharacterLibraryImportResult> => {
     const response = await fetch(`${CHARACTER_LIBRARY_PATH}/import?filename=${encodeURIComponent(file.name)}`, {
@@ -13048,7 +13080,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} runtimeDiagnostics={runtimeDiagnostics} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listWorldInfos={listWorldInfos} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} importCharacterFile={importCharacterFile} prepareChatMigration={prepareChatMigration} prepareRpDistributionChatMigration={prepareRpDistributionChatMigration} launchPreparedChatMigration={launchPreparedChatMigration} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} manageState={manageState} manageTurnMode={manageTurnMode} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listAgentCapabilityPresets={listAgentCapabilityPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
+  }, props => <RoleplayHeader {...props} runtimeDiagnostics={runtimeDiagnostics} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listWorldInfos={listWorldInfos} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} deleteCharacter={deleteCharacter} importCharacterFile={importCharacterFile} prepareChatMigration={prepareChatMigration} prepareRpDistributionChatMigration={prepareRpDistributionChatMigration} launchPreparedChatMigration={launchPreparedChatMigration} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} manageState={manageState} manageTurnMode={manageTurnMode} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listAgentCapabilityPresets={listAgentCapabilityPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -13064,7 +13096,7 @@ export function apply(ctx: ClientContext): void {
     listPersonas={listPersonas} listWorldInfos={listWorldInfos}
     probe={probeRpDistribution} transfer={transferRpDistribution} receive={receiveRpDistribution} />))
   const sidebarRoleplayWorkbenchProps: SidebarRoleplayWorkbenchProps = {
-    runtimeDiagnostics, workspaceSettings, workspaceList, listCharacters, readCharacter, setCharacterArchived,
+    runtimeDiagnostics, workspaceSettings, workspaceList, listCharacters, readCharacter, setCharacterArchived, deleteCharacter,
     importCharacterFile, prepareChatMigration: prepareChatMigrationFromBlankSession,
     prepareRpDistributionChatMigration: prepareRpDistributionChatMigrationFromBlankSession,
     launchPreparedChatMigration: launchPreparedChatMigrationFromBlankSession,

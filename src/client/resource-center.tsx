@@ -26,6 +26,7 @@ interface ResourceCenterProps {
   readonly initialSection?: ResourceSection
   readonly listCharacters: (collection?: CharacterLibraryCollection) => Promise<readonly CharacterLibrarySummary[]>
   readonly setCharacterArchived: (id: string, archived: boolean) => Promise<CharacterLibraryDetail>
+  readonly deleteCharacter: (id: string) => Promise<void>
   readonly importCharacterFile: (file: File) => Promise<CharacterLibraryImportResult>
   readonly listWorldInfos: () => Promise<readonly WorldInfoLibraryUpload[]>
   readonly importWorldInfoFile: (file: File) => Promise<WorldInfoLibraryUpload>
@@ -348,7 +349,7 @@ function SillyTavernLibraryMigrationDialog({
 /** Manage reusable resources without tying them to one Character Card or Session. */
 export function RoleplayResourceCenter({
   accent, narrow, initialSection = 'characters',
-  listCharacters, setCharacterArchived, importCharacterFile,
+  listCharacters, setCharacterArchived, deleteCharacter, importCharacterFile,
   listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo,
   listPresets, importPresetFile, renamePreset, deletePreset,
   listPersonas, savePersona, deletePersona,
@@ -370,6 +371,7 @@ export function RoleplayResourceCenter({
   const [confirmingPresetId, setConfirmingPresetId] = useState<string>()
   const [confirmingPersonaId, setConfirmingPersonaId] = useState<string>()
   const [confirmingWorldInfoId, setConfirmingWorldInfoId] = useState<string>()
+  const [confirmingCharacterId, setConfirmingCharacterId] = useState<string>()
   const [migrationOpen, setMigrationOpen] = useState(false)
   const characterInputRef = useRef<HTMLInputElement | null>(null)
   const worldInfoInputRef = useRef<HTMLInputElement | null>(null)
@@ -463,6 +465,21 @@ export function RoleplayResourceCenter({
     void setCharacterArchived(entry.id, !entry.archived).then(updated => {
       setCharacters(value => (value ?? []).map(item => item.id === updated.id ? updated : item))
       setNotice(`${updated.archived ? '已收起' : '已恢复'}角色「${updated.displayName}」`)
+    }).catch(reason => { setError(message(reason)) }).finally(finishAction)
+  }
+  const removeCharacter = (entry: CharacterLibrarySummary): void => {
+    if (!entry.archived) return
+    if (confirmingCharacterId !== entry.id) {
+      setConfirmingCharacterId(entry.id)
+      setError(undefined)
+      setNotice('永久删除不可恢复；已有会话引用这张角色卡时，Host 会拒绝删除')
+      return
+    }
+    startAction(`character:${entry.id}`)
+    void deleteCharacter(entry.id).then(() => {
+      setCharacters(value => (value ?? []).filter(item => item.id !== entry.id))
+      setConfirmingCharacterId(undefined)
+      setNotice(`已永久删除角色「${entry.displayName}」`)
     }).catch(reason => { setError(message(reason)) }).finally(finishAction)
   }
   const savePresetName = (): void => {
@@ -673,8 +690,15 @@ export function RoleplayResourceCenter({
                 </span>
               </div>
               <button type="button" disabled={busy !== undefined} onClick={() => { toggleCharacterArchive(entry) }} style={actionStyle(busy === undefined)}>
-                {busy === `character:${entry.id}` ? '处理中…' : entry.archived ? '恢复' : '收起'}
+                {busy === `character:${entry.id}` ? '处理中…' : entry.archived ? '恢复' : '移入收纳箱'}
               </button>
+              {entry.archived && <button type="button" disabled={busy !== undefined} onClick={() => { removeCharacter(entry) }} style={{
+                ...actionStyle(busy === undefined),
+                color: confirmingCharacterId === entry.id ? 'var(--dsw-alias-state-danger, #e88989)' : 'inherit',
+              }}>
+                {busy === `character:${entry.id}` ? '删除中…'
+                  : confirmingCharacterId === entry.id ? '确认永久删除' : '永久删除'}
+              </button>}
             </div>)}
             {section === 'world-info' && visibleWorldInfos.map((entry, index) => <div key={entry.id} style={{ ...rowStyle, borderTop: index === 0 ? 'none' : rowStyle.borderTop }}>
               <div style={{ flex: 1, minWidth: 0 }}>

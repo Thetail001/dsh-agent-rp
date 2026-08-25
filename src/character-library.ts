@@ -1258,6 +1258,31 @@ export class CharacterLibrary {
     return this.get(id)
   }
 
+  /** Permanently remove one archived card and every Host-owned local revision. */
+  deleteArchived(id: string): void {
+    const meta = this.readMetadata(id)
+    if (meta.archivedAt === undefined) throw new Error('请先把角色移入收纳箱，再永久删除')
+    const paths = [this.assetPath(meta), this.overlayPath(id), this.metaPath(id)]
+    const staged: Array<{ readonly source: string; readonly target: string }> = []
+    try {
+      for (const source of paths) {
+        if (!existsSync(source)) continue
+        const target = join(this.root, `.${id}.${process.pid}.${randomUUID()}.delete.tmp`)
+        renameSync(source, target)
+        staged.push({ source, target })
+      }
+    } catch (error: unknown) {
+      for (const entry of staged.reverse()) {
+        if (existsSync(entry.target) && !existsSync(entry.source)) renameSync(entry.target, entry.source)
+      }
+      throw new Error('无法完整移除角色卡文件', { cause: error })
+    }
+    const cached = this.parsed.get(id)
+    if (cached !== undefined) this.parsedSourceBytes -= cached.sourceBytes
+    this.parsed.delete(id)
+    for (const entry of staged) rmSync(entry.target, { force: true })
+  }
+
   private assertId(id: string): void {
     if (!ID_PATTERN.test(id)) throw new Error('角色库 id 无效')
   }
