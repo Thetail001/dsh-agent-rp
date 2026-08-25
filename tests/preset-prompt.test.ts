@@ -10,6 +10,7 @@ import {
   injectSillyTavernInChatPrompts,
   injectSillyTavernPromptPlan,
   prepareSillyTavernProviderMessages,
+  splitRoleplaySystemPrompt,
 } from '../src/preset-prompt.ts'
 import { EjsTemplateEngine } from '../src/ejs-template.ts'
 
@@ -78,7 +79,7 @@ test('assembles markers and nested variables on the correct side of chat history
   const beforeText = assembled.beforeHistory.map(prompt => prompt.content).join('\n')
   const afterText = assembled.afterHistory.map(prompt => prompt.content).join('\n')
 
-  assert.match(beforeText, /<world>海城终年多雾。<\/world>/u)
+  assert.doesNotMatch(beforeText, /<world>海城终年多雾。<\/world>/u)
   assert.match(beforeText, /白露在修表/u)
   assert.match(beforeText, /<personality>安静但敏锐。<\/personality>/u)
   assert.match(beforeText, /<scenario>宝宝刚刚推门进来。<\/scenario>/u)
@@ -87,8 +88,9 @@ test('assembles markers and nested variables on the correct side of chat history
   assert.match(`${beforeText}\n${afterText}`, /宝宝\/宝宝\/白露\/白露\/白露/u)
   assert.doesNotMatch(beforeText, /历史后|OUTPUT|暂不应进入请求|绝不能出现/u)
   assert.match(afterText, /轻声回答：表为什么停了/u)
+  assert.match(afterText, /<world>海城终年多雾。<\/world>/u)
   assert.match(afterText, /OUTPUT/u)
-  assert.deepEqual(assembled.afterHistory.map(prompt => prompt.role), ['system', 'system', 'assistant'])
+  assert.deepEqual(assembled.afterHistory.map(prompt => prompt.role), ['system', 'system', 'system', 'assistant'])
   assert.doesNotMatch(`${beforeText}\n${afterText}`, /\{\{|不进入提示词|暂不应进入请求|绝不能出现/u)
   assert.deepEqual(assembled.inChat, [{
     role: 'system', content: '暂不应进入请求', depth: 2, order: 100,
@@ -125,8 +127,10 @@ test('keeps marker content when a preset intentionally leaves wrapper formats em
     session: Session.create(SessionId('preset-empty-formats')),
   })
   const beforeText = assembled.beforeHistory.map(prompt => prompt.content).join('\n')
+  const afterText = assembled.afterHistory.map(prompt => prompt.content).join('\n')
 
-  assert.match(beforeText, /海城终年多雾。/u)
+  assert.doesNotMatch(beforeText, /海城终年多雾。/u)
+  assert.match(afterText, /海城终年多雾。/u)
   assert.match(beforeText, /安静但敏锐。/u)
   assert.match(beforeText, /宝宝刚刚推门进来。/u)
 })
@@ -153,9 +157,80 @@ test('assembles a standalone World Info preset without inventing character-card 
 
   assert.deepEqual(assembled.beforeHistory, [
     { role: 'user', content: '天琴座回应旅人' },
-    { role: 'system', content: '<world>星港仍在运转。</world>' },
   ])
-  assert.deepEqual(assembled.afterHistory, [{ role: 'assistant', content: '继续剧情' }])
+  assert.deepEqual(assembled.afterHistory, [
+    { role: 'system', content: '<world>星港仍在运转。</world>' },
+    { role: 'assistant', content: '继续剧情' },
+  ])
+})
+
+test('keeps changing world context behind the reusable dialogue prefix', () => {
+  const history = [
+    message('user', '第一步'),
+    message('assistant', '已经走完'),
+    message('user', '第二步'),
+  ]
+  const earlier = prepareSillyTavernProviderMessages(history, {
+    beforeHistory: [{ role: 'system', content: '稳定角色契约' }],
+    afterHistory: [{ role: 'system', content: '当前位置：机场' }],
+    inChat: [],
+    includeHistory: true,
+  })
+  const later = prepareSillyTavernProviderMessages([
+    ...history,
+    message('assistant', '棋子起飞'),
+    message('user', '第三步'),
+  ], {
+    beforeHistory: [{ role: 'system', content: '稳定角色契约' }],
+    afterHistory: [{ role: 'system', content: '当前位置：航线 3' }],
+    inChat: [],
+    includeHistory: true,
+  })
+
+  const signature = (messages: readonly Message[]) => messages.map(item => ({
+    role: item.role,
+    content: item.content,
+  }))
+  const text = (message: Message | undefined): string => {
+    const block = message?.content[0]
+    return block?.type === 'text' ? block.text : ''
+  }
+  assert.deepEqual(signature(later.slice(0, earlier.length - 1)), signature(earlier.slice(0, -1)))
+  assert.equal(text(earlier.at(-1)), '当前位置：机场')
+  assert.equal(text(later.at(-1)), '当前位置：航线 3')
+})
+
+test('moves only the leading system run into the reusable provider system field', () => {
+  assert.deepEqual(splitRoleplaySystemPrompt({
+    beforeHistory: [
+      { role: 'system', content: '身份规则' },
+      { role: 'system', content: '写作规则' },
+      { role: 'user', content: '作者指令' },
+      { role: 'system', content: '不得越过作者指令' },
+    ],
+    afterHistory: [],
+    inChat: [],
+    includeHistory: true,
+  }), {
+    systemPromptText: '身份规则\n\n写作规则',
+    beforeHistory: [
+      { role: 'user', content: '作者指令' },
+      { role: 'system', content: '不得越过作者指令' },
+    ],
+  })
+})
+
+test('retains the authored module order when chat history is disabled', () => {
+  const beforeHistory = [
+    { role: 'system' as const, content: '系统规则' },
+    { role: 'user' as const, content: '作者指令' },
+  ]
+  assert.deepEqual(splitRoleplaySystemPrompt({
+    beforeHistory,
+    afterHistory: [],
+    inChat: [],
+    includeHistory: false,
+  }), { systemPromptText: '', beforeHistory })
 })
 
 test('preserves extension-owned macros while resolving nested built-ins and additive variables', () => {

@@ -18,10 +18,12 @@ import {
   renderMvuUpdateInstructions,
 } from './mvu.ts'
 import {
+  importedCharacterPromptIsTurnVariant,
   renderActiveMemoryContext,
   renderCharacterPrompt,
   renderImportedChatPrompt,
   renderImportedCharacterPrompt,
+  renderImportedCharacterIdentityPrompt,
   renderWorldInfoScenarioPrompt,
   roleplayVisibleDialogue,
   roleplayVisibleTranscript,
@@ -29,6 +31,7 @@ import {
 } from './prompt.ts'
 import {
   assembleSillyTavernPreset,
+  splitRoleplaySystemPrompt,
   type RoleplayInChatPrompt,
   type RoleplayProviderPromptPlan,
 } from './preset-prompt.ts'
@@ -43,7 +46,7 @@ import {
   type RoleplayWorldBinding,
 } from './roleplay-runtime.ts'
 import type { ResolvedSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
-import { renderRoleplayStateContext, ROLEPLAY_STATE_MODULE_ID } from './roleplay-state.ts'
+import { ROLEPLAY_STATE_MODULE_ID } from './roleplay-state.ts'
 import {
   tavernInjectedInChatPrompts,
   tavernInjectedOrderedPrompts,
@@ -477,6 +480,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   }
   let providerPrompt = nativeProviderPrompt()
   let systemPromptText = ''
+  let nativeActorTail: RoleplayProviderPromptPlan['afterHistory'] = []
   let enabledModules = 0
   let unsupportedMacros = worldMacros.unsupportedCount
   let templateRenders = 0
@@ -514,44 +518,53 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
       mvuEnabled: resolved.mvu !== undefined && resolved.turnMode === 'conversation',
       ...(options.renderTemplate === undefined ? {} : { renderTemplate: options.renderTemplate }),
     })
-    providerPrompt = assembled
+    const systemPrompt = splitRoleplaySystemPrompt(assembled)
+    providerPrompt = { ...assembled, beforeHistory: systemPrompt.beforeHistory }
+    systemPromptText = systemPrompt.systemPromptText
     enabledModules = assembled.enabledPromptCount
     unsupportedMacros += assembled.unsupportedMacroCount
     templateRenders = assembled.templateRenderCount
     templateFailures = assembled.templateFailureCount
   } else if (resolved.card !== undefined) {
     const cardMacros = new ReplayableRoleplayMacros(macroContext)
-    systemPromptText = renderImportedCharacterPrompt(
+    const mvuOutputEnabled = resolved.mvu !== undefined && resolved.turnMode === 'conversation'
+    const renderedCardPrompt = renderImportedCharacterPrompt(
       resolved.card,
-      loreBefore,
-      loreAfter,
+      [],
+      [],
       userName,
       resolved.mvu?.statData,
       snapshot.participant?.description,
       options,
       cardMacros,
       true,
-      resolved.turnMode === 'conversation',
+      mvuOutputEnabled,
     )
+    if (importedCharacterPromptIsTurnVariant(resolved.card)) {
+      systemPromptText = renderImportedCharacterIdentityPrompt(
+        resolved.card,
+        snapshot.participant?.description,
+        mvuOutputEnabled,
+      )
+      nativeActorTail = [{ role: 'system', content: renderedCardPrompt }]
+    } else {
+      systemPromptText = renderedCardPrompt
+    }
     unsupportedMacros += cardMacros.unsupportedCount
   } else if (resolved.importedChat !== undefined) {
-    systemPromptText = [
-      ...experienceBefore,
-      renderImportedChatPrompt(
-        resolved.importedChat.characterName,
-        userName,
-        snapshot.participant?.description,
-      ),
-      ...experienceAfter,
-    ].join('\n\n')
+    systemPromptText = renderImportedChatPrompt(
+      resolved.importedChat.characterName,
+      userName,
+      snapshot.participant?.description,
+    )
   } else if (resolved.worldScenario !== undefined) {
     systemPromptText = renderWorldInfoScenarioPrompt(
-      experienceBefore,
-      experienceAfter,
+      [],
+      [],
       snapshot.participant?.description,
     )
   } else {
-    systemPromptText = renderCharacterPrompt(input.deployment, experienceBefore, experienceAfter)
+    systemPromptText = renderCharacterPrompt(input.deployment)
   }
 
   if (resolved.nativePromptPolicy !== undefined) {
@@ -562,21 +575,34 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
 
   if (stateActionTarget !== undefined) {
     const guidance = renderRoleplayStateActionGuidance(stateActionTarget, mvuUpdateInstructions!)
-    if (snapshot.prompt.strategy === 'modules') {
-      providerPrompt = { ...providerPrompt, afterHistory: [...providerPrompt.afterHistory, { role: 'system', content: guidance }] }
-    } else {
-      systemPromptText = [systemPromptText, guidance].filter(Boolean).join('\n\n')
+    providerPrompt = {
+      ...providerPrompt,
+      afterHistory: [...providerPrompt.afterHistory, { role: 'system', content: guidance }],
     }
   }
 
   const transforms = promptTransforms(resolved, characterName, userName)
+  const nativeWorldBefore = snapshot.prompt.strategy === 'modules'
+    ? [] : loreBefore.map(content => ({ role: 'system' as const, content }))
+  const nativeWorldAfter = snapshot.prompt.strategy === 'modules'
+    ? [] : loreAfter.map(content => ({ role: 'system' as const, content }))
+  const deferredInjectedBefore = providerPrompt.includeHistory ? injectedPrompts.beforeHistory : []
   const prompt: RoleplayTurnPromptPlan = {
     ...providerPrompt,
-    beforeHistory: [...injectedPrompts.beforeHistory, ...providerPrompt.beforeHistory],
-    afterHistory: [...providerPrompt.afterHistory, ...injectedPrompts.afterHistory],
+    beforeHistory: [
+      ...(providerPrompt.includeHistory ? [] : injectedPrompts.beforeHistory),
+      ...providerPrompt.beforeHistory,
+    ],
+    afterHistory: [
+      ...deferredInjectedBefore,
+      ...nativeWorldBefore,
+      ...nativeActorTail,
+      ...nativeWorldAfter,
+      ...providerPrompt.afterHistory,
+      ...injectedPrompts.afterHistory,
+    ],
     inChat: [...providerPrompt.inChat, ...world.inChat, ...injectedPrompts.inChat],
-    systemPromptText: [systemPromptText, renderRoleplayStateContext(resolved.nativeStates)]
-      .filter(text => text !== '').join('\n\n'),
+    systemPromptText,
     transforms,
     diagnostics: { enabledModules, unsupportedMacros, templateFailures },
   }

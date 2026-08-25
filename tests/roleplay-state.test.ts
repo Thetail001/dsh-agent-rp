@@ -12,6 +12,7 @@ import {
   readRoleplayStates,
   ROLEPLAY_STATE_MODULE_ID,
 } from '../src/roleplay-state.ts'
+import { renderRoleplayTurnStateContext } from '../src/roleplay-runtime-context.ts'
 import { executeRoleplayStateCommand } from '../src/roleplay-state-command.ts'
 import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
 import {
@@ -239,7 +240,8 @@ test('keeps state-free turns unchanged and compiles exact native state into prep
     writerModuleId: 'roleplay:fixture',
     value: { location: '钟楼', weather: '浓雾' },
   }])
-  assert.match(plan.prompt.systemPromptText, /<roleplay_state>[\s\S]*"state:scene"[\s\S]*"浓雾"/u)
+  assert.doesNotMatch(plan.prompt.systemPromptText, /state:scene|浓雾/u)
+  assert.match(renderRoleplayTurnStateContext(plan), /本轮只读状态[\s\S]*"state:scene"[\s\S]*"浓雾"/u)
   assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === ROLEPLAY_STATE_MODULE_ID), {
     moduleId: ROLEPLAY_STATE_MODULE_ID,
     outcome: 'applied',

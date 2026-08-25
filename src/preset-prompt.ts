@@ -10,6 +10,7 @@ import type {
 } from './import/sillytavern-preset.ts'
 import type { EjsTemplateResult } from './ejs-template.ts'
 import {
+  hasTurnVariantRoleplaySyntax,
   ReplayableRoleplayMacros,
   type RoleplayMacroContext,
   type RoleplayMacroMessage,
@@ -83,6 +84,30 @@ export type SillyTavernPromptPlan = RoleplayProviderPromptPlan
 export type SillyTavernContinuationPlan = RoleplayContinuationPlan
 export type SillyTavernInChatPrompt = RoleplayInChatPrompt
 
+/** Stable request-level system text and the ordered modules that must remain before history. */
+export interface RoleplaySystemPromptSplit {
+  readonly systemPromptText: string
+  readonly beforeHistory: readonly RoleplayOrderedPrompt[]
+}
+
+/**
+ * Move only the leading stable system run into the provider system field.
+ * Presets without chat history retain their complete authored message order.
+ */
+export function splitRoleplaySystemPrompt(
+  plan: RoleplayProviderPromptPlan,
+): RoleplaySystemPromptSplit {
+  if (!plan.includeHistory) return { systemPromptText: '', beforeHistory: plan.beforeHistory }
+  const firstNonSystem = plan.beforeHistory.findIndex(prompt => prompt.role !== 'system')
+  const prefixLength = firstNonSystem < 0 ? plan.beforeHistory.length : firstNonSystem
+  if (prefixLength === 0) return { systemPromptText: '', beforeHistory: plan.beforeHistory }
+  return {
+    systemPromptText: plan.beforeHistory.slice(0, prefixLength)
+      .map(prompt => prompt.content).join('\n\n'),
+    beforeHistory: plan.beforeHistory.slice(prefixLength),
+  }
+}
+
 function macroMessageText(message: ReturnType<Session['deriveMessages']>[number] | UserMessage): string {
   return message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
 }
@@ -100,6 +125,11 @@ function macroMessages(session: Session, pending: readonly UserMessage[]): reado
 interface PromptAssemblyDiagnostics {
   templateRenders: number
   templateFailures: number
+}
+
+interface ExpandedPromptText {
+  readonly text: string
+  readonly turnVariant: boolean
 }
 
 const RESOLVED_FORMAT_VALUE = '\u0000agent-rp-resolved-format-value\u0000'
@@ -152,13 +182,51 @@ function markerText(
   }
 }
 
+function promptHasTurnVariantSyntax(
+  prompt: SillyTavernPresetPrompt,
+  preset: ImportedSillyTavernPreset,
+  inputs: PresetPromptInputs,
+): boolean {
+  const card = inputs.card
+  if (prompt.identifier === 'worldInfoBefore' || prompt.identifier === 'worldInfoAfter') return true
+  const sources = [prompt.content]
+  switch (prompt.identifier) {
+    case 'charDescription':
+      sources.push(card?.description ?? '')
+      break
+    case 'charPersonality':
+      sources.push(preset.formats.personality, card?.personality ?? '')
+      break
+    case 'scenario':
+      sources.push(preset.formats.scenario, card?.scenario ?? '')
+      break
+    case 'personaDescription':
+      sources.push(inputs.userPersona ?? '')
+      break
+    case 'dialogueExamples':
+      sources.push(card?.messageExample ?? '')
+      break
+    case 'main':
+      if (card !== undefined && card.systemPrompt.trim() !== '' && !prompt.forbidOverrides) {
+        sources.push(card.systemPrompt)
+      }
+      break
+    case 'jailbreak':
+      if (card !== undefined && card.postHistoryInstructions.trim() !== '' && !prompt.forbidOverrides) {
+        sources.push(card.postHistoryInstructions)
+      }
+      break
+  }
+  return sources.some(hasTurnVariantRoleplaySyntax)
+}
+
 function promptText(
   prompt: SillyTavernPresetPrompt,
   preset: ImportedSillyTavernPreset,
   inputs: PresetPromptInputs,
   macros: ReplayableRoleplayMacros,
   diagnostics: PromptAssemblyDiagnostics,
-): string | undefined {
+): ExpandedPromptText | undefined {
   const marker = prompt.marker ? markerText(prompt, preset, inputs, macros) : prompt.content
   if (marker === undefined) return undefined
   const card = inputs.card
@@ -170,7 +238,8 @@ function promptText(
     value = card.postHistoryInstructions.replaceAll('{{original}}', marker)
   }
   const expanded = macros.expand(value)
-  if (!/<%[=_-]?[\s\S]*?%>/imu.test(expanded)) return expanded
+  const turnVariant = promptHasTurnVariantSyntax(prompt, preset, inputs)
+  if (!/<%[=_-]?[\s\S]*?%>/imu.test(expanded)) return { text: expanded, turnVariant }
   if (inputs.renderTemplate === undefined) {
     diagnostics.templateFailures += 1
     return undefined
@@ -181,7 +250,7 @@ function promptText(
     return undefined
   }
   diagnostics.templateRenders += 1
-  return rendered.text
+  return { text: rendered.text, turnVariant }
 }
 
 function continuationPlan(
@@ -322,8 +391,11 @@ export function assembleSillyTavernPreset(
   })
   const diagnostics: PromptAssemblyDiagnostics = { templateRenders: 0, templateFailures: 0 }
   const before: RoleplayOrderedPrompt[] = []
+  const deferred: RoleplayOrderedPrompt[] = []
   const after: RoleplayOrderedPrompt[] = []
   const inChat: RoleplayInChatPrompt[] = []
+  const hasHistory = preset.order.some(entry => entry.enabled
+    && byId.get(entry.identifier)?.identifier === 'chatHistory')
   let pastHistory = false
   let includeHistory = false
   let enabledPromptCount = 0
@@ -337,12 +409,12 @@ export function assembleSillyTavernPreset(
       pastHistory = true
       continue
     }
-    const value = promptText(prompt, preset, inputs, macros, diagnostics)
-    if (value === undefined || value.trim() === '') continue
+    const expanded = promptText(prompt, preset, inputs, macros, diagnostics)
+    if (expanded === undefined || expanded.text.trim() === '') continue
     if (prompt.injectionPosition === 1) {
       inChat.push({
         role: prompt.role,
-        content: value,
+        content: expanded.text,
         depth: Number.isSafeInteger(prompt.injectionDepth) && (prompt.injectionDepth ?? -1) >= 0
           ? prompt.injectionDepth! : 4,
         order: typeof prompt.injectionOrder === 'number' && Number.isFinite(prompt.injectionOrder)
@@ -350,7 +422,12 @@ export function assembleSillyTavernPreset(
       })
       continue
     }
-    ;(pastHistory ? after : before).push({ role: prompt.role, content: value })
+    const ordered = { role: prompt.role, content: expanded.text }
+    if (hasHistory && !pastHistory && expanded.turnVariant) {
+      deferred.push(ordered)
+      continue
+    }
+    ;(pastHistory ? after : before).push(ordered)
   }
   if (inputs.mvuEnabled === true) {
     after.push({
@@ -361,7 +438,7 @@ export function assembleSillyTavernPreset(
   const continuation = continuationPlan(preset.continuation, macros)
   return {
     beforeHistory: before,
-    afterHistory: after,
+    afterHistory: [...deferred, ...after],
     inChat,
     includeHistory,
     ...(continuation === undefined ? {} : { continuation }),

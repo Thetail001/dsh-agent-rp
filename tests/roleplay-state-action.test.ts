@@ -276,7 +276,9 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
   })
   const dialogueStep = await root.systemPrompt.assemble({ scope: nativeAgent })
   assert.equal(dialogueStep.tools.some(tool => tool.name === ROLEPLAY_STATE_ACTION_TOOL), false)
-  assert.equal(dialogueStep.contexts.find(value => value.name === 'agent-rp:state')?.text, '')
+  const dialogueState = dialogueStep.contexts.find(value => value.name === 'agent-rp:state')?.text ?? ''
+  assert.match(dialogueState, /本轮只读状态/u)
+  assert.match(dialogueState, /"state:mvu":\{"角色":\{"等级":1,"称号":"学徒"\}\}/u)
 
   const resumedSession = Session.create(SessionId('state-action-resumed-default'))
   const resumedAgent = { id: resumedSession.id, session: resumedSession } as Agent
@@ -315,9 +317,10 @@ test('applies one semantic action after turn end and keeps its narrative message
   assert.equal(plan.act.strategy, 'agent')
   assert.deepEqual(plan.act.responseRepairs, [])
   assert.equal(plan.act.stateActions[0]?.tool, ROLEPLAY_STATE_ACTION_TOOL)
-  assert.match(plan.prompt.systemPromptText, /后台阶段独立结算/u)
+  assert.doesNotMatch(plan.prompt.systemPromptText, /后台阶段独立结算/u)
+  assert.match(plan.prompt.afterHistory.map(message => message.content).join('\n'), /后台阶段独立结算/u)
   const schema4 = projectRoleplayTurnPlan(plan, 4) as RoleplayTurnPlan
-  assert.match(schema4.prompt.systemPromptText, /再在正文之后调用 apply_roleplay_state/u)
+  assert.match(schema4.prompt.afterHistory.map(message => message.content).join('\n'), /再在正文之后调用 apply_roleplay_state/u)
   assert.equal(schema4.act.stateActions[0]?.instructions, undefined)
   const args = {
     stateId: 'state:mvu',

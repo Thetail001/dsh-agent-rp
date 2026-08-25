@@ -23,6 +23,12 @@ export interface RoleplayMacroContext {
 
 const LAST_CHAT_MESSAGE_MACRO = '{{lastChatMessage}}'
 const MAX_MACRO_DEPTH = 100
+const TURN_VARIANT_MACRO = /\{\{\s*(?:random|roll|input|lastmessage|lastusermessage|lastcharmessage|lastmessageid|lastchatmessage|setvar|addvar|getvar|format_message_variable|get_message_variable)(?=\s*(?:::|\}\}))/iu
+
+/** Whether one supported template can render differently at a later turn boundary. */
+export function hasTurnVariantRoleplaySyntax(value: string): boolean {
+  return /<%[=_-]?[\s\S]*?%>/imu.test(value) || TURN_VARIANT_MACRO.test(value)
+}
 
 function macroClose(value: string, open: number): number | undefined {
   let depth = 0

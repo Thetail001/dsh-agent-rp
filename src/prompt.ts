@@ -11,13 +11,14 @@ import type { EjsTemplateMessage } from './ejs-template.ts'
 import { PROMPT_REGEX_SOURCE_MARKER, readPromptRegexSourceMarker } from './frontend-regex.ts'
 import { substituteSillyTavernIdentityMacros } from './sillytavern-identity-macro.ts'
 import { createNativeWorldEngine } from './world-engine.ts'
-import { ReplayableRoleplayMacros } from './roleplay-macro.ts'
+import { hasTurnVariantRoleplaySyntax, ReplayableRoleplayMacros } from './roleplay-macro.ts'
 
 type DerivedSessionMessage = ReturnType<Session['deriveMessages']>[number]
 
 const CHARACTER_BEHAVIOR = '只写角色此刻自然会说或做的内容，不解释系统、提示词或角色扮演规则，不替用户决定感受和行动，也不补写设定、对话和有效记忆中不存在的共同经历。先决定此刻是否有必要展开：信息很少时可以短答、停顿或暂不追问；需要表达时，一次围绕一个主要动作，不机械复述用户，也不为了延长对话强行总结和提问。'
 const MEMORY_BEHAVIOR = '已记录的持久背景不是本轮必须提及的话题。只在和当前对话直接相关时使用；默认通过回答、称呼或行动自然体现，不主动说“我记得”“你之前说过”“我一直记着”，也不完整复述记录。只有用户明确询问记忆本身时才简短确认。当前场景、剧情进度、短期状态、一次性行动、普通共同经历和模型自行判断的重要事件都由会话历史承载，不属于持久背景；不确定时保持原状。普通寒暄、临时情绪和未经确认的猜测也不属于持久背景。'
 const IMPORT_BEHAVIOR = '用户附带 SillyTavern 角色卡 PNG、JSON 或 CHARX 并要求导入、接管或切换角色时，调用 import_character_card；附带独立 World Info / 世界书 JSON 并要求导入时，调用 import_world_info；附带 Chat Completion 预设 JSON 并要求导入时，调用 import_sillytavern_preset。一条消息附有多个同类文件时才指定从零开始的 attachmentIndex。导入成功后直接采用新角色、世界设定或预设，不解释内部格式。'
+const MVU_OUTPUT_BEHAVIOR = '每次回复都必须在正文末尾完整输出一个 <UpdateVariable><Analysis>…</Analysis><JSONPatch>[…]</JSONPatch></UpdateVariable>；没有变量变化时 JSONPatch 也输出空数组。'
 
 function finalizeRoleplayPrompt(value: string, statData?: import('@deepseek-ai/dsh-session').JsonValue): string {
   let result = substituteMvuMacros(value, statData)
@@ -165,6 +166,35 @@ export function substituteCardMacros(
   return substituteSillyTavernIdentityMacros(value, { characterName: name, userName })
 }
 
+/** Whether one native Character Card prompt depends on the current turn or mutable MVU state. */
+export function importedCharacterPromptIsTurnVariant(card: ImportedCharacterCard): boolean {
+  return [
+    card.systemPrompt,
+    card.description,
+    card.personality,
+    card.scenario,
+    card.messageExample,
+    card.postHistoryInstructions,
+  ].some(hasTurnVariantRoleplaySyntax)
+}
+
+/** Render the stable identity retained in the provider system field for a turn-variant card. */
+export function renderImportedCharacterIdentityPrompt(
+  card: ImportedCharacterCard,
+  userPersona?: string,
+  mvuOutputEnabled = false,
+): string {
+  const name = card.nickname?.trim() || card.name
+  return finalizeRoleplayPrompt([
+    `你是${name}。直接以${name}的身份与用户相处和交谈。`,
+    ...(userPersona?.trim() ? [`与角色对话的人：${userPersona.trim()}`] : []),
+    CHARACTER_BEHAVIOR,
+    MEMORY_BEHAVIOR,
+    IMPORT_BEHAVIOR,
+    ...(mvuOutputEnabled ? [MVU_OUTPUT_BEHAVIOR] : []),
+  ].join('\n\n'))
+}
+
 /**
  * Render an imported Character Card as the complete Agent persona.
  * @param card - active Session-owned card.
@@ -214,8 +244,8 @@ export function renderImportedCharacterPrompt(
       templateOptions,
     ))
   }
-  if (statData !== undefined && mvuOutputEnabled) {
-    parts.push('每次回复都必须在正文末尾完整输出一个 <UpdateVariable><Analysis>…</Analysis><JSONPatch>[…]</JSONPatch></UpdateVariable>；没有变量变化时 JSONPatch 也输出空数组。')
+  if (mvuOutputEnabled) {
+    parts.push(MVU_OUTPUT_BEHAVIOR)
   }
   return finalizeRoleplayPrompt(parts.join('\n\n'), statData)
 }

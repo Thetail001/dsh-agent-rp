@@ -161,6 +161,11 @@ function cardFixture(regexScripts: readonly ImportedRegexScript[] = [], includeM
 function modularPreset(): ImportedSillyTavernPreset {
   const prompts: ImportedSillyTavernPreset['prompts'] = [
     {
+      identifier: 'stable', name: '稳定前缀', role: 'system',
+      content: '稳定系统前缀', marker: false,
+      systemPrompt: true, forbidOverrides: false,
+    },
+    {
       identifier: 'main', name: '主提示', role: 'system',
       content: '主提示：<%= char %>/<%= getchatvar("weather") %>', marker: false,
       systemPrompt: true, forbidOverrides: false,
@@ -303,7 +308,8 @@ test('keeps a standalone World Info launch actor-free and explains its activatio
   assert.equal(plan.world.resources[0]?.entries[0]?.entryId, '0')
   assert.equal(plan.world.resources[0]?.entries[0]?.reason, 'active-constant')
   assert.match(plan.prompt.systemPromptText, /本会话由独立世界书启动/u)
-  assert.match(plan.prompt.systemPromptText, /星港仍在运转/u)
+  assert.doesNotMatch(plan.prompt.systemPromptText, /星港仍在运转/u)
+  assert.match(plan.prompt.afterHistory.map(item => item.content).join('\n'), /星港仍在运转/u)
   assert.doesNotMatch(plan.prompt.systemPromptText, /\{\{/u)
 })
 
@@ -353,10 +359,15 @@ test('continues an imported chat identity without falling back to the deployment
     '{"name":"白露","mes":"门还没锁。","is_user":false,"is_system":false}',
     '{"name":"宝宝","mes":"那我进来啦。","is_user":true,"is_system":false}',
   ].join('\n'))
-  const seed = createSillyTavernChatSeed(chat, {
+  let seed = createSillyTavernChatSeed(chat, {
     ...attachment('turn-plan-chat', '白露.jsonl'),
     mediaType: 'application/x-ndjson',
   })
+  seed = appendWorldInfoLibrarySessionSeed(seed, worldAsset(
+    'world-info-00000000000000000000000000000005',
+    '导入聊天背景',
+    '海城的潮汐正在上涨。',
+  ))
   const session = Session.create(SessionId('turn-plan-chat'), seed)
   const resolved = resolveSessionRoleplayRuntime({ session, deployment })
   const plan = prepareRoleplayTurn({ session, deployment, resolved })
@@ -364,6 +375,8 @@ test('continues an imported chat identity without falling back to the deployment
   assert.equal(plan.runtime.actor?.name, '白露')
   assert.equal(plan.runtime.actor?.adapter, 'sillytavern:chat')
   assert.equal(plan.prompt.systemPromptText, renderImportedChatPrompt('白露', '宝宝'))
+  assert.doesNotMatch(plan.prompt.systemPromptText, /潮汐正在上涨/u)
+  assert.match(plan.prompt.afterHistory.map(message => message.content).join('\n'), /潮汐正在上涨/u)
   assert.doesNotMatch(plan.prompt.systemPromptText, /你是岚/u)
 })
 
@@ -396,10 +409,10 @@ test('preserves native card prompt ordering across experience and actor worlds',
   const plan = prepareRoleplayTurn({ session, deployment, resolved, templateEngine: engine })
   const expected = renderImportedCharacterPrompt(
     resolved.card!,
-    [...plan.world.experienceBeforeActor, ...plan.world.actorBefore],
-    [...plan.world.actorAfter, ...plan.world.experienceAfterActor],
+    [],
+    [],
     '小满',
-    resolved.mvu?.statData,
+    undefined,
     '刚到海城的旅人。',
     {
       regexEngine: engine,
@@ -412,12 +425,17 @@ test('preserves native card prompt ordering across experience and actor worlds',
         }))),
       }),
     },
+    undefined,
+    true,
+    true,
   )
 
   assert.deepEqual(plan.world.experienceBeforeActor, ['海城今晚有雾。'])
   assert.deepEqual(plan.world.actorBefore, ['浓雾中的钟楼。'])
   assert.equal(plan.prompt.systemPromptText, expected)
-  assert.match(plan.prompt.systemPromptText, /海城今晚有雾。[\s\S]*浓雾中的钟楼。[\s\S]*角色描述：钟表匠/u)
+  assert.match(plan.prompt.systemPromptText, /角色描述：钟表匠/u)
+  assert.doesNotMatch(plan.prompt.systemPromptText, /海城今晚有雾。|浓雾中的钟楼。/u)
+  assert.match(plan.prompt.afterHistory.map(item => item.content).join('\n'), /海城今晚有雾。[\s\S]*浓雾中的钟楼。/u)
   assert.deepEqual(plan.stateReads.map(stateRead => [stateRead.id, stateRead.revision]), [
     ['state:mvu', 1], ['state:tavern-helper', state.revision],
   ])
@@ -509,13 +527,27 @@ test('uses the shared replay-safe macro boundary for a native card turn', () => 
 
   const first = prepareRoleplayTurn({ session, pendingMessages: [pending], deployment, resolved })
   const replay = prepareRoleplayTurn({ session, pendingMessages: [pending], deployment, resolved })
+  const later = prepareRoleplayTurn({
+    session,
+    pendingMessages: [createUserMessage({
+      source: { kind: 'user' }, content: [{ type: 'text', text: '明晚去哪里？' }],
+    })],
+    deployment,
+    resolved,
+  })
+  const turnText = first.prompt.afterHistory.map(message => message.content).join('\n')
+  const laterTurnText = later.prompt.afterHistory.map(message => message.content).join('\n')
 
   assert.equal(replay.prompt.systemPromptText, first.prompt.systemPromptText)
-  assert.match(first.prompt.systemPromptText, /白露听见小满说：今晚去哪里？ \/ 今晚去哪里？/u)
-  assert.match(first.prompt.systemPromptText, /同行者：刚到海城的旅人。/u)
-  assert.match(first.prompt.systemPromptText, /路线：(钟楼|港口|旧街)/u)
-  assert.match(first.prompt.systemPromptText, /角色版本：1；骰点：[1-6]/u)
-  assert.doesNotMatch(first.prompt.systemPromptText, /\{\{/u)
+  assert.equal(later.prompt.systemPromptText, first.prompt.systemPromptText)
+  assert.doesNotMatch(first.prompt.systemPromptText, /今晚去哪里|明晚去哪里|骰点/u)
+  assert.match(turnText, /白露听见小满说：今晚去哪里？ \/ 今晚去哪里？/u)
+  assert.match(turnText, /同行者：刚到海城的旅人。/u)
+  assert.match(turnText, /路线：(钟楼|港口|旧街)/u)
+  assert.match(turnText, /角色版本：1；骰点：[1-6]/u)
+  assert.doesNotMatch(turnText, /\{\{/u)
+  assert.match(laterTurnText, /明晚去哪里/u)
+  assert.notEqual(laterTurnText, turnText)
   assert.equal(first.prompt.diagnostics.unsupportedMacros, 1)
 })
 
@@ -632,12 +664,11 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
     }),
   })
 
-  assert.equal(plan.prompt.systemPromptText, '')
-  assert.deepEqual(plan.prompt.beforeHistory, [
-    { role: 'system', content: '脚本前置注入' },
-    ...direct.beforeHistory,
-  ])
+  assert.equal(plan.prompt.systemPromptText, '稳定系统前缀')
+  assert.deepEqual(direct.beforeHistory, [{ role: 'system', content: '稳定系统前缀' }])
+  assert.deepEqual(plan.prompt.beforeHistory, [])
   assert.deepEqual(plan.prompt.afterHistory, [
+    { role: 'system', content: '脚本前置注入' },
     ...direct.afterHistory,
     { role: 'system', content: '脚本后置注入' },
   ])
@@ -674,8 +705,8 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
     id: 'state:mvu', owner: 'session', adapter: 'sillytavern:mvu', revision: 2,
     writerModuleId: 'adapter:mvu', value: { 关系: { 信任: 4 } },
   })
-  assert.match(plan.prompt.beforeHistory.map(item => item.content).join('\n'), /主提示：白露\/浓雾/u)
-  assert.match(plan.prompt.beforeHistory.map(item => item.content).join('\n'), /海城今晚有雾。[\s\S]*浓雾中的钟楼/u)
+  assert.match(plan.prompt.afterHistory.map(item => item.content).join('\n'), /主提示：白露\/浓雾/u)
+  assert.match(plan.prompt.afterHistory.map(item => item.content).join('\n'), /海城今晚有雾。[\s\S]*浓雾中的钟楼/u)
   assert.match(plan.prompt.afterHistory.map(item => item.content).join('\n'), /UpdateVariable/u)
   assert.deepEqual(plan.generation, preset.generation)
   assert.deepEqual(plan.input.pendingMessageIds, [String(pending.id)])
