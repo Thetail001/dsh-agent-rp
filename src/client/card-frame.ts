@@ -25,6 +25,7 @@ import {
   type SillyTavernIdentityMacroValues,
 } from '../sillytavern-identity-macro.ts'
 import type { CardVariableScope } from './card-capability.ts'
+import type { CardFrameAppearance } from './card-frame-appearance.ts'
 import { embeddedNativeIdentityRelayRuntime } from './embedded-identity.ts'
 
 /** One browser-ready display piece consumed directly by the React view. */
@@ -51,6 +52,8 @@ export interface CompiledCardFrames {
 /** Inputs that vary with the active Session and local browser origin. */
 export interface CardFrameCompileOptions {
   readonly origin: string
+  /** Host theme baseline used only for mixed prose and inline HTML. */
+  readonly appearance?: CardFrameAppearance
   readonly statData?: JsonValue
   /** Active identities used only while projecting state into the isolated view. */
   readonly identity?: SillyTavernIdentityMacroValues
@@ -101,6 +104,13 @@ html{background:transparent!important;color-scheme:dark;scrollbar-color:rgba(145
 ::-webkit-scrollbar-thumb{border:2px solid transparent;border-radius:999px;background:rgba(145,158,181,.58);background-clip:padding-box}
 img,svg,video,canvas{max-width:100%}
 </style>`
+
+function cardFrameAppearanceRuntime(appearance: CardFrameAppearance | undefined): string {
+  if (appearance === undefined) return ''
+  const json = JSON.stringify(appearance)
+    .replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
+  return `(function(){var value=${json};function apply(target){if(!target)return;target.style.setProperty('background-color',value.backgroundColor,'important');target.style.setProperty('color',value.color,'important');target.style.setProperty('font-family',value.fontFamily);target.style.setProperty('font-size',value.fontSize);target.style.setProperty('font-style',value.fontStyle);target.style.setProperty('font-weight',value.fontWeight);target.style.setProperty('letter-spacing',value.letterSpacing);target.style.setProperty('line-height',value.lineHeight);if(target===document.body){target.style.setProperty('margin','0','important');target.style.setProperty('padding','0','important')}}apply(document.documentElement);addEventListener('DOMContentLoaded',function(){apply(document.body)},{once:true})})();`
+}
 
 function remoteOrigins(source: string): readonly string[] {
   const origins = new Set<string>()
@@ -396,7 +406,7 @@ function cardFrameSource(source: string, options: CardFrameCompileOptions): stri
   const statData = options.statData === undefined || options.identity === undefined
     ? options.statData
     : projectSillyTavernIdentityMacros(options.statData, options.identity)
-  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigins}; media-src ${policy('media')}; style-src 'unsafe-inline'${styleOrigins}; script-src 'unsafe-inline'${unsafeEval}${scriptOrigins}; connect-src ${policy('connect')}; font-src ${policy('font')}; frame-src ${policy('frame')};"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<script>${isolatedCardStorageRuntime()}${mvuFrameRuntime(statData, options.compatibilityMarkers, options.greetingChoices, options.currentCharacter, options.variableScopes, options.capabilityToken)}${resourceViolationRuntime()}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',token:__dshCardCapabilityToken,value:String(value)},'*')};var __dshLastSize=-1,__dshSizeFrame=0;function __dshReportSize(force){__dshSizeFrame=0;var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);if(!force&&value===__dshLastSize)return;__dshLastSize=value;parent.postMessage({source:'dsh-agent-rp-card',action:'resize',token:__dshCardCapabilityToken,value:value},'*')}function __dshScheduleSize(force){if(__dshSizeFrame)return;__dshSizeFrame=requestAnimationFrame(function(){__dshReportSize(force===true)})}addEventListener('message',function(event){var message=event.data;if(message&&message.source==='dsh-agent-rp-host'&&message.action==='request-resize')__dshScheduleSize(true)});addEventListener('load',function(){__dshScheduleSize(true)});addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',token:__dshCardCapabilityToken,value:input.value},'*')});var send=document.getElementById('send_but');if(!send){send=document.createElement('button');send.id='send_but';send.type='button';send.hidden=true;document.body.appendChild(send)}send.addEventListener('click',function(){void __dshCardSendMessage(input.value).then(function(){input.value='';parent.postMessage({source:'dsh-agent-rp-card',action:'draft',token:__dshCardCapabilityToken,value:''},'*')}).catch(console.error)});__dshScheduleSize(true);if(window.ResizeObserver){var resizeObserver=new ResizeObserver(function(){__dshScheduleSize(false)});resizeObserver.observe(document.documentElement);resizeObserver.observe(document.body)}if(window.MutationObserver)new MutationObserver(function(){__dshScheduleSize(false)}).observe(document.body,{attributes:true,childList:true,subtree:true});setTimeout(function(){__dshScheduleSize(true)},250);setTimeout(function(){__dshScheduleSize(true)},2000)});</script>`
+  const head = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: ${allowedImageOrigins}; media-src ${policy('media')}; style-src 'unsafe-inline'${styleOrigins}; script-src 'unsafe-inline'${unsafeEval}${scriptOrigins}; connect-src ${policy('connect')}; font-src ${policy('font')}; frame-src ${policy('frame')};"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">${cardFrameCompatibility}<script>${cardFrameAppearanceRuntime(options.appearance)}${isolatedCardStorageRuntime()}${mvuFrameRuntime(statData, options.compatibilityMarkers, options.greetingChoices, options.currentCharacter, options.variableScopes, options.capabilityToken)}${resourceViolationRuntime()}window.dshCharacterAssets=Object.freeze(${assetJson}.map(Object.freeze));window.getCharacterAsset=function(type,name){var target=window.dshCharacterAssets.find(function(asset){return asset.type===String(type).toLowerCase()&&(name===undefined||asset.name===String(name))});return target?.url};window.triggerSlash=function(value){parent.postMessage({source:'dsh-agent-rp-card',action:'trigger-slash',token:__dshCardCapabilityToken,value:String(value)},'*')};var __dshLastSize=-1,__dshSizeFrame=0;function __dshReportSize(force){__dshSizeFrame=0;var root=document.documentElement;var body=document.body;var value=Math.max(root?root.scrollHeight:0,body?body.scrollHeight:0);if(!force&&value===__dshLastSize)return;__dshLastSize=value;parent.postMessage({source:'dsh-agent-rp-card',action:'resize',token:__dshCardCapabilityToken,value:value},'*')}function __dshScheduleSize(force){if(__dshSizeFrame)return;__dshSizeFrame=requestAnimationFrame(function(){__dshReportSize(force===true)})}addEventListener('message',function(event){var message=event.data;if(message&&message.source==='dsh-agent-rp-host'&&message.action==='request-resize')__dshScheduleSize(true)});addEventListener('load',function(){__dshScheduleSize(true)});addEventListener('DOMContentLoaded',function(){var input=document.getElementById('send_textarea');if(!input){input=document.createElement('textarea');input.id='send_textarea';input.hidden=true;document.body.appendChild(input)}input.addEventListener('input',function(){parent.postMessage({source:'dsh-agent-rp-card',action:'draft',token:__dshCardCapabilityToken,value:input.value},'*')});var send=document.getElementById('send_but');if(!send){send=document.createElement('button');send.id='send_but';send.type='button';send.hidden=true;document.body.appendChild(send)}send.addEventListener('click',function(){void __dshCardSendMessage(input.value).then(function(){input.value='';parent.postMessage({source:'dsh-agent-rp-card',action:'draft',token:__dshCardCapabilityToken,value:''},'*')}).catch(console.error)});__dshScheduleSize(true);if(window.ResizeObserver){var resizeObserver=new ResizeObserver(function(){__dshScheduleSize(false)});resizeObserver.observe(document.documentElement);resizeObserver.observe(document.body)}if(window.MutationObserver)new MutationObserver(function(){__dshScheduleSize(false)}).observe(document.body,{attributes:true,childList:true,subtree:true});setTimeout(function(){__dshScheduleSize(true)},250);setTimeout(function(){__dshScheduleSize(true)},2000)});</script>`
   if (/<head(?:\s|>)/iu.test(adapted)) {
     return adapted.replace(/<head([^>]*)>/iu, (_matched, attributes: string) => `<head${attributes}>${head}`)
   }
@@ -489,10 +499,11 @@ export function compileCardFrames(
     const frameOptions = options.capabilityToken === undefined
       ? options : { ...options, capabilityToken: `${options.capabilityToken}:${index}` }
     if (segment.kind === 'html') {
+      const { appearance: _appearance, ...documentOptions } = frameOptions
       return {
         kind: 'frame' as const,
         sourceKind: segment.kind,
-        srcDoc: cardFrameSource(segment.source, frameOptions),
+        srcDoc: cardFrameSource(segment.source, documentOptions),
         interactive: /<script\b|\bfetch\s*\(|\bon[a-z]+\s*=/iu.test(segment.source),
         remoteOrigins: remoteOrigins(segment.source),
         remoteResources: cardRemoteResourceRequirements(segment.source),

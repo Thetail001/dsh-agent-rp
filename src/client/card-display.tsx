@@ -12,6 +12,7 @@ import {
 } from '../character-library-protocol.ts'
 import { cardRemoteResourceApprovalKey } from '../card-remote-resource.ts'
 import { substituteSillyTavernIdentityMacros } from '../sillytavern-identity-macro.ts'
+import type { CardFrameAppearance } from './card-frame-appearance.ts'
 import {
   blockedCardFrameResources,
   cardFrameDiagnosticSummary,
@@ -96,8 +97,9 @@ function BlockedCardResources({ character, resources }: {
 }
 
 function CardFrameView({
-  character, characterName, frameToken, onFrameRegistration, preview, segment, segmentIndex,
+  appearance, character, characterName, frameToken, onFrameRegistration, preview, segment, segmentIndex,
 }: {
+  readonly appearance?: CardFrameAppearance
   readonly character?: CharacterLibraryDetail
   readonly characterName: string
   readonly frameToken?: string
@@ -154,7 +156,7 @@ function CardFrameView({
       }, cardFrameRevealFallbackMs)
     }}
     style={{
-      background: 'transparent', border: 0, colorScheme: 'dark', display: 'block',
+      background: appearance?.backgroundColor ?? 'transparent', border: 0, colorScheme: 'dark', display: 'block',
       height: preview ? 'min(52vh, 480px)' : '72px', maxWidth: '100%',
       visibility: preview ? 'visible' : 'hidden', width: '100%',
     }}
@@ -163,9 +165,10 @@ function CardFrameView({
 
 /** Render compiled Markdown and isolated light-frontend segments. */
 export function CharacterDisplay({
-  capabilityToken, compilation, statData, characterName, character, compatibilityMarkers, greetingChoices,
+  appearance, capabilityToken, compilation, statData, characterName, character, compatibilityMarkers, greetingChoices,
   onFrameRegistration, onReady, preview = false, tavernHelperScripts, variableScopes,
 }: {
+  readonly appearance?: CardFrameAppearance
   readonly capabilityToken?: string
   readonly compilation: CompiledCharacterDisplay
   readonly statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined
@@ -181,6 +184,7 @@ export function CharacterDisplay({
 }) {
   const compiled = useMemo(() => compileCardFrames(compilation, {
     origin: window.location.origin,
+    ...(appearance === undefined ? {} : { appearance }),
     ...(statData === undefined ? {} : { statData }),
     ...(character === undefined ? {} : { character }),
     ...(compatibilityMarkers === undefined ? {} : { compatibilityMarkers }),
@@ -190,7 +194,7 @@ export function CharacterDisplay({
     }),
     ...(variableScopes === undefined ? {} : { variableScopes }),
     ...(capabilityToken === undefined ? {} : { capabilityToken }),
-  }), [capabilityToken, character, characterName, compatibilityMarkers, compilation, greetingChoices, statData, tavernHelperScripts, variableScopes])
+  }), [appearance, capabilityToken, character, characterName, compatibilityMarkers, compilation, greetingChoices, statData, tavernHelperScripts, variableScopes])
   useLayoutEffect(() => { onReady?.() }, [onReady])
   return <div data-agent-rp-character-display data-agent-rp-display-diagnostics={cardFrameDiagnosticSummary(compiled.diagnostics)}
     style={{ display: 'grid', gap: '10px', minWidth: 0 }}>
@@ -212,6 +216,7 @@ export function CharacterDisplay({
       const frameToken = capabilityToken === undefined ? undefined : `${capabilityToken}:${index}`
       return <CardFrameView key={index} characterName={characterName} preview={preview}
         segment={segment} segmentIndex={index}
+        {...(segment.sourceKind !== 'inline-html' || appearance === undefined ? {} : { appearance })}
         {...(character === undefined ? {} : { character })}
         {...(frameToken === undefined ? {} : { frameToken })}
         {...(onFrameRegistration === undefined ? {} : { onFrameRegistration })} />

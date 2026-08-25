@@ -270,9 +270,10 @@ function applyScriptWithOutcome(
       ? args.at(-1) as Record<string, string | undefined>
       : undefined
     const replacement = script.replaceString.replace(/\{\{match\}\}/giu, '$0').replace(
-      /\$(\d+)|\$<([^>]+)>/gu,
-      (_token, numeric: string | undefined, named: string | undefined) => {
-        const match = numeric === undefined ? groups?.[named ?? ''] : args[Number(numeric)]
+      /\$(?:(&)|(\d+)|<([^>]+)>)/gu,
+      (_token, whole: string | undefined, numeric: string | undefined, named: string | undefined) => {
+        const match = whole === '&' ? args[0]
+          : numeric === undefined ? groups?.[named ?? ''] : args[Number(numeric)]
         return typeof match === 'string' ? filterMatch(match, script.trimStrings, card, userName) : ''
       },
     )

@@ -120,6 +120,7 @@ import {
   cardResourceTypeLabel,
   CharacterDisplay,
 } from './card-display.tsx'
+import { captureCardFrameAppearance } from './card-frame-appearance.ts'
 import {
   characterLibraryChangedEvent,
   characterLibraryJson,
@@ -11782,10 +11783,12 @@ function roleplayComposerDockComponent(
       activeCompatibilityMarkers: readonly string[],
     ): void => {
       const existing = item.querySelector<HTMLElement>(':scope > [data-agent-rp-rendered-display]')
+      const appearance = captureCardFrameAppearance(original)
       const greetingChoices = cardFrameGreetingChoices(activeProjection, activeCharacterDetail)
       const activeCharacterScripts = activeTavernScripts(activeProjection, 'character')
       const signature = JSON.stringify([
         compilation,
+        appearance,
         activeProjection.mvu?.statData,
         activeProjection.tavern?.scopes,
         activeProjection.characterName,
@@ -11821,6 +11824,7 @@ function roleplayComposerDockComponent(
         original.style.removeProperty('display')
         display.style.setProperty('display', 'block')
         mount.root.render(<CharacterDisplay
+          appearance={appearance}
           capabilityToken={mount.capabilityToken}
           compilation={compilation}
           statData={activeProjection.mvu?.statData}

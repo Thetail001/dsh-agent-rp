@@ -9,6 +9,10 @@ import {
   blockedCardFrameResources, cardFrameCompatibilityUrl, compileCardFrameDocument, compileCardFrames,
 } from '../src/client/card-frame.ts'
 import {
+  captureCardFrameAppearance,
+  type CardFrameAppearance,
+} from '../src/client/card-frame-appearance.ts'
+import {
   parseCardCapabilityRequest, parseCardChatSendCapabilityRequest, parseCardExternalWindowCapabilityRequest,
   parseCardExternalWindowControlRequest, parseCardExternalWindowDeliveryReport,
   parseCardNativeIdentityCapabilityRequest,
@@ -84,6 +88,49 @@ test('keeps a leading style block in inline frontend source for sanitization', (
 
   assert.deepEqual(compiled.segments, [{ kind: 'inline-html', source }])
   assert.deepEqual(compiled.diagnostics, [{ code: 'inline-html', count: 1 }])
+})
+
+test('captures the visible Host theme behind a transparent message node', () => {
+  const parent = { parentElement: null }
+  const child = { parentElement: parent }
+  const childStyle = {
+    backgroundColor: 'rgba(0, 0, 0, 0)', color: 'rgb(249, 250, 251)',
+    fontFamily: 'Inter', fontSize: '14px', fontStyle: 'normal', fontWeight: '400',
+    letterSpacing: 'normal', lineHeight: '21px',
+  }
+  const parentStyle = { ...childStyle, backgroundColor: 'rgb(23, 23, 25)' }
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'getComputedStyle')
+  Object.defineProperty(globalThis, 'getComputedStyle', {
+    configurable: true,
+    value: (element: unknown) => element === child ? childStyle : parentStyle,
+  })
+  try {
+    assert.deepEqual(captureCardFrameAppearance(child as HTMLElement), {
+      backgroundColor: 'rgb(23, 23, 25)', color: 'rgb(249, 250, 251)',
+      fontFamily: 'Inter', fontSize: '14px', fontStyle: 'normal', fontWeight: '400',
+      letterSpacing: 'normal', lineHeight: '21px',
+    })
+  } finally {
+    if (previous === undefined) Reflect.deleteProperty(globalThis, 'getComputedStyle')
+    else Object.defineProperty(globalThis, 'getComputedStyle', previous)
+  }
+})
+
+test('projects a Host theme baseline into an opted-in isolated document', () => {
+  const appearance: CardFrameAppearance = {
+    backgroundColor: 'rgb(23, 23, 25)', color: 'rgb(249, 250, 251)',
+    fontFamily: 'Inter', fontSize: '14px', fontStyle: 'normal', fontWeight: '400',
+    letterSpacing: 'normal', lineHeight: '21px',
+  }
+  const source = compileCardFrameDocument('<p>正文 <span style="color:#d9b36c">藤子</span></p>', {
+    appearance, origin: 'http://127.0.0.1:3091',
+  })
+
+  assert.match(source, /"backgroundColor":"rgb\(23, 23, 25\)"/u)
+  assert.match(source, /"color":"rgb\(249, 250, 251\)"/u)
+  assert.match(source, /setProperty\('background-color',value\.backgroundColor,'important'\)/u)
+  assert.match(source, /setProperty\('color',value\.color,'important'\)/u)
+  assert.match(source, /setProperty\('margin','0','important'\)/u)
 })
 
 test('preserves styled custom wrappers inside an isolated inline frontend', () => {

@@ -153,6 +153,21 @@ test('renders plain Markdown replacements for user-message display rules', () =>
   assert.deepEqual(splitCharacterDisplay(rendered), [{ kind: 'markdown', text: '**new**' }])
 })
 
+test('supports SillyTavern full-match replacement aliases', () => {
+  const card = { ...character, frontend: { ...character.frontend, regexScripts: [] } }
+  for (const alias of ['$&', '$0', '{{match}}']) {
+    const script = {
+      ...base,
+      findRegex: '/藤子/gu',
+      replaceString: `<span style="color:#d9b36c">${alias}</span>`,
+    }
+    assert.equal(
+      renderCharacterDisplay('你好，藤子。', card, AI_OUTPUT_PLACEMENT, 0, '宝宝', [script]),
+      '你好，<span style="color:#d9b36c">藤子</span>。',
+    )
+  }
+})
+
 test('uses current library display rules without changing Session prompt behavior', () => {
   const sessionDisplay = { ...base, scriptName: '旧显示', findRegex: 'old', replaceString: 'stale' }
   const ordinary = { ...base, scriptName: '双向规则', markdownOnly: false, findRegex: 'seed', replaceString: 'old' }
@@ -3164,7 +3179,7 @@ test('reports prompt regex outcomes without exposing expressions or replacements
 
 test('runs the same two regex phases inside the isolated Tavern runtime', () => {
   const ordinary = { ...base, findRegex: '/<StatusBlocks>([\\s\\S]*?)<\\/StatusBlocks>/gu', replaceString: '$1', markdownOnly: false }
-  const display = { ...base, findRegex: '/状态：(.+)/gu', replaceString: '<details><summary>状态</summary>$1</details>' }
+  const display = { ...base, findRegex: '/状态：(.+)/gu', replaceString: '<details><summary>状态</summary>$&</details>' }
   const html = tavernScriptFrameSource({
     id: 'status-runtime', name: '状态栏', content: '', info: '', enabled: true,
     buttonEnabled: false, buttons: [], data: {},
@@ -3188,7 +3203,7 @@ test('runs the same two regex phases inside the isolated Tavern runtime', () => 
   const format = context.formatAsDisplayedMessage as (text: string, option: { readonly message_id: number }) => string
 
   assert.equal(format('<StatusBlocks>状态：平静</StatusBlocks>', { message_id: 0 }),
-    '<details><summary>状态</summary>平静</details>')
+    '<details><summary>状态</summary>状态：平静</details>')
   const body = (context.document as { readonly body: RuntimeElement }).body
   const chat = body.children[0] as RuntimeElement & { readonly id?: string; readonly className?: string }
   assert.equal(chat.children.length, 1)
