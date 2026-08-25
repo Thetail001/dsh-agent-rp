@@ -51,11 +51,17 @@ export function prepareRoleplayExperienceSession(
   selection: ExperienceSelection,
 ): PreparedAgentRpSession {
   const worlds = selection.worlds ?? []
+  const regexPacks = selection.regexPacks ?? []
   if (worlds.length > 16) throw new Error('一次体验最多选择 16 个世界资源')
   if (new Set(worlds.map(world => `${world.kind}\u0000${world.id}`)).size !== worlds.length) {
     throw new Error('世界资源不能重复')
   }
   for (const world of worlds) requireKind(world, 'world', '世界选择')
+  if (regexPacks.length > 16) throw new Error('一次体验最多选择 16 个正则包资源')
+  if (new Set(regexPacks.map(pack => `${pack.kind}\u0000${pack.id}`)).size !== regexPacks.length) {
+    throw new Error('正则包资源不能重复')
+  }
+  for (const pack of regexPacks) requireKind(pack, 'regex', '正则包选择')
   if (selection.participant !== undefined) requireKind(selection.participant, 'persona', '玩家身份')
   if (selection.promptPolicy !== undefined) requireKind(selection.promptPolicy, 'prompt-policy', '提示策略')
   if (selection.mode === 'character') {
@@ -82,6 +88,7 @@ export function prepareRoleplayExperienceSession(
     primary,
     ...(selection.participant === undefined ? [] : [selection.participant]),
     ...(selection.mode === 'character' ? worlds : worlds.slice(1)),
+    ...regexPacks,
     ...(selection.promptPolicy === undefined ? [] : [selection.promptPolicy]),
   ]
   for (const resource of ordered) {
@@ -95,6 +102,7 @@ export function prepareRoleplayExperienceSession(
     ...(selection.participant === undefined ? {} : { participant: selection.participant }),
     worlds,
     ...(selection.promptPolicy === undefined ? {} : { promptPolicy: selection.promptPolicy }),
+    regexPacks,
   })
   return Object.freeze({ seed: navigableSeed(events), title })
 }

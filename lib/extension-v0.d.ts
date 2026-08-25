@@ -4,7 +4,7 @@ import { ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import { Agent } from "@deepseek-ai/dsh-agent";
 
 /** Reusable resource categories that can be selected independently for an experience. */
-declare const ROLEPLAY_RESOURCE_KINDS: readonly ["actor", "persona", "world", "prompt-policy"];
+declare const ROLEPLAY_RESOURCE_KINDS: readonly ["actor", "persona", "world", "prompt-policy", "regex"];
 type RoleplayResourceKind = typeof ROLEPLAY_RESOURCE_KINDS[number];
 /** Source-neutral identity used to select one exact reusable resource. */
 interface RoleplayResourceReference {
@@ -39,8 +39,15 @@ interface RoleplayPromptPolicyResourceDetail {
   readonly moduleCount: number;
   readonly enabledModuleCount: number;
 }
+interface RoleplayRegexResourceDetail {
+  readonly kind: 'regex';
+  readonly scriptCount: number;
+  readonly enabledCount: number;
+  readonly displayCount: number;
+  readonly promptCount: number;
+}
 /** Source-neutral, kind-specific information needed to configure one selection. */
-type RoleplayResourceDetail = RoleplayActorResourceDetail | RoleplayPersonaResourceDetail | RoleplayWorldResourceDetail | RoleplayPromptPolicyResourceDetail;
+type RoleplayResourceDetail = RoleplayActorResourceDetail | RoleplayPersonaResourceDetail | RoleplayWorldResourceDetail | RoleplayPromptPolicyResourceDetail | RoleplayRegexResourceDetail;
 /** Stable reference and presentation metadata without source-format payloads. */
 interface RoleplayResourceDescriptor extends RoleplayResourceReference {
   readonly name: string;
@@ -726,6 +733,20 @@ declare module '@deepseek-ai/dsh-session' {
   }
 }
 /** Validate a detached native policy without consulting mutable provider state. */
+/** Immutable pack content appended by its resource provider. */
+interface SessionRegexPackSnapshot {
+  readonly format: 0;
+  readonly id: string;
+  readonly name: string;
+  readonly scripts: readonly ImportedRegexScript[];
+}
+declare module '@deepseek-ai/dsh-session' {
+  interface SessionEventMap {
+    /** Ordered global-scope regex rules selected explicitly for this Session. */
+    'agent-rp/regex-pack-seed': SessionRegexPackSnapshot;
+  }
+}
+/** Validate one Session-owned pack without consulting the mutable library. */
 /** Exact prepared input consumed by one model step in the settled turn. */
 interface RoleplayTurnPlanReference {
   readonly step: number;
@@ -997,7 +1018,7 @@ interface RoleplayExternalContextRead {
   readonly messageId: string;
 }
 /** Source-neutral ownership of one ordered model-facing text transformation. */
-type RoleplayPromptTransformOwner = 'prompt-policy' | 'actor';
+type RoleplayPromptTransformOwner = 'regex' | 'prompt-policy' | 'actor';
 /** Normalized regex operation prepared by an input adapter for the native prompt boundary. */
 interface RoleplayPromptRegexTransform {
   readonly engine: 'regex-v0';

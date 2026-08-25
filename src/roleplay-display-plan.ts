@@ -12,6 +12,13 @@ import {
 /** Placeholder emitted by imported status-bar rules before their visible replacement is resolved. */
 export const ROLEPLAY_STATUS_PLACEHOLDER = '<StatusPlaceHolderImpl/>'
 
+const EMPTY_FRONTEND: ImportedCharacterFrontend = {
+  regexScripts: [],
+  tavernHelperScriptNames: [],
+  tavernHelperScripts: [],
+  tavernHelperVariables: {},
+}
+
 /** Tavern transcript item needed to resolve display-regex depth and overrides. */
 export interface RoleplayDisplayMessage {
   readonly messageId: number
@@ -25,6 +32,9 @@ export interface RoleplayDisplayMessage {
 export interface RoleplayDisplayProjection {
   readonly characterName: string
   readonly userName?: string
+  readonly regexPacks?: readonly {
+    readonly scripts: readonly ImportedRegexScript[]
+  }[]
   readonly preset?: {
     readonly regexScripts: readonly ImportedRegexScript[]
   }
@@ -100,11 +110,15 @@ export function createRoleplayDisplayPlanner(input: {
   readonly overrides: ReadonlyMap<number, string>
 }): RoleplayDisplayPlanner {
   const { projection, frontend, immersive, overrides } = input
+  const activeFrontend = frontend ?? EMPTY_FRONTEND
   const messages = projection.tavern?.messages
   const messageBySeq = new Map(messages?.map(message => [message.seq, message]))
   const messageIdBySeq = new Map(messages?.map(message => [message.seq, message.messageId]))
-  const hasDisplayRules = immersive && frontend !== undefined
-    && frontend.regexScripts.length + (projection.preset?.regexScripts.length ?? 0) > 0
+  const sharedRegexScripts = [
+    ...(projection.regexPacks ?? []).flatMap(pack => pack.scripts),
+    ...(projection.preset?.regexScripts ?? []),
+  ]
+  const hasDisplayRules = immersive && activeFrontend.regexScripts.length + sharedRegexScripts.length > 0
 
   return {
     user: ({ seq, alignedMessage }) => {
@@ -112,13 +126,13 @@ export function createRoleplayDisplayPlanner(input: {
       const messageId = message?.messageId ?? messageIdBySeq.get(seq)
       const override = messageId === undefined ? undefined : overrides.get(messageId)
       if (override !== undefined) return overridePlan(override)
-      if (!hasDisplayRules || frontend === undefined || message?.role !== 'user' || message.text === '') {
+      if (!hasDisplayRules || message?.role !== 'user' || message.text === '') {
         return { kind: 'host' }
       }
       const rendered = renderCharacterDisplay(message.text, {
         name: projection.characterName,
-        frontend,
-      }, USER_INPUT_PLACEMENT, messageDepth(messages, message.messageId), projection.userName, projection.preset?.regexScripts)
+        frontend: activeFrontend,
+      }, USER_INPUT_PLACEMENT, messageDepth(messages, message.messageId), projection.userName, sharedRegexScripts)
       return rendered === message.text
         ? { kind: 'host' }
         : { kind: 'render', source: 'display-regex', compilation: compileCharacterDisplay(rendered) }
@@ -138,22 +152,20 @@ export function createRoleplayDisplayPlanner(input: {
         if (selected !== undefined) {
           const rendered = renderCharacterDisplay(selected.text.replaceAll(ROLEPLAY_STATUS_PLACEHOLDER, ''), {
             name: projection.characterName,
-            frontend: frontend ?? {
-              regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {},
-            },
-          }, AI_OUTPUT_PLACEMENT, messageDepth(messages, messageId), projection.userName, projection.preset?.regexScripts)
+            frontend: activeFrontend,
+          }, AI_OUTPUT_PLACEMENT, messageDepth(messages, messageId), projection.userName, sharedRegexScripts)
           return {
             kind: 'render', source: 'selected-generation', compilation: compileCharacterDisplay(rendered),
           }
         }
       }
-      if (!hasDisplayRules || frontend === undefined) return { kind: 'host' }
+      if (!hasDisplayRules) return { kind: 'host' }
       const raw = alignedMessage?.role === 'assistant' ? alignedMessage.text : blockText
       if (raw === '') return { kind: 'host' }
       const rendered = renderCharacterDisplay(raw.replaceAll(ROLEPLAY_STATUS_PLACEHOLDER, ''), {
         name: projection.characterName,
-        frontend,
-      }, AI_OUTPUT_PLACEMENT, messageDepth(messages, messageId), projection.userName, projection.preset?.regexScripts)
+        frontend: activeFrontend,
+      }, AI_OUTPUT_PLACEMENT, messageDepth(messages, messageId), projection.userName, sharedRegexScripts)
       return rendered === raw
         ? { kind: 'host' }
         : { kind: 'render', source: 'display-regex', compilation: compileCharacterDisplay(rendered) }

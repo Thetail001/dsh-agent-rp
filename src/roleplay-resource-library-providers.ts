@@ -9,6 +9,7 @@ import { readActiveSessionWorldInfos } from './import/session-world-info.ts'
 import { appendCharacterWorldSessionSeed, appendWorldInfoLibrarySessionSeed } from './import/world-info-seed.ts'
 import type { PersonaLibrary } from './persona-library.ts'
 import type { PresetLibrary, PresetLibraryEntry } from './preset-library.ts'
+import type { RegexPackLibrary } from './regex-pack-library.ts'
 import { substituteCardMacros } from './prompt.ts'
 import type {
   RoleplayResourceMaterializationInput,
@@ -19,17 +20,21 @@ import {
   CHARACTER_LIBRARY_ROLEPLAY_PROVIDER_ID,
   PERSONA_LIBRARY_ROLEPLAY_PROVIDER_ID,
   PRESET_LIBRARY_ROLEPLAY_PROVIDER_ID,
+  REGEX_PACK_LIBRARY_ROLEPLAY_PROVIDER_ID,
   WORLD_INFO_LIBRARY_ROLEPLAY_PROVIDER_ID,
   characterLibraryRoleplayResourceId,
   presetLibraryRoleplayResourceId,
+  regexPackLibraryRoleplayResourceId,
   worldInfoLibraryRoleplayResourceId,
 } from './roleplay-resource-library-ids.ts'
+import { appendSessionRegexPack } from './session-regex-pack.ts'
 import type {} from './session-persona.ts'
 import type { WorldInfoLibrary } from './world-info-library.ts'
 
 export {
   characterLibraryRoleplayResourceId,
   presetLibraryRoleplayResourceId,
+  regexPackLibraryRoleplayResourceId,
   worldInfoLibraryRoleplayResourceId,
 } from './roleplay-resource-library-ids.ts'
 
@@ -97,8 +102,41 @@ export function roleplayLibraryResourceProviders(libraries: {
   readonly characters: CharacterLibrary
   readonly personas: PersonaLibrary
   readonly presets: PresetLibrary
+  readonly regexPacks?: RegexPackLibrary
   readonly worldInfos: WorldInfoLibrary
 }): readonly RoleplayResourceProvider[] {
+  const regexPacks = libraries.regexPacks
+  const regexProvider: RoleplayResourceProvider | undefined = regexPacks === undefined ? undefined : {
+    id: REGEX_PACK_LIBRARY_ROLEPLAY_PROVIDER_ID,
+    list: () => regexPacks.list().map(entry => available({
+      id: regexPackLibraryRoleplayResourceId(entry.id),
+      kind: 'regex',
+      name: entry.name,
+      updatedAt: entry.updatedAt,
+    })),
+    inspect: descriptor => {
+      const pack = regexPacks.get(libraryId(descriptor.id, 'regex:library:'))
+      return {
+        kind: 'regex',
+        scriptCount: pack.scriptCount,
+        enabledCount: pack.enabledCount,
+        displayCount: pack.displayCount,
+        promptCount: pack.promptCount,
+      }
+    },
+    materialize: input => {
+      noVariant(input)
+      const pack = regexPacks.get(libraryId(input.selection.id, 'regex:library:'))
+      return {
+        events: appendSessionRegexPack(input.events, {
+          format: 0,
+          id: pack.id,
+          name: pack.name,
+          scripts: pack.scripts,
+        }),
+      }
+    },
+  }
   return [{
     id: CHARACTER_LIBRARY_ROLEPLAY_PROVIDER_ID,
     list: () => [
@@ -238,5 +276,5 @@ export function roleplayLibraryResourceProviders(libraries: {
         title: world.upload.name,
       }
     },
-  }]
+  }, ...(regexProvider === undefined ? [] : [regexProvider])]
 }

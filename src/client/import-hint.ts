@@ -1,4 +1,6 @@
 /** Minimal browser draft shape needed to recognize a pending chat import. */
+import { isSillyTavernRegexPackValue } from '../regex-pack.ts'
+
 export interface DraftAttachmentLike {
   readonly kind: string
   readonly file: {
@@ -16,7 +18,7 @@ export interface SillyTavernDraftSelection {
 }
 
 /** Resource kind inferred from inert JSON fields without evaluating embedded content. */
-export type SillyTavernJsonKind = 'character-card' | 'world-info' | 'preset' | 'unknown'
+export type SillyTavernJsonKind = 'character-card' | 'world-info' | 'preset' | 'regex-pack' | 'unknown'
 
 /** Maximum JSON size inspected in the browser before the authoritative importer validates it. */
 export const MAX_SILLYTAVERN_JSON_HINT_BYTES = 8 * 1024 * 1024
@@ -44,6 +46,7 @@ export function classifySillyTavernJson(source: string): SillyTavernJsonKind {
   } catch {
     return 'unknown'
   }
+  if (isSillyTavernRegexPackValue(parsed)) return 'regex-pack'
   const root = record(parsed)
   if (root === undefined) return 'unknown'
   if (Array.isArray(root.prompts) && Array.isArray(root.prompt_order)) return 'preset'

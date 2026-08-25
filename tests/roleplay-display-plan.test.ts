@@ -68,6 +68,45 @@ test('plans user display regexes without reading a rendered DSH row', () => {
   }])
 })
 
+test('runs standalone global display rules before preset and character rules', () => {
+  const planner = createRoleplayDisplayPlanner({
+    projection: {
+      ...projection,
+      regexPacks: [{ scripts: [displayScript({ findRegex: '/藤子/g', replaceString: '全局' })] }],
+      preset: { regexScripts: [displayScript({ findRegex: '/全局/g', replaceString: '预设' })] },
+    },
+    frontend: { ...frontend, regexScripts: [displayScript({ findRegex: '/预设/g', replaceString: '角色' })] },
+    immersive: true,
+    overrides: new Map(),
+  })
+  const plan = planner.user({ seq: 10 })
+  assert.equal(plan.kind, 'render')
+  if (plan.kind !== 'render') return
+  assert.deepEqual(plan.compilation.segments, [{ kind: 'markdown', text: '角色' }])
+})
+
+test('runs standalone global display rules in a scene without a Character Card frontend', () => {
+  const planner = createRoleplayDisplayPlanner({
+    projection: {
+      ...projection,
+      regexPacks: [{ scripts: [displayScript({ placement: [1, 2] })] }],
+    },
+    immersive: true,
+    overrides: new Map(),
+  })
+  const user = planner.user({ seq: 10 })
+  const assistant = planner.assistant({ finalSeq: 20, blockText: '原回复', alignedMessage: {
+    messageId: 3, seq: 20, role: 'assistant', text: '藤子', isHidden: false,
+  } })
+  assert.equal(user.kind, 'render')
+  assert.equal(assistant.kind, 'render')
+  if (user.kind !== 'render' || assistant.kind !== 'render') return
+  assert.deepEqual(user.compilation.segments, [{
+    kind: 'inline-html', source: '<span style="color:#d9b36c">藤子</span>',
+  }])
+  assert.deepEqual(assistant.compilation.segments, user.compilation.segments)
+})
+
 test('keeps display regexes inactive in debug view while honoring explicit script overrides', () => {
   const planner = createRoleplayDisplayPlanner({
     projection,

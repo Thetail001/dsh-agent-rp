@@ -105,6 +105,16 @@ export interface AgentRpProjection {
     }[]
   }
   readonly frontend?: ImportedCharacterFrontend
+  /** Explicit standalone regex packs frozen into this Session in execution order. */
+  readonly regexPacks: readonly {
+    readonly id: string
+    readonly name: string
+    readonly scriptCount: number
+    readonly enabledCount: number
+    readonly displayCount: number
+    readonly promptCount: number
+    readonly scripts: readonly ImportedRegexScript[]
+  }[]
   /** Latest model-facing regex pass without expressions or message text. */
   readonly promptRegex?: PromptRegexTraceRecord
   readonly mvu?: {

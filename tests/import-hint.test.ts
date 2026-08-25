@@ -50,6 +50,9 @@ test('classifies inert JSON resources by their stable SillyTavern fields', () =>
   assert.equal(classifySillyTavernJson(JSON.stringify({
     name: '城市', entries: { 0: { key: ['车站'], content: '月台' } },
   })), 'world-info')
+  assert.equal(classifySillyTavernJson(JSON.stringify([{
+    scriptName: '状态栏', findRegex: '/状态/g', replaceString: '<span>状态</span>', placement: [2],
+  }])), 'regex-pack')
   assert.equal(classifySillyTavernJson('{not json'), 'unknown')
   assert.equal(classifySillyTavernJson(JSON.stringify({ name: '普通配置', options: [] })), 'unknown')
 })

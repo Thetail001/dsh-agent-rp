@@ -4,7 +4,7 @@
 export const ROLEPLAY_RESOURCE_CATALOG_PATH = '/api/agent-rp/resources'
 
 /** Reusable resource categories that can be selected independently for an experience. */
-export const ROLEPLAY_RESOURCE_KINDS = ['actor', 'persona', 'world', 'prompt-policy'] as const
+export const ROLEPLAY_RESOURCE_KINDS = ['actor', 'persona', 'world', 'prompt-policy', 'regex'] as const
 
 export type RoleplayResourceKind = typeof ROLEPLAY_RESOURCE_KINDS[number]
 
@@ -48,12 +48,21 @@ export interface RoleplayPromptPolicyResourceDetail {
   readonly enabledModuleCount: number
 }
 
+export interface RoleplayRegexResourceDetail {
+  readonly kind: 'regex'
+  readonly scriptCount: number
+  readonly enabledCount: number
+  readonly displayCount: number
+  readonly promptCount: number
+}
+
 /** Source-neutral, kind-specific information needed to configure one selection. */
 export type RoleplayResourceDetail =
   | RoleplayActorResourceDetail
   | RoleplayPersonaResourceDetail
   | RoleplayWorldResourceDetail
   | RoleplayPromptPolicyResourceDetail
+  | RoleplayRegexResourceDetail
 
 function exactDetailKeys(value: object, allowed: readonly string[]): boolean {
   return Object.keys(value).every(key => allowed.includes(key))
@@ -118,16 +127,32 @@ export function parseRoleplayResourceDetail(
     }
     return Object.freeze({ kind: 'world', entryCount: detail.entryCount })
   }
-  if (!exactDetailKeys(detail, ['kind', 'moduleCount', 'enabledModuleCount'])
-    || !Number.isSafeInteger(detail.moduleCount) || detail.moduleCount < 0
-    || !Number.isSafeInteger(detail.enabledModuleCount) || detail.enabledModuleCount < 0
-    || detail.enabledModuleCount > detail.moduleCount) {
-    throw new Error(`Roleplay prompt policy ${JSON.stringify(reference.id)} returned invalid details`)
+  if (detail.kind === 'prompt-policy') {
+    if (!exactDetailKeys(detail, ['kind', 'moduleCount', 'enabledModuleCount'])
+      || !Number.isSafeInteger(detail.moduleCount) || detail.moduleCount < 0
+      || !Number.isSafeInteger(detail.enabledModuleCount) || detail.enabledModuleCount < 0
+      || detail.enabledModuleCount > detail.moduleCount) {
+      throw new Error(`Roleplay prompt policy ${JSON.stringify(reference.id)} returned invalid details`)
+    }
+    return Object.freeze({
+      kind: 'prompt-policy',
+      moduleCount: detail.moduleCount,
+      enabledModuleCount: detail.enabledModuleCount,
+    })
+  }
+  if (!exactDetailKeys(detail, ['kind', 'scriptCount', 'enabledCount', 'displayCount', 'promptCount'])
+    || ![detail.scriptCount, detail.enabledCount, detail.displayCount, detail.promptCount]
+      .every(count => Number.isSafeInteger(count) && count >= 0)
+    || detail.enabledCount > detail.scriptCount || detail.displayCount > detail.scriptCount
+    || detail.promptCount > detail.scriptCount) {
+    throw new Error(`Roleplay regex pack ${JSON.stringify(reference.id)} returned invalid details`)
   }
   return Object.freeze({
-    kind: 'prompt-policy',
-    moduleCount: detail.moduleCount,
-    enabledModuleCount: detail.enabledModuleCount,
+    kind: 'regex',
+    scriptCount: detail.scriptCount,
+    enabledCount: detail.enabledCount,
+    displayCount: detail.displayCount,
+    promptCount: detail.promptCount,
   })
 }
 

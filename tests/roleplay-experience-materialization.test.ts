@@ -11,11 +11,16 @@ import { readActiveSessionWorldInfos } from '../src/import/session-world-info.ts
 import { parseSillyTavernPresetJson } from '../src/import/sillytavern-preset.ts'
 import { PersonaLibrary } from '../src/persona-library.ts'
 import { PresetLibrary } from '../src/preset-library.ts'
-import { readRoleplayExperienceSelection } from '../src/roleplay-experience-selection.ts'
+import { RegexPackLibrary } from '../src/regex-pack-library.ts'
+import {
+  parseRoleplayExperienceSelection,
+  readRoleplayExperienceSelection,
+} from '../src/roleplay-experience-selection.ts'
 import { RoleplayResourceCatalog } from '../src/roleplay-resource-catalog.ts'
 import {
   characterLibraryRoleplayResourceId,
   presetLibraryRoleplayResourceId,
+  regexPackLibraryRoleplayResourceId,
   roleplayLibraryResourceProviders,
   worldInfoLibraryRoleplayResourceId,
 } from '../src/roleplay-resource-library-providers.ts'
@@ -33,6 +38,8 @@ import {
   renderNativePromptPolicy,
 } from '../src/native-prompt-policy.ts'
 import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
+import { readSessionRegexPacks } from '../src/session-regex-pack.ts'
+import { agentRpProjectionDefinition } from '../src/projection.ts'
 
 function fixture(context: test.TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'agent-rp-experience-materialization-'))
@@ -40,6 +47,7 @@ function fixture(context: test.TestContext) {
   const characters = new CharacterLibrary({ root: join(root, 'characters') })
   const personas = new PersonaLibrary({ root: join(root, 'personas') })
   const presets = new PresetLibrary({ root: join(root, 'presets') })
+  const regexPacks = new RegexPackLibrary({ root: join(root, 'regex-packs') })
   const worldInfos = new WorldInfoLibrary({ root: join(root, 'worlds') })
   const chats = new SillyTavernChatLibrary({ root: join(root, 'chats') })
   const character = characters.importFile({
@@ -71,19 +79,28 @@ function fixture(context: test.TestContext) {
       } },
     })),
   })
+  const regexPack = regexPacks.importFile({
+    filename: '全局规则.json',
+    data: new TextEncoder().encode(JSON.stringify([{
+      id: 'global-before-preset', scriptName: '全局先行', findRegex: '/海城/g', replaceString: '雾都',
+      trimStrings: [], placement: [2], disabled: false, markdownOnly: false, promptOnly: true,
+      runOnEdit: false, substituteRegex: 0, minDepth: null, maxDepth: null,
+    }])),
+  })
   const catalog = new RoleplayResourceCatalog()
-  for (const provider of roleplayLibraryResourceProviders({ characters, personas, presets, worldInfos })) {
+  for (const provider of roleplayLibraryResourceProviders({ characters, personas, presets, regexPacks, worldInfos })) {
     catalog.register(provider)
   }
   catalog.register(nativePromptPolicyResourceProvider())
-  return { characters, personas, presets, worldInfos, chats, character, persona, preset, world, catalog }
+  return { characters, personas, presets, regexPacks, worldInfos, chats, character, persona, preset, regexPack, world, catalog }
 }
 
-test('materializes four independent resources into one exact replayable character experience', context => {
+test('materializes five independent resources into one exact replayable character experience', context => {
   const value = fixture(context)
   const actorId = characterLibraryRoleplayResourceId(value.character.id)
   const worldId = worldInfoLibraryRoleplayResourceId(value.world.id)
   const promptPolicyId = presetLibraryRoleplayResourceId(value.preset.id)
+  const regexPackId = regexPackLibraryRoleplayResourceId(value.regexPack.id)
   const request = parseAgentRpSessionLaunchRequest({
     format: 0,
     sourceSessionId: 'source-session',
@@ -93,6 +110,7 @@ test('materializes four independent resources into one exact replayable characte
     participant: { kind: 'persona', id: value.persona.id },
     worlds: [{ kind: 'world', id: worldId }],
     promptPolicy: { kind: 'prompt-policy', id: promptPolicyId },
+    regexPacks: [{ kind: 'regex', id: regexPackId }],
   })
   assert.equal(request.kind, 'experience')
   const prepared = prepareAgentRpSession(
@@ -123,12 +141,47 @@ test('materializes four independent resources into one exact replayable characte
     participant: { kind: 'persona', id: value.persona.id },
     worlds: [{ kind: 'world', id: worldId }],
     promptPolicy: { kind: 'prompt-policy', id: promptPolicyId },
+    regexPacks: [{ kind: 'regex', id: regexPackId }],
   })
+  assert.deepEqual(readSessionRegexPacks(replay.events).map(pack => pack.id), [value.regexPack.id])
+  let projectionState = agentRpProjectionDefinition.init()
+  for (const event of replay.events) projectionState = agentRpProjectionDefinition.apply(projectionState, event)
+  assert.deepEqual(agentRpProjectionDefinition.wire.view(projectionState).regexPacks.map(pack => ({
+    id: pack.id,
+    scriptCount: pack.scriptCount,
+    enabledCount: pack.enabledCount,
+    displayCount: pack.displayCount,
+    promptCount: pack.promptCount,
+  })), [{ id: value.regexPack.id, scriptCount: 1, enabledCount: 1, displayCount: 0, promptCount: 1 }])
   assert.equal(runtime.experience.id, actorId)
   assert.equal(runtime.actor?.id, actorId)
   assert.equal(runtime.participant?.id, value.persona.id)
   assert.equal(runtime.world.bindings.some(binding => binding.id === worldId), true)
   assert.equal(runtime.prompt.resource?.id, promptPolicyId)
+  const plan = prepareRoleplayTurn({
+    session: replay,
+    deployment: resolveConfig({ characterName: 'fallback' }),
+    resolved: resolveSessionRoleplayRuntime({
+      session: replay,
+      deployment: resolveConfig({ characterName: 'fallback' }),
+    }),
+  })
+  assert.equal(plan.prompt.transforms.operations[0]?.owner, 'regex')
+})
+
+test('normalizes older experience provenance without a regex-pack selection', () => {
+  assert.deepEqual(parseRoleplayExperienceSelection({
+    format: 0,
+    mode: 'character',
+    actor: { kind: 'actor', id: 'actor:legacy' },
+    worlds: [],
+  }), {
+    format: 0,
+    mode: 'character',
+    actor: { kind: 'actor', id: 'actor:legacy' },
+    worlds: [],
+    regexPacks: [],
+  })
 })
 
 test('materializes a scene without fabricating an actor and preserves its primary world reference', context => {

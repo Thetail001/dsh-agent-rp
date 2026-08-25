@@ -5,6 +5,7 @@ import type { RoleplayResourceSelection } from '../roleplay-resource-catalog-pro
 import {
   characterLibraryRoleplayResourceId,
   presetLibraryRoleplayResourceId,
+  regexPackLibraryRoleplayResourceId,
   worldInfoLibraryRoleplayResourceId,
 } from '../roleplay-resource-library-ids.ts'
 import type { RoleplayExperienceSessionLaunchRequest } from '../session-launch-protocol.ts'
@@ -12,12 +13,14 @@ import type { RoleplayExperienceSessionLaunchRequest } from '../session-launch-p
 export type CharacterExperienceSelection = Pick<
   RoleplayExperienceSessionLaunchRequest,
   'actor' | 'participant' | 'worlds' | 'promptPolicy'
+  | 'regexPacks'
   | 'agentPresetId'
 >
 
 export type SceneExperienceSelection = Pick<
   RoleplayExperienceSessionLaunchRequest,
   'participant' | 'worlds' | 'promptPolicy'
+  | 'regexPacks'
   | 'agentPresetId'
 >
 
@@ -28,6 +31,7 @@ export function characterExperienceSelection(input: {
   readonly persona?: SessionPersonaSnapshot
   readonly presetId?: string
   readonly worldInfoIds: readonly string[]
+  readonly regexPackIds?: readonly string[]
   readonly agentPresetId?: string
 }): CharacterExperienceSelection {
   if (!Number.isSafeInteger(input.greetingIndex) || input.greetingIndex < 0) {
@@ -49,6 +53,10 @@ export function characterExperienceSelection(input: {
     ...(input.presetId === undefined
       ? {}
       : { promptPolicy: { kind: 'prompt-policy' as const, id: presetLibraryRoleplayResourceId(input.presetId) } }),
+    regexPacks: (input.regexPackIds ?? []).map(id => ({
+      kind: 'regex' as const,
+      id: regexPackLibraryRoleplayResourceId(id),
+    })),
     ...(input.agentPresetId === undefined ? {} : { agentPresetId: input.agentPresetId }),
   }
 }
@@ -59,6 +67,7 @@ export function sceneExperienceSelection(input: {
   readonly persona?: SessionPersonaSnapshot
   readonly presetId?: string
   readonly supportingWorldInfoIds: readonly string[]
+  readonly regexPackIds?: readonly string[]
   readonly agentPresetId?: string
 }): SceneExperienceSelection {
   return {
@@ -72,6 +81,10 @@ export function sceneExperienceSelection(input: {
     ...(input.presetId === undefined
       ? {}
       : { promptPolicy: { kind: 'prompt-policy' as const, id: presetLibraryRoleplayResourceId(input.presetId) } }),
+    regexPacks: (input.regexPackIds ?? []).map(id => ({
+      kind: 'regex' as const,
+      id: regexPackLibraryRoleplayResourceId(id),
+    })),
     ...(input.agentPresetId === undefined ? {} : { agentPresetId: input.agentPresetId }),
   }
 }
@@ -84,6 +97,7 @@ export function experiencePreflightResources(
     ...('actor' in selection && selection.actor !== undefined ? [selection.actor] : []),
     ...(selection.participant === undefined ? [] : [selection.participant]),
     ...(selection.worlds ?? []),
+    ...(selection.regexPacks ?? []),
     ...(selection.promptPolicy === undefined ? [] : [selection.promptPolicy]),
   ]
 }
@@ -95,6 +109,7 @@ export function characterExperienceLaunchRequest(input: {
   readonly persona?: SessionPersonaSnapshot
   readonly presetId?: string
   readonly worldInfoIds: readonly string[]
+  readonly regexPackIds?: readonly string[]
 }): RoleplayExperienceSessionLaunchRequest {
   return {
     format: 0,
@@ -111,6 +126,7 @@ export function sceneExperienceLaunchRequest(input: {
   readonly persona?: SessionPersonaSnapshot
   readonly presetId?: string
   readonly supportingWorldInfoIds: readonly string[]
+  readonly regexPackIds?: readonly string[]
 }): RoleplayExperienceSessionLaunchRequest {
   return {
     format: 0,

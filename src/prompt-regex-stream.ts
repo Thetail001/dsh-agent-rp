@@ -243,7 +243,8 @@ export function applyPromptRegexSurface(
     messageCount: nodes.length,
     replacementCount: replacements.length,
     scripts: scripts.map((script, index) => ({
-      source: plan.operations[index]?.owner === 'prompt-policy' ? 'preset' : 'character',
+      source: plan.operations[index]?.owner === 'regex' ? 'regex'
+        : plan.operations[index]?.owner === 'prompt-policy' ? 'preset' : 'character',
       index: plan.operations[index]?.ownerIndex ?? index,
       scriptName: script.scriptName,
       outcome: summaries[index]?.outcome ?? 'no-match',

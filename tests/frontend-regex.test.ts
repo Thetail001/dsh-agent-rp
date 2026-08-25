@@ -2478,6 +2478,7 @@ test('lets Tavern scripts inspect current character regexes through new and lega
     min_depth: null, max_depth: null,
   }
   const presetRegex = { ...characterRegex, id: 'preset-regex', script_name: '预设清理' }
+  const globalRegex = { ...characterRegex, id: 'global-regex', script_name: '全局清理' }
   const script = String.raw`
 const mutable = getTavernRegexes({ type: 'character', name: 'current' });
 mutable[0].script_name = '不应污染快照';
@@ -2504,7 +2505,7 @@ window.__regexReads = {
     },
     scopes: { global: {}, preset: {}, character: {}, chat: {}, message: {}, script: {} },
     worldbooks: {}, worldbookBindings: { global: [], character: { primary: null, additional: [] }, chat: null },
-    activeWorldbookEntries: [], messages: [], characterRegexScripts: [characterRegex],
+    activeWorldbookEntries: [], messages: [], characterRegexScripts: [characterRegex], globalRegexScripts: [globalRegex],
     presetScriptTrees: [], characterScriptTrees: [], displayRegexScripts: [],
   })
   const source = html.match(/<script>([\s\S]*)<\/script>/u)?.[1]
@@ -2515,10 +2516,13 @@ window.__regexReads = {
   assert.equal(result.enabled, true)
   assert.deepEqual(result.character, [characterRegex])
   assert.deepEqual(result.preset, [presetRegex])
-  assert.deepEqual(result.global, [])
-  assert.deepEqual(result.legacyAll, [{ ...characterRegex, scope: 'character' }])
+  assert.deepEqual(result.global, [globalRegex])
+  assert.deepEqual(result.legacyAll, [
+    { ...globalRegex, scope: 'global' },
+    { ...characterRegex, scope: 'character' },
+  ])
   assert.deepEqual(result.legacyCharacter, [{ ...characterRegex, scope: 'character' }])
-  assert.deepEqual(result.legacyGlobal, [])
+  assert.deepEqual(result.legacyGlobal, [{ ...globalRegex, scope: 'global' }])
 })
 
 test('lets Tavern scripts inspect preset and character script trees without sharing mutations', () => {

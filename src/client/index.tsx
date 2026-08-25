@@ -235,6 +235,12 @@ import {
 } from './tavern-permission.ts'
 import { fetchTavernPreflight } from './tavern-preflight.ts'
 import { RoleplayResourceCenter } from './resource-center.tsx'
+import {
+  deleteRegexPack,
+  importRegexPackFile,
+  listRegexPacks,
+} from './regex-pack-library-client.ts'
+import type { RegexPackLibrarySummary } from '../regex-pack-library-protocol.ts'
 import { fetchRoleplayResourceDetail } from './roleplay-resource-detail.ts'
 import {
   agentRpSessionResourcePermissionsChangedEvent,
@@ -604,8 +610,12 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
     memory?: 'copy-active',
     resourcePermissions?: AgentRpSessionResourcePermissions,
     agentPresetId?: string,
+    regexPackIds?: readonly string[],
   ) => Promise<void>
   readonly listPresets: () => Promise<readonly PresetLibrarySummary[]>
+  readonly listRegexPacks: () => Promise<readonly RegexPackLibrarySummary[]>
+  readonly importRegexPackFile: (file: File) => Promise<RegexPackLibrarySummary>
+  readonly deleteRegexPack: (id: string) => Promise<void>
   readonly listAgentCapabilityPresets: () => Promise<readonly AgentRpCapabilityPresetSummary[]>
   readonly listPersonas: () => Promise<readonly PersonaLibraryEntry[]>
   readonly savePersona: (request: PersonaLibrarySaveRequest) => Promise<PersonaLibraryEntry>
@@ -1315,11 +1325,14 @@ function roleplaySummary(
     // Keep that rolling upgrade usable until the Host process is restarted.
     const nativeStates = (projection as Partial<AgentRpProjection>).nativeStates
     const turnMode = (projection as Partial<AgentRpProjection>).turnMode
-    return Array.isArray(nativeStates) && (turnMode === 'conversation' || turnMode === 'agent')
+    const regexPacks = (projection as Partial<AgentRpProjection>).regexPacks
+    return Array.isArray(nativeStates) && Array.isArray(regexPacks)
+      && (turnMode === 'conversation' || turnMode === 'agent')
       ? projection
       : {
           ...projection,
           nativeStates: Array.isArray(nativeStates) ? nativeStates : [],
+          regexPacks: Array.isArray(regexPacks) ? regexPacks : [],
           turnMode: turnMode === 'agent' ? 'agent' : 'conversation',
         }
   }
@@ -1348,6 +1361,7 @@ function roleplaySummary(
       },
       books: [],
     },
+    regexPacks: [],
     presetLibrary: [],
     generations: [],
     source: 'preset' as const,
@@ -2676,6 +2690,9 @@ type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
   | 'launchPreparedChatMigration'
   | 'startCharacterSession'
   | 'listPresets'
+  | 'listRegexPacks'
+  | 'importRegexPackFile'
+  | 'deleteRegexPack'
   | 'listAgentCapabilityPresets'
   | 'importPresetFile'
   | 'listPersonas'
@@ -2694,6 +2711,7 @@ type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
     worldInfoIds?: readonly string[],
     resourcePermissions?: AgentRpSessionResourcePermissions,
     agentPresetId?: string,
+    regexPackIds?: readonly string[],
   ) => Promise<void>
   readonly renamePreset: (id: string, name: string) => Promise<PresetLibrarySummary>
   readonly deletePreset: (id: string) => Promise<void>
@@ -2771,7 +2789,8 @@ function SidebarRoleplayDestination({
   listCharacters, readCharacter, setCharacterArchived, deleteCharacter, importCharacterFile,
   prepareChatMigration, prepareRpDistributionChatMigration, launchPreparedChatMigration,
   startCharacterSession,
-  listPresets, listAgentCapabilityPresets, importPresetFile, listPersonas, savePersona, deletePersona,
+  listPresets, listRegexPacks, importRegexPackFile, deleteRegexPack,
+  listAgentCapabilityPresets, importPresetFile, listPersonas, savePersona, deletePersona,
   listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo, renamePreset, deletePreset,
   startWorldInfoSession,
   workspaceSettings, workspaceList,
@@ -2780,7 +2799,7 @@ function SidebarRoleplayDestination({
   const [launchComposerOpen, setLaunchComposerOpen] = useState(false)
   const [migrationOpen, setMigrationOpen] = useState(false)
   const [resourceCenterOpen, setResourceCenterOpen] = useState(false)
-  const [resourceCenterSection, setResourceCenterSection] = useState<'characters' | 'world-info'>('characters')
+  const [resourceCenterSection, setResourceCenterSection] = useState<'characters' | 'world-info' | 'regex-packs'>('characters')
   const [worldInfoLaunch, setWorldInfoLaunch] = useState<WorldInfoLibraryUpload>()
   const [launchSessionId, setLaunchSessionId] = useState<SessionId | undefined>(undefined)
   const [accessSaving, setAccessSaving] = useState(false)
@@ -2997,6 +3016,7 @@ function SidebarRoleplayDestination({
       readCharacter={readCharacter}
       listWorldInfos={listWorldInfos}
       listPresets={listPresets}
+      listRegexPacks={listRegexPacks}
       listAgentCapabilityPresets={listAgentCapabilityPresets}
       listPersonas={listPersonas}
       onClose={() => { setLaunchComposerOpen(false) }}
@@ -3005,11 +3025,13 @@ function SidebarRoleplayDestination({
         setResourceCenterSection(section)
         setResourceCenterOpen(true)
       }}
-      onStartCharacter={(character, greetingIndex, persona, presetId, worldInfoIds, resourcePermissions, agentPresetId) => startCharacterSession(
-        launchSessionId, character, greetingIndex, persona, presetId, worldInfoIds, undefined, resourcePermissions, agentPresetId,
+      onStartCharacter={(character, greetingIndex, persona, presetId, worldInfoIds, regexPackIds, resourcePermissions, agentPresetId) => startCharacterSession(
+        launchSessionId, character, greetingIndex, persona, presetId, worldInfoIds,
+        undefined, resourcePermissions, agentPresetId, regexPackIds,
       )}
-      onStartWorldInfo={(worldInfo, persona, presetId, worldInfoIds, resourcePermissions, agentPresetId) => startWorldInfoSession(
-        launchSessionId, worldInfo, persona, presetId, worldInfoIds, resourcePermissions, agentPresetId,
+      onStartWorldInfo={(worldInfo, persona, presetId, worldInfoIds, regexPackIds, resourcePermissions, agentPresetId) => startWorldInfoSession(
+        launchSessionId, worldInfo, persona, presetId, worldInfoIds,
+        resourcePermissions, agentPresetId, regexPackIds,
       )}
     />, document.body)}
     {migrationOpen && launchSessionId !== undefined && createPortal(<SillyTavernImportDialog
@@ -3038,9 +3060,12 @@ function SidebarRoleplayDestination({
       setWorldInfoDefault={setWorldInfoDefault}
       deleteWorldInfo={deleteWorldInfo}
       listPresets={listPresets}
+      listRegexPacks={listRegexPacks}
       importPresetFile={importPresetFile}
       renamePreset={renamePreset}
       deletePreset={deletePreset}
+      importRegexPackFile={importRegexPackFile}
+      deleteRegexPack={deleteRegexPack}
       listPersonas={listPersonas}
       savePersona={savePersona}
       deletePersona={deletePersona}
@@ -4153,7 +4178,10 @@ function RoleplayHeader({
     : renderCharacterDisplay(statusPlaceholder, {
         name: projection.characterName,
         frontend: displayFrontend,
-      }, AI_OUTPUT_PLACEMENT, 0, projection.userName, projection.preset?.regexScripts)
+      }, AI_OUTPUT_PLACEMENT, 0, projection.userName, [
+        ...projection.regexPacks.flatMap(pack => pack.scripts),
+        ...(projection.preset?.regexScripts ?? []),
+      ])
   const statusHtml = status === undefined || status === statusPlaceholder
     ? undefined
     : splitCharacterDisplay(status).find(segment => segment.kind === 'html')?.source
@@ -5612,7 +5640,8 @@ type RoleplayLaunchMode = 'character' | 'world-info'
 
 /** Compose peer RP resources for one new Session without turning any one library into their owner. */
 function RoleplayLaunchComposer({
-  runtimeDiagnostics, listCharacters, readCharacter, listWorldInfos, listPresets, listAgentCapabilityPresets, listPersonas,
+  runtimeDiagnostics, listCharacters, readCharacter, listWorldInfos, listPresets, listRegexPacks,
+  listAgentCapabilityPresets, listPersonas,
   onClose, onManageResources, onStartCharacter, onStartWorldInfo,
 }: {
   readonly runtimeDiagnostics: AgentRpRuntimeDiagnosticRegistry
@@ -5620,16 +5649,18 @@ function RoleplayLaunchComposer({
   readonly readCharacter: HeaderProps['readCharacter']
   readonly listWorldInfos: HeaderProps['listWorldInfos']
   readonly listPresets: HeaderProps['listPresets']
+  readonly listRegexPacks: HeaderProps['listRegexPacks']
   readonly listAgentCapabilityPresets: HeaderProps['listAgentCapabilityPresets']
   readonly listPersonas: HeaderProps['listPersonas']
   readonly onClose: () => void
-  readonly onManageResources: (section: 'characters' | 'world-info') => void
+  readonly onManageResources: (section: 'characters' | 'world-info' | 'regex-packs') => void
   readonly onStartCharacter: (
     character: CharacterLibraryDetail,
     greetingIndex: number,
     persona?: SessionPersonaSnapshot,
     presetId?: string,
     worldInfoIds?: readonly string[],
+    regexPackIds?: readonly string[],
     resourcePermissions?: AgentRpSessionResourcePermissions,
     agentPresetId?: string,
   ) => Promise<void>
@@ -5638,6 +5669,7 @@ function RoleplayLaunchComposer({
     persona?: SessionPersonaSnapshot,
     presetId?: string,
     worldInfoIds?: readonly string[],
+    regexPackIds?: readonly string[],
     resourcePermissions?: AgentRpSessionResourcePermissions,
     agentPresetId?: string,
   ) => Promise<void>
@@ -5652,6 +5684,8 @@ function RoleplayLaunchComposer({
   const [worldInfos, setWorldInfos] = useState<readonly WorldInfoLibraryUpload[]>()
   const [primaryWorldInfoId, setPrimaryWorldInfoId] = useState('')
   const [selectedWorldInfoIds, setSelectedWorldInfoIds] = useState<readonly string[]>()
+  const [regexPacks, setRegexPacks] = useState<readonly RegexPackLibrarySummary[]>()
+  const [selectedRegexPackIds, setSelectedRegexPackIds] = useState<readonly string[]>([])
   const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
   const [personaId, setPersonaId] = useState('')
   const [greetingIndex, setGreetingIndex] = useState(0)
@@ -5698,6 +5732,17 @@ function RoleplayLaunchComposer({
     })
     return () => { current = false }
   }, [listWorldInfos])
+  useEffect(() => {
+    let current = true
+    void listRegexPacks().then(entries => {
+      if (current) setRegexPacks(entries)
+    }, reason => {
+      if (!current) return
+      setRegexPacks([])
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { current = false }
+  }, [listRegexPacks])
   useEffect(() => {
     let current = true
     void listPersonas().then(entries => {
@@ -5761,12 +5806,14 @@ function RoleplayLaunchComposer({
       ...(selectedPersona === undefined ? {} : { persona: selectedPersona }),
       ...(selectedPresetId === undefined ? {} : { presetId: selectedPresetId }),
       worldInfoIds: selectedWorldInfoIds ?? [],
+      regexPackIds: selectedRegexPackIds,
     })
     : primaryWorldInfoId === '' ? undefined : sceneExperienceSelection({
       primaryWorldInfoId,
       ...(selectedPersona === undefined ? {} : { persona: selectedPersona }),
       ...(selectedPresetId === undefined ? {} : { presetId: selectedPresetId }),
       supportingWorldInfoIds: selectedWorldInfoIds ?? [],
+      regexPackIds: selectedRegexPackIds,
     })
   const experienceResources = experienceSelection === undefined
     ? undefined : experiencePreflightResources(experienceSelection)
@@ -5883,7 +5930,7 @@ function RoleplayLaunchComposer({
         if (!approval.ready) return false
         await onStartCharacter(
           approval.character, greetingIndex, persona, selectedPresetId,
-          additionalWorldInfoIds, approval.resourcePermissions, agentCapabilityPresetId,
+          additionalWorldInfoIds, selectedRegexPackIds, approval.resourcePermissions, agentCapabilityPresetId,
         )
         return true
       }
@@ -5892,7 +5939,7 @@ function RoleplayLaunchComposer({
         ? await launchPreflight.approve(permissionDuration) : undefined
       if (tavern !== undefined && !tavern.ready) return false
       await onStartWorldInfo(
-        primaryWorldInfo, persona, selectedPresetId, additionalWorldInfoIds,
+        primaryWorldInfo, persona, selectedPresetId, additionalWorldInfoIds, selectedRegexPackIds,
         tavern?.permissions === undefined ? undefined : { tavern: tavern.permissions, card: [] },
         agentCapabilityPresetId,
       )
@@ -6079,6 +6126,53 @@ function RoleplayLaunchComposer({
             excludedIds={mode === 'world-info' && primaryWorldInfoId !== '' ? [primaryWorldInfoId] : []}
             embedded
           />
+        </section>
+
+        <section data-agent-rp-launch-resource="regex" style={{ ...resourcePanelStyle, marginTop: '12px' }}>
+          <div style={{ alignItems: 'baseline', display: 'flex', gap: '10px' }}>
+            <span style={{ flex: 1 }}>
+              <strong style={{ display: 'block', fontSize: '12px' }}>正则包</strong>
+              <span style={{ display: 'block', fontSize: '10px', lineHeight: 1.5, marginTop: '3px', opacity: .48 }}>
+                全局规则先于预设与角色卡正则执行；选择顺序会固定到本次会话
+              </span>
+            </span>
+            <button type="button" onClick={() => { onManageResources('regex-packs') }} style={{
+              background: 'transparent', border: 0, color, cursor: 'pointer', font: 'inherit', fontSize: '11px', padding: 0,
+            }}>管理</button>
+          </div>
+          {regexPacks === undefined
+            ? <div style={{ fontSize: '11px', marginTop: '9px', opacity: .5 }}>正在读取正则包…</div>
+            : regexPacks.length === 0
+              ? <div style={{ fontSize: '11px', marginTop: '9px', opacity: .5 }}>没有独立正则包；可从资源中心导入</div>
+              : <div style={{ display: 'grid', gap: '6px', marginTop: '9px', maxHeight: '210px', overflowY: 'auto' }}>
+                {regexPacks.map(entry => {
+                  const order = selectedRegexPackIds.indexOf(entry.id)
+                  const checked = order >= 0
+                  const disabled = !checked && selectedRegexPackIds.length >= 16
+                  return <label key={entry.id} data-agent-rp-regex-pack-option={entry.id} style={{
+                    alignItems: 'center', background: checked ? `color-mix(in srgb, ${color} 10%, transparent)` : 'transparent',
+                    borderRadius: '8px', cursor: disabled ? 'default' : 'pointer', display: 'flex', gap: '9px',
+                    opacity: disabled ? .42 : 1, padding: '8px 9px',
+                  }}>
+                    <input type="checkbox" checked={checked} disabled={disabled} onChange={event => {
+                      setSelectedRegexPackIds(event.target.checked
+                        ? [...selectedRegexPackIds, entry.id]
+                        : selectedRegexPackIds.filter(id => id !== entry.id))
+                    }} style={{ accentColor: color, margin: 0 }} />
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <strong style={{ display: 'block', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</strong>
+                      <span style={{ display: 'block', fontSize: '10px', marginTop: '3px', opacity: .48 }}>
+                        {entry.enabledCount}/{entry.scriptCount} 启用 · {entry.displayCount} 显示 · {entry.promptCount} 提示词
+                      </span>
+                    </span>
+                    {checked && <span aria-label={`正则包顺序 ${order + 1}`} style={{
+                      alignItems: 'center', background: `color-mix(in srgb, ${color} 18%, transparent)`,
+                      borderRadius: '999px', display: 'inline-flex', fontSize: '10px', height: '20px',
+                      justifyContent: 'center', minWidth: '20px', padding: '0 5px',
+                    }}>{order + 1}</span>}
+                  </label>
+                })}
+              </div>}
         </section>
 
         {expectsResourcePreflight && <section data-agent-rp-launch-preflight={launchPhase}
@@ -8598,7 +8692,7 @@ function tavernPresetPrompt(
 function tavernRegex(
   script: ImportedRegexScript,
   index: number,
-  scope: 'preset' | 'character',
+  scope: 'global' | 'preset' | 'character',
 ): Record<string, JsonValue> {
   return {
     id: script.id ?? `${scope}-regex-${index}`,
@@ -8860,6 +8954,8 @@ function tavernScriptSnapshot(
     })),
     characterRegexScripts: (projection.frontend?.regexScripts ?? [])
       .map((entry, index) => tavernRegex(entry, index, 'character')),
+    globalRegexScripts: projection.regexPacks.flatMap(pack => pack.scripts)
+      .map((entry, index) => tavernRegex(entry, index, 'global')),
     globalScriptTrees: tavernScriptTrees(projection, 'global'),
     presetScriptTrees: tavernScriptTrees(projection, 'preset'),
     characterScriptTrees: tavernScriptTrees(projection, 'character'),
@@ -8869,6 +8965,7 @@ function tavernScriptSnapshot(
       return [value]
     }),
     displayRegexScripts: [
+      ...projection.regexPacks.flatMap(pack => pack.scripts),
       ...(projection.preset?.regexScripts ?? []),
       ...(projection.frontend?.regexScripts ?? []),
     ],
@@ -9568,6 +9665,7 @@ function TavernScriptRuntime({
       source: 'dsh-agent-rp-host', action: 'variables-sync',
       scopes: snapshot.scopes, messages: snapshot.messages,
       characterRegexScripts: snapshot.characterRegexScripts,
+      globalRegexScripts: snapshot.globalRegexScripts,
       globalScriptTrees: snapshot.globalScriptTrees,
       presetScriptTrees: snapshot.presetScriptTrees,
       characterScriptTrees: snapshot.characterScriptTrees,
@@ -12424,13 +12522,15 @@ function importHintComponent(
           {migration ? '迁移角色与对话' : chat ? '导入历史对话' : selected.kind === 'character-card'
             ? '识别到 CHARX 角色卡' : jsonKind === 'character-card' ? '识别到角色卡'
               : jsonKind === 'world-info' ? '识别到世界书' : jsonKind === 'preset' ? '识别到聊天补全预设'
+                : jsonKind === 'regex-pack' ? '识别到独立正则包'
                 : selected.kind === 'json-resource' ? '识别到 JSON 资源' : '识别到 PNG 图片'}
           <span style={{ fontWeight: 400, marginLeft: '6px', opacity: 0.72 }}>{selected.name}</span>
         </div>
         <div style={{ fontSize: '12px', lineHeight: 1.45, marginTop: '2px', opacity: 0.62 }}>{migration
           ? '将创建一个角色会话，并保留原聊天历史'
           : chat ? '将从这份记录创建新的角色会话'
-            : selected.kind === 'json-resource' && jsonKind === undefined ? '正在安全识别资源类型…'
+              : selected.kind === 'json-resource' && jsonKind === undefined ? '正在安全识别资源类型…'
+                : jsonKind === 'regex-pack' ? '请在 Agent RP 资源中心的“正则包”中导入并选择使用'
               : inferredDraft !== undefined ? '已自动选择导入类型；发送后开始导入'
                 : blank ? '无法确定资源类型，请手动选择' : '发送后开始导入'}</div>
       </div>
@@ -12709,8 +12809,9 @@ export function apply(ctx: ClientContext): void {
     memory?: 'copy-active',
     resourcePermissions?: AgentRpSessionResourcePermissions,
     agentPresetId?: string,
+    regexPackIds?: readonly string[],
   ): Promise<void> => {
-    if (memory === undefined && worldInfoIds !== undefined) {
+    if (memory === undefined && (worldInfoIds !== undefined || regexPackIds !== undefined)) {
       await launchRoleplaySession(characterExperienceLaunchRequest({
         sourceSessionId: sessionId,
         characterId: character.id,
@@ -12718,7 +12819,8 @@ export function apply(ctx: ClientContext): void {
         ...(persona === undefined ? {} : { persona }),
         ...(presetId === undefined ? {} : { presetId }),
         ...(agentPresetId === undefined ? {} : { agentPresetId }),
-        worldInfoIds,
+        worldInfoIds: worldInfoIds ?? [],
+        ...(regexPackIds === undefined ? {} : { regexPackIds }),
       }), resourcePermissions)
       return
     }
@@ -12743,15 +12845,17 @@ export function apply(ctx: ClientContext): void {
     worldInfoIds?: readonly string[],
     resourcePermissions?: AgentRpSessionResourcePermissions,
     agentPresetId?: string,
+    regexPackIds?: readonly string[],
   ): Promise<void> => {
-    if (worldInfoIds !== undefined) {
+    if (worldInfoIds !== undefined || regexPackIds !== undefined) {
       await launchRoleplaySession(sceneExperienceLaunchRequest({
         sourceSessionId: sessionId,
         primaryWorldInfoId: worldInfo.id,
         ...(persona === undefined ? {} : { persona }),
         ...(presetId === undefined ? {} : { presetId }),
         ...(agentPresetId === undefined ? {} : { agentPresetId }),
-        supportingWorldInfoIds: worldInfoIds,
+        supportingWorldInfoIds: worldInfoIds ?? [],
+        ...(regexPackIds === undefined ? {} : { regexPackIds }),
       }), resourcePermissions)
       return
     }
@@ -12784,10 +12888,14 @@ export function apply(ctx: ClientContext): void {
     _memory?: 'copy-active',
     resourcePermissions?: AgentRpSessionResourcePermissions,
     agentPresetId?: string,
+    regexPackIds?: readonly string[],
   ): Promise<void> => {
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
     if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话选择角色')
-    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId, worldInfoIds, undefined, resourcePermissions, agentPresetId)
+    await startCharacterSession(
+      sessionId, character, greetingIndex, persona, presetId, worldInfoIds,
+      undefined, resourcePermissions, agentPresetId, regexPackIds,
+    )
     await archiveConsumedBlankSession(sessionId)
   }
   const startWorldInfoFromBlankSession = async (
@@ -12798,10 +12906,13 @@ export function apply(ctx: ClientContext): void {
     worldInfoIds?: readonly string[],
     resourcePermissions?: AgentRpSessionResourcePermissions,
     agentPresetId?: string,
+    regexPackIds?: readonly string[],
   ): Promise<void> => {
     const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
     if (summary === undefined || !summary.blank) throw new Error('只能从尚未开始的会话选择世界书剧情')
-    await startWorldInfoSession(sessionId, worldInfo, persona, presetId, worldInfoIds, resourcePermissions, agentPresetId)
+    await startWorldInfoSession(
+      sessionId, worldInfo, persona, presetId, worldInfoIds, resourcePermissions, agentPresetId, regexPackIds,
+    )
     await archiveConsumedBlankSession(sessionId)
   }
   const startCharacterFromCurrentSession = async (
@@ -12814,8 +12925,12 @@ export function apply(ctx: ClientContext): void {
     memory?: 'copy-active',
     resourcePermissions?: AgentRpSessionResourcePermissions,
     agentPresetId?: string,
+    regexPackIds?: readonly string[],
   ): Promise<void> => {
-    await startCharacterSession(sessionId, character, greetingIndex, persona, presetId, worldInfoIds, memory, resourcePermissions, agentPresetId)
+    await startCharacterSession(
+      sessionId, character, greetingIndex, persona, presetId, worldInfoIds,
+      memory, resourcePermissions, agentPresetId, regexPackIds,
+    )
   }
   const prepareChatMigration = async (
     sourceSessionId: SessionId,
@@ -13166,7 +13281,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} runtimeDiagnostics={runtimeDiagnostics} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listWorldInfos={listWorldInfos} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} deleteCharacter={deleteCharacter} importCharacterFile={importCharacterFile} prepareChatMigration={prepareChatMigration} prepareRpDistributionChatMigration={prepareRpDistributionChatMigration} launchPreparedChatMigration={launchPreparedChatMigration} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} manageState={manageState} manageTurnMode={manageTurnMode} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listAgentCapabilityPresets={listAgentCapabilityPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
+  }, props => <RoleplayHeader {...props} runtimeDiagnostics={runtimeDiagnostics} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listWorldInfos={listWorldInfos} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} deleteCharacter={deleteCharacter} importCharacterFile={importCharacterFile} prepareChatMigration={prepareChatMigration} prepareRpDistributionChatMigration={prepareRpDistributionChatMigration} launchPreparedChatMigration={launchPreparedChatMigration} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} manageState={manageState} manageTurnMode={manageTurnMode} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listRegexPacks={listRegexPacks} importRegexPackFile={importRegexPackFile} deleteRegexPack={deleteRegexPack} listAgentCapabilityPresets={listAgentCapabilityPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -13187,7 +13302,8 @@ export function apply(ctx: ClientContext): void {
     importCharacterFile, prepareChatMigration: prepareChatMigrationFromBlankSession,
     prepareRpDistributionChatMigration: prepareRpDistributionChatMigrationFromBlankSession,
     launchPreparedChatMigration: launchPreparedChatMigrationFromBlankSession,
-    startCharacterSession: startCharacterFromBlankSession, listPresets, listAgentCapabilityPresets, importPresetFile,
+    startCharacterSession: startCharacterFromBlankSession, listPresets, listRegexPacks,
+    importRegexPackFile, deleteRegexPack, listAgentCapabilityPresets, importPresetFile,
     renamePreset: renamePresetLibraryEntry, deletePreset: deletePresetLibraryEntry, listPersonas, savePersona, deletePersona,
     listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo,
     startWorldInfoSession: startWorldInfoFromBlankSession,

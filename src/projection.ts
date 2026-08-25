@@ -71,6 +71,8 @@ import {
   type TavernMessageAnnotationState,
 } from './tavern-message-annotation.ts'
 import { substituteSillyTavernIdentityMacros } from './sillytavern-identity-macro.ts'
+import { summarizeRegexPackScripts } from './regex-pack.ts'
+import { parseSessionRegexPack, type SessionRegexPackSnapshot } from './session-regex-pack.ts'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -112,6 +114,7 @@ const projectionSchema = {
       || record.worldInfoCount < 0
       || typeof record.worldInfo !== 'object' || record.worldInfo === null
       || (record.frontend !== undefined && (typeof record.frontend !== 'object' || record.frontend === null))
+      || !Array.isArray(record.regexPacks)
       || (record.tavern !== undefined && (typeof record.tavern !== 'object' || record.tavern === null))
       || (record.preset !== undefined && (typeof record.preset !== 'object' || record.preset === null))
       || !Array.isArray(record.presetLibrary)
@@ -148,7 +151,8 @@ type ImportCall = 'character-card' | 'world-info' | 'preset'
 
 interface AgentRpProjectionState {
   readonly character: Omit<AgentRpProjection, 'worldInfoCount' | 'worldInfo' | 'presetLibrary' | 'lastRequest'
-  | 'generations' | 'auxiliaryGenerations' | 'presentation' | 'nativeStates' | 'turnMode' | 'hostCapabilities'>
+  | 'generations' | 'auxiliaryGenerations' | 'presentation' | 'nativeStates' | 'turnMode' | 'hostCapabilities'
+  | 'regexPacks'>
   readonly turnMode: RoleplayTurnMode
   readonly cardWorldInfoCount: number
   readonly cardLorebook?: SessionLorebookSource
@@ -175,6 +179,7 @@ interface AgentRpProjectionState {
   readonly tavern?: TavernHelperState
   readonly tavernMessageAnnotations: TavernMessageAnnotationState
   readonly auxiliaryGenerations: TavernAuxiliaryGenerationReplay
+  readonly regexPacks: readonly SessionRegexPackSnapshot[]
 }
 
 declare module '@deepseek-ai/dsh-session-projection/types' {
@@ -204,6 +209,7 @@ const projectionStateSchema = {
       || Array.isArray(record.personaCommands)
       || !Array.isArray(record.nativeStates) || !validNativeStates(record.nativeStates)
       || !Array.isArray(record.presetLibrary)
+      || !Array.isArray(record.regexPacks)
       || typeof record.generations !== 'object' || record.generations === null || Array.isArray(record.generations)
       || (record.presentation !== undefined && (typeof record.presentation !== 'object'
         || record.presentation === null || Array.isArray(record.presentation)))
@@ -725,6 +731,7 @@ export function createAgentRpProjectionDefinition(
     generations: {},
     tavernMessageAnnotations: {},
     auxiliaryGenerations: EMPTY_TAVERN_AUXILIARY_GENERATION_REPLAY,
+    regexPacks: [],
   }),
   apply(state, event) {
     const surface = applySurface(state.surface, event)
@@ -738,6 +745,15 @@ export function createAgentRpProjectionDefinition(
     }
     if (event.type === 'agent-rp/turn-mode') {
       return { ...withSurface, turnMode: parseRoleplayTurnModeRecord(event.data).mode }
+    }
+    if (event.type === 'agent-rp/regex-pack-seed') {
+      try {
+        const pack = parseSessionRegexPack(event.data)
+        if (withSurface.regexPacks.some(existing => existing.id === pack.id)) return withSurface
+        return { ...withSurface, regexPacks: [...withSurface.regexPacks, pack] }
+      } catch {
+        return withSurface
+      }
     }
     if (event.type === 'agent-rp/mvu-state') return { ...withSurface, mvu: event.data }
     if (event.type === 'agent-rp/world-info-library-seed') {
@@ -1239,6 +1255,12 @@ export function createAgentRpProjectionDefinition(
         : { auxiliaryGenerations }),
       worldInfoCount: worldInfo.books.reduce((total, book) => total + book.entries.filter(entry => !entry.deleted).length, 0),
       worldInfo,
+      regexPacks: state.regexPacks.map(pack => ({
+        id: pack.id,
+        name: pack.name,
+        ...summarizeRegexPackScripts(pack.scripts),
+        scripts: pack.scripts.map(script => ({ ...script })),
+      })),
       ...(state.mvu === undefined ? {} : { mvu: state.mvu }),
       ...(state.preset === undefined ? {} : { preset: state.preset }),
       presetLibrary: state.presetLibrary,

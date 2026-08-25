@@ -10,6 +10,7 @@ import type {
 } from '../character-library-protocol.ts'
 import type { PersonaLibraryEntry, PersonaLibrarySaveRequest } from '../persona-library-protocol.ts'
 import type { PresetLibrarySummary } from '../preset-library-http-protocol.ts'
+import type { RegexPackLibrarySummary } from '../regex-pack-library-protocol.ts'
 import type { WorldInfoLibraryUpload } from '../world-info-library-protocol.ts'
 import { classifySillyTavernJsonFile } from './import-hint.ts'
 import {
@@ -19,7 +20,7 @@ import {
   type SillyTavernMigrationScan,
 } from './sillytavern-library-migration.ts'
 
-type ResourceSection = 'characters' | 'world-info' | 'presets' | 'personas'
+type ResourceSection = 'characters' | 'world-info' | 'presets' | 'regex-packs' | 'personas'
 
 interface ResourceCenterProps {
   readonly accent: string
@@ -42,6 +43,9 @@ interface ResourceCenterProps {
   readonly importPresetFile: (file: File) => Promise<PresetLibrarySummary>
   readonly renamePreset: (id: string, name: string) => Promise<PresetLibrarySummary>
   readonly deletePreset: (id: string) => Promise<void>
+  readonly listRegexPacks: () => Promise<readonly RegexPackLibrarySummary[]>
+  readonly importRegexPackFile: (file: File) => Promise<RegexPackLibrarySummary>
+  readonly deleteRegexPack: (id: string) => Promise<void>
   readonly listPersonas: () => Promise<readonly PersonaLibraryEntry[]>
   readonly savePersona: (request: PersonaLibrarySaveRequest) => Promise<PersonaLibraryEntry>
   readonly deletePersona: (id: string) => Promise<PersonaLibraryEntry>
@@ -74,12 +78,14 @@ function sectionName(section: ResourceSection): string {
   if (section === 'characters') return '角色'
   if (section === 'world-info') return '世界书'
   if (section === 'presets') return '预设'
+  if (section === 'regex-packs') return '正则包'
   return '身份'
 }
 
 function migrationKindName(kind: SillyTavernMigrationAssetKind): string {
   if (kind === 'character') return '角色卡'
   if (kind === 'world-info') return '世界书'
+  if (kind === 'regex-pack') return '正则包'
   return '预设'
 }
 
@@ -104,6 +110,7 @@ function SillyTavernLibraryMigrationDialog({
   importCharacterFile,
   importWorldInfoFile,
   importPresetFile,
+  importRegexPackFile,
   onImported,
   onClose,
 }: {
@@ -114,6 +121,7 @@ function SillyTavernLibraryMigrationDialog({
   readonly importCharacterFile: (file: File) => Promise<CharacterLibraryImportResult>
   readonly importWorldInfoFile: (file: File) => Promise<WorldInfoLibraryUpload>
   readonly importPresetFile: (file: File) => Promise<PresetLibrarySummary>
+  readonly importRegexPackFile: (file: File) => Promise<RegexPackLibrarySummary>
   readonly onImported: (report: MigrationImportReport) => Promise<void>
   readonly onClose: () => void
 }) {
@@ -144,7 +152,7 @@ function SillyTavernLibraryMigrationDialog({
     input.value = ''
     if (files.length > 0) beginScan(files)
   }
-  const kinds: readonly SillyTavernMigrationAssetKind[] = ['character', 'world-info', 'preset']
+  const kinds: readonly SillyTavernMigrationAssetKind[] = ['character', 'world-info', 'preset', 'regex-pack']
   const ready = scan?.assets.filter(asset => asset.state === 'ready') ?? []
   const selectedAssets = ready.filter(asset => selected.has(asset.id))
   const setKindSelected = (kind: SillyTavernMigrationAssetKind, enabled: boolean): void => {
@@ -177,8 +185,10 @@ function SillyTavernLibraryMigrationDialog({
           else if (result.outcome === 'restored') restored += 1
         } else if (asset.kind === 'world-info') {
           await importWorldInfoFile(asset.file)
-        } else {
+        } else if (asset.kind === 'preset') {
           await importPresetFile(asset.file)
+        } else {
+          await importRegexPackFile(asset.file)
         }
         handled += 1
       } catch (reason: unknown) {
@@ -239,7 +249,7 @@ function SillyTavernLibraryMigrationDialog({
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: narrow ? '14px' : '18px' }}>
         {scan === undefined && report === undefined && <>
           <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '0 0 14px', opacity: .72 }}>
-            可以选择整个用户数据目录、压缩后的 ZIP，或一次选择多份导出文件。角色卡、世界书和预设会自动分类。
+            可以选择整个用户数据目录、压缩后的 ZIP，或一次选择多份导出文件。角色卡、世界书、预设和独立正则包会自动分类。
           </p>
           <div style={{ display: 'grid', gap: '9px', gridTemplateColumns: narrow ? 'minmax(0, 1fr)' : 'repeat(3, minmax(0, 1fr))' }}>
             <button type="button" disabled={working !== undefined} onClick={() => { zipInputRef.current?.click() }} style={choiceButtonStyle}>
@@ -268,11 +278,12 @@ function SillyTavernLibraryMigrationDialog({
           {working === 'scan' && <p role="status" style={{ fontSize: '12px', margin: '14px 2px 0', opacity: .62 }}>正在扫描并识别资源…</p>}
         </>}
         {scan !== undefined && report === undefined && <>
-          <div style={{ display: 'grid', gap: '8px', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
+          <div style={{ display: 'grid', gap: '8px', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))' }}>
             {[
               ['角色', scan.assets.filter(asset => asset.kind === 'character').length],
               ['世界书', scan.assets.filter(asset => asset.kind === 'world-info').length],
               ['预设', scan.assets.filter(asset => asset.kind === 'preset').length],
+              ['正则', scan.assets.filter(asset => asset.kind === 'regex-pack').length],
               ['聊天', chats.length],
             ].map(([label, count]) => <div key={String(label)} style={{ ...panelStyle, padding: narrow ? '9px 6px' : '10px', textAlign: 'center' }}>
               <strong style={{ display: 'block', fontSize: '16px' }}>{count}</strong>
@@ -365,6 +376,7 @@ export function RoleplayResourceCenter({
   setCharacterArchived, deleteCharacter, importCharacterFile,
   listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo,
   listPresets, importPresetFile, renamePreset, deletePreset,
+  listRegexPacks, importRegexPackFile, deleteRegexPack,
   listPersonas, savePersona, deletePersona,
   onConfigureWorldInfo,
   onClose,
@@ -374,6 +386,7 @@ export function RoleplayResourceCenter({
   const [characters, setCharacters] = useState<readonly CharacterLibrarySummary[]>()
   const [worldInfos, setWorldInfos] = useState<readonly WorldInfoLibraryUpload[]>()
   const [presets, setPresets] = useState<readonly PresetLibrarySummary[]>()
+  const [regexPacks, setRegexPacks] = useState<readonly RegexPackLibrarySummary[]>()
   const [personas, setPersonas] = useState<readonly PersonaLibraryEntry[]>()
   const [loadErrors, setLoadErrors] = useState<Partial<Record<ResourceSection, string>>>({})
   const [busy, setBusy] = useState<string>()
@@ -384,12 +397,14 @@ export function RoleplayResourceCenter({
   const [worldBindingDraft, setWorldBindingDraft] = useState<CharacterWorldBindingDraft>()
   const [confirmingPresetId, setConfirmingPresetId] = useState<string>()
   const [confirmingPersonaId, setConfirmingPersonaId] = useState<string>()
+  const [confirmingRegexPackId, setConfirmingRegexPackId] = useState<string>()
   const [confirmingWorldInfoId, setConfirmingWorldInfoId] = useState<string>()
   const [confirmingCharacterId, setConfirmingCharacterId] = useState<string>()
   const [migrationOpen, setMigrationOpen] = useState(false)
   const characterInputRef = useRef<HTMLInputElement | null>(null)
   const worldInfoInputRef = useRef<HTMLInputElement | null>(null)
   const presetInputRef = useRef<HTMLInputElement | null>(null)
+  const regexPackInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     let current = true
@@ -399,6 +414,7 @@ export function RoleplayResourceCenter({
       if (target === 'characters') setCharacters([])
       else if (target === 'world-info') setWorldInfos([])
       else if (target === 'presets') setPresets([])
+      else if (target === 'regex-packs') setRegexPacks([])
       else setPersonas([])
     }
     void Promise.all([listCharacters('active'), listCharacters('archived')]).then(([active, archived]) => {
@@ -406,9 +422,10 @@ export function RoleplayResourceCenter({
     }, failed('characters'))
     void listWorldInfos().then(value => { if (current) setWorldInfos(value) }, failed('world-info'))
     void listPresets().then(value => { if (current) setPresets(value) }, failed('presets'))
+    void listRegexPacks().then(value => { if (current) setRegexPacks(value) }, failed('regex-packs'))
     void listPersonas().then(value => { if (current) setPersonas(value) }, failed('personas'))
     return () => { current = false }
-  }, [listCharacters, listPersonas, listPresets, listWorldInfos])
+  }, [listCharacters, listPersonas, listPresets, listRegexPacks, listWorldInfos])
 
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const matches = (...values: readonly string[]): boolean => normalizedQuery === ''
@@ -417,6 +434,7 @@ export function RoleplayResourceCenter({
     matches(entry.displayName, entry.name, entry.originalFilename)), [characters, normalizedQuery])
   const visibleWorldInfos = useMemo(() => (worldInfos ?? []).filter(entry => matches(entry.name)), [worldInfos, normalizedQuery])
   const visiblePresets = useMemo(() => (presets ?? []).filter(entry => matches(entry.name)), [presets, normalizedQuery])
+  const visibleRegexPacks = useMemo(() => (regexPacks ?? []).filter(entry => matches(entry.name)), [regexPacks, normalizedQuery])
   const visiblePersonas = useMemo(() => (personas ?? []).filter(entry => matches(entry.name, entry.description)), [personas, normalizedQuery])
   const worldInfoById = useMemo(() => new Map((worldInfos ?? []).map(entry => [entry.id, entry])), [worldInfos])
 
@@ -449,6 +467,13 @@ export function RoleplayResourceCenter({
       setNotice(`已加入预设「${entry.name}」`)
     }).catch(reason => { setError(message(reason)) }).finally(finishAction)
   }
+  const importRegexPack = (file: File): void => {
+    startAction('import-regex-pack')
+    void importRegexPackFile(file).then(entry => {
+      setRegexPacks(value => [entry, ...(value ?? []).filter(item => item.id !== entry.id)])
+      setNotice(`已加入正则包「${entry.name}」`)
+    }).catch(reason => { setError(message(reason)) }).finally(finishAction)
+  }
   const importResource = (file: File, fallback: Exclude<ResourceSection, 'personas'>): void => {
     if (!/\.json$/iu.test(file.name)) {
       if (fallback === 'characters') importCharacter(file)
@@ -466,9 +491,12 @@ export function RoleplayResourceCenter({
       } else if (kind === 'preset') {
         setSection('presets')
         importPreset(file)
+      } else if (kind === 'regex-pack') {
+        setSection('regex-packs')
+        importRegexPack(file)
       } else {
         finishAction()
-        setError('无法识别这份 JSON；请选择角色卡、SillyTavern 世界书或 Chat Completion 预设')
+        setError('无法识别这份 JSON；请选择角色卡、世界书、Chat Completion 预设或独立正则包')
       }
     }, reason => {
       finishAction()
@@ -550,6 +578,18 @@ export function RoleplayResourceCenter({
       setNotice(`已移除预设「${entry.name}」；已有会话不受影响`)
     }).catch(reason => { setError(message(reason)) }).finally(finishAction)
   }
+  const removeRegexPack = (entry: RegexPackLibrarySummary): void => {
+    if (confirmingRegexPackId !== entry.id) {
+      setConfirmingRegexPackId(entry.id)
+      return
+    }
+    startAction(`regex-pack:${entry.id}`)
+    void deleteRegexPack(entry.id).then(() => {
+      setRegexPacks(value => (value ?? []).filter(item => item.id !== entry.id))
+      setConfirmingRegexPackId(undefined)
+      setNotice(`已移除正则包「${entry.name}」；已有会话不受影响`)
+    }).catch(reason => { setError(message(reason)) }).finally(finishAction)
+  }
   const toggleWorldInfoDefault = (entry: WorldInfoLibraryUpload): void => {
     startAction(`world-info-default:${entry.id}`)
     void setWorldInfoDefault(entry.id, !entry.defaultForNewSessions).then(updated => {
@@ -597,22 +637,27 @@ export function RoleplayResourceCenter({
     characters: characters?.length,
     'world-info': worldInfos?.length,
     presets: presets?.length,
+    'regex-packs': regexPacks?.length,
     personas: personas?.length,
   }
-  const sections: readonly ResourceSection[] = ['characters', 'world-info', 'presets', 'personas']
+  const sections: readonly ResourceSection[] = ['characters', 'world-info', 'presets', 'regex-packs', 'personas']
   const loading = counts[section] === undefined
   const empty = section === 'characters' ? visibleCharacters.length === 0
     : section === 'world-info' ? visibleWorldInfos.length === 0
-      : section === 'presets' ? visiblePresets.length === 0 : visiblePersonas.length === 0
+      : section === 'presets' ? visiblePresets.length === 0
+        : section === 'regex-packs' ? visibleRegexPacks.length === 0 : visiblePersonas.length === 0
   const canImport = section !== 'personas'
-  const importLabel = section === 'characters' ? '导入角色卡' : section === 'world-info' ? '导入世界书' : '导入预设'
+  const importLabel = section === 'characters' ? '导入角色卡' : section === 'world-info' ? '导入世界书'
+    : section === 'regex-packs' ? '导入正则包' : '导入预设'
   const importBusy = busy === (section === 'characters' ? 'import-character'
-    : section === 'world-info' ? 'import-world-info' : 'import-preset')
+    : section === 'world-info' ? 'import-world-info'
+      : section === 'regex-packs' ? 'import-regex-pack' : 'import-preset')
 
   const triggerImport = (): void => {
     if (section === 'characters') characterInputRef.current?.click()
     else if (section === 'world-info') worldInfoInputRef.current?.click()
     else if (section === 'presets') presetInputRef.current?.click()
+    else if (section === 'regex-packs') regexPackInputRef.current?.click()
   }
   const rowStyle = {
     alignItems: 'center', borderTop: '1px solid var(--dsw-alias-border-l2, #39393c)',
@@ -651,7 +696,7 @@ export function RoleplayResourceCenter({
           }}>×</button>}
         </div>
         <div role="tablist" aria-label="资源类型" style={{
-          display: 'grid', gap: narrow ? '4px' : '5px', gridTemplateColumns: narrow ? 'repeat(4, minmax(0, 1fr))' : 'minmax(0, 1fr)',
+          display: 'grid', gap: narrow ? '4px' : '5px', gridTemplateColumns: narrow ? 'repeat(5, minmax(0, 1fr))' : 'minmax(0, 1fr)',
         }}>
           {sections.map(value => <button key={value} type="button" role="tab" aria-selected={section === value}
             onClick={() => { setSection(value); setQuery(''); setError(undefined); setNotice(undefined) }} style={{
@@ -673,7 +718,8 @@ export function RoleplayResourceCenter({
             <strong style={{ display: 'block', fontSize: '15px' }}>{sectionName(section)}</strong>
             <span style={{ display: 'block', fontSize: '11px', marginTop: '2px', opacity: .48 }}>
               {section === 'characters' ? '角色卡与收藏状态' : section === 'world-info' ? '独立世界书来源'
-                : section === 'presets' ? '可复用的对话预设' : '玩家身份与人物设定'}
+                : section === 'presets' ? '可复用的对话预设'
+                  : section === 'regex-packs' ? '会话显式选择的全局正则规则' : '玩家身份与人物设定'}
             </span>
           </div>
           {section === 'personas' && <button type="button" disabled={busy !== undefined} onClick={() => {
@@ -693,6 +739,9 @@ export function RoleplayResourceCenter({
         }} />
         <input ref={presetInputRef} type="file" accept=".json,application/json" hidden onChange={event => {
           const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file !== undefined) importResource(file, 'presets')
+        }} />
+        <input ref={regexPackInputRef} type="file" accept=".json,application/json" hidden onChange={event => {
+          const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file !== undefined) importResource(file, 'regex-packs')
         }} />
         <div style={{ padding: narrow ? '10px 12px' : '12px 18px' }}>
           <input type="search" value={query} aria-label={`搜索${sectionName(section)}`} placeholder={`搜索${sectionName(section)}`}
@@ -871,6 +920,21 @@ export function RoleplayResourceCenter({
                 {busy === `preset:${entry.id}` ? '移除中…' : confirmingPresetId === entry.id ? '确认移除' : '移除'}
               </button>
             </div>)}
+            {section === 'regex-packs' && visibleRegexPacks.map((entry, index) => <div key={entry.id} style={{ ...rowStyle, borderTop: index === 0 ? 'none' : rowStyle.borderTop }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <strong style={{ display: 'block', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</strong>
+                <span style={{ display: 'block', fontSize: '10px', marginTop: '4px', opacity: .48 }}>
+                  {entry.enabledCount}/{entry.scriptCount} 启用 · {entry.displayCount} 显示 · {entry.promptCount} 提示词
+                </span>
+              </div>
+              <button type="button" disabled={busy !== undefined} onClick={() => { removeRegexPack(entry) }} style={{
+                ...actionStyle(busy === undefined),
+                color: confirmingRegexPackId === entry.id ? 'var(--dsw-alias-state-danger, #e88989)' : 'inherit',
+              }}>
+                {busy === `regex-pack:${entry.id}` ? '移除中…'
+                  : confirmingRegexPackId === entry.id ? '确认移除' : '移除'}
+              </button>
+            </div>)}
             {section === 'personas' && visiblePersonas.map((entry, index) => <div key={entry.id} style={{ ...rowStyle, alignItems: 'flex-start', borderTop: index === 0 ? 'none' : rowStyle.borderTop }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <strong style={{ display: 'block', fontSize: '13px' }}>{entry.name}</strong>
@@ -894,13 +958,15 @@ export function RoleplayResourceCenter({
         importCharacterFile={importCharacterFile}
         importWorldInfoFile={importWorldInfoFile}
         importPresetFile={importPresetFile}
+        importRegexPackFile={importRegexPackFile}
         onImported={async report => {
-          const [active, archived, nextWorldInfos, nextPresets] = await Promise.all([
-            listCharacters('active'), listCharacters('archived'), listWorldInfos(), listPresets(),
+          const [active, archived, nextWorldInfos, nextPresets, nextRegexPacks] = await Promise.all([
+            listCharacters('active'), listCharacters('archived'), listWorldInfos(), listPresets(), listRegexPacks(),
           ])
           setCharacters([...active, ...archived])
           setWorldInfos(nextWorldInfos)
           setPresets(nextPresets)
+          setRegexPacks(nextRegexPacks)
           setNotice(report.failures.length === 0
             ? `迁移已完成，共处理 ${report.handled} 项`
             : `已处理 ${report.handled} 项，${report.failures.length} 项需要查看原因`)

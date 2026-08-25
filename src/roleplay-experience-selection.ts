@@ -14,6 +14,7 @@ export interface RoleplayExperienceSelectionSnapshot {
   readonly participant?: RoleplayResourceSelection
   readonly worlds: readonly RoleplayResourceSelection[]
   readonly promptPolicy?: RoleplayResourceSelection
+  readonly regexPacks: readonly RoleplayResourceSelection[]
 }
 
 declare module '@deepseek-ai/dsh-session' {
@@ -52,8 +53,9 @@ export function parseRoleplayExperienceSelection(value: unknown): RoleplayExperi
   const record = object(value)
   if (record.format !== 0 || (record.mode !== 'character' && record.mode !== 'scene')
     || !Array.isArray(record.worlds) || record.worlds.length > 16
+    || (record.regexPacks !== undefined && (!Array.isArray(record.regexPacks) || record.regexPacks.length > 16))
     || Object.keys(record).some(key => ![
-      'format', 'mode', 'actor', 'participant', 'worlds', 'promptPolicy',
+      'format', 'mode', 'actor', 'participant', 'worlds', 'promptPolicy', 'regexPacks',
     ].includes(key))) {
     throw new Error('角色体验选择快照字段无效')
   }
@@ -65,7 +67,9 @@ export function parseRoleplayExperienceSelection(value: unknown): RoleplayExperi
   const promptPolicy = record.promptPolicy === undefined
     ? undefined
     : parseSelection(record.promptPolicy, 'prompt-policy')
+  const regexPacks = (record.regexPacks ?? []).map(value => parseSelection(value, 'regex'))
   if (new Set(worlds.map(world => world.id)).size !== worlds.length
+    || new Set(regexPacks.map(pack => pack.id)).size !== regexPacks.length
     || (record.mode === 'character' && actor === undefined)
     || (record.mode === 'scene' && (actor !== undefined || worlds.length === 0))) {
     throw new Error('角色体验选择组合无效')
@@ -77,6 +81,7 @@ export function parseRoleplayExperienceSelection(value: unknown): RoleplayExperi
     ...(participant === undefined ? {} : { participant }),
     worlds: Object.freeze(worlds),
     ...(promptPolicy === undefined ? {} : { promptPolicy }),
+    regexPacks: Object.freeze(regexPacks),
   })
 }
 

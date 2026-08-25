@@ -105,10 +105,13 @@ test('classifies standalone JSON exports by inert stable fields', async () => {
     browserFile('character.json', character),
     browserFile('world.json', JSON.stringify({ entries: [] })),
     browserFile('preset.json', JSON.stringify({ prompts: [], prompt_order: [] })),
+    browserFile('regex.json', JSON.stringify([{
+      scriptName: '显示', findRegex: '/foo/g', replaceString: 'bar', placement: [2],
+    }])),
     browserFile('unknown.json', JSON.stringify({ options: [] })),
   ], emptyLibrary)
 
-  assert.deepEqual(scan.assets.map(asset => asset.kind), ['character', 'world-info', 'preset'])
+  assert.deepEqual(scan.assets.map(asset => asset.kind), ['character', 'world-info', 'preset', 'regex-pack'])
   assert.equal(scan.issues.length, 1)
   assert.equal(scan.issues[0]?.path, 'unknown.json')
 })

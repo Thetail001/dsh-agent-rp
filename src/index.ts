@@ -25,6 +25,8 @@ import { roleplayLibraryResourceProviders } from './roleplay-resource-library-pr
 import { nativePromptPolicyResourceProvider } from './native-prompt-policy.ts'
 import { characterLibraryRoleplayResourceId } from './roleplay-resource-library-ids.ts'
 import { installRoleplayResourceCatalogHttp } from './roleplay-resource-catalog-http.ts'
+import { RegexPackLibrary } from './regex-pack-library.ts'
+import { installRegexPackLibraryHttp } from './regex-pack-library-http.ts'
 import { tavernResourceLibraryPreflightContributors } from './tavern-resource-library-preflight.ts'
 import {
   TAVERN_RESOURCE_PREFLIGHT_KEY,
@@ -224,6 +226,7 @@ export type {
   RoleplayActorResourceDetail,
   RoleplayPersonaResourceDetail,
   RoleplayPromptPolicyResourceDetail,
+  RoleplayRegexResourceDetail,
   RoleplayResourceCatalogResponse,
   RoleplayResourceDescriptor,
   RoleplayResourceDetail,
@@ -236,8 +239,32 @@ export type {
 export {
   characterLibraryRoleplayResourceId,
   presetLibraryRoleplayResourceId,
+  regexPackLibraryRoleplayResourceId,
   worldInfoLibraryRoleplayResourceId,
 } from './roleplay-resource-library-ids.ts'
+export {
+  isSillyTavernRegexPackValue,
+  MAX_REGEX_PACK_SCRIPTS,
+  parseRegexPackBytes,
+  parseRegexPackJson,
+  parseRegexPackValue,
+  summarizeRegexPackScripts,
+} from './regex-pack.ts'
+export type { RegexPackScriptSummary } from './regex-pack.ts'
+export { MAX_REGEX_PACK_BYTES, REGEX_PACK_LIBRARY_PATH } from './regex-pack-library-protocol.ts'
+export type {
+  RegexPackLibraryDeleteResponse,
+  RegexPackLibraryImportResponse,
+  RegexPackLibraryListResponse,
+  RegexPackLibrarySummary,
+} from './regex-pack-library-protocol.ts'
+export {
+  appendSessionRegexPack,
+  parseSessionRegexPack,
+  readSessionRegexPacks,
+  sessionRegexScripts,
+} from './session-regex-pack.ts'
+export type { SessionRegexPackSnapshot } from './session-regex-pack.ts'
 export { prepareRoleplayExperienceSession } from './roleplay-experience-materialization.ts'
 export {
   appendRoleplayExperienceSelection,
@@ -1591,6 +1618,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
     characterLibrary.migrateEmbeddedWorldInfos()
     const personaLibrary = new PersonaLibrary()
     const presetLibrary = new PresetLibrary()
+    const regexPackLibrary = new RegexPackLibrary()
     const chatLibrary = new SillyTavernChatLibrary()
     const workspaceSettings = new WorkspaceSettingsStore()
     const generatedImageLibrary = new GeneratedImageLibrary()
@@ -1598,6 +1626,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
       characters: characterLibrary,
       personas: personaLibrary,
       presets: presetLibrary,
+      regexPacks: regexPackLibrary,
       worldInfos: worldInfoLibrary,
     }).concat(nativePromptPolicyResourceProvider())) ctx.effect(
       () => resourceCatalog.register(provider),
@@ -1623,6 +1652,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         installCharacterLibraryHttp(webCtx, ctx, characterLibrary, server)
         installPersonaLibraryHttp(webCtx, personaLibrary, server)
         installPresetLibraryHttp(webCtx, presetLibrary, server)
+        installRegexPackLibraryHttp(webCtx, regexPackLibrary, server)
         const tavernExecutionPlans = new TavernExecutionPlanCache(undefined, 64, {
           persistentRoot: dshHomePath('agent-rp', 'cache', 'tavern-execution-plans'),
         })

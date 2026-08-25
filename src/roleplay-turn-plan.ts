@@ -144,7 +144,7 @@ export interface RoleplayExternalContextRead {
 }
 
 /** Source-neutral ownership of one ordered model-facing text transformation. */
-export type RoleplayPromptTransformOwner = 'prompt-policy' | 'actor'
+export type RoleplayPromptTransformOwner = 'regex' | 'prompt-policy' | 'actor'
 
 /** Normalized regex operation prepared by an input adapter for the native prompt boundary. */
 export interface RoleplayPromptRegexTransform {
@@ -292,9 +292,11 @@ function promptTransforms(
   actorName: string,
   participantName: string | undefined,
 ): RoleplayPromptTransformPlan {
+  const regex = resolved.regexPacks.flatMap(pack => pack.scripts)
   const promptPolicy = resolved.preset === undefined ? [] : presetRegexScripts(resolved.preset.preset)
   const actor = resolved.card?.frontend.regexScripts ?? []
   const operations = [
+    ...regex.map((script, index) => promptTransform(script, 'regex', index)),
     ...promptPolicy.map((script, index) => promptTransform(script, 'prompt-policy', index)),
     ...actor.map((script, index) => promptTransform(script, 'actor', index)),
   ].filter((operation): operation is RoleplayPromptRegexTransform => operation !== undefined)
@@ -651,12 +653,13 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     (count, resource) => count + resource.beforeActor.length + resource.afterActor.length,
     world.inChat.length,
   )
+  const regexTransformCount = transforms.operations.filter(operation => operation.owner === 'regex').length
   const promptPolicyTransformCount = transforms.operations
     .filter(operation => operation.owner === 'prompt-policy').length
   const actorTransformCount = transforms.operations.filter(operation => operation.owner === 'actor').length
   const promptContributions = providerPrompt.beforeHistory.length + providerPrompt.afterHistory.length
     + providerPrompt.inChat.length + (systemPromptText === '' ? 0 : 1) + actorTransformCount
-  const promptAdapterContributions = enabledModules + promptPolicyTransformCount
+  const promptAdapterContributions = enabledModules + regexTransformCount + promptPolicyTransformCount
   const worldEntries = world.resources.flatMap(resource => resource.entries)
   const worldTemplateAttempts = worldEntries.filter(entry => entry.template !== undefined).length
   const worldTemplateFailures = worldEntries.filter(entry =>
@@ -667,7 +670,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
       outcome: promptContributions === 0 ? 'idle' : 'applied',
       contributions: promptContributions,
     },
-    ...(resolved.preset === undefined ? [] : [{
+    ...(resolved.preset === undefined && resolved.regexPacks.length === 0 ? [] : [{
       moduleId: ROLEPLAY_PROMPT_ADAPTER_MODULE_ID,
       outcome: promptAdapterContributions === 0 ? 'idle' as const : 'applied' as const,
       contributions: promptAdapterContributions,

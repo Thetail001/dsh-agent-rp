@@ -1,0 +1,19 @@
+[
+  {
+    "id": "agent-rp-global-display-probe",
+    "scriptName": "全局显示探针",
+    "findRegex": "/数据库脚本兼容验收/g",
+    "replaceString": "<span style=\"color:#d9b36c\">全局正则验收</span>",
+    "trimStrings": [],
+    "placement": [
+      2
+    ],
+    "disabled": false,
+    "markdownOnly": true,
+    "promptOnly": false,
+    "runOnEdit": false,
+    "substituteRegex": 0,
+    "minDepth": null,
+    "maxDepth": null
+  }
+]

@@ -53,6 +53,7 @@ import {
 import { readRoleplayTurnMode, type RoleplayTurnMode } from './roleplay-turn-mode.ts'
 import { readNativePromptPolicy, type NativePromptPolicySnapshot } from './native-prompt-policy.ts'
 import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
+import { readSessionRegexPacks, type SessionRegexPackSnapshot } from './session-regex-pack.ts'
 
 /** One source plus the Session overlay that will be evaluated for this turn. */
 export interface ConfiguredRoleplayLorebook {
@@ -70,6 +71,7 @@ export interface ResolvedSessionRoleplayRuntime {
   readonly worldScenario?: WorldInfoLibrarySeedRecord
   readonly preset?: ActiveSessionPreset
   readonly nativePromptPolicy?: NativePromptPolicySnapshot
+  readonly regexPacks: readonly SessionRegexPackSnapshot[]
   readonly tavern?: TavernHelperState
   readonly mvu?: MvuStateSnapshot
   readonly lorebooks: readonly ConfiguredRoleplayLorebook[]
@@ -116,6 +118,7 @@ export function resolveSessionRoleplayRuntime(input: {
   const worldScenario = readWorldInfoLibrarySessionSeed(events)
   const preset = readActiveSessionPreset(events)
   const nativePromptPolicy = readNativePromptPolicy(events)
+  const regexPacks = readSessionRegexPacks(events)
   if (preset !== undefined && nativePromptPolicy !== undefined) {
     throw new Error('Roleplay Session cannot activate imported and native prompt policies together')
   }
@@ -241,7 +244,8 @@ export function resolveSessionRoleplayRuntime(input: {
       nativeStates.map(nativeState => nativeState.id),
     )]),
     ...(lorebooks.length === 0 ? [] : [runtimeModule(ROLEPLAY_WORLD_MODULE_ID, 'native', ['recall'])]),
-    ...(preset === undefined ? [] : [runtimeModule(ROLEPLAY_PROMPT_ADAPTER_MODULE_ID, 'adapter', ['prepare'])]),
+    ...(preset === undefined && regexPacks.length === 0
+      ? [] : [runtimeModule(ROLEPLAY_PROMPT_ADAPTER_MODULE_ID, 'adapter', ['prepare'])]),
     ...(mvu === undefined ? [] : [runtimeModule(
       MVU_ROLEPLAY_MODULE_ID, 'adapter', ['prepare', 'act', 'settle'], [MVU_ROLEPLAY_STATE_ID],
     )]),
@@ -301,6 +305,7 @@ export function resolveSessionRoleplayRuntime(input: {
   }
   return {
     snapshot,
+    regexPacks,
     turnMode,
     nativeStates,
     ...(card === undefined ? {} : { card }),

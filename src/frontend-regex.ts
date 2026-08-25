@@ -65,7 +65,7 @@ export interface PromptRegexTraceRecord {
   readonly messageCount: number
   readonly replacementCount: number
   readonly scripts: readonly {
-    readonly source: 'preset' | 'character'
+    readonly source: 'regex' | 'preset' | 'character'
     readonly index: number
     readonly scriptName: string
     readonly outcome: PromptRegexOutcome
@@ -103,7 +103,7 @@ function promptRegexTraceRecord(value: unknown): PromptRegexTraceRecord | undefi
   for (const value of record.scripts) {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
     const script = value as Record<string, unknown>
-    if ((script.source !== 'preset' && script.source !== 'character')
+    if ((script.source !== 'regex' && script.source !== 'preset' && script.source !== 'character')
       || typeof script.index !== 'number' || !Number.isSafeInteger(script.index) || script.index < 0
       || typeof script.scriptName !== 'string'
       || typeof script.outcome !== 'string' || !PROMPT_REGEX_OUTCOMES.has(script.outcome as PromptRegexOutcome)

@@ -20,6 +20,7 @@ test('maps browser library choices to a content-free character experience reques
     },
     presetId: 'imported-0123456789abcdef',
     worldInfoIds: ['world-info-0123456789abcdef0123456789abcdef'],
+    regexPackIds: ['regex-0123456789abcdef0123456789abcdef'],
   })
   assert.deepEqual(parseAgentRpSessionLaunchRequest(request), request)
   assert.deepEqual(request, {
@@ -37,12 +38,14 @@ test('maps browser library choices to a content-free character experience reques
       kind: 'world', id: 'standalone:library:world-info-0123456789abcdef0123456789abcdef',
     }],
     promptPolicy: { kind: 'prompt-policy', id: 'preset:library:imported-0123456789abcdef' },
+    regexPacks: [{ kind: 'regex', id: 'regex:library:regex-0123456789abcdef0123456789abcdef' }],
   })
   assert.equal(JSON.stringify(request).includes('完整 Persona 正文'), false)
   assert.deepEqual(experiencePreflightResources(request), [
     request.actor,
     request.participant,
     ...request.worlds!,
+    ...request.regexPacks!,
     request.promptPolicy,
   ])
 })

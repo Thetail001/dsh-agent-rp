@@ -163,9 +163,10 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       || (record.actor !== undefined && record.mode !== 'character')
       || (record.mode === 'character' && record.actor === undefined)
       || !Array.isArray(record.worlds) || record.worlds.length > 16
+      || (record.regexPacks !== undefined && (!Array.isArray(record.regexPacks) || record.regexPacks.length > 16))
       || (record.mode === 'scene' && record.worlds.length === 0)
       || Object.keys(record).some(key => ![
-        'format', 'sourceSessionId', 'kind', 'mode', 'actor', 'participant', 'worlds', 'promptPolicy', 'agentPresetId',
+        'format', 'sourceSessionId', 'kind', 'mode', 'actor', 'participant', 'worlds', 'promptPolicy', 'regexPacks', 'agentPresetId',
       ].includes(key))) {
       throw new Error('原生角色体验启动请求字段无效')
     }
@@ -180,6 +181,8 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
     const promptPolicy = record.promptPolicy === undefined
       ? undefined
       : parseResourceSelection(record.promptPolicy, 'prompt-policy', '提示策略资源')
+    const regexPacks = (record.regexPacks ?? []).map(value => parseResourceSelection(value, 'regex', '正则包资源'))
+    if (new Set(regexPacks.map(pack => pack.id)).size !== regexPacks.length) throw new Error('正则包资源不能重复')
     const agentPresetId = parseAgentPresetId(record.agentPresetId)
     return {
       format: 0,
@@ -190,6 +193,7 @@ export function parseAgentRpSessionLaunchRequest(value: unknown): AgentRpSession
       ...(participant === undefined ? {} : { participant }),
       worlds,
       ...(promptPolicy === undefined ? {} : { promptPolicy }),
+      regexPacks,
       ...(agentPresetId === undefined ? {} : { agentPresetId }),
     }
   }

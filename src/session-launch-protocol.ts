@@ -59,6 +59,7 @@ export interface RoleplayExperienceSessionLaunchRequest {
   readonly participant?: RoleplayResourceSelection
   readonly worlds?: readonly RoleplayResourceSelection[]
   readonly promptPolicy?: RoleplayResourceSelection
+  readonly regexPacks?: readonly RoleplayResourceSelection[]
   /** DSH Agent composition providing tools and runtime capabilities. */
   readonly agentPresetId?: string
 }

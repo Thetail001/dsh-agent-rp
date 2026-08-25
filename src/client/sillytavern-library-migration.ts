@@ -2,6 +2,7 @@
 
 import { unzip, type UnzipFileInfo } from 'fflate'
 import { classifySillyTavernJsonFile, type SillyTavernJsonKind } from './import-hint.ts'
+import { MAX_REGEX_PACK_BYTES } from '../regex-pack-library-protocol.ts'
 
 const MEBIBYTE = 1024 * 1024
 const MAX_ARCHIVE_BYTES = 512 * MEBIBYTE
@@ -10,8 +11,7 @@ const MAX_EXTRACTED_CANDIDATE_BYTES = 512 * MEBIBYTE
 const MAX_CHARACTER_BYTES = 64 * MEBIBYTE
 const MAX_PRESET_BYTES = 64 * MEBIBYTE
 const MAX_WORLD_INFO_BYTES = 2 * MEBIBYTE
-
-export type SillyTavernMigrationAssetKind = 'character' | 'preset' | 'world-info'
+export type SillyTavernMigrationAssetKind = 'character' | 'preset' | 'regex-pack' | 'world-info'
 export type SillyTavernMigrationDeferredKind = 'chat' | 'group-chat' | 'persona'
 export type SillyTavernMigrationAssetState = 'ready' | 'already-imported' | 'duplicate' | 'too-large'
 
@@ -210,11 +210,13 @@ function jsonKindToAsset(kind: SillyTavernJsonKind): SillyTavernMigrationAssetKi
   if (kind === 'character-card') return 'character'
   if (kind === 'world-info') return 'world-info'
   if (kind === 'preset') return 'preset'
+  if (kind === 'regex-pack') return 'regex-pack'
   return undefined
 }
 
 function sizeLimit(kind: SillyTavernMigrationAssetKind): number {
   if (kind === 'world-info') return MAX_WORLD_INFO_BYTES
+  if (kind === 'regex-pack') return MAX_REGEX_PACK_BYTES
   return kind === 'preset' ? MAX_PRESET_BYTES : MAX_CHARACTER_BYTES
 }
 
@@ -278,7 +280,7 @@ export async function scanSillyTavernMigration(
       kind = source.file === undefined ? undefined : jsonKindToAsset(await classifySillyTavernJsonFile(source.file))
     }
     if (kind === undefined || source.file === undefined) {
-      issues.push({ path: source.path, message: '无法识别为角色卡、世界书或 Chat Completion 预设' })
+      issues.push({ path: source.path, message: '无法识别为角色卡、世界书、Chat Completion 预设或独立正则包' })
       continue
     }
     candidates.push({ source, kind })
