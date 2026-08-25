@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": false,
+    "noEmit": true,
+    "types": ["react"]
+  },
+  "files": [
+    "fixtures/published-client-extension-consumer.ts"
+  ]
+}

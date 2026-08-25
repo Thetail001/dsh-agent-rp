@@ -6,7 +6,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import type {
   ClientContext, SessionId, SessionSummary, WorkspaceView,
 } from '@deepseek-ai/dsh-client-runtime/client'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { CommandRowProps, IConversation, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
@@ -16,6 +16,7 @@ import {
   IconLoadingOutline16, IconPlayOutline16, IconRefreshOutline16, IconSparkle16, IconWarningOutline16,
   Menu, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { AGENT_RP_WORKBENCH_SECTION_SLOT } from '../client-extension-v0.ts'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { createPortal } from 'react-dom'
@@ -2719,8 +2720,12 @@ type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
   readonly workspaceList: WorkspaceListSource
 }
 
-type SidebarRoleplayDestinationProps = PropsRuntime<'sidebar.destinations'> & SidebarRoleplayWorkbenchProps
-type SidebarRoleplayFooterActionProps = PropsRuntime<'sidebar.footer.action'> & SidebarRoleplayWorkbenchProps
+type SidebarRoleplayDestinationProps = PropsRuntime<'sidebar.destinations'>
+  & PropsRenderSlots<typeof AGENT_RP_WORKBENCH_SECTION_SLOT>
+  & SidebarRoleplayWorkbenchProps
+type SidebarRoleplayFooterActionProps = PropsRuntime<'sidebar.footer.action'>
+  & PropsRenderSlots<typeof AGENT_RP_WORKBENCH_SECTION_SLOT>
+  & SidebarRoleplayWorkbenchProps
 
 function RoleplayDestinationIcon({ size }: { readonly size: number }) {
   return <svg aria-hidden="true" viewBox="0 0 20 20" width={size} height={size} fill="none">
@@ -2784,7 +2789,7 @@ function SidebarRoleplayFooterAction(props: SidebarRoleplayFooterActionProps) {
 }
 
 function SidebarRoleplayDestination({
-  wide, width, useSessions,
+  wide, width, useSessions, renderSlot,
   runtimeDiagnostics,
   listCharacters, readCharacter, setCharacterArchived, deleteCharacter, importCharacterFile,
   prepareChatMigration, prepareRpDistributionChatMigration, launchPreparedChatMigration,
@@ -3004,6 +3009,9 @@ function SidebarRoleplayDestination({
             </span>
             <span aria-hidden="true" style={{ fontSize: '16px', opacity: .38 }}>›</span>
           </button>
+          <div data-agent-rp-workbench-extensions style={{ display: 'contents' }}>
+            {renderSlot(AGENT_RP_WORKBENCH_SECTION_SLOT, { closeWorkbench })}
+          </div>
           <p style={{ fontSize: '11px', lineHeight: 1.6, margin: '12px 2px 0', opacity: .46 }}>
             工作台保持一个全局入口；具体能力按任务分组，不再占用发送栏，也不会为每项兼容功能增加常驻图标
           </p>
@@ -13310,11 +13318,13 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('sidebar.destinations', () => ctx.slots.register({
     name: 'sidebar.destinations', id: 'agent-rp-workbench', order: 20,
+    children: { [AGENT_RP_WORKBENCH_SECTION_SLOT]: { kind: 'list', scope: 'root' } },
   }, props => <SidebarRoleplayDestination {...props} {...sidebarRoleplayWorkbenchProps} />))
   ctx.slots.inject('sidebar.footer.action', () => {
     if (ctx.slots.spec('sidebar.destinations') !== undefined) return () => {}
     return ctx.slots.register({
       name: 'sidebar.footer.action', id: 'agent-rp-workbench', order: 20,
+      children: { [AGENT_RP_WORKBENCH_SECTION_SLOT]: { kind: 'list', scope: 'root' } },
     }, props => <SidebarRoleplayFooterAction {...props} {...sidebarRoleplayWorkbenchProps} />)
   })
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({

@@ -15,6 +15,10 @@
       "types": "./lib/extension-v0.d.ts",
       "import": "./lib/extension-v0.js"
     },
+    "./client-extension/v0": {
+      "types": "./lib/client-extension-v0.d.ts",
+      "import": "./lib/client-extension-v0.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -22,6 +26,8 @@
     "lib/index.js",
     "lib/extension-v0.js",
     "lib/extension-v0.d.ts",
+    "lib/client-extension-v0.js",
+    "lib/client-extension-v0.d.ts",
     "lib/repair-session.js",
     "lib/client.js",
     "lib/client.js.map",
@@ -58,7 +64,7 @@
     "smoke:compat": "tsdown --config tsdown.smoke.config.ts && node .smoke-dist/smoke-card-compat.mjs",
     "build": "tsdown",
     "build:host": "tsdown --config tsdown.host.config.ts",
-    "check:published-imports": "node scripts/check-published-imports.mjs",
+    "check:published-imports": "node scripts/check-published-imports.mjs && tsc -p tsconfig.published-client-extension.json && tsdown fixtures/published-client-extension-consumer.ts --no-config --format cjs --platform browser --target es2024 --out-dir .test-dist/published-client-extension --clean && node scripts/check-published-client-extension.mjs",
     "prepack": "pnpm run check:tavern-vendor && pnpm run build && pnpm run check:published-imports",
     "test": "node scripts/run-source-tests.mjs all",
     "test:external-window": "node scripts/run-source-tests.mjs external-window",

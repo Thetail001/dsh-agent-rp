@@ -15,7 +15,13 @@ function packageName(specifier) {
   return specifier.split('/')[0]
 }
 
-for (const file of ['../lib/index.js', '../lib/extension-v0.js', '../lib/repair-session.js', '../lib/client.js']) {
+for (const file of [
+  '../lib/index.js',
+  '../lib/extension-v0.js',
+  '../lib/client-extension-v0.js',
+  '../lib/repair-session.js',
+  '../lib/client.js',
+]) {
   const source = readFileSync(new URL(file, import.meta.url), 'utf8')
   const specifiers = [
     ...source.matchAll(/\bfrom\s+["']([^"']+)["']/gu),
@@ -47,6 +53,15 @@ for (const name of [
 }
 if (extension.AGENT_RP_EXTENSION_API_VERSION !== 0) {
   throw new Error('Published extension/v0 reports the wrong API version')
+}
+
+const clientExtension = await import('@dsh-external/dsh-agent-rp/client-extension/v0')
+for (const name of ['AGENT_RP_CLIENT_EXTENSION_API_VERSION', 'AGENT_RP_WORKBENCH_SECTION_SLOT']) {
+  if (!(name in clientExtension)) throw new Error(`Published client-extension/v0 export is missing ${name}`)
+}
+if (clientExtension.AGENT_RP_CLIENT_EXTENSION_API_VERSION !== 0
+  || clientExtension.AGENT_RP_WORKBENCH_SECTION_SLOT !== 'agent-rp.workbench.section') {
+  throw new Error('Published client-extension/v0 reports the wrong contract')
 }
 
 if (clientBuiltins.size > 0) {

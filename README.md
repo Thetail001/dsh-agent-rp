@@ -116,7 +116,7 @@ Termux 路线面向 ARM64、Android 11 及以上设备，目标是在手机本�
 
 更具体的格式支持与降级方式见 [SillyTavern 兼容说明](docs/sillytavern-compatibility.md)。
 
-需要比较大型卡片改动时，可运行不含社区卡片内容的 [合成兼容基准与本地真实卡、预设验收流程](docs/compatibility-benchmark.md)。EJS 的可执行与保留范围见 [EJS 兼容表](docs/ejs-compatibility.md)；后续世界书与插件生态遵循 [安全扩展能力协议](docs/extension-capabilities.md)。
+需要比较大型卡片改动时，可运行不含社区卡片内容的 [合成兼容基准与本地真实卡、预设验收流程](docs/compatibility-benchmark.md)。EJS 的可执行与保留范围见 [EJS 兼容表](docs/ejs-compatibility.md)；后续世界书与插件生态遵循 [安全扩展能力协议](docs/extension-capabilities.md)。独立 DSH 插件可从 [社区插件接入](docs/community-plugin-development.md) 选择 Host 生命周期接口或 Agent RP 工作台 Slot；当前仍是源码与本地安装协作入口，不代表 npm 分发已经完成。
 
 ## 反馈与贡献
 

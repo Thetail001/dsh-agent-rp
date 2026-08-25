@@ -1,0 +1,23 @@
+import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import {
+  AGENT_RP_WORKBENCH_SECTION_SLOT,
+  type AgentRpWorkbenchSectionProps,
+} from '@dsh-external/dsh-agent-rp/client-extension/v0'
+
+/** DSH client services required by the independent fixture plugin. */
+export const inject = ['slots']
+
+function CommunityWorldbookSection(props: AgentRpWorkbenchSectionProps) {
+  void props.closeWorkbench
+  return null
+}
+
+/** Register one external workbench section using only the published client contract. */
+export function apply(ctx: ClientContext): void {
+  ctx.slots.inject(AGENT_RP_WORKBENCH_SECTION_SLOT, () => ctx.slots.register({
+    name: AGENT_RP_WORKBENCH_SECTION_SLOT,
+    id: 'published-consumer-fixture',
+    order: 10,
+    label: 'External fixture',
+  }, CommunityWorldbookSection))
+}
