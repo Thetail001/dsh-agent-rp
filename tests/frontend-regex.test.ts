@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import type { ImportedRegexScript } from '../src/import/types.ts'
@@ -55,6 +54,7 @@ import {
   withCurrentCharacterDisplayScripts,
   USER_INPUT_PLACEMENT,
 } from '../src/frontend-regex.ts'
+import { createRoleplayDisplayPlanner } from '../src/roleplay-display-plan.ts'
 
 const base: ImportedRegexScript = {
   scriptName: 'script',
@@ -75,8 +75,6 @@ const character = {
   name: '白露',
   frontend: { regexScripts: [base], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {} },
 }
-
-const clientSource = readFileSync(new URL('../src/client/index.tsx', import.meta.url), 'utf8')
 
 test('keeps unrelated Tavern scripts ready when only image approvals change', () => {
   const scope = { sessionId: 'session-a', planSignature: 'scripts-a' }
@@ -196,14 +194,23 @@ test('uses current library display rules without changing Session prompt behavio
 })
 
 test('uses current library display rules for an already-generated reply', () => {
-  const branchStart = clientSource.indexOf("if (activeViewMode === 'immersive' && generation !== undefined)")
-  const branchEnd = clientSource.indexOf("if (activeViewMode === 'immersive')", branchStart + 1)
-  const branch = clientSource.slice(branchStart, branchEnd)
-
-  assert.notEqual(branchStart, -1)
-  assert.notEqual(branchEnd, -1)
-  assert.match(branch, /name: activeProjection\.characterName,\s*frontend: frontend \?\?/u)
-  assert.doesNotMatch(branch, /frontend: activeProjection\.frontend/u)
+  const currentDisplay = { ...base, replaceString: 'current' }
+  const planner = createRoleplayDisplayPlanner({
+    projection: {
+      characterName: character.name,
+      tavern: { messages: [{ messageId: 0, seq: 10, role: 'assistant', text: 'old', isHidden: false }] },
+      generations: [{
+        anchorSeq: 10, selectedVersionSeq: 10, assistantSeqs: [10], versions: [{ seq: 10, text: 'old' }],
+      }],
+    },
+    frontend: withCurrentCharacterDisplayScripts(character.frontend, [currentDisplay]),
+    immersive: true,
+    overrides: new Map(),
+  })
+  const plan = planner.assistant({ finalSeq: 10, blockText: 'old' })
+  assert.equal(plan.kind, 'render')
+  if (plan.kind !== 'render') return
+  assert.deepEqual(plan.compilation.segments, [{ kind: 'markdown', text: 'current' }])
 })
 
 test('parses Tavern send and trigger pipelines without leaking commands into chat', () => {

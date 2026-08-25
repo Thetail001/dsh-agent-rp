@@ -77,7 +77,6 @@ import {
   parseTavernResourceBlockedReport,
   resolveTavernScriptExecution,
   shouldResetTavernScriptRuntime,
-  tavernMessageDepth,
   tavernReasoningExtra,
   tavernScriptFrameNavigation,
   tavernScriptFrameSource,
@@ -111,6 +110,10 @@ import {
   summarizeCharacterRegexScript, USER_INPUT_PLACEMENT, withCurrentCharacterDisplayScripts, type CompiledCharacterDisplay,
   type CharacterDisplaySegment, type CharacterRegexScriptSummary,
 } from '../frontend-regex.ts'
+import {
+  createRoleplayDisplayPlanner,
+  ROLEPLAY_STATUS_PLACEHOLDER,
+} from '../roleplay-display-plan.ts'
 import {
   blockedCardFrameResources, compileCardFrameDocument, inlineCardSanitizerProbeState,
 } from './card-frame.ts'
@@ -627,7 +630,7 @@ type GenerationTailProps = TurnTailOwnerProps & {
 }
 
 const color = 'var(--dsw-alias-state-business-primary, #6f78e8)'
-const statusPlaceholder = '<StatusPlaceHolderImpl/>'
+const statusPlaceholder = ROLEPLAY_STATUS_PLACEHOLDER
 const openRoleplaySessionToolsEvent = 'dsh-agent-rp-open-session-tools'
 
 function elapsedStartupMilliseconds(startedAt: number): number {
@@ -11854,6 +11857,18 @@ function roleplayComposerDockComponent(
       mounted.set(display, mount)
       render(display, mount)
     }
+    const restoreHostDisplay = (item: HTMLElement, original: HTMLElement): void => {
+      const display = item.querySelector<HTMLElement>(':scope > [data-agent-rp-rendered-display]')
+      if (display === null) return
+      const mount = mounted.get(display)
+      if (mount !== undefined) {
+        mount.root.unmount()
+        mounted.delete(display)
+      }
+      display.remove()
+      original.style.removeProperty('display')
+      delete item.dataset.agentRpFrontend
+    }
     window.addEventListener('message', bridge)
     const scan = (): void => {
       const {
@@ -11871,10 +11886,12 @@ function roleplayComposerDockComponent(
         && activeCharacterStatus !== 'error') return
       const frontend = activeProjection.frontend === undefined ? undefined
         : withCurrentCharacterDisplayScripts(activeProjection.frontend, activeCharacterDisplayRegexScripts)
-      const hasDisplayRules = activeViewMode === 'immersive' && frontend !== undefined
-        && frontend.regexScripts.length + (activeProjection.preset?.regexScripts.length ?? 0) > 0
-      const messageIdBySeq = new Map(activeProjection.tavern?.messages.map(message => [message.seq, message.messageId]))
-      const tavernMessageBySeq = new Map(activeProjection.tavern?.messages.map(message => [message.seq, message]))
+      const displayPlanner = createRoleplayDisplayPlanner({
+        projection: activeProjection,
+        immersive: activeViewMode === 'immersive',
+        overrides: activeDisplayOverrides,
+        ...(frontend === undefined ? {} : { frontend }),
+      })
       const visibleTavernMessages = activeProjection.tavern?.messages.filter(message => !message.isHidden) ?? []
       const visibleFlowItems = [...scroll.querySelectorAll<HTMLElement>(
         '[data-chat-flow-kind="user"], [data-chat-flow-kind="assistant-step"]',
@@ -11936,26 +11953,13 @@ function roleplayComposerDockComponent(
         const node = activeChat.nodes.get(key)
         if (node?.kind !== 'user') continue
         const seq = (node.data as { readonly seq: number }).seq
-        const message = alignedTavernMessageByItem.get(item) ?? tavernMessageBySeq.get(seq)
-        const messageId = message?.messageId ?? messageIdBySeq.get(seq)
-        const override = messageId === undefined ? undefined : activeDisplayOverrides.get(messageId)
         const original = item.firstElementChild as HTMLElement | null
         if (original === null) continue
-        if (override !== undefined) {
-          mountRenderedDisplay(item, original, {
-            segments: [{ kind: 'html', source: override }], diagnostics: [],
-          }, activeProjection, activeCharacterDetail, activeCompatibilityMarkers)
-          continue
-        }
-        if (!hasDisplayRules || frontend === undefined || message?.role !== 'user' || message.text === '') continue
-        const depth = tavernMessageDepth(activeProjection.tavern?.messages, message.messageId)
-        const rendered = renderCharacterDisplay(message.text, {
-          name: activeProjection.characterName,
-          frontend,
-        }, USER_INPUT_PLACEMENT, depth, activeProjection.userName, activeProjection.preset?.regexScripts)
-        if (rendered === message.text) continue
-        mountRenderedDisplay(
-          item, original, compileCharacterDisplay(rendered), activeProjection, activeCharacterDetail, activeCompatibilityMarkers,
+        const alignedMessage = alignedTavernMessageByItem.get(item)
+        const plan = displayPlanner.user({ seq, ...(alignedMessage === undefined ? {} : { alignedMessage }) })
+        if (plan.kind === 'host') restoreHostDisplay(item, original)
+        else if (plan.kind === 'render') mountRenderedDisplay(
+          item, original, plan.compilation, activeProjection, activeCharacterDetail, activeCompatibilityMarkers,
         )
       }
       for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="assistant-step"]')) {
@@ -11965,55 +11969,22 @@ function roleplayComposerDockComponent(
         if (node?.kind !== 'assistant-step') continue
         const data = node.data as { readonly blocks?: readonly { readonly kind: string; readonly text?: string }[] }
         const finalSeq = (node.data as { readonly finalNode?: { readonly seq: number } }).finalNode?.seq
-        const generation = finalSeq === undefined
-          ? undefined
-          : activeProjection.generations.find(group => group.assistantSeqs.includes(finalSeq))
-        const selected = generation?.versions.find(version => version.seq === generation.selectedVersionSeq)
-        const alignedMessage = alignedTavernMessageByItem.get(item)
-        const messageId = (selected === undefined ? undefined : messageIdBySeq.get(selected.seq))
-          ?? alignedMessage?.messageId
-          ?? (finalSeq === undefined ? undefined : messageIdBySeq.get(finalSeq))
-        const depth = tavernMessageDepth(activeProjection.tavern?.messages, messageId)
-        const override = messageId === undefined ? undefined : activeDisplayOverrides.get(messageId)
         const original = item.firstElementChild as HTMLElement | null
-        if (override !== undefined && original !== null) {
-          mountRenderedDisplay(item, original, {
-            segments: [{ kind: 'html', source: override }], diagnostics: [],
-          }, activeProjection, activeCharacterDetail, activeCompatibilityMarkers)
+        const alignedMessage = alignedTavernMessageByItem.get(item)
+        const plan = displayPlanner.assistant({
+          blockText: data.blocks
+            ?.flatMap(block => block.kind === 'text' && block.text !== undefined ? [block.text] : []).join('\n') ?? '',
+          ...(finalSeq === undefined ? {} : { finalSeq }),
+          ...(alignedMessage === undefined ? {} : { alignedMessage }),
+        })
+        if (plan.kind === 'hidden') {
+          hideTranscriptDetail(item)
           continue
         }
-        if (activeViewMode === 'immersive' && generation !== undefined) {
-          if (finalSeq !== generation.anchorSeq) {
-            hideTranscriptDetail(item)
-            continue
-          }
-          if (selected !== undefined && original !== null) {
-            const rendered = renderCharacterDisplay(selected.text.replaceAll(statusPlaceholder, ''), {
-              name: activeProjection.characterName,
-              frontend: frontend ?? {
-                regexScripts: [], tavernHelperScriptNames: [], tavernHelperScripts: [], tavernHelperVariables: {},
-              },
-            }, AI_OUTPUT_PLACEMENT, depth, activeProjection.userName, activeProjection.preset?.regexScripts)
-            mountRenderedDisplay(
-              item, original, compileCharacterDisplay(rendered), activeProjection, activeCharacterDetail,
-              activeCompatibilityMarkers,
-            )
-            continue
-          }
-        }
-        if (!hasDisplayRules || frontend === undefined) continue
-        const raw = alignedMessage?.role === 'assistant'
-          ? alignedMessage.text
-          : data.blocks?.flatMap(block => block.kind === 'text' && block.text !== undefined ? [block.text] : []).join('\n') ?? ''
-        if (raw === '') continue
-        const rendered = renderCharacterDisplay(raw.replaceAll(statusPlaceholder, ''), {
-          name: activeProjection.characterName,
-          frontend,
-        }, AI_OUTPUT_PLACEMENT, depth, activeProjection.userName, activeProjection.preset?.regexScripts)
-        if (rendered === raw) continue
         if (original === null) continue
-        mountRenderedDisplay(
-          item, original, compileCharacterDisplay(rendered), activeProjection, activeCharacterDetail, activeCompatibilityMarkers,
+        if (plan.kind === 'host') restoreHostDisplay(item, original)
+        else mountRenderedDisplay(
+          item, original, plan.compilation, activeProjection, activeCharacterDetail, activeCompatibilityMarkers,
         )
       }
       if (activeViewMode === 'immersive') {
