@@ -804,7 +804,10 @@ export function installAgentRp(
         })
         return hasInlineStateAction
           ? { outcome: 'skipped' }
-          : runRoleplayStagedStateSettlement(input)
+          : runRoleplayStagedStateSettlement({
+              ...input,
+              verificationModel: workspaceSettings.get().turnWorkers.stateVerification.model,
+            })
       },
     }),
     'agent-rp: state settlement Worker',

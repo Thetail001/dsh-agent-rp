@@ -525,23 +525,25 @@ interface CurrentModelCapabilities {
   }
 }
 
+interface AvailableModelCatalog {
+  readonly current: CurrentModelCapabilities['current']
+  readonly groups: readonly {
+    readonly id: string
+    readonly name: string
+    readonly models: readonly {
+      readonly id: string
+      readonly name: string
+      readonly reasoning?: CurrentModelCapabilities['reasoning']
+    }[]
+  }[]
+}
+
 interface ClientModelGateway {
   readonly api: {
     readonly sessions: {
       models(request: { readonly sessionId: SessionId }): Promise<{
         readonly result:
-        | { readonly ok: true; readonly value: {
-          readonly current: CurrentModelCapabilities['current']
-          readonly groups: readonly {
-            readonly id: string
-            readonly name: string
-            readonly models: readonly {
-              readonly id: string
-              readonly name: string
-              readonly reasoning?: CurrentModelCapabilities['reasoning']
-            }[]
-          }[]
-        } }
+        | { readonly ok: true; readonly value: AvailableModelCatalog }
         | { readonly ok: false; readonly error: { readonly message: string } }
       }>
     }
@@ -3070,6 +3072,7 @@ function SidebarRoleplayDestination({
 interface WorkspaceSettingsSectionProps extends PropsRuntime<'settings.section'> {
   readonly workspaceSettings: WorkspaceSettingsSource
   readonly workspaceList: WorkspaceListSource
+  readonly loadModelCatalog: () => Promise<AvailableModelCatalog>
 }
 
 interface RpDistributionBridgeSectionProps extends PropsRuntime<'settings.section'> {
@@ -3529,12 +3532,34 @@ type ToolStrategyDraft = {
   custom: Array<{ id: string; enabled: boolean; text: string }>
 }
 
-function TurnWorkerSettingsPanel({ settings, writable, onSave }: {
+function TurnWorkerSettingsPanel({ settings, writable, onSave, loadModelCatalog }: {
   readonly settings: AgentRpSettings
   readonly writable: boolean
   readonly onSave: (settings: AgentRpSettings) => void
+  readonly loadModelCatalog: () => Promise<AvailableModelCatalog>
 }) {
   const enabled = settings.turnWorkers.narrativeReview.enabled
+  const selectedModel = settings.turnWorkers.stateVerification.model
+  const [modelCatalog, setModelCatalog] = useState<AvailableModelCatalog>()
+  const [modelCatalogError, setModelCatalogError] = useState<string>()
+  useEffect(() => {
+    let active = true
+    setModelCatalogError(undefined)
+    void loadModelCatalog().then(value => {
+      if (active) setModelCatalog(value)
+    }).catch((reason: unknown) => {
+      if (active) setModelCatalogError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { active = false }
+  }, [loadModelCatalog])
+  const modelOptions = (modelCatalog?.groups ?? []).flatMap(group => group.models.map(model => ({
+    provider: group.id,
+    model: model.id,
+    label: `${group.name} · ${model.name}`,
+    value: JSON.stringify([group.id, model.id]),
+  })))
+  const selectedValue = selectedModel === null ? '' : JSON.stringify([selectedModel.provider, selectedModel.model])
+  const savedModelIsListed = selectedModel === null || modelOptions.some(option => option.value === selectedValue)
   return <section style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)', marginTop: '26px', paddingTop: '23px' }}>
     <div style={{ alignItems: 'flex-start', display: 'flex', gap: '14px', justifyContent: 'space-between' }}>
       <div>
@@ -3547,11 +3572,42 @@ function TurnWorkerSettingsPanel({ settings, writable, onSave }: {
         <input type="checkbox" checked={enabled} disabled={!writable} onChange={event => {
           onSave({
             ...settings,
-            turnWorkers: { narrativeReview: { enabled: event.target.checked } },
+            turnWorkers: {
+              ...settings.turnWorkers,
+              narrativeReview: { enabled: event.target.checked },
+            },
           })
         }} />正文审阅
       </label>
     </div>
+    <label style={{ display: 'grid', fontSize: '12px', gap: '6px', marginTop: '14px', opacity: writable ? 1 : .62 }}>状态核验模型
+      <select value={selectedValue} disabled={!writable} onChange={event => {
+        const option = modelOptions.find(candidate => candidate.value === event.target.value)
+        if (event.target.value !== '' && option === undefined) return
+        onSave({
+          ...settings,
+          turnWorkers: {
+            ...settings.turnWorkers,
+            stateVerification: {
+              model: option === undefined ? null : { provider: option.provider, model: option.model },
+            },
+          },
+        })
+      }} style={settingsFieldStyle}>
+        <option value="">跟随当前会话模型（可靠默认）</option>
+        {!savedModelIsListed && selectedModel !== null && <option value={selectedValue}>
+          {selectedModel.provider} · {selectedModel.model}（当前不可用）
+        </option>}
+        {modelOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </label>
+    <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '7px 0 0', opacity: .56 }}>
+      只改变独立核验请求；候选结算和角色正文仍使用会话模型。选择更快的模型可以缩短有状态回合，模型不可用时会明确保留原状态并记录失败。
+    </p>
+    {modelCatalog === undefined && modelCatalogError === undefined && <p role="status" style={{ fontSize: '11px', margin: '7px 0 0', opacity: .5 }}>正在读取当前会话可用模型…</p>}
+    {modelCatalogError !== undefined && <p role="alert" style={{ color: 'var(--dsw-alias-state-warning, #d6a955)', fontSize: '11px', margin: '7px 0 0' }}>
+      暂时无法读取模型列表：{modelCatalogError}
+    </p>}
     <div style={{ display: 'grid', gap: '8px', marginTop: '14px' }}>
       {[
         ['1', '角色 Agent · 正文', '使用角色卡、世界书与所选预设完成剧情和工具行动'],
@@ -3712,6 +3768,7 @@ function ToolStrategySettingsPanel({ settings, writable, onSave }: {
 function WorkspaceSettingsSection({
   workspaceSettings,
   workspaceList,
+  loadModelCatalog,
 }: WorkspaceSettingsSectionProps) {
   const snapshot = useSyncExternalStore(
     workspaceSettings.subscribe,
@@ -3817,7 +3874,7 @@ function WorkspaceSettingsSection({
       </div>
     </details>
     <NativeIdentitySettingsPanel />
-    <TurnWorkerSettingsPanel settings={settings} writable={writable} onSave={write} />
+    <TurnWorkerSettingsPanel settings={settings} writable={writable} onSave={write} loadModelCatalog={loadModelCatalog} />
     <ToolStrategySettingsPanel settings={settings} writable={writable} onSave={write} />
     <ImageGenerationSettingsPanel settings={settings} writable={writable} onSave={write} />
     {snapshot.status === 'loading' && <p role="status" style={{ fontSize: '12px', marginTop: '14px', opacity: .55 }}>正在读取设置…</p>}
@@ -12488,6 +12545,15 @@ export function apply(ctx: ClientContext): void {
       }),
     }
   }
+  const loadWorkerModelCatalog = async (): Promise<AvailableModelCatalog> => {
+    const sessionId = ctx.sessions.list.getSnapshot().current
+    if (sessionId === undefined) throw new Error('请先选择一个会话，以读取已配置的模型')
+    const connection = ctx.get('connection') as ClientModelGateway | undefined
+    if (connection === undefined) throw new Error('当前客户端无法读取模型列表')
+    const { result } = await connection.api.sessions.models({ sessionId })
+    if (!result.ok) throw new Error(result.error.message)
+    return result.value
+  }
   const renameSession = async (sessionId: SessionId, title: string): Promise<void> => {
     const scope = ctx.sessions.scope(sessionId)
     const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
@@ -13131,7 +13197,8 @@ export function apply(ctx: ClientContext): void {
     id: 'agent-rp',
     order: 25,
     label: 'Agent RP',
-  }, props => <WorkspaceSettingsSection {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList} />))
+  }, props => <WorkspaceSettingsSection {...props} workspaceSettings={workspaceSettings} workspaceList={workspaceList}
+    loadModelCatalog={loadWorkerModelCatalog} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp-interoperability',

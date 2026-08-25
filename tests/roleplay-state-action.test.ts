@@ -29,6 +29,7 @@ import {
 } from '../src/roleplay-state-action.ts'
 import {
   collectRoleplayStagedStateSettlement,
+  resolveRoleplayStateVerificationModel,
   runRoleplayStagedStateSettlement,
 } from '../src/roleplay-staged-state-settlement.ts'
 import {
@@ -439,11 +440,14 @@ test('settles MVU after the visible reply through a replayable local-provider st
   const requestTexts: string[] = []
   const requestSystems: string[] = []
   const requestReasoning: (string | undefined)[] = []
+  const requestModels: Array<{ readonly provider: string; readonly model: string }> = []
   let requestCount = 0
   const fake = {
     sessions: { flush: async () => true },
     llm: {
       stream(options: {
+        readonly provider: string
+        readonly model: string
         readonly messages: readonly { readonly content: readonly unknown[] }[]
         readonly system?: string
         readonly reasoningEffort?: string
@@ -452,6 +456,7 @@ test('settles MVU after the visible reply through a replayable local-provider st
         requestTexts.push(JSON.stringify(options.messages))
         requestSystems.push(options.system ?? '')
         requestReasoning.push(options.reasoningEffort)
+        requestModels.push({ provider: options.provider, model: options.model })
         return (async function* () {
           const delta = requestCount === 1 ? 1 : 2
           const text = `{"operations":[{"operation":"delta","path":"/角色/等级","value":${String(delta)}}]}`
@@ -469,6 +474,7 @@ test('settles MVU after the visible reply through a replayable local-provider st
     agent,
     turn: 1,
     plan: { step: 2, plan },
+    verificationModel: { provider: 'fast-fixture', model: 'verification-fixture' },
     signal: new AbortController().signal,
   })
   await runRoleplayStagedStateSettlement({
@@ -494,9 +500,12 @@ test('settles MVU after the visible reply through a replayable local-provider st
   assert.match(requestText, /变量更新规则/u)
   assert.match(verificationSystem, /独立状态核验器/u)
   assert.match(verificationSystem, /从 current_state 直接到核验后状态/u)
-  assert.match(verificationText, /<proposal_operations>/u)
-  assert.match(verificationText, /<candidate_state>/u)
+  assert.doesNotMatch(verificationText, /<proposal_operations>|<candidate_state>/u)
   assert.deepEqual(requestReasoning, ['off', 'low'])
+  assert.deepEqual(requestModels, [
+    { provider: 'fixture', model: 'fixture' },
+    { provider: 'fast-fixture', model: 'verification-fixture' },
+  ])
   assert.equal(session.events.filter(event => event.type === 'assistant/message').length, 3)
   const requestEvent = session.events.find(event => event.type === 'agent-rp/staged-state-request'
     && event.data.stage === 'proposal')
@@ -609,4 +618,12 @@ test('settles MVU after the visible reply through a replayable local-provider st
     turn: 2,
     plans: [],
   }), undefined)
+})
+
+test('state verification follows the session model until the player selects another route', () => {
+  const sessionModel = { provider: 'session-provider', model: 'session-model' }
+  assert.deepEqual(resolveRoleplayStateVerificationModel(sessionModel, null), sessionModel)
+  assert.deepEqual(resolveRoleplayStateVerificationModel(sessionModel, {
+    provider: 'worker-provider', model: 'worker-model',
+  }), { provider: 'worker-provider', model: 'worker-model' })
 })

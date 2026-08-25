@@ -113,6 +113,16 @@ export interface RoleplayTurnWorkerSettings {
   readonly narrativeReview: {
     readonly enabled: boolean
   }
+  /** Model route for the independent state verification pass; null follows the active session. */
+  readonly stateVerification: {
+    readonly model: RoleplayWorkerModelSelection | null
+  }
+}
+
+/** Explicit provider route used by one background Roleplay Worker. */
+export interface RoleplayWorkerModelSelection {
+  readonly provider: string
+  readonly model: string
 }
 
 const DEFAULT_IMAGE_PROFILE_ID = 'default'
@@ -182,6 +192,7 @@ export const DEFAULT_AGENT_RP_SETTINGS: AgentRpSettings = {
   toolGuidance: DEFAULT_TOOL_GUIDANCE,
   turnWorkers: {
     narrativeReview: { enabled: false },
+    stateVerification: { model: null },
   },
 }
 
@@ -378,6 +389,27 @@ export function normalizeAgentRpSettings(value: unknown): AgentRpSettings {
   const narrativeReviewEnabled = (narrativeReview as Record<string, unknown> | undefined)?.enabled
     ?? DEFAULT_AGENT_RP_SETTINGS.turnWorkers.narrativeReview.enabled
   if (typeof narrativeReviewEnabled !== 'boolean') throw new Error('正文审阅 Worker 开关无效')
+  const stateVerification = (turnWorkersRecord as Record<string, unknown> | undefined)?.stateVerification
+  if (stateVerification !== undefined
+    && (typeof stateVerification !== 'object' || stateVerification === null || Array.isArray(stateVerification))) {
+    throw new Error('状态核验 Worker 设置无效')
+  }
+  const stateVerificationModel = (stateVerification as Record<string, unknown> | undefined)?.model ?? null
+  if (stateVerificationModel !== null
+    && (typeof stateVerificationModel !== 'object' || Array.isArray(stateVerificationModel))) {
+    throw new Error('状态核验 Worker 模型无效')
+  }
+  let normalizedStateVerificationModel: RoleplayWorkerModelSelection | null = null
+  if (stateVerificationModel !== null) {
+    const model = stateVerificationModel as Record<string, unknown>
+    if (typeof model.provider !== 'string' || model.provider.trim() !== model.provider
+      || model.provider === '' || model.provider.length > 256
+      || typeof model.model !== 'string' || model.model.trim() !== model.model
+      || model.model === '' || model.model.length > 512) {
+      throw new Error('状态核验 Worker 模型无效')
+    }
+    normalizedStateVerificationModel = { provider: model.provider, model: model.model }
+  }
   let imageProfiles: ImageGenerationProfile[]
   let activeImageProfileId: string
   if (record.imageProfiles === undefined) {
@@ -419,7 +451,10 @@ export function normalizeAgentRpSettings(value: unknown): AgentRpSettings {
     activeImageProfileId,
     imageProfiles,
     toolGuidance,
-    turnWorkers: { narrativeReview: { enabled: narrativeReviewEnabled } },
+    turnWorkers: {
+      narrativeReview: { enabled: narrativeReviewEnabled },
+      stateVerification: { model: normalizedStateVerificationModel },
+    },
   }
 }
 

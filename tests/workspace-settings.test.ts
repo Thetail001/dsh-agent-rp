@@ -88,15 +88,34 @@ test('retains Thetail tool guidance settings without importing provider-specific
 
 test('normalizes the optional narrative review Worker without changing older settings files', () => {
   assert.deepEqual(normalizeAgentRpSettings({ workspaceMode: 'all', workspaceIds: [] }).turnWorkers,
-    { narrativeReview: { enabled: false } })
+    { narrativeReview: { enabled: false }, stateVerification: { model: null } })
   assert.deepEqual(normalizeAgentRpSettings({
     workspaceMode: 'all', workspaceIds: [],
     turnWorkers: { narrativeReview: { enabled: true } },
-  }).turnWorkers, { narrativeReview: { enabled: true } })
+  }).turnWorkers, { narrativeReview: { enabled: true }, stateVerification: { model: null } })
   assert.throws(() => normalizeAgentRpSettings({
     workspaceMode: 'all', workspaceIds: [],
     turnWorkers: { narrativeReview: { enabled: 'yes' } },
   }), /正文审阅 Worker 开关/u)
+})
+
+test('normalizes an explicit state verification model without guessing unavailable routes', () => {
+  assert.deepEqual(normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [],
+    turnWorkers: {
+      stateVerification: { model: { provider: 'deepseek', model: 'DeepSeek-V4-Flash' } },
+    },
+  }).turnWorkers.stateVerification, {
+    model: { provider: 'deepseek', model: 'DeepSeek-V4-Flash' },
+  })
+  assert.throws(() => normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [],
+    turnWorkers: { stateVerification: { model: { provider: '', model: 'fixture' } } },
+  }), /状态核验 Worker 模型无效/u)
+  assert.throws(() => normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [],
+    turnWorkers: { stateVerification: { model: { provider: 'fixture', model: ' fixture ' } } },
+  }), /状态核验 Worker 模型无效/u)
 })
 
 test('updates one workspace through the active policy list', () => {
@@ -249,11 +268,18 @@ test('persists workspace settings outside the DSH settings allowlist', (t) => {
   const path = join(root, 'settings.json')
   const store = new WorkspaceSettingsStore({ path })
   assert.deepEqual(store.get(), DEFAULT_AGENT_RP_SETTINGS)
-  assert.deepEqual(store.set({ workspaceMode: 'selected', workspaceIds: ['workspace-a'] }), {
-    ...DEFAULT_AGENT_RP_SETTINGS, workspaceMode: 'selected', workspaceIds: ['workspace-a'],
-  })
-  assert.deepEqual(new WorkspaceSettingsStore({ path }).get(), {
-    ...DEFAULT_AGENT_RP_SETTINGS, workspaceMode: 'selected', workspaceIds: ['workspace-a'],
-  })
+  const expected = {
+    ...DEFAULT_AGENT_RP_SETTINGS,
+    workspaceMode: 'selected' as const,
+    workspaceIds: ['workspace-a'],
+    turnWorkers: {
+      narrativeReview: { enabled: false },
+      stateVerification: { model: { provider: 'fixture', model: 'fast-fixture' } },
+    },
+  }
+  assert.deepEqual(store.set({
+    workspaceMode: 'selected', workspaceIds: ['workspace-a'], turnWorkers: expected.turnWorkers,
+  }), expected)
+  assert.deepEqual(new WorkspaceSettingsStore({ path }).get(), expected)
   assert.match(readFileSync(path, 'utf8'), /"format": 0/u)
 })

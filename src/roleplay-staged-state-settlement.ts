@@ -25,6 +25,7 @@ import type { BoundRoleplayTurnPlan, RoleplayTurnPlanReference } from './rolepla
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import { applyMvuOperations, type MvuStateOperation } from './mvu.ts'
 import type { RoleplayTurnWorkerOutcome } from './roleplay-turn-worker.ts'
+import type { RoleplayWorkerModelSelection } from './workspace-settings.ts'
 
 interface RoleplayStagedStateRequestBase {
   readonly format: 0
@@ -247,20 +248,21 @@ function settlementVerificationRequest(
   agent: Agent,
   evidence: string,
   target: RoleplayStateActionPlan,
-  proposal: readonly MvuStateOperation[],
-  candidate: JsonValue,
+  modelSelection: RoleplayWorkerModelSelection | null | undefined,
   signal: AbortSignal,
 ): GenerateOptions {
   const header = agent.session.requestHeader()
   if (header === undefined) throw new Error('Roleplay staged settlement has no provider request header')
+  const model = resolveRoleplayStateVerificationModel(header.config, modelSelection)
   return {
     ...header.config,
+    ...model,
     reasoningEffort: ReasoningEffortId('low'),
     temperature: 0,
     maxTokens: Math.min(header.config.maxTokens ?? 4096, 4096),
     system: [
-      '你是角色扮演运行时的独立状态核验器。候选结算由另一个 Worker 生成，可能遗漏规则联动、使用错误路径或包含正文没有发生的变化。',
-      '以 current_state 为唯一基线，重新根据状态规则、玩家输入和最终正文计算本轮后的完整状态；candidate_state 和 proposal_operations 只供审计，不是事实来源。',
+      '你是角色扮演运行时的独立状态核验器。另一个 Worker 已生成候选结算，但它的输出不会提供给你，避免其遗漏或错误影响核验。',
+      '以 current_state 为唯一基线，重新根据状态规则、玩家输入和最终正文计算本轮后的完整状态。',
       '先在内部逐字段比较重新计算的状态与 current_state，检查回合、计数器、阶段、碰撞对象和关联实体。返回从 current_state 直接到核验后状态的完整 operations；不要返回对 candidate_state 的增量。',
       ...stateOperationContract(target),
     ].join('\n'),
@@ -268,19 +270,21 @@ function settlementVerificationRequest(
       source: { kind: 'plugin', plugin: 'dsh-agent-rp' },
       content: [{
         type: 'text',
-        text: [
-          evidence,
-          '<proposal_operations>',
-          JSON.stringify(proposal),
-          '</proposal_operations>',
-          '<candidate_state>',
-          JSON.stringify(candidate),
-          '</candidate_state>',
-        ].join('\n'),
+        text: evidence,
       }],
     })],
     signal,
   }
+}
+
+/** Resolve the verification route without changing the proposal or visible Roleplay request. */
+export function resolveRoleplayStateVerificationModel(
+  sessionModel: Pick<GenerateOptions, 'provider' | 'model'>,
+  selection: RoleplayWorkerModelSelection | null | undefined,
+): Pick<GenerateOptions, 'provider' | 'model'> {
+  return selection === null || selection === undefined
+    ? { provider: sessionModel.provider, model: sessionModel.model }
+    : { provider: selection.provider, model: selection.model }
 }
 
 function matchingPlanEvent(
@@ -330,7 +334,6 @@ type StateSettlementDispatchOutcome =
       readonly resultEvent: SessionEvent<'agent-rp/staged-state-result'>
       readonly text: string
       readonly operations: readonly MvuStateOperation[]
-      readonly candidate: JsonValue
     }
   | {
       readonly outcome: 'failed'
@@ -395,14 +398,14 @@ async function dispatchStateSettlement(
     if (operations.some(operation => !input.target.operations.includes(operation.op))) {
       throw new Error('Roleplay staged state result uses an operation outside its prepared plan')
     }
-    const candidate = applyMvuOperations(input.current, operations).statData
+    applyMvuOperations(input.current, operations)
     const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
       format: 0,
       requestId,
       requestSeq: requestEvent.seq,
       result: { kind: 'success', text, operations },
     })
-    return { outcome: 'success', requestEvent, resultEvent, text, operations, candidate }
+    return { outcome: 'success', requestEvent, resultEvent, text, operations }
   } catch (error: unknown) {
     let resultEvent = input.agent.session.events.find(
       (event): event is SessionEvent<'agent-rp/staged-state-result'> =>
@@ -426,6 +429,7 @@ export async function runRoleplayStagedStateSettlement(input: {
   readonly agent: Agent
   readonly turn: number
   readonly plan: BoundRoleplayTurnPlan
+  readonly verificationModel?: RoleplayWorkerModelSelection | null
   readonly signal: AbortSignal
 }): Promise<RoleplayTurnWorkerOutcome> {
   const target = input.plan.plan.act.stateActions[0]
@@ -476,8 +480,7 @@ export async function runRoleplayStagedStateSettlement(input: {
       input.agent,
       evidence,
       target,
-      proposal.operations,
-      proposal.candidate,
+      input.verificationModel,
       input.signal,
     ),
     stage: 'verification',
