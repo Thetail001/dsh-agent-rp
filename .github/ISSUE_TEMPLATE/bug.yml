@@ -1,0 +1,92 @@
+name: Bug 或兼容性问题
+description: 反馈安装、导入、角色会话、Agent/MVU、世界书、正则或 Tavern Helper 问题
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        谢谢你帮助改进 Agent RP。请只提供定位问题所需的信息，不要上传 API Key、私人对话、完整 Session Log 或无权再分发的卡片内容。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题发生在哪里？
+      options:
+        - 安装、更新或启动
+        - 角色卡、预设或资源导入
+        - 普通角色会话
+        - Agent 或 MVU 回合
+        - 世界书或 EJS
+        - 正则或消息显示
+        - Tavern Helper 脚本
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 实际发生了什么？
+      description: 请写清楚看到了什么，以及问题影响了哪项操作。
+      placeholder: 例如：从资源中心导入正则数组后提示“未知 JSON”，文件没有出现在资源列表。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 最短复现步骤
+      description: 从打开哪个入口开始，按顺序写到问题出现即可。
+      placeholder: |
+        1. 打开……
+        2. 选择……
+        3. 点击……
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      placeholder: 原本希望出现什么结果？在 SillyTavern 中的对应行为也可以写在这里。
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 本地错误或诊断
+      description: Tavern Helper 失败请在“脚本 x/y”中使用“复制失败详情”；其他问题请贴界面错误文字或经过检查的匿名诊断。截图可以直接拖到这里。
+      render: text
+
+  - type: input
+    id: source
+    attributes:
+      label: 相关资源与公开来源
+      description: 可填写角色卡、预设、脚本或插件的名称、版本和公开链接；不方便公开时可写“私有资源”并说明文件类型。
+      placeholder: 名称 / 版本 / URL / JSON、PNG 或 CHARX
+
+  - type: input
+    id: version
+    attributes:
+      label: Agent RP 版本或提交
+      description: 可从更新记录、安装输出或 GitHub 提交中复制；不清楚时写“不清楚”。
+      placeholder: 例如 96125b8 或 main 2026-08-26
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: 运行环境
+      placeholder: 例如 Windows 11 / DSH Desktop，或 Ubuntu 24.04 / Node 22 / web profile
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已检查上述内容，不包含 API Key、私人对话或完整 Session Log。
+          required: true

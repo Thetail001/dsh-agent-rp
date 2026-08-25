@@ -1,0 +1,44 @@
+name: 功能建议
+description: 说明希望改善的游玩或插件开发体验，以及真实使用场景
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎提出方向。真实场景和预期结果比预先指定实现架构更有帮助；如果有可参考的社区插件或公开仓库，也可以附上链接。
+
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 现在在做什么、遇到了什么限制、谁会使用这项能力？
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 希望达到的结果
+      description: 请描述玩家或插件作者最终能完成什么，不要求先设计内部实现。
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: 当前替代方式
+      description: 如果现在只能手工操作、使用其他插件或无法完成，请写在这里。
+
+  - type: textarea
+    id: references
+    attributes:
+      label: 参考资料
+      description: 可附公开插件、仓库、帖子、截图或最小示例；请勿上传无权再分发的内容。
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我描述的是实际使用目标；具体架构可以根据 Agent RP 与 DSH 的现状调整。
+          required: true
