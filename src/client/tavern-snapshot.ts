@@ -10,7 +10,11 @@ import type {
 } from '../tavern-helper.ts'
 import { tavernScriptIdentity } from '../tavern-script-identity.ts'
 import type { AgentRpProjection } from '../projection-types.ts'
-import { tavernReasoningExtra, type TavernScriptSnapshot } from './tavern-runtime.ts'
+import {
+  tavernReasoningExtra,
+  type TavernPageSnapshot,
+  type TavernScriptSnapshot,
+} from './tavern-runtime.ts'
 
 function tavernWorldbookEntry(
   entry: AgentRpProjection['worldInfo']['books'][number]['entries'][number],
@@ -177,19 +181,12 @@ export function currentTavernPreset(projection: AgentRpProjection): TavernScript
   return { name: preset.name, revision: preset.revision, value }
 }
 
-/** Build the shared SillyTavern page snapshot for one script identity and Session. */
-export function tavernScriptSnapshot(
+/** Build the script-independent SillyTavern page state for one Agent RP Session. */
+export function tavernPageSnapshot(
   projection: AgentRpProjection,
-  script: ImportedTavernHelperScript,
-  scriptScope: TavernScriptTreeScope,
-  approvedScriptOrigins: readonly string[],
   sessionId: SessionId,
-  approvedImageOrigins: readonly string[] = [],
-  approvedStyleOrigins: readonly string[] = [],
-  approvedFontOrigins: readonly string[] = [],
-  approvedFrameOrigins: readonly string[] = [],
   extensionSettings: Readonly<Record<string, JsonValue>> = {},
-): TavernScriptSnapshot {
+): TavernPageSnapshot {
   const state = projection.tavern
   const message = {
     ...(state?.scopes.message ?? {}),
@@ -204,16 +201,8 @@ export function tavernScriptSnapshot(
   const characterBook = projection.worldInfo.books.find(book => book.source === 'character')
   const importedGlobalBooks = projection.worldInfo.books
     .filter(book => book.source === 'standalone' && !book.id.startsWith('script:')).map(book => book.name)
-  const statusPanel = state?.statusPanels?.find(panel => panel.owner.scriptScope === scriptScope
-    && panel.owner.scriptId === script.id)
   const preset = currentTavernPreset(projection)
   return {
-    scriptScope,
-    scriptId: script.id,
-    scriptName: script.name,
-    scriptInfo: script.info,
-    buttons: script.buttons,
-    ...(statusPanel === undefined ? {} : { statusPanelHtml: statusPanel.html }),
     characterName: projection.characterName,
     characterId: projection.tavern?.characterSourceId ?? projection.avatarLibraryId ?? projection.characterName,
     ...(projection.characterCardRaw === undefined ? {} : { characterCard: projection.characterCardRaw }),
@@ -222,18 +211,12 @@ export function tavernScriptSnapshot(
     ...(projection.persona === undefined ? {} : { persona: projection.persona }),
     ...(preset === undefined ? {} : { preset }),
     extensionSettings,
-    approvedScriptOrigins,
-    approvedImageOrigins,
-    approvedStyleOrigins,
-    approvedFontOrigins,
-    approvedFrameOrigins,
     scopes: {
       global: state?.scopes.global ?? {},
       preset: state?.scopes.preset ?? {},
       character: state?.scopes.character ?? projection.frontend?.tavernHelperVariables ?? {},
       chat: state?.scopes.chat ?? {},
       message,
-      script: state?.scripts[tavernScriptIdentity(scriptScope, script.id)] ?? state?.scripts[script.id] ?? script.data,
     },
     worldbooks,
     worldbookBindings: {
@@ -248,7 +231,6 @@ export function tavernScriptSnapshot(
       ...entry,
       data: index === entries.length - 1 ? message : {},
       extra: tavernReasoningExtra(entry.reasoning),
-      annotations: entry.annotations?.[tavernScriptIdentity(scriptScope, script.id)] ?? {},
     })),
     characterRegexScripts: (projection.frontend?.regexScripts ?? [])
       .map((entry, index) => tavernRegex(entry, index, 'character')),
@@ -257,15 +239,57 @@ export function tavernScriptSnapshot(
     globalScriptTrees: tavernScriptTrees(projection, 'global'),
     presetScriptTrees: tavernScriptTrees(projection, 'preset'),
     characterScriptTrees: tavernScriptTrees(projection, 'character'),
-    injectedPrompts: (state?.injectedPrompts ?? []).flatMap(prompt => {
-      if (prompt.scriptScope !== scriptScope || prompt.scriptId !== script.id) return []
-      const { scriptId: _scriptId, scriptScope: _scriptScope, ...value } = prompt
-      return [value]
-    }),
     displayRegexScripts: [
       ...projection.regexPacks.flatMap(pack => pack.scripts),
       ...(projection.preset?.regexScripts ?? []),
       ...(projection.frontend?.regexScripts ?? []),
     ],
+  }
+}
+
+/** Add one Tavern Helper script's identity, state, and permissions to the shared page snapshot. */
+export function tavernScriptSnapshot(
+  projection: AgentRpProjection,
+  script: ImportedTavernHelperScript,
+  scriptScope: TavernScriptTreeScope,
+  approvedScriptOrigins: readonly string[],
+  sessionId: SessionId,
+  approvedImageOrigins: readonly string[] = [],
+  approvedStyleOrigins: readonly string[] = [],
+  approvedFontOrigins: readonly string[] = [],
+  approvedFrameOrigins: readonly string[] = [],
+  extensionSettings: Readonly<Record<string, JsonValue>> = {},
+): TavernScriptSnapshot {
+  const state = projection.tavern
+  const page = tavernPageSnapshot(projection, sessionId, extensionSettings)
+  const owner = tavernScriptIdentity(scriptScope, script.id)
+  const statusPanel = state?.statusPanels?.find(panel => panel.owner.scriptScope === scriptScope
+    && panel.owner.scriptId === script.id)
+  return {
+    ...page,
+    scriptScope,
+    scriptId: script.id,
+    scriptName: script.name,
+    scriptInfo: script.info,
+    buttons: script.buttons,
+    ...(statusPanel === undefined ? {} : { statusPanelHtml: statusPanel.html }),
+    approvedScriptOrigins,
+    approvedImageOrigins,
+    approvedStyleOrigins,
+    approvedFontOrigins,
+    approvedFrameOrigins,
+    scopes: {
+      ...page.scopes,
+      script: state?.scripts[owner] ?? state?.scripts[script.id] ?? script.data,
+    },
+    messages: page.messages.map((entry, index) => ({
+      ...entry,
+      annotations: state?.messages[index]?.annotations?.[owner] ?? {},
+    })),
+    injectedPrompts: (state?.injectedPrompts ?? []).flatMap(prompt => {
+      if (prompt.scriptScope !== scriptScope || prompt.scriptId !== script.id) return []
+      const { scriptId: _scriptId, scriptScope: _scriptScope, ...value } = prompt
+      return [value]
+    }),
   }
 }

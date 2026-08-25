@@ -198,14 +198,7 @@ export interface TavernScriptPresetSnapshot {
 }
 
 /** Initial state copied into one script sandbox. */
-export interface TavernScriptSnapshot {
-  readonly scriptScope: TavernScriptTreeScope
-  readonly scriptId: string
-  readonly scriptName: string
-  readonly scriptInfo: string
-  readonly buttons: readonly { readonly name: string; readonly visible: boolean }[]
-  /** Last durable session panel for this owner, used to avoid no-op writes on boot. */
-  readonly statusPanelHtml?: string | null
+export interface TavernPageSnapshot {
   readonly characterName: string
   readonly characterId: string
   /** Exact current character card, when this Session was created from one. */
@@ -214,24 +207,14 @@ export interface TavernScriptSnapshot {
   readonly userName?: string
   readonly persona?: SessionPersonaSnapshot
   readonly preset?: TavernScriptPresetSnapshot
-  /** Host-persisted SillyTavern extension settings shared by this installed script tree. */
+  /** Host-persisted SillyTavern extension settings shared by this page lifecycle. */
   readonly extensionSettings?: JsonRecord
-  readonly approvedScriptOrigins: readonly string[]
-  /** Player-approved HTTPS origins available only to image elements and CSS images. */
-  readonly approvedImageOrigins?: readonly string[]
-  /** Player-approved HTTPS origins available only to external stylesheets. */
-  readonly approvedStyleOrigins?: readonly string[]
-  /** Player-approved HTTPS origins available only to font files. */
-  readonly approvedFontOrigins?: readonly string[]
-  /** Player-approved HTTPS origins available only to nested browsing contexts. */
-  readonly approvedFrameOrigins?: readonly string[]
   readonly scopes: {
     readonly global: JsonRecord
     readonly preset: JsonRecord
     readonly character: JsonRecord
     readonly chat: JsonRecord
     readonly message: JsonRecord
-    readonly script: JsonRecord
   }
   readonly worldbooks: Readonly<Record<string, readonly TavernWorldbookEntry[]>>
   readonly worldbookBindings: Required<TavernWorldbookBindings>
@@ -245,7 +228,7 @@ export interface TavernScriptSnapshot {
     readonly isHidden: boolean
     readonly data: JsonRecord
     readonly extra: JsonRecord
-    /** Root-level SillyTavern fields owned by this isolated script only. */
+    /** Root-level SillyTavern fields visible to the selected runtime owner. */
     readonly annotations?: JsonRecord
   }[]
   /** Current character-card regexes in Tavern Helper's public representation. */
@@ -258,9 +241,32 @@ export interface TavernScriptSnapshot {
   readonly characterScriptTrees: readonly TavernScriptTree[]
   /** Session-local global scripts; DSH has no process-wide mutable script source. */
   readonly globalScriptTrees?: readonly TavernScriptTree[]
+  readonly displayRegexScripts: readonly ImportedRegexScript[]
+}
+
+/** Page state plus the private identity and permissions of one Tavern Helper script. */
+export interface TavernScriptSnapshot extends TavernPageSnapshot {
+  readonly scriptScope: TavernScriptTreeScope
+  readonly scriptId: string
+  readonly scriptName: string
+  readonly scriptInfo: string
+  readonly buttons: readonly { readonly name: string; readonly visible: boolean }[]
+  /** Last durable session panel for this owner, used to avoid no-op writes on boot. */
+  readonly statusPanelHtml?: string | null
+  readonly approvedScriptOrigins: readonly string[]
+  /** Player-approved HTTPS origins available only to image elements and CSS images. */
+  readonly approvedImageOrigins?: readonly string[]
+  /** Player-approved HTTPS origins available only to external stylesheets. */
+  readonly approvedStyleOrigins?: readonly string[]
+  /** Player-approved HTTPS origins available only to font files. */
+  readonly approvedFontOrigins?: readonly string[]
+  /** Player-approved HTTPS origins available only to nested browsing contexts. */
+  readonly approvedFrameOrigins?: readonly string[]
+  readonly scopes: TavernPageSnapshot['scopes'] & {
+    readonly script: JsonRecord
+  }
   /** Prompts currently owned by this script and persisted by the Host. */
   readonly injectedPrompts?: readonly Omit<TavernInjectedPrompt, 'scriptId' | 'scriptScope'>[]
-  readonly displayRegexScripts: readonly ImportedRegexScript[]
 }
 
 /** Last visible transcript message observed by the Host event bridge. */

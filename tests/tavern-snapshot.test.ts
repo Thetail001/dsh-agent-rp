@@ -3,7 +3,11 @@ import test from 'node:test'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { ImportedTavernHelperScript } from '../src/import/types.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
-import { currentTavernPreset, tavernScriptSnapshot } from '../src/client/tavern-snapshot.ts'
+import {
+  currentTavernPreset,
+  tavernPageSnapshot,
+  tavernScriptSnapshot,
+} from '../src/client/tavern-snapshot.ts'
 
 const script = {
   id: 'snapshot-script',
@@ -18,6 +22,7 @@ const script = {
 
 test('projects the initial Session without loading the React client entry', () => {
   const projection = agentRpProjectionDefinition.wire.view(agentRpProjectionDefinition.init())
+  const page = tavernPageSnapshot(projection, SessionId('snapshot-session'))
   const snapshot = tavernScriptSnapshot(
     projection,
     script,
@@ -27,6 +32,8 @@ test('projects the initial Session without loading the React client entry', () =
   )
 
   assert.equal(currentTavernPreset(projection), undefined)
+  assert.equal('script' in page.scopes, false)
+  assert.deepEqual(page.messages, [])
   assert.deepEqual({
     scriptScope: snapshot.scriptScope,
     scriptId: snapshot.scriptId,
