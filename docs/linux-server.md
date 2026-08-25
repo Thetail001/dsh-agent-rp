@@ -6,6 +6,8 @@
 
 创建一个不具备 root 权限的服务用户，并始终以这个用户安装、更新和运行 DSH。以下示例使用当前登录用户；自定义 `DSH_HOME` 必须是绝对路径，并在安装和生成服务单元时保持一致。
 
+管理员代服务用户执行安装器时，推荐先用 `sudo -iu <用户>` 进入该用户的登录环境。安装器也会在工具检查前进入目标用户的 `HOME`，避免 Corepack 读取管理员的私有当前目录；相对的本地 `--runner-source-base` 会在切换目录前解析。
+
 ```bash
 installer_path="$(mktemp)"
 curl -fsSL https://raw.githubusercontent.com/hewzhew/dsh-agent-rp/main/scripts/install-linux.sh -o "$installer_path"

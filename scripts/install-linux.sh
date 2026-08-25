@@ -73,6 +73,12 @@ if [ "$(id -u)" -eq 0 ] && [ "$ALLOW_ROOT" != 1 ]; then
   die '不要用 root 运行。请切换到以后实际运行 DSH 的非特权用户。'
 fi
 
+# Corepack walks parent manifests, so do not leave it in another user's private directory.
+if [ -d "$RUNNER_SOURCE_BASE" ]; then
+  RUNNER_SOURCE_BASE="$(cd -- "$RUNNER_SOURCE_BASE" && pwd -P)"
+fi
+cd -- "$HOME" 2>/dev/null || cd /
+
 dsh_home="${DSH_HOME:-$HOME/.dsh}"
 case "$dsh_home" in
   /*) ;;
