@@ -7,6 +7,7 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 
 const CHARACTER_ID_PATTERN = /^card-[a-f0-9]{32}$/u
 const WORLD_INFO_ID_PATTERN = /^world-info-[a-f0-9]{32}$/u
+const MAX_BOUND_WORLD_INFOS = 16
 
 /** Why one reusable world is attached to a character. */
 export type CharacterWorldBindingProvenance = 'embedded-import' | 'user-bound'
@@ -26,6 +27,9 @@ export interface CharacterWorldBinding {
   readonly createdAt: number
   readonly updatedAt: number
 }
+
+/** Raised when an editor tries to replace a binding revision that is no longer current. */
+export class CharacterWorldBindingConflictError extends Error {}
 
 function characterId(value: unknown): string {
   if (typeof value !== 'string' || !CHARACTER_ID_PATTERN.test(value)) throw new Error('角色世界绑定的角色编号无效')
@@ -61,6 +65,7 @@ function parseBinding(value: unknown): CharacterWorldBinding {
   const additional = record.additional.map((entry, index) => worldReference(entry, `附加世界绑定 ${index + 1}`))
   const ids = [...(primary === null ? [] : [primary.worldInfoId]), ...additional.map(entry => entry.worldInfoId)]
   if (new Set(ids).size !== ids.length) throw new Error('角色世界绑定不能重复')
+  if (ids.length > MAX_BOUND_WORLD_INFOS) throw new Error(`角色最多可以绑定 ${MAX_BOUND_WORLD_INFOS} 本世界书`)
   return {
     format: 0,
     characterId: characterId(record.characterId),
@@ -113,6 +118,52 @@ export class CharacterWorldBindingStore {
       primary,
       additional: [],
       createdAt: now,
+      updatedAt: now,
+    }
+    this.write(binding)
+    return binding
+  }
+
+  /** Atomically replace one character's reusable world composition after an optimistic revision check. */
+  replaceUserBinding(
+    character: string,
+    revision: number,
+    primaryWorldInfoId: string | null,
+    additionalWorldInfoIds: readonly string[],
+  ): CharacterWorldBinding {
+    const id = characterId(character)
+    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('角色世界绑定版本无效')
+    if (primaryWorldInfoId !== null && !WORLD_INFO_ID_PATTERN.test(primaryWorldInfoId)) {
+      throw new Error('主世界书编号无效')
+    }
+    if (!Array.isArray(additionalWorldInfoIds)
+      || additionalWorldInfoIds.some(worldInfoId => !WORLD_INFO_ID_PATTERN.test(worldInfoId))) {
+      throw new Error('附加世界书编号无效')
+    }
+    const worldInfoIds = [
+      ...(primaryWorldInfoId === null ? [] : [primaryWorldInfoId]),
+      ...additionalWorldInfoIds,
+    ]
+    if (worldInfoIds.length > MAX_BOUND_WORLD_INFOS) {
+      throw new Error(`角色最多可以绑定 ${MAX_BOUND_WORLD_INFOS} 本世界书`)
+    }
+    if (new Set(worldInfoIds).size !== worldInfoIds.length) throw new Error('角色世界绑定不能重复')
+    const existing = this.get(id)
+    if (existing === undefined) throw new Error('角色还没有可编辑的世界绑定')
+    if (existing.updatedAt !== revision) {
+      throw new CharacterWorldBindingConflictError('角色世界组合已在别处改变，请刷新后重试')
+    }
+    const now = Math.max(Date.now(), existing.updatedAt + 1)
+    const reference = (worldInfoId: string): CharacterWorldReference => ({
+      worldInfoId,
+      provenance: 'user-bound',
+    })
+    const binding: CharacterWorldBinding = {
+      format: 0,
+      characterId: id,
+      primary: primaryWorldInfoId === null ? null : reference(primaryWorldInfoId),
+      additional: additionalWorldInfoIds.map(reference),
+      createdAt: existing.createdAt,
       updatedAt: now,
     }
     this.write(binding)

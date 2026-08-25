@@ -30,6 +30,7 @@ import {
   type CharacterLibraryDetail, type CharacterLibraryDisplayExtension, type CharacterLibraryEditableContent,
   type CharacterLibraryImage, type CharacterLibraryRegexScript,
   type CharacterLibraryImportResult, type CharacterLibrarySummary, type CharacterLibraryWorldInfo,
+  type CharacterLibraryWorldBinding, type CharacterWorldBindingUpdateRequest,
   type CharacterLibraryWorldInfoEntry, type CharacterLibraryWorldInfoPage, type CharacterRemoteResourceApproval,
   type CharacterRemoteResourcePolicy, type CharacterRemoteResourceType,
 } from './character-library-protocol.ts'
@@ -779,6 +780,7 @@ function characterDetail(
   meta: StoredCharacterMetadata,
   parsed: ParsedStoredCharacter,
   includeWorldInfo: boolean,
+  worldBinding?: CharacterWorldBinding,
 ): CharacterLibraryDetail {
   const worldInfo = includeWorldInfo ? worldInfoDetail(parsed.card) : undefined
   const declaredRemoteResources = cardRemoteResourcePlan(parsed.card)
@@ -801,6 +803,7 @@ function characterDetail(
     approvedRemoteResources: parsed.overlay.approvedRemoteResources,
     remoteResourcePolicy: parsed.overlay.remoteResourcePolicy,
     ...(worldInfo === undefined ? {} : { worldInfo }),
+    ...(worldBinding === undefined ? {} : { worldBinding: browserWorldBinding(worldBinding) }),
     degradations: parsed.card.degradations,
     regexScripts: regexScriptDetail(parsed.sourceCard, parsed.overlay),
     displayExtensions: displayExtensionDetail(parsed.overlay, parsed.sourceCard),
@@ -809,6 +812,15 @@ function characterDetail(
     content: characterContent(parsed.card),
     localRevision: parsed.overlay.revision,
     localEdits: parsed.overlay.content !== undefined || parsed.overlay.regexOverrides.length > 0,
+  }
+}
+
+function browserWorldBinding(binding: CharacterWorldBinding): CharacterLibraryWorldBinding {
+  return {
+    format: 0,
+    primary: binding.primary,
+    additional: binding.additional,
+    revision: binding.updatedAt,
   }
 }
 
@@ -843,8 +855,8 @@ export class CharacterLibrary {
   get(id: string): CharacterLibraryDetail {
     const meta = this.readMetadata(id)
     const parsed = this.parseStoredId(meta)
-    this.ensureWorldBinding(id, parsed.card)
-    const detail = characterDetail(meta, parsed, true)
+    const worldBinding = this.ensureWorldBinding(id, parsed.card)
+    const detail = characterDetail(meta, parsed, true, worldBinding)
     this.rememberIndex(meta, detail)
     return detail
   }
@@ -853,8 +865,8 @@ export class CharacterLibrary {
   overview(id: string): CharacterLibraryDetail {
     const meta = this.readMetadata(id)
     const parsed = this.parseStoredId(meta)
-    this.ensureWorldBinding(id, parsed.card)
-    const detail = characterDetail(meta, parsed, false)
+    const worldBinding = this.ensureWorldBinding(id, parsed.card)
+    const detail = characterDetail(meta, parsed, false, worldBinding)
     this.rememberIndex(meta, detail)
     return detail
   }
@@ -881,7 +893,7 @@ export class CharacterLibrary {
     const parsed = this.parseStoredId(meta)
     const worldBinding = this.ensureWorldBinding(id, parsed.card)
     return {
-      detail: characterDetail(meta, parsed, true),
+      detail: characterDetail(meta, parsed, true, worldBinding),
       card: parsed.card,
       transport: meta.transport === 'png'
         ? { transport: 'png', metadataKeyword: meta.metadataKeyword! }
@@ -899,6 +911,31 @@ export class CharacterLibrary {
   worldBinding(id: string): CharacterWorldBinding | undefined {
     const meta = this.readMetadata(id)
     return this.ensureWorldBinding(id, this.parseStoredId(meta).card)
+  }
+
+  /** Replace the worlds used by future Sessions after validating every referenced reusable asset. */
+  updateWorldBinding(id: string, request: CharacterWorldBindingUpdateRequest): CharacterLibraryDetail {
+    if (this.worldInfos === undefined || this.worldBindings === undefined) {
+      throw new Error('当前角色库没有配置可编辑的世界绑定')
+    }
+    const meta = this.readMetadata(id)
+    if (meta.archivedAt !== undefined) throw new Error('请先恢复这个角色，再编辑世界组合')
+    const parsed = this.parseStoredId(meta)
+    this.ensureWorldBinding(id, parsed.card)
+    const worldInfoIds = [
+      ...(request.primaryWorldInfoId === null ? [] : [request.primaryWorldInfoId]),
+      ...request.additionalWorldInfoIds,
+    ]
+    for (const worldInfoId of worldInfoIds) this.worldInfos.resolve(worldInfoId)
+    const binding = this.worldBindings.replaceUserBinding(
+      id,
+      request.revision,
+      request.primaryWorldInfoId,
+      request.additionalWorldInfoIds,
+    )
+    const detail = characterDetail(meta, parsed, false, binding)
+    this.rememberIndex(meta, detail)
+    return detail
   }
 
   /** Materialize binding records for cards imported before resource separation. */
@@ -1413,7 +1450,12 @@ export class CharacterLibrary {
       updatedAt: Math.max(Date.now(), entry.meta.updatedAt + 1),
     }
     const parsed = this.parseStored(updatedMeta, entry.data)
-    const detail = characterDetail(updatedMeta, parsed, true)
+    const detail = characterDetail(
+      updatedMeta,
+      parsed,
+      true,
+      this.ensureWorldBinding(updatedMeta.id, parsed.card),
+    )
     this.writeMetadata({ ...updatedMeta, index: storedIndex(detail) })
     return detail
   }

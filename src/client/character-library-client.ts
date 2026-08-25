@@ -8,6 +8,7 @@ import {
   type CharacterLibraryWorldInfoPage,
   type CharacterRemoteResourcePolicy,
   type CharacterRemoteResourceType,
+  type CharacterWorldBindingUpdateRequest,
 } from '../character-library-protocol.ts'
 
 /** Browser event emitted after one character library entry changes. */
@@ -42,7 +43,7 @@ export function notifyCharacterLibraryChanged(id: string): void {
 async function postCharacterMutation(
   path: string,
   fallbackError: string,
-  body?: CharacterLibraryEditRequest,
+  body?: CharacterLibraryEditRequest | CharacterWorldBindingUpdateRequest,
 ): Promise<CharacterLibraryDetail> {
   const response = await fetch(`${CHARACTER_LIBRARY_PATH}${path}`, {
     method: 'POST',
@@ -61,6 +62,20 @@ async function postCharacterMutation(
     throw new Error(value.error ?? `${fallbackError}（${response.status}）`)
   }
   return value.entry
+}
+
+/** Replace the complete default world composition used by future Sessions for one character. */
+export async function updateCharacterWorldBinding(
+  id: string,
+  request: CharacterWorldBindingUpdateRequest,
+): Promise<CharacterLibraryDetail> {
+  const entry = await postCharacterMutation(
+    `/${encodeURIComponent(id)}/world-binding`,
+    '角色世界组合保存失败',
+    request,
+  )
+  notifyCharacterLibraryChanged(id)
+  return entry
 }
 
 /** Save character fields, toggle card regexes, or restore the imported definition. */

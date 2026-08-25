@@ -7,8 +7,9 @@ import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from './character-library.ts'
 import {
   CHARACTER_LIBRARY_PATH, type CharacterLibraryDetail, type CharacterLibraryEditRequest,
-  type CharacterRemoteResourceType,
+  type CharacterRemoteResourceType, type CharacterWorldBindingUpdateRequest,
 } from './character-library-protocol.ts'
+import { CharacterWorldBindingConflictError } from './character-world-binding-store.ts'
 import { isCharacterRemoteResourceType } from './card-remote-resource.ts'
 import {
   jsonResponse as json,
@@ -104,6 +105,30 @@ async function readEditRequest(request: IncomingMessage): Promise<CharacterLibra
   }
   if (record.operation === 'reset') return record as unknown as CharacterLibraryEditRequest
   throw new Error('角色修订操作无效')
+}
+
+async function readWorldBindingUpdateRequest(request: IncomingMessage): Promise<CharacterWorldBindingUpdateRequest> {
+  let value: unknown
+  try {
+    value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await readUpload(request)))
+  } catch (error) {
+    throw new Error('角色世界组合请求不是有效 JSON', { cause: error })
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('角色世界组合请求无效')
+  }
+  const record = value as Record<string, unknown>
+  if (record.format !== 0
+    || typeof record.revision !== 'number' || !Number.isSafeInteger(record.revision) || record.revision < 0
+    || (record.primaryWorldInfoId !== null && typeof record.primaryWorldInfoId !== 'string')
+    || !Array.isArray(record.additionalWorldInfoIds)
+    || record.additionalWorldInfoIds.some(worldInfoId => typeof worldInfoId !== 'string')
+    || Object.keys(record).some(key => ![
+      'format', 'revision', 'primaryWorldInfoId', 'additionalWorldInfoIds',
+    ].includes(key))) {
+    throw new Error('角色世界组合请求字段无效')
+  }
+  return record as unknown as CharacterWorldBindingUpdateRequest
 }
 
 function pathParts(request: IncomingMessage): readonly string[] {
@@ -254,6 +279,12 @@ export function installCharacterLibraryHttp(
           return
         }
         if (request.method === 'POST' && parts.length === 2 && parts[0] !== undefined
+          && parts[1] === 'world-binding') {
+          const entry = library.updateWorldBinding(parts[0], await readWorldBindingUpdateRequest(request))
+          json(response, 200, { format: 0, entry: browserDetail(entry) })
+          return
+        }
+        if (request.method === 'POST' && parts.length === 2 && parts[0] !== undefined
           && (parts[1] === 'archive' || parts[1] === 'restore')) {
           const entry = parts[1] === 'archive' ? library.archive(parts[0]) : library.restore(parts[0])
           json(response, 200, { format: 0, entry: browserDetail(entry) })
@@ -377,7 +408,8 @@ export function installCharacterLibraryHttp(
         fail(response, 404, 'not found')
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)
-        fail(response, error instanceof CharacterLibraryConflictError ? 409
+        fail(response, error instanceof CharacterLibraryConflictError
+          || error instanceof CharacterWorldBindingConflictError ? 409
           : /角色库中没有/u.test(message) ? 404 : /过大/u.test(message) ? 413 : 400, message)
       }
     },

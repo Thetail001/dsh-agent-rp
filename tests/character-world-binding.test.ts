@@ -78,6 +78,16 @@ function characterBytesWithMvu(): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(raw))
 }
 
+function worldInfoBytes(name: string, content: string): Uint8Array {
+  const raw = JSON.parse(readFileSync('tests/fixtures/manual-world-info.json', 'utf8')) as {
+    name: string
+    entries: Record<string, { content: string }>
+  }
+  raw.name = name
+  raw.entries['10']!.content = content
+  return new TextEncoder().encode(JSON.stringify(raw))
+}
+
 test('splits an embedded book into a reusable world and persists its relationship', context => {
   const { bindings, worlds, characters } = integratedLibraries(context)
   const bytes = characterBytes()
@@ -143,15 +153,56 @@ test('migrates old cards once and records cards without embedded books', context
   assert.equal(bindings.get(withoutBook.id)?.primary, null)
 })
 
-test('materializes one actor world through launch, runtime, projection, and current export', context => {
+test('edits a character world composition across future launch, runtime, projection, and current export', context => {
   const { root, worlds, characters } = integratedLibraries(context)
   const bytes = characterBytesWithMvu()
   const character = characters.importFile({
     data: bytes,
     filename: 'character.json', mediaType: 'application/json',
   })
-  const primary = characters.worldBinding(character.id)?.primary?.worldInfoId
-  assert.ok(primary)
+  const embeddedWorldId = characters.worldBinding(character.id)?.primary?.worldInfoId
+  assert.ok(embeddedWorldId)
+  const oldPrepared = prepareAgentRpSession(
+    characters,
+    new SillyTavernChatLibrary({ root: join(root, 'old-chats') }),
+    new PresetLibrary({ root: join(root, 'old-presets') }),
+    worlds,
+    {
+      format: 0,
+      sourceSessionId: 'old-source',
+      kind: 'character',
+      characterId: character.id,
+      greetingIndex: 0,
+    },
+  )
+  const oldSession = Session.create(SessionId('character-world-binding-old-runtime'), oldPrepared.seed)
+
+  const primary = worlds.importFile({ filename: '新主世界.json', data: worldInfoBytes('新主世界', '主世界采用新的潮汐纪年。') })
+  const supporting = worlds.importFile({ filename: '附加世界.json', data: worldInfoBytes('附加世界', '附加世界记录港口航线。') })
+  const initialBinding = characters.get(character.id).worldBinding
+  assert.ok(initialBinding)
+  const updated = characters.updateWorldBinding(character.id, {
+    format: 0,
+    revision: initialBinding.revision,
+    primaryWorldInfoId: primary.id,
+    additionalWorldInfoIds: [supporting.id, embeddedWorldId],
+  })
+  assert.equal(updated.worldBinding?.primary?.worldInfoId, primary.id)
+  assert.deepEqual(updated.worldBinding?.additional.map(reference => reference.worldInfoId), [
+    supporting.id,
+    embeddedWorldId,
+  ])
+  assert.deepEqual([
+    updated.worldBinding?.primary?.provenance,
+    ...updated.worldBinding!.additional.map(reference => reference.provenance),
+  ], ['user-bound', 'user-bound', 'user-bound'])
+  assert.throws(() => characters.updateWorldBinding(character.id, {
+    format: 0,
+    revision: initialBinding.revision,
+    primaryWorldInfoId: null,
+    additionalWorldInfoIds: [],
+  }), /已在别处改变/u)
+
   const prepared = prepareAgentRpSession(
     characters,
     new SillyTavernChatLibrary({ root: join(root, 'chats') }),
@@ -163,44 +214,60 @@ test('materializes one actor world through launch, runtime, projection, and curr
       kind: 'character',
       characterId: character.id,
       greetingIndex: 0,
-      worldInfoIds: [primary],
     },
   )
   const worldSeeds = prepared.seed.filter(event => event.type === 'agent-rp/world-info-library-seed')
-  assert.equal(worldSeeds.length, 1)
-  assert.equal(worldSeeds[0]?.data.worldInfoLibraryId, primary)
-  assert.equal(worldSeeds[0]?.data.placement, 'actor')
-  assert.equal(worldSeeds[0]?.data.purpose, 'character-binding')
+  assert.deepEqual(worldSeeds.map(event => event.data.worldInfoLibraryId), [primary.id, supporting.id, embeddedWorldId])
+  assert.ok(worldSeeds.every(event => event.data.placement === 'actor'))
+  assert.ok(worldSeeds.every(event => event.data.purpose === 'character-binding'))
 
   const session = Session.create(SessionId('character-world-binding-runtime'), prepared.seed)
   const sources = readSessionLorebookSourcesFromEvents(session.events)
-  assert.equal(sources.length, 1)
-  assert.equal(sources[0]?.source, 'character')
-  assert.equal(sources[0]?.id, `character:library:${primary}`)
+  assert.deepEqual(sources.map(source => source.id), [
+    `character:library:${primary.id}`,
+    `character:library:${supporting.id}`,
+    `character:library:${embeddedWorldId}`,
+  ])
+  assert.ok(sources.every(source => source.source === 'character'))
 
   const runtime = resolveSessionRoleplayRuntime({
     session,
     deployment: resolveConfig({ characterName: 'fallback' }),
   })
   assert.equal(runtime.card?.lorebook, undefined)
-  assert.equal(runtime.lorebooks.length, 1)
-  assert.equal(runtime.lorebooks[0]?.source.source, 'character')
+  assert.equal(runtime.lorebooks.length, 3)
+  assert.ok(runtime.lorebooks.every(lorebook => lorebook.source.source === 'character'))
   assert.deepEqual(runtime.mvu?.statData, { 角色: { 等级: 1 } })
 
   let projectionState = agentRpProjectionDefinition.init()
   for (const event of session.events) projectionState = agentRpProjectionDefinition.apply(projectionState, event)
   const projection = agentRpProjectionDefinition.wire.view(projectionState)
-  assert.equal(projection.worldInfo.books.length, 1)
-  assert.equal(projection.worldInfo.books[0]?.source, 'character')
+  assert.equal(projection.worldInfo.books.length, 3)
+  assert.ok(projection.worldInfo.books.every(book => book.source === 'character'))
   assert.deepEqual(projection.mvu?.statData, { 角色: { 等级: 1 } })
 
+  assert.equal(readSessionLorebookSourcesFromEvents(oldSession.events).length, 1)
+  assert.equal(readSessionLorebookSourcesFromEvents(oldSession.events)[0]?.id, `character:library:${embeddedWorldId}`)
   assert.deepEqual(characters.asset(character.id).data, bytes)
   const exported = JSON.parse(new TextDecoder().decode(characters.exportModified(character.id).data)) as {
     data: { character_book: { entries: readonly Record<string, unknown>[] } }
   }
   assert.equal(typeof exported.data.character_book.entries[0]?.insertion_order, 'number')
+  const exportedLorebook = parseCharacterCardJsonBytes(characters.exportModified(character.id).data).lorebook
+  const primaryWorldInfo = worlds.asset(primary.id).worldInfo
+  assert.equal(exportedLorebook?.name, primaryWorldInfo.name)
   assert.deepEqual(
-    parseCharacterCardJsonBytes(characters.exportModified(character.id).data).lorebook,
-    parseCharacterCardJsonBytes(bytes).lorebook,
+    exportedLorebook?.entries.map(entry => entry.content),
+    primaryWorldInfo.lorebook.entries.map(entry => entry.content),
   )
+
+  const cleared = characters.updateWorldBinding(character.id, {
+    format: 0,
+    revision: updated.worldBinding!.revision,
+    primaryWorldInfoId: null,
+    additionalWorldInfoIds: [],
+  })
+  assert.equal(cleared.worldBinding?.primary, null)
+  assert.equal(parseCharacterCardJsonBytes(characters.exportModified(character.id).data).lorebook, undefined)
+  assert.deepEqual(characters.asset(character.id).data, bytes)
 })

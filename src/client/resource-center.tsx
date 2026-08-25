@@ -6,6 +6,7 @@ import type {
   CharacterLibraryDetail,
   CharacterLibraryImportResult,
   CharacterLibrarySummary,
+  CharacterWorldBindingUpdateRequest,
 } from '../character-library-protocol.ts'
 import type { PersonaLibraryEntry, PersonaLibrarySaveRequest } from '../persona-library-protocol.ts'
 import type { PresetLibrarySummary } from '../preset-library-http-protocol.ts'
@@ -25,6 +26,11 @@ interface ResourceCenterProps {
   readonly narrow: boolean
   readonly initialSection?: ResourceSection
   readonly listCharacters: (collection?: CharacterLibraryCollection) => Promise<readonly CharacterLibrarySummary[]>
+  readonly readCharacter: (id: string) => Promise<CharacterLibraryDetail>
+  readonly updateCharacterWorldBinding: (
+    id: string,
+    request: CharacterWorldBindingUpdateRequest,
+  ) => Promise<CharacterLibraryDetail>
   readonly setCharacterArchived: (id: string, archived: boolean) => Promise<CharacterLibraryDetail>
   readonly deleteCharacter: (id: string) => Promise<void>
   readonly importCharacterFile: (file: File) => Promise<CharacterLibraryImportResult>
@@ -41,6 +47,12 @@ interface ResourceCenterProps {
   readonly deletePersona: (id: string) => Promise<PersonaLibraryEntry>
   readonly onConfigureWorldInfo?: (entry: WorldInfoLibraryUpload) => void
   readonly onClose: () => void
+}
+
+interface CharacterWorldBindingDraft {
+  readonly character: CharacterLibraryDetail
+  readonly primaryWorldInfoId: string | null
+  readonly additionalWorldInfoIds: readonly string[]
 }
 
 const secondaryButtonStyle = {
@@ -349,7 +361,8 @@ function SillyTavernLibraryMigrationDialog({
 /** Manage reusable resources without tying them to one Character Card or Session. */
 export function RoleplayResourceCenter({
   accent, narrow, initialSection = 'characters',
-  listCharacters, setCharacterArchived, deleteCharacter, importCharacterFile,
+  listCharacters, readCharacter, updateCharacterWorldBinding,
+  setCharacterArchived, deleteCharacter, importCharacterFile,
   listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo,
   listPresets, importPresetFile, renamePreset, deletePreset,
   listPersonas, savePersona, deletePersona,
@@ -368,6 +381,7 @@ export function RoleplayResourceCenter({
   const [error, setError] = useState<string>()
   const [personaDraft, setPersonaDraft] = useState<{ readonly id?: string; readonly name: string; readonly description: string }>()
   const [presetDraft, setPresetDraft] = useState<{ readonly id: string; readonly name: string }>()
+  const [worldBindingDraft, setWorldBindingDraft] = useState<CharacterWorldBindingDraft>()
   const [confirmingPresetId, setConfirmingPresetId] = useState<string>()
   const [confirmingPersonaId, setConfirmingPersonaId] = useState<string>()
   const [confirmingWorldInfoId, setConfirmingWorldInfoId] = useState<string>()
@@ -404,6 +418,7 @@ export function RoleplayResourceCenter({
   const visibleWorldInfos = useMemo(() => (worldInfos ?? []).filter(entry => matches(entry.name)), [worldInfos, normalizedQuery])
   const visiblePresets = useMemo(() => (presets ?? []).filter(entry => matches(entry.name)), [presets, normalizedQuery])
   const visiblePersonas = useMemo(() => (personas ?? []).filter(entry => matches(entry.name, entry.description)), [personas, normalizedQuery])
+  const worldInfoById = useMemo(() => new Map((worldInfos ?? []).map(entry => [entry.id, entry])), [worldInfos])
 
   const startAction = (key: string): void => {
     setBusy(key)
@@ -464,6 +479,9 @@ export function RoleplayResourceCenter({
     startAction(`character:${entry.id}`)
     void setCharacterArchived(entry.id, !entry.archived).then(updated => {
       setCharacters(value => (value ?? []).map(item => item.id === updated.id ? updated : item))
+      if (updated.archived) {
+        setWorldBindingDraft(value => value?.character.id === updated.id ? undefined : value)
+      }
       setNotice(`${updated.archived ? '已收起' : '已恢复'}角色「${updated.displayName}」`)
     }).catch(reason => { setError(message(reason)) }).finally(finishAction)
   }
@@ -480,6 +498,34 @@ export function RoleplayResourceCenter({
       setCharacters(value => (value ?? []).filter(item => item.id !== entry.id))
       setConfirmingCharacterId(undefined)
       setNotice(`已永久删除角色「${entry.displayName}」`)
+    }).catch(reason => { setError(message(reason)) }).finally(finishAction)
+  }
+  const editCharacterWorldBinding = (entry: CharacterLibrarySummary): void => {
+    if (entry.archived) return
+    startAction(`character-world:${entry.id}`)
+    void readCharacter(entry.id).then(character => {
+      if (character.worldBinding === undefined) throw new Error('当前 Host 没有提供角色世界组合编辑能力')
+      setWorldBindingDraft({
+        character,
+        primaryWorldInfoId: character.worldBinding.primary?.worldInfoId ?? null,
+        additionalWorldInfoIds: character.worldBinding.additional.map(reference => reference.worldInfoId),
+      })
+    }).catch(reason => { setError(message(reason)) }).finally(finishAction)
+  }
+  const saveCharacterWorldBinding = (): void => {
+    const draft = worldBindingDraft
+    const binding = draft?.character.worldBinding
+    if (draft === undefined || binding === undefined) return
+    startAction(`character-world:${draft.character.id}`)
+    void updateCharacterWorldBinding(draft.character.id, {
+      format: 0,
+      revision: binding.revision,
+      primaryWorldInfoId: draft.primaryWorldInfoId,
+      additionalWorldInfoIds: draft.additionalWorldInfoIds,
+    }).then(entry => {
+      setCharacters(value => (value ?? []).map(item => item.id === entry.id ? entry : item))
+      setWorldBindingDraft(undefined)
+      setNotice(`已保存角色「${entry.displayName}」的世界组合；已有会话与原始文件不受影响`)
     }).catch(reason => { setError(message(reason)) }).finally(finishAction)
   }
   const savePresetName = (): void => {
@@ -677,6 +723,87 @@ export function RoleplayResourceCenter({
               }}>{busy?.startsWith('persona:') === true ? '保存中…' : '保存身份'}</button>
             </div>
           </div>}
+          {section === 'characters' && worldBindingDraft !== undefined && <div style={{
+            background: 'var(--dsw-alias-bg-layer-1, #202024)', border: `1px solid color-mix(in srgb, ${accent} 30%, transparent)`,
+            borderRadius: '10px', display: 'grid', gap: '10px', marginBottom: '10px', padding: '12px',
+          }}>
+            <div>
+              <strong style={{ display: 'block', fontSize: '13px' }}>{worldBindingDraft.character.displayName} · 默认世界组合</strong>
+              <span style={{ display: 'block', fontSize: '10px', lineHeight: 1.55, marginTop: '4px', opacity: .56 }}>
+                保存后只影响未来新会话与“导出当前版本”；已有会话和导入的原始角色文件不会改变。
+              </span>
+            </div>
+            <label style={{ display: 'grid', fontSize: '11px', gap: '5px' }}>
+              <span>主世界</span>
+              <select aria-label="主世界" value={worldBindingDraft.primaryWorldInfoId ?? ''} onChange={event => {
+                const primaryWorldInfoId = event.target.value === '' ? null : event.target.value
+                setWorldBindingDraft(value => value === undefined ? undefined : { ...value, primaryWorldInfoId })
+              }} style={{
+                background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #444)',
+                borderRadius: '8px', color: 'inherit', font: 'inherit', padding: '8px',
+              }}>
+                <option value="">不绑定主世界</option>
+                {(worldInfos ?? []).map(entry => <option key={entry.id} value={entry.id}
+                  disabled={worldBindingDraft.additionalWorldInfoIds.includes(entry.id)}>{entry.name}</option>)}
+              </select>
+            </label>
+            <div style={{ display: 'grid', gap: '6px' }}>
+              <span style={{ fontSize: '11px' }}>附加世界（按此顺序进入新会话）</span>
+              {worldBindingDraft.additionalWorldInfoIds.length === 0
+                ? <span style={{ fontSize: '10px', opacity: .5 }}>没有附加世界</span>
+                : worldBindingDraft.additionalWorldInfoIds.map((id, index) => <div key={id} style={{
+                  alignItems: 'center', display: 'flex', gap: '6px', minWidth: 0,
+                }}>
+                  <span style={{ flex: 1, fontSize: '11px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {index + 1}. {worldInfoById.get(id)?.name ?? id}
+                  </span>
+                  <button type="button" aria-label={`上移 ${worldInfoById.get(id)?.name ?? id}`} disabled={index === 0 || busy !== undefined}
+                    onClick={() => { setWorldBindingDraft(value => {
+                      if (value === undefined || index === 0) return value
+                      const additionalWorldInfoIds = [...value.additionalWorldInfoIds]
+                      ;[additionalWorldInfoIds[index - 1], additionalWorldInfoIds[index]] = [additionalWorldInfoIds[index]!, additionalWorldInfoIds[index - 1]!]
+                      return { ...value, additionalWorldInfoIds }
+                    }) }} style={actionStyle(index > 0 && busy === undefined)}>↑</button>
+                  <button type="button" aria-label={`下移 ${worldInfoById.get(id)?.name ?? id}`}
+                    disabled={index === worldBindingDraft.additionalWorldInfoIds.length - 1 || busy !== undefined}
+                    onClick={() => { setWorldBindingDraft(value => {
+                      if (value === undefined || index === value.additionalWorldInfoIds.length - 1) return value
+                      const additionalWorldInfoIds = [...value.additionalWorldInfoIds]
+                      ;[additionalWorldInfoIds[index], additionalWorldInfoIds[index + 1]] = [additionalWorldInfoIds[index + 1]!, additionalWorldInfoIds[index]!]
+                      return { ...value, additionalWorldInfoIds }
+                    }) }} style={actionStyle(index < worldBindingDraft.additionalWorldInfoIds.length - 1 && busy === undefined)}>↓</button>
+                  <button type="button" disabled={busy !== undefined} onClick={() => {
+                    setWorldBindingDraft(value => value === undefined ? undefined : {
+                      ...value, additionalWorldInfoIds: value.additionalWorldInfoIds.filter(worldInfoId => worldInfoId !== id),
+                    })
+                  }} style={actionStyle(busy === undefined)}>移除</button>
+                </div>)}
+              <select aria-label="添加附加世界" value="" disabled={busy !== undefined
+                || worldBindingDraft.additionalWorldInfoIds.length + (worldBindingDraft.primaryWorldInfoId === null ? 0 : 1) >= 16}
+                onChange={event => {
+                  const id = event.target.value
+                  if (id === '') return
+                  setWorldBindingDraft(value => value === undefined ? undefined : {
+                    ...value, additionalWorldInfoIds: [...value.additionalWorldInfoIds, id],
+                  })
+                }} style={{
+                  background: 'var(--dsw-alias-bg-base, #171719)', border: '1px solid var(--dsw-alias-border-l2, #444)',
+                  borderRadius: '8px', color: 'inherit', font: 'inherit', padding: '8px',
+                }}>
+                <option value="">添加附加世界…</option>
+                {(worldInfos ?? []).filter(entry => entry.id !== worldBindingDraft.primaryWorldInfoId
+                  && !worldBindingDraft.additionalWorldInfoIds.includes(entry.id))
+                  .map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              <button type="button" disabled={busy !== undefined} onClick={() => { setWorldBindingDraft(undefined) }}
+                style={actionStyle(busy === undefined)}>取消</button>
+              <button type="button" disabled={busy !== undefined} onClick={saveCharacterWorldBinding} style={{
+                ...actionStyle(busy === undefined), background: accent, borderColor: accent, color: '#fff',
+              }}>{busy === `character-world:${worldBindingDraft.character.id}` ? '保存中…' : '保存世界组合'}</button>
+            </div>
+          </div>}
           {loading && <div style={{ fontSize: '12px', opacity: .52, padding: '22px 4px' }}>正在读取{sectionName(section)}…</div>}
           {!loading && empty && <div style={{ fontSize: '12px', lineHeight: 1.65, opacity: .55, padding: '22px 4px', textAlign: 'center' }}>
             {normalizedQuery === '' ? `还没有${sectionName(section)}资源` : `没有找到匹配的${sectionName(section)}`}
@@ -689,6 +816,11 @@ export function RoleplayResourceCenter({
                   V{entry.cardVersion} · {entry.greetingCount} 个开场{entry.worldInfoCount > 0 ? ` · ${entry.worldInfoCount} 条世界书` : ''}{entry.archived ? ' · 已收起' : ''}
                 </span>
               </div>
+              <button type="button" disabled={busy !== undefined || entry.archived}
+                title={entry.archived ? '请先恢复这个角色' : '编辑未来新会话使用的默认世界组合'}
+                onClick={() => { editCharacterWorldBinding(entry) }} style={actionStyle(busy === undefined && !entry.archived)}>
+                {busy === `character-world:${entry.id}` ? '读取中…' : '世界组合'}
+              </button>
               <button type="button" disabled={busy !== undefined} onClick={() => { toggleCharacterArchive(entry) }} style={actionStyle(busy === undefined)}>
                 {busy === `character:${entry.id}` ? '处理中…' : entry.archived ? '恢复' : '移入收纳箱'}
               </button>

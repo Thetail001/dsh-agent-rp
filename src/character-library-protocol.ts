@@ -89,6 +89,28 @@ export interface CharacterLibraryEditableContent {
   readonly alternateGreetings: readonly string[]
 }
 
+/** One reusable World Info reference in a character's editable default composition. */
+export interface CharacterLibraryWorldReference {
+  readonly worldInfoId: string
+  readonly provenance: 'embedded-import' | 'user-bound'
+}
+
+/** Browser-safe view of the worlds attached to future Sessions for one character. */
+export interface CharacterLibraryWorldBinding {
+  readonly format: 0
+  readonly primary: CharacterLibraryWorldReference | null
+  readonly additional: readonly CharacterLibraryWorldReference[]
+  readonly revision: number
+}
+
+/** Optimistic replacement of one character's complete default world composition. */
+export interface CharacterWorldBindingUpdateRequest {
+  readonly format: 0
+  readonly revision: number
+  readonly primaryWorldInfoId: string | null
+  readonly additionalWorldInfoIds: readonly string[]
+}
+
 /** One card-owned regex with stable source addressing for local enable switches. */
 export interface CharacterLibraryRegexScript extends CharacterRegexScriptSummary {
   readonly index: number
@@ -155,6 +177,8 @@ export interface CharacterLibraryDetail extends CharacterLibrarySummary {
   readonly remoteResourcePolicy: CharacterRemoteResourcePolicy
   /** Original embedded entries; edits belong to a launched Session overlay. */
   readonly worldInfo?: CharacterLibraryWorldInfo
+  /** Reusable worlds applied to future Sessions and the primary world used by current-version export. */
+  readonly worldBinding?: CharacterLibraryWorldBinding
   readonly degradations: readonly CharacterImportDegradation[]
   /** Card-owned regex metadata without expressions, replacements, or card text. */
   readonly regexScripts: readonly CharacterLibraryRegexScript[]

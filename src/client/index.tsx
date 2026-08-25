@@ -128,6 +128,7 @@ import {
   updateCharacterEdits,
   updateCharacterRemoteResource,
   updateCharacterRemoteResourcePolicy,
+  updateCharacterWorldBinding,
 } from './character-library-client.ts'
 import { CharacterContentEditor } from './character-content-editor.tsx'
 import {
@@ -3020,6 +3021,8 @@ function SidebarRoleplayDestination({
       narrow={narrowResourceCenter}
       initialSection={resourceCenterSection}
       listCharacters={listCharacters}
+      readCharacter={readCharacter}
+      updateCharacterWorldBinding={updateCharacterWorldBinding}
       setCharacterArchived={setCharacterArchived}
       deleteCharacter={deleteCharacter}
       importCharacterFile={importCharacterFile}
