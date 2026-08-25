@@ -25,6 +25,8 @@ test('builds one shared settings document and transports extension source withou
   const source = compileStExtensionDocument({
     entries: [entry('extension.dangerous', [], dangerous)],
     nonce: 'nonce_1234567890_safe',
+    sessionId: 'session-a',
+    settings: { community: { enabled: true } },
     token: 'token</script>',
   })
 
@@ -37,6 +39,10 @@ test('builds one shared settings document and transports extension source withou
   assert.match(source, /script-src 'nonce-nonce_1234567890_safe' blob:/u)
   assert.match(source, /URL\.createObjectURL\(new Blob/u)
   assert.match(source, /await import\(url\)/u)
+  assert.match(source, /globalThis\.extension_settings=clone\(boot\.settings\)/u)
+  assert.match(source, /globalThis\.saveSettingsDebounced=/u)
+  assert.match(source, /globalThis\.__dshAgentRpSessionId=sessionId/u)
+  assert.match(source, /dsh-agent-rp-session-change/u)
   assert.match(source, /style\?\.remove\(\)/u)
   assert.match(source, /catch\{return '无法读取扩展错误'\}/u)
 })
@@ -49,6 +55,8 @@ test('compiles dependency-aware isolated activation with terminal host reporting
       entry('extension.missing', ['extension.absent']),
     ],
     nonce: 'nonce_1234567890_safe',
+    sessionId: null,
+    settings: {},
     token: 'host-token',
   })
 
@@ -65,6 +73,8 @@ test('rejects a nonce that could escape the CSP attribute', () => {
   assert.throws(() => compileStExtensionDocument({
     entries: [],
     nonce: 'bad\" nonce',
+    sessionId: null,
+    settings: {},
     token: 'token',
   }), /nonce is invalid/u)
 })
@@ -90,6 +100,23 @@ test('accepts only bounded lifecycle reports for the current frame token', () =>
     token: 'stale',
     action: 'settings-surface',
     hasContent: true,
+  }, 'current'), undefined)
+  assert.deepEqual(parseStExtensionHostMessage({
+    source: 'dsh-agent-rp-st-extension-host',
+    token: 'current',
+    action: 'settings-save',
+    settings: { community: { enabled: true } },
+  }, 'current'), {
+    source: 'dsh-agent-rp-st-extension-host',
+    token: 'current',
+    action: 'settings-save',
+    settings: { community: { enabled: true } },
+  })
+  assert.equal(parseStExtensionHostMessage({
+    source: 'dsh-agent-rp-st-extension-host',
+    token: 'current',
+    action: 'settings-save',
+    settings: [],
   }, 'current'), undefined)
   assert.equal(parseStExtensionHostMessage({
     source: 'dsh-agent-rp-st-extension-host',

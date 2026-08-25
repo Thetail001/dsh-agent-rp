@@ -92,3 +92,21 @@ export function parseTavernExtensionSettingsIdentity(value: string): {
     scope: parsed[3],
   }
 }
+
+/** Build the Host-owned settings identity shared by browser-installed ST extensions. */
+export function installedStExtensionSettingsIdentity(): string {
+  return JSON.stringify([1, 'installed-st-extensions'])
+}
+
+/** Parse only the current browser-installed ST extension settings identity. */
+export function parseInstalledStExtensionSettingsIdentity(value: string): { readonly kind: 'installed' } | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value) as unknown
+  } catch {
+    return undefined
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 2
+    || parsed[0] !== 1 || parsed[1] !== 'installed-st-extensions') return undefined
+  return { kind: 'installed' }
+}

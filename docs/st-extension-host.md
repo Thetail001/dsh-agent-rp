@@ -2,7 +2,7 @@
 
 本文约束“已安装的 SillyTavern 第三方扩展”在 Agent RP 中的宿主生命周期。它不描述角色卡或预设携带的 Tavern Helper 脚本；后者继续由现有的逐脚本 iframe 运行时承载。
 
-当前功能分支已提供浏览器注册表、单例 document 与版本化客户端注册服务。每个自包含 ESM bundle 在共享 document 中只导入一次，热注册和撤销会合并为一次完整重建；这层基础装配尚未提供完整 ST 页面 API、当前 Session 绑定与独立设置持久化，因此不能宣称支持任意 ST 第三方扩展。社区插件也不能通过向每个 Tavern Helper iframe 拼接相同源码来模拟页面级扩展加载。
+当前功能分支已提供浏览器注册表、单例 document 与版本化客户端注册服务。每个自包含 ESM bundle 在共享 document 中只导入一次，热注册和撤销会合并为一次完整重建；当前 Session 切换只发送 `dsh-agent-rp-session-change` 浏览器事件，不会重新导入扩展。这层基础装配尚未提供完整 ST 页面 API，因此不能宣称支持任意 ST 第三方扩展。社区插件也不能通过向每个 Tavern Helper iframe 拼接相同源码来模拟页面级扩展加载。
 
 ## 上游生命周期
 
@@ -33,9 +33,9 @@
 
 ## 设置与界面
 
-宿主提供单例 `#extensions_settings` 和 `#extensions_settings2`，并允许扩展按 ST 约定挂载界面。空容器不应让 Agent RP 自动打开面板；加入可见内容后，界面应通过现有工作台或独立扩展面板出现。
+宿主提供单例 `#extensions_settings` 和 `#extensions_settings2`，并允许扩展按 ST 约定挂载界面。空容器不应让 Agent RP 自动打开面板；加入可见内容后，界面应通过现有工作台或独立扩展面板出现。当前基础宿主已经检测容器内容，但可见面板接入仍属于验收缺口。
 
-扩展设置按稳定的安装扩展标识持久化，不复用 `tavernExtensionSettingsIdentity(characterId, presetId, scope)`。角色卡和预设的 `extension_settings` 兼容对象继续属于各自的 Tavern 脚本树，不能覆盖安装型扩展设置。
+扩展设置使用固定的安装集合身份持久化，不复用 `tavernExtensionSettingsIdentity(characterId, presetId, scope)`，也不会抢占旧浏览器全局设置的迁移资格。共享 document 提供 `extension_settings`、`saveSettings()` 和 `saveSettingsDebounced()`；角色卡和预设的 `extension_settings` 兼容对象继续属于各自的 Tavern 脚本树，不能覆盖安装型扩展设置。
 
 ## 实现验收
 

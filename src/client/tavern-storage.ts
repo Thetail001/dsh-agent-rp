@@ -2,6 +2,7 @@
 
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import {
+  parseInstalledStExtensionSettingsIdentity,
   parseTavernExtensionSettingsIdentity,
   parseTavernScriptStorageIdentity,
 } from '../tavern-script-identity.ts'
@@ -155,9 +156,10 @@ function owner(value: string): string {
   return value
 }
 
-function extensionSettingsOwner(value: string): string {
-  if (parseTavernExtensionSettingsIdentity(value) === undefined) throw new Error('酒馆扩展设置身份无效')
-  return value
+function extensionSettingsOwner(value: string): { readonly id: string; readonly migrateLegacy: boolean } {
+  if (parseTavernExtensionSettingsIdentity(value) !== undefined) return { id: value, migrateLegacy: true }
+  if (parseInstalledStExtensionSettingsIdentity(value) !== undefined) return { id: value, migrateLegacy: false }
+  throw new Error('酒馆扩展设置身份无效')
 }
 
 function encodedTavernExtensionSettings(value: unknown): { readonly source: string; readonly value: JsonRecord } {
@@ -222,12 +224,14 @@ export async function readTavernExtensionSettings(
   ownerIdentity: string,
   legacyStorage: Pick<Storage, 'getItem'>,
 ): Promise<JsonRecord> {
-  const ownerId = extensionSettingsOwner(ownerIdentity)
+  const owner = extensionSettingsOwner(ownerIdentity)
   try {
     const db = await openExtensionSettingsDatabase()
-    await migrateLegacyExtensionSettings(db, ownerId, legacyTavernExtensionSettings(legacyStorage))
+    if (owner.migrateLegacy) {
+      await migrateLegacyExtensionSettings(db, owner.id, legacyTavernExtensionSettings(legacyStorage))
+    }
     const transaction = db.transaction(EXTENSION_SETTINGS_STORE_NAME, 'readonly')
-    const stored = await result(transaction.objectStore(EXTENSION_SETTINGS_STORE_NAME).get(ownerId)) as
+    const stored = await result(transaction.objectStore(EXTENSION_SETTINGS_STORE_NAME).get(owner.id)) as
       StoredTavernExtensionSettings | undefined
     return stored === undefined ? {} : encodedTavernExtensionSettings(stored.value).value
   } catch {
@@ -241,7 +245,7 @@ export async function writeTavernExtensionSettings(
   ownerIdentity: string,
   value: unknown,
 ): Promise<JsonRecord> {
-  const ownerId = extensionSettingsOwner(ownerIdentity)
+  const ownerId = extensionSettingsOwner(ownerIdentity).id
   const encoded = encodedTavernExtensionSettings(value)
   const db = await openExtensionSettingsDatabase()
   const transaction = db.transaction([

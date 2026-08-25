@@ -4,7 +4,10 @@ import { installStExtensionHost } from '../src/client/st-extension-host.ts'
 import { InstalledStExtensionRegistry } from '../src/client/st-extension-registry.ts'
 
 class FakeFrame {
-  readonly contentWindow = {}
+  readonly messages: unknown[] = []
+  readonly contentWindow = {
+    postMessage: (message: unknown): void => { this.messages.push(message) },
+  }
   readonly dataset: Record<string, string> = {}
   readonly attributes = new Map<string, string>()
   hidden = false
@@ -52,6 +55,25 @@ class FakeWindow {
   }
 }
 
+class FakeSessionSource {
+  currentId: string | undefined = 'session-a'
+  readonly listeners = new Set<() => void>()
+
+  current(): string | undefined {
+    return this.currentId
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  select(sessionId: string | undefined): void {
+    this.currentId = sessionId
+    for (const listener of this.listeners) listener()
+  }
+}
+
 async function flushRebuild(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
@@ -62,10 +84,17 @@ test('coalesces registrations into one frame, rebuilds once, and tears down comp
   const document = new FakeDocument()
   const window = new FakeWindow()
   const warnings: string[] = []
+  const writes: unknown[] = []
+  const sessions = new FakeSessionSource()
   const dispose = installStExtensionHost(
     window as unknown as Window,
     document as unknown as Document,
     registry,
+    sessions,
+    {
+      read: async () => ({ fixture: { enabled: true } }),
+      write: async settings => { writes.push(settings); return settings },
+    },
     message => { warnings.push(message) },
   )
   const revokeA = registry.register({
@@ -82,6 +111,8 @@ test('coalesces registrations into one frame, rebuilds once, and tears down comp
   assert.equal(first.attributes.get('sandbox'), 'allow-scripts allow-same-origin allow-forms')
   assert.match(first.srcdoc, /extension\.a/u)
   assert.match(first.srcdoc, /extension\.b/u)
+  assert.match(first.srcdoc, /fixture/u)
+  assert.match(first.srcdoc, /session-a/u)
 
   window.dispatch(first.contentWindow, {
     source: 'dsh-agent-rp-st-extension-host',
@@ -91,6 +122,20 @@ test('coalesces registrations into one frame, rebuilds once, and tears down comp
   assert.equal(first.dataset.agentRpStExtensionPhase, 'ready')
   assert.equal(first.dataset.agentRpStExtensionLoaded, '1')
   assert.equal(first.dataset.agentRpStExtensionFailed, '1')
+  window.dispatch(first.contentWindow, {
+    source: 'dsh-agent-rp-st-extension-host',
+    token: JSON.parse(first.srcdoc.match(/const boot=(\{.*?\});const entries/u)?.[1] ?? '{}').token,
+    action: 'settings-save', settings: { fixture: { enabled: false } },
+  })
+  await flushRebuild()
+  assert.deepEqual(writes, [{ fixture: { enabled: false } }])
+  sessions.select('session-b')
+  assert.equal(document.frames.length, 1)
+  assert.deepEqual(first.messages, [{
+    source: 'dsh-agent-rp-host', action: 'session-bind',
+    token: JSON.parse(first.srcdoc.match(/const boot=(\{.*?\});const entries/u)?.[1] ?? '{}').token,
+    sessionId: 'session-b',
+  }])
 
   registry.register({
     id: 'extension.c', displayName: 'C', loadingOrder: 2, source: 'export {}',
@@ -106,6 +151,7 @@ test('coalesces registrations into one frame, rebuilds once, and tears down comp
   dispose()
   assert.equal(document.frames.at(-1)?.removed, true)
   assert.equal(window.listeners.size, 0)
+  assert.equal(sessions.listeners.size, 0)
   assert.deepEqual(warnings, [])
 })
 
@@ -114,10 +160,13 @@ test('ignores stale frames and reports bounded current-frame failures', async ()
   const document = new FakeDocument()
   const window = new FakeWindow()
   const warnings: string[] = []
+  const sessions = new FakeSessionSource()
   const dispose = installStExtensionHost(
     window as unknown as Window,
     document as unknown as Document,
     registry,
+    sessions,
+    { read: async () => ({}), write: async settings => settings },
     message => { warnings.push(message) },
   )
   registry.register({

@@ -54,6 +54,7 @@ import type {
   TavernWorldbookEntry,
 } from '../tavern-helper.ts'
 import {
+  installedStExtensionSettingsIdentity,
   tavernExtensionSettingsIdentity,
   tavernScriptIdentity,
   tavernScriptStorageIdentity,
@@ -12617,11 +12618,20 @@ export const inject = ['connection', 'conversationEvents', 'slots', 'sessions', 
 /** Register the Agent RP header, composer presentation, and import affordance. */
 export function apply(ctx: ClientContext): void {
   const installedStExtensions = new InstalledStExtensionRegistry()
+  const installedStSettingsOwner = installedStExtensionSettingsIdentity()
   ctx.provide(AGENT_RP_ST_EXTENSION_SERVICE, installedStExtensions)
   ctx.effect(() => installStExtensionHost(
     window,
     document,
     installedStExtensions,
+    {
+      current: () => ctx.sessions.list.getSnapshot().current,
+      subscribe: listener => ctx.sessions.list.subscribe(listener),
+    },
+    {
+      read: () => readTavernExtensionSettings(installedStSettingsOwner, window.localStorage),
+      write: settings => writeTavernExtensionSettings(installedStSettingsOwner, settings),
+    },
     message => { ctx.logger.warn(message) },
   ))
   installRoleplayArtifactTail(ctx)

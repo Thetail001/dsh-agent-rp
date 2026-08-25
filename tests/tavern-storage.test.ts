@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import {
+  installedStExtensionSettingsIdentity,
+  parseInstalledStExtensionSettingsIdentity,
   parseTavernExtensionSettingsIdentity,
   parseTavernScriptStorageIdentity,
   tavernExtensionSettingsIdentity,
@@ -112,10 +114,21 @@ test('migrates global extension settings once and isolates script-tree installat
   const otherCharacterOwner = tavernExtensionSettingsIdentity('character-b', 'preset-a', 'character')
   const otherPresetOwner = tavernExtensionSettingsIdentity('character-a', 'preset-b', 'character')
   const presetTreeOwner = tavernExtensionSettingsIdentity('character-a', 'preset-a', 'preset')
+  const installedOwner = installedStExtensionSettingsIdentity()
   assert.deepEqual(parseTavernExtensionSettingsIdentity(characterOwner), {
     characterId: 'character-a', presetId: 'preset-a', scope: 'character',
   })
   assert.equal(parseTavernExtensionSettingsIdentity('[0,"character-a",null,"script"]'), undefined)
+  assert.deepEqual(parseInstalledStExtensionSettingsIdentity(installedOwner), { kind: 'installed' })
+  assert.equal(parseInstalledStExtensionSettingsIdentity(characterOwner), undefined)
+
+  assert.deepEqual(await readTavernExtensionSettings(installedOwner, legacyStorage), {})
+  assert.deepEqual(await writeTavernExtensionSettings(installedOwner, {
+    communityWorldbook: { expanded: true },
+  }), { communityWorldbook: { expanded: true } })
+  assert.deepEqual(await readTavernExtensionSettings(installedOwner, legacyStorage), {
+    communityWorldbook: { expanded: true },
+  })
 
   assert.deepEqual(await readTavernExtensionSettings(characterOwner, legacyStorage), {
     cardRefinery: { theme: 'legacy' },
