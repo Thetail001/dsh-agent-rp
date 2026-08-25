@@ -480,7 +480,7 @@ export async function executeGenerationCommand(invocation: {
         : readTavernHelperStateSnapshotAt(events, baseTavernStateSeq).state
       if ((candidateBaseTavern !== undefined || baseMvu !== undefined)
         && !supportsAgentRpSessionEvents(invocation.agent.session)) {
-        throw new Error('含状态的回复需更新 DSH 后才能重新生成')
+        throw new Error('当前 DSH Host 缺少安全插件事件能力，无法重新生成含状态的回复')
       }
       const selected = assistantEvent(invocation.agent.session.events, current.selectedSeq)
       replacementStartSeq = appendCurrentReplySurface(

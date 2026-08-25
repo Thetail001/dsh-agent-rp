@@ -24,13 +24,15 @@ Invoke-WebRequest 'https://raw.githubusercontent.com/hewzhew/dsh-agent-rp/main/s
 powershell -NoProfile -ExecutionPolicy Bypass -File $installerPath -Start
 ```
 
-当前 Agent Host 固定在官方 DSH `0.1.1-rc.2`，并通过 pnpm 的可审计补丁机制补上插件私有事件写入能力；依赖版本和补丁哈希都由锁文件约束。官方 DSH 发布等价接口后会移除这层补丁。直接运行官方 `@deepseek-ai/dsh@0.1.1-rc.2` 仍可使用纯对话兼容模式，但不能完整保存 Agent/MVU 回合记录。
+当前 Agent Host 固定在官方 DSH `0.1.1-rc.2`，并通过 pnpm 的可审计补丁机制补上插件私有事件写入能力；依赖版本和补丁哈希都由锁文件约束，安装器还会实际导入 Session 模块验证能力已经生效。官方 DSH 发布等价接口后会移除这层补丁。直接运行官方 `@deepseek-ai/dsh@0.1.1-rc.2` 仍可使用纯对话兼容模式，但不能完整保存 Agent/MVU 回合记录；官方 runner 与 Agent Host 显示相同的 DSH 版本号，不能只按版本号判断能力。
 
-以后更新时重新运行同一安装器。若安装后没有选择 `-Start`，可以这样启动：
+安装器会在默认 DSH 数据目录生成稳定的 Agent RP 专用启动入口。以后更新时重新运行同一安装器；平时启动使用：
 
 ```powershell
-& "$env:USERPROFILE\.dsh\runners\agent-rp\node_modules\.bin\dsh.cmd" --profile web
+& "$env:USERPROFILE\.dsh\bin\dsh-agent-rp.ps1"
 ```
+
+设置过 `DSH_HOME` 时，安装器会打印该数据目录中的实际启动路径。不要改回 `npx -p @deepseek-ai/dsh@latest dsh --profile web`；这会重新进入尚未包含插件事件能力的官方 runner。若界面提示当前 Host 缺少安全插件事件能力，请关闭旧 DSH 后从上述专用入口启动。安装器发现默认端口 3080 已被其他进程占用时不会停止它或再启动第二个 DSH，而会显示进程 PID 和后续命令。
 
 国内 npm registry 较慢时，可在安装器最后一行加 `-ChinaMirror`。这个选项只改变本次安装使用的 npm registry；下载 runner 文件或 Agent RP 源码时访问的是 GitHub，切换 npm 镜像不会修复这一段。
 

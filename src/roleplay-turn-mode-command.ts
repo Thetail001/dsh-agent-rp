@@ -15,7 +15,7 @@ export function executeRoleplayTurnModeCommand(invocation: {
   readonly rawInput: string
 }): { readonly kind: 'success'; readonly sourceEventSeq: number } {
   if (!supportsAgentRpSessionEvents(invocation.agent.session)) {
-    throw new Error('Agent 回合需更新 DSH')
+    throw new Error('当前 DSH Host 缺少安全插件事件能力，无法启用 Agent 回合')
   }
   const request = parseRoleplayTurnModeCommandRequest(invocation.rawInput)
   const source = invocation.agent.session.events.findLast(event => event.type === 'command/run'

@@ -13,6 +13,7 @@ $pluginPackageName = '@dsh-external/dsh-agent-rp'
 $minimumPnpmMajor = 11
 $previousRegistry = $env:npm_config_registry
 $agentHostVersion = '0.1.1-rc.2'
+$agentHostPort = 3080
 $runnerFiles = @(
   'package.json',
   'pnpm-lock.yaml',
@@ -81,6 +82,63 @@ function Invoke-Dsh {
   & $CommandPath @Arguments
   if ($LASTEXITCODE -ne 0) {
     throw "DSH 执行失败（退出码 $LASTEXITCODE）"
+  }
+}
+
+function Assert-AgentHostCapability {
+  param([string]$RunnerDirectory)
+  $probe = "import { Session } from '@deepseek-ai/dsh-session'; process.stdout.write(typeof Session.prototype.appendIgnorable)"
+  Push-Location $RunnerDirectory
+  try {
+    $result = (& node --input-type=module --eval $probe | Select-Object -Last 1)
+    $exitCode = $LASTEXITCODE
+  } finally {
+    Pop-Location
+  }
+  if ($exitCode -ne 0 -or ([string]$result).Trim() -ne 'function') {
+    throw 'Agent Host 缺少安全插件事件能力；补丁没有正确应用，已停止安装，避免生成无法保存 Agent 回合的启动入口。'
+  }
+}
+
+function Write-AgentHostLauncher {
+  param(
+    [string]$DshHomePath,
+    [string]$RunnerCommand
+  )
+  $launcherDirectory = Join-Path $DshHomePath 'bin'
+  $powershellLauncher = Join-Path $launcherDirectory 'dsh-agent-rp.ps1'
+  $commandLauncher = Join-Path $launcherDirectory 'dsh-agent-rp.cmd'
+  New-Item -ItemType Directory -Path $launcherDirectory -Force | Out-Null
+
+  $escapedRunner = $RunnerCommand.Replace("'", "''")
+  $powershellSource = @"
+`$ErrorActionPreference = 'Stop'
+`$runner = '$escapedRunner'
+if (-not (Test-Path -LiteralPath `$runner -PathType Leaf)) {
+  throw "Agent RP 专用 Host 不存在：`$runner。请重新运行 Agent RP 安装器。"
+}
+& `$runner --profile web @args
+exit `$LASTEXITCODE
+"@
+  $commandSource = "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0dsh-agent-rp.ps1`" %*`r`n"
+  $utf8 = [Text.UTF8Encoding]::new($false)
+  [IO.File]::WriteAllText($powershellLauncher, $powershellSource, $utf8)
+  [IO.File]::WriteAllText($commandLauncher, $commandSource, $utf8)
+  return [pscustomobject]@{
+    PowerShell = $powershellLauncher
+    Command = $commandLauncher
+  }
+}
+
+function Get-AgentHostPortListener {
+  param([int]$Port)
+  if ($null -eq (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) { return $null }
+  $connection = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($null -eq $connection) { return $null }
+  $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
+  return [pscustomobject]@{
+    ProcessId = $connection.OwningProcess
+    ProcessName = if ($null -eq $process) { '未知进程' } else { $process.ProcessName }
   }
 }
 
@@ -174,6 +232,9 @@ try {
   if ($LASTEXITCODE -ne 0 -or $reportedDshVersion -ne $agentHostVersion) {
     throw "Agent Host 版本验证失败：预期 $agentHostVersion，实际 $reportedDshVersion"
   }
+  Assert-AgentHostCapability $runnerDirectory
+  $launcher = Write-AgentHostLauncher $dshHomePath $runnerCommand
+  Write-Host '    安全插件事件能力：已验证'
 
   $installedSpec = $null
   if (Test-Path -LiteralPath $profileManifestPath) {
@@ -212,11 +273,19 @@ try {
   }
 
   Write-Host "Agent RP $($installedManifest.version) 已就绪，已有角色卡和会话不会被清空。" -ForegroundColor Green
+  Write-Host "以后请从 Agent RP 专用入口启动：& '$($launcher.PowerShell)'" -ForegroundColor Cyan
+  Write-Host "也可以在 cmd 中运行：`"$($launcher.Command)`""
   if ($Start) {
-    Write-Host '正在启动 DSH；关闭这个窗口或按 Ctrl+C 会停止本地服务。' -ForegroundColor Cyan
-    Invoke-Dsh $runnerCommand @('--profile', 'web')
+    $listener = Get-AgentHostPortListener $agentHostPort
+    if ($null -ne $listener) {
+      Write-Warning "端口 $agentHostPort 已由 $($listener.ProcessName)（PID $($listener.ProcessId)）占用；安装已经完成，但没有再启动第二个 DSH。"
+      Write-Host "请先关闭旧的 DSH，再运行：& '$($launcher.PowerShell)'" -ForegroundColor Yellow
+    } else {
+      Write-Host '正在启动 Agent RP 专用 DSH；关闭这个窗口或按 Ctrl+C 会停止本地服务。' -ForegroundColor Cyan
+      Invoke-Dsh $runnerCommand @('--profile', 'web')
+    }
   } else {
-    Write-Host "启动命令：& '$runnerCommand' --profile web"
+    Write-Host "启动命令：& '$($launcher.PowerShell)'"
   }
 } catch {
   Write-Host "安装失败：$($_.Exception.Message)" -ForegroundColor Red

@@ -1137,7 +1137,7 @@ function GenerationTail({
     && (projection.tavern !== undefined || projection.mvu !== undefined)
   const regenerateDisabled = disabled || statefulRegenerationUnavailable
   const regenerateUnavailableReason = statefulRegenerationUnavailable
-    ? '更新 DSH 后可重新生成含状态的回复'
+    ? '当前 DSH Host 缺少安全插件事件能力，无法重新生成含状态的回复'
     : unavailableReason
   const previousUnavailable = disabled || selectedIndex <= 0
   const nextUnavailable = disabled || group === undefined || selectedIndex >= group.versions.length - 1
@@ -4119,8 +4119,11 @@ function RoleplayHeader({
             {turnModeSaving ? '正在切换…' : `回合方式 · ${projection.turnMode === 'agent' ? 'Agent' : '纯对话'}`}
           </button>
           {projection.hostCapabilities?.sessionEvents !== true && <p data-agent-rp-host-capability-note style={{
-            fontSize: '11px', lineHeight: 1.45, margin: '0 9px 4px', opacity: .5,
-          }}>Agent 模式需更新 DSH</p>}
+            fontSize: '11px', lineHeight: 1.45, margin: '0 9px 4px', maxWidth: '230px', opacity: .64,
+          }}>
+            当前启动的 DSH Host 缺少安全插件事件能力；仅更新版本号可能无效，请从 Agent RP 安装器创建的专用入口启动。{' '}
+            <a href="https://github.com/hewzhew/dsh-agent-rp#安装" target="_blank" rel="noreferrer" style={{ color, fontWeight: 600 }}>查看修复方式</a>
+          </p>}
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setMemoryOpen(true) }} style={headerMenuItemStyle}>记忆</button>
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setStateOpen(true) }} style={headerMenuItemStyle}>
             状态数据{projection.nativeStates.length === 0 ? '' : ` · ${projection.nativeStates.length}`}
