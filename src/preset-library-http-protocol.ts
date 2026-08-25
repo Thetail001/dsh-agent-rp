@@ -34,6 +34,12 @@ export interface PresetLibraryRenameResponse {
   readonly entry: PresetLibrarySummary
 }
 
+/** Confirmation returned after removing one reusable preset copy. */
+export interface PresetLibraryDeleteResponse {
+  readonly format: 0
+  readonly id: string
+}
+
 /** Disambiguate same-name presets without exposing prompt or script contents. */
 export function presetLibraryOptionLabel(
   entry: PresetLibrarySummary,

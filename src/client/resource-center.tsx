@@ -34,6 +34,7 @@ interface ResourceCenterProps {
   readonly listPresets: () => Promise<readonly PresetLibrarySummary[]>
   readonly importPresetFile: (file: File) => Promise<PresetLibrarySummary>
   readonly renamePreset: (id: string, name: string) => Promise<PresetLibrarySummary>
+  readonly deletePreset: (id: string) => Promise<void>
   readonly listPersonas: () => Promise<readonly PersonaLibraryEntry[]>
   readonly savePersona: (request: PersonaLibrarySaveRequest) => Promise<PersonaLibraryEntry>
   readonly deletePersona: (id: string) => Promise<PersonaLibraryEntry>
@@ -349,7 +350,7 @@ export function RoleplayResourceCenter({
   accent, narrow, initialSection = 'characters',
   listCharacters, setCharacterArchived, importCharacterFile,
   listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo,
-  listPresets, importPresetFile, renamePreset,
+  listPresets, importPresetFile, renamePreset, deletePreset,
   listPersonas, savePersona, deletePersona,
   onConfigureWorldInfo,
   onClose,
@@ -366,6 +367,7 @@ export function RoleplayResourceCenter({
   const [error, setError] = useState<string>()
   const [personaDraft, setPersonaDraft] = useState<{ readonly id?: string; readonly name: string; readonly description: string }>()
   const [presetDraft, setPresetDraft] = useState<{ readonly id: string; readonly name: string }>()
+  const [confirmingPresetId, setConfirmingPresetId] = useState<string>()
   const [confirmingPersonaId, setConfirmingPersonaId] = useState<string>()
   const [confirmingWorldInfoId, setConfirmingWorldInfoId] = useState<string>()
   const [migrationOpen, setMigrationOpen] = useState(false)
@@ -470,6 +472,19 @@ export function RoleplayResourceCenter({
       setPresets(value => (value ?? []).map(item => item.id === entry.id ? entry : item))
       setPresetDraft(undefined)
       setNotice(`预设已改名为「${entry.name}」`)
+    }).catch(reason => { setError(message(reason)) }).finally(finishAction)
+  }
+  const removePreset = (entry: PresetLibrarySummary): void => {
+    if (confirmingPresetId !== entry.id) {
+      setConfirmingPresetId(entry.id)
+      return
+    }
+    startAction(`preset:${entry.id}`)
+    void deletePreset(entry.id).then(() => {
+      setPresets(value => (value ?? []).filter(item => item.id !== entry.id))
+      setPresetDraft(value => value?.id === entry.id ? undefined : value)
+      setConfirmingPresetId(undefined)
+      setNotice(`已移除预设「${entry.name}」；已有会话不受影响`)
     }).catch(reason => { setError(message(reason)) }).finally(finishAction)
   }
   const toggleWorldInfoDefault = (entry: WorldInfoLibraryUpload): void => {
@@ -693,6 +708,12 @@ export function RoleplayResourceCenter({
                 <button type="button" disabled={busy !== undefined} onClick={() => { setPresetDraft(undefined) }} style={actionStyle(busy === undefined)}>取消</button>
                 <button type="button" disabled={busy !== undefined || presetDraft.name.trim() === ''} onClick={savePresetName} style={actionStyle(busy === undefined && presetDraft.name.trim() !== '')}>{busy === `preset:${entry.id}` ? '保存中…' : '保存'}</button>
               </> : <button type="button" disabled={busy !== undefined} onClick={() => { setPresetDraft({ id: entry.id, name: entry.name }) }} style={actionStyle(busy === undefined)}>改名</button>}
+              <button type="button" disabled={busy !== undefined} onClick={() => { removePreset(entry) }} style={{
+                ...actionStyle(busy === undefined),
+                color: confirmingPresetId === entry.id ? 'var(--dsw-alias-state-danger, #e88989)' : 'inherit',
+              }}>
+                {busy === `preset:${entry.id}` ? '移除中…' : confirmingPresetId === entry.id ? '确认移除' : '移除'}
+              </button>
             </div>)}
             {section === 'personas' && visiblePersonas.map((entry, index) => <div key={entry.id} style={{ ...rowStyle, alignItems: 'flex-start', borderTop: index === 0 ? 'none' : rowStyle.borderTop }}>
               <div style={{ flex: 1, minWidth: 0 }}>

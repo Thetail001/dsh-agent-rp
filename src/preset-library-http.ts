@@ -63,8 +63,18 @@ export function installPresetLibraryHttp(ctx: Context, library: PresetLibrary, s
           json(response, 200, { format: 0, entry })
           return
         }
+        if (request.method === 'DELETE') {
+          const id = new URL(request.url ?? '/', 'http://agent-rp.local').searchParams.get('id')
+          if (id === null) {
+            json(response, 400, { error: '预设库 id 缺失' })
+            return
+          }
+          library.delete(id)
+          json(response, 200, { format: 0, id })
+          return
+        }
         if (request.method !== 'POST') {
-          response.setHeader('allow', 'GET, POST, PATCH')
+          response.setHeader('allow', 'DELETE, GET, PATCH, POST')
           json(response, 405, { error: 'method not allowed' })
           return
         }

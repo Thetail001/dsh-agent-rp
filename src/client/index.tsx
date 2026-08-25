@@ -99,6 +99,7 @@ import { projectPresetPromptSections } from '../preset-sections.ts'
 import {
   PRESET_LIBRARY_PATH,
   presetLibraryOptionLabel,
+  type PresetLibraryDeleteResponse,
   type PresetLibraryImportResponse,
   type PresetLibraryListResponse,
   type PresetLibraryRenameResponse,
@@ -765,6 +766,17 @@ async function renamePresetLibraryEntry(id: string, name: string): Promise<Prese
   const value = await response.json() as Partial<PresetLibraryRenameResponse> & { readonly error?: string }
   if (!response.ok || value.entry === undefined) throw new Error(value.error ?? `预设改名失败（${response.status}）`)
   return value.entry
+}
+
+async function deletePresetLibraryEntry(id: string): Promise<void> {
+  const response = await fetch(`${PRESET_LIBRARY_PATH}?id=${encodeURIComponent(id)}`, {
+    method: 'DELETE', headers: { accept: 'application/json' },
+  })
+  const value = await response.json() as Partial<PresetLibraryDeleteResponse> & { readonly error?: string }
+  if (!response.ok || value.format !== 0 || value.id !== id) {
+    throw new Error(value.error ?? `预设移除失败（${response.status}）`)
+  }
+  if (readRoleplayPresetPreference() === id) writeRoleplayPresetPreference('')
 }
 
 function usePresetPreference(
@@ -2666,6 +2678,7 @@ type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
     agentPresetId?: string,
   ) => Promise<void>
   readonly renamePreset: (id: string, name: string) => Promise<PresetLibrarySummary>
+  readonly deletePreset: (id: string) => Promise<void>
   readonly workspaceSettings: WorkspaceSettingsSource
   readonly workspaceList: WorkspaceListSource
 }
@@ -2741,7 +2754,7 @@ function SidebarRoleplayDestination({
   prepareChatMigration, prepareRpDistributionChatMigration, launchPreparedChatMigration,
   startCharacterSession,
   listPresets, listAgentCapabilityPresets, importPresetFile, listPersonas, savePersona, deletePersona,
-  listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo, renamePreset,
+  listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo, renamePreset, deletePreset,
   startWorldInfoSession,
   workspaceSettings, workspaceList,
 }: SidebarRoleplayDestinationProps) {
@@ -3006,6 +3019,7 @@ function SidebarRoleplayDestination({
       listPresets={listPresets}
       importPresetFile={importPresetFile}
       renamePreset={renamePreset}
+      deletePreset={deletePreset}
       listPersonas={listPersonas}
       savePersona={savePersona}
       deletePersona={deletePersona}
@@ -13055,7 +13069,7 @@ export function apply(ctx: ClientContext): void {
     prepareRpDistributionChatMigration: prepareRpDistributionChatMigrationFromBlankSession,
     launchPreparedChatMigration: launchPreparedChatMigrationFromBlankSession,
     startCharacterSession: startCharacterFromBlankSession, listPresets, listAgentCapabilityPresets, importPresetFile,
-    renamePreset: renamePresetLibraryEntry, listPersonas, savePersona, deletePersona,
+    renamePreset: renamePresetLibraryEntry, deletePreset: deletePresetLibraryEntry, listPersonas, savePersona, deletePersona,
     listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo,
     startWorldInfoSession: startWorldInfoFromBlankSession,
   }
