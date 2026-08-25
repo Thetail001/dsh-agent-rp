@@ -635,10 +635,9 @@ test('state verification follows the session model until the player selects anot
   }), { provider: 'worker-provider', model: 'worker-model' })
 })
 
-async function emptyStagedSettlementFixture(input: {
+function preparedEmptyStagedSettlement(input: {
   readonly id: string
   readonly previousError?: string
-  readonly verification: 'success' | 'failure'
 }) {
   const { card, session } = cardSession(input.id, 'agent')
   if (input.previousError !== undefined) {
@@ -648,7 +647,7 @@ async function emptyStagedSettlementFixture(input: {
       lastError: input.previousError,
     })
   }
-  const { plan } = beginTurn(session)
+  const { plan, reference } = beginTurn(session)
   session.append('request/header', {
     reason: 'initial',
     header: { config: { provider: 'fixture', model: 'fixture', maxTokens: 8192 } },
@@ -662,6 +661,15 @@ async function emptyStagedSettlementFixture(input: {
     }),
   }, { surfaceOp: 'append', sourceEventSeqs: [] })
   session.append('step/end', { turn: 1, step: 1 })
+  return { card, session, plan, reference }
+}
+
+async function emptyStagedSettlementFixture(input: {
+  readonly id: string
+  readonly previousError?: string
+  readonly verification: 'success' | 'transient-failure' | 'failure'
+}) {
+  const { card, session, plan } = preparedEmptyStagedSettlement(input)
   let requestCount = 0
   const fake = {
     sessions: { flush: async () => true },
@@ -669,7 +677,10 @@ async function emptyStagedSettlementFixture(input: {
       stream() {
         requestCount += 1
         return (async function* () {
-          const text = requestCount === 2 && input.verification === 'failure'
+          const invalid = input.verification === 'failure'
+            ? requestCount >= 2
+            : input.verification === 'transient-failure' && requestCount === 2
+          const text = invalid
             ? 'not a state result'
             : '{"operations":[]}'
           yield { type: 'block-start', index: 0, blockType: 'text' }
@@ -689,8 +700,179 @@ async function emptyStagedSettlementFixture(input: {
   })
   session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
   const recovery = recoverSessionRoleplayTurns({ session, deployment })
-  return { card, session, outcome, recovery }
+  return { card, session, outcome, recovery, requestCount }
 }
+
+async function providerFailureSettlementFixture(input: {
+  readonly id: string
+  readonly finish: 'error' | 'aborted'
+  readonly failure: {
+    readonly code: string
+    readonly message: string
+    readonly status?: number
+    readonly providerRetryAfterMs?: number
+  }
+  readonly retryableCodes: readonly string[]
+}) {
+  const { card, session, plan, reference } = preparedEmptyStagedSettlement({ id: input.id })
+  let requestCount = 0
+  const fake = {
+    sessions: { flush: async () => true },
+    llm: {
+      providerRetryPolicy() {
+        return {
+          mode: 'normal' as const,
+          maxRetries: 5,
+          retryableCodes: input.retryableCodes,
+          initialDelayMs: 1,
+          maxDelayMs: 5,
+          jitterRatio: 0,
+        }
+      },
+      stream() {
+        requestCount += 1
+        return (async function* () {
+          if (requestCount === 1) {
+            yield { type: 'finish', reason: { kind: input.finish, failure: input.failure } }
+            return
+          }
+          const text = '{"operations":[]}'
+          yield { type: 'block-start', index: 0, blockType: 'text' }
+          yield { type: 'text-delta', index: 0, text }
+          yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    },
+  } as unknown as Context
+  const outcome = await runRoleplayStagedStateSettlement({
+    ctx: fake,
+    agent: { id: session.id, session } as Agent,
+    turn: 1,
+    plan: { step: 1, plan },
+    signal: new AbortController().signal,
+  })
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const recovery = recoverSessionRoleplayTurns({ session, deployment })
+  return { card, session, outcome, recovery, requestCount, reference }
+}
+
+test('retries one invalid state response and records both verification attempts', async () => {
+  const { card, session, outcome, recovery, requestCount } = await emptyStagedSettlementFixture({
+    id: 'staged-state-invalid-output-retry',
+    verification: 'transient-failure',
+  })
+
+  assert.equal(requestCount, 3)
+  assert.equal(outcome.outcome, 'unchanged')
+  assert.deepEqual(recovery, { settlements: 1, presentations: 1, turns: [1] })
+  const results = session.events.filter(event => event.type === 'agent-rp/staged-state-result')
+  assert.equal(results.length, 3)
+  assert.deepEqual(results[1]?.data.result, {
+    kind: 'failure',
+    failure: 'unknown',
+    detail: {
+      code: 'INVALID_RESPONSE',
+      message: '状态结算模型返回了无效结果：Roleplay staged state result has no JSON object',
+    },
+  })
+  assert.equal(results[2]?.data.result.kind, 'success')
+  assert.deepEqual(readCurrentSessionMvuState(card, session), {
+    statData: { 角色: { 等级: 1, 称号: '学徒' } },
+    updateCount: 0,
+  })
+})
+
+test('retries one provider failure only when its captured policy allows the code', async () => {
+  const { card, session, outcome, recovery, requestCount } = await providerFailureSettlementFixture({
+    id: 'staged-state-provider-retry',
+    finish: 'error',
+    failure: {
+      code: 'RATE_LIMIT',
+      message: 'provider temporarily busy',
+      status: 429,
+      providerRetryAfterMs: 1,
+    },
+    retryableCodes: ['RATE_LIMIT'],
+  })
+
+  assert.equal(requestCount, 3)
+  assert.equal(outcome.outcome, 'unchanged')
+  assert.deepEqual(recovery, { settlements: 1, presentations: 1, turns: [1] })
+  const first = session.events.find(event => event.type === 'agent-rp/staged-state-result')
+  assert.equal(first?.type, 'agent-rp/staged-state-result')
+  assert.deepEqual(first?.data.result, {
+    kind: 'failure',
+    failure: 'provider',
+    detail: {
+      code: 'RATE_LIMIT',
+      message: 'provider temporarily busy',
+      status: 429,
+      providerRetryAfterMs: 1,
+    },
+  })
+  assert.deepEqual(readCurrentSessionMvuState(card, session), {
+    statData: { 角色: { 等级: 1, 称号: '学徒' } },
+    updateCount: 0,
+  })
+})
+
+test('keeps deterministic and aborted provider failures terminal with local details', async () => {
+  for (const fixture of [{
+    id: 'staged-state-auth-terminal',
+    finish: 'error' as const,
+    failure: { code: 'AUTH', message: 'credential rejected', status: 401 },
+    retryableCodes: ['SERVER'],
+    expected: '后台状态结算失败（AUTH）：credential rejected',
+  }, {
+    id: 'staged-state-aborted-terminal',
+    finish: 'aborted' as const,
+    failure: { code: 'ABORTED', message: 'player cancelled' },
+    retryableCodes: ['ABORTED'],
+    expected: '后台状态结算失败（ABORTED）：player cancelled',
+  }, {
+    id: 'staged-state-provider-delay-terminal',
+    finish: 'error' as const,
+    failure: { code: 'RATE_LIMIT', message: 'retry later', providerRetryAfterMs: 50 },
+    retryableCodes: ['RATE_LIMIT'],
+    expected: '后台状态结算失败（RATE_LIMIT）：retry later',
+  }]) {
+    const { card, session, outcome, requestCount } = await providerFailureSettlementFixture(fixture)
+    assert.equal(requestCount, 1)
+    assert.equal(outcome.outcome, 'failed')
+    assert.equal(readCurrentSessionMvuState(card, session)?.lastError, fixture.expected)
+    assert.equal(session.events.filter(event => event.type === 'agent-rp/staged-state-result').length, 1)
+  }
+})
+
+test('bounds provider diagnostics and rejects malformed durable failure details', async () => {
+  const { session, reference } = await providerFailureSettlementFixture({
+    id: 'staged-state-bounded-failure-detail',
+    finish: 'error',
+    failure: { code: 'AUTH', message: 'x'.repeat(2_100), status: 401 },
+    retryableCodes: ['SERVER'],
+  })
+  const result = session.events.find(event => event.type === 'agent-rp/staged-state-result')
+  assert.equal(result?.type, 'agent-rp/staged-state-result')
+  if (result?.type !== 'agent-rp/staged-state-result' || result.data.result.kind !== 'failure') {
+    assert.fail('missing bounded state failure')
+  }
+  assert.equal(result.data.result.detail?.message, `${'x'.repeat(1_999)}…`)
+  const malformed = {
+    ...result,
+    data: {
+      ...result.data,
+      result: { ...result.data.result, detail: { code: '', message: 'missing code' } },
+    },
+  } as SessionEvent<'agent-rp/staged-state-result'>
+  const events = session.events.map(event => event.seq === malformed.seq ? malformed : event)
+  assert.throws(() => collectRoleplayStagedStateSettlement({
+    events,
+    sessionId: String(session.id),
+    turn: 1,
+    plans: [reference],
+  }), /staged state result is invalid/u)
+})
 
 test('clears a previous state error after a verified unchanged settlement', async () => {
   const { card, session, outcome, recovery } = await emptyStagedSettlementFixture({
@@ -745,7 +927,7 @@ test('keeps a genuine staged state failure visible', async () => {
   assert.deepEqual(readCurrentSessionMvuState(card, session), {
     statData: { 角色: { 等级: 1, 称号: '学徒' } },
     updateCount: 0,
-    lastError: '后台状态结算失败（unknown）',
+    lastError: '后台状态结算失败（INVALID_RESPONSE）：状态结算模型返回了无效结果：Roleplay staged state result has no JSON object',
     source: {
       kind: 'agent-action',
       turn: 1,

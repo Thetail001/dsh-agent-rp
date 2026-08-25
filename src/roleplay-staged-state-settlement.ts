@@ -5,9 +5,13 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import {
   BlockAssembler,
   createUserMessage,
+  errorChain,
+  isHarnessError,
   ReasoningEffortId,
   type ContentBlock,
   type GenerateOptions,
+  type LlmFailure,
+  type ResolvedRetryPolicy,
 } from '@deepseek-ai/dsh-llm'
 import { foldSurface, type JsonValue, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { jsonrepair } from 'jsonrepair'
@@ -60,7 +64,16 @@ export interface RoleplayStagedStateResultRecord {
     | {
         readonly kind: 'failure'
         readonly failure: RoleplayActModelFailureKind
+        readonly detail?: RoleplayStagedStateFailureDetail
       }
+}
+
+/** Bounded local diagnostics retained for one failed state-settlement request. */
+export interface RoleplayStagedStateFailureDetail {
+  readonly code: string
+  readonly message: string
+  readonly status?: number
+  readonly providerRetryAfterMs?: number
 }
 
 declare module '@deepseek-ai/dsh-session' {
@@ -132,6 +145,70 @@ function parseStateSettlementResponse(text: unknown): readonly MvuStateOperation
 
 const MAX_SETTLEMENT_TEXT_LENGTH = 128 * 1024
 const STATE_SETTLEMENT_MAX_TOKENS = 4_096
+const MAX_FAILURE_CODE_LENGTH = 128
+const MAX_FAILURE_MESSAGE_LENGTH = 2_000
+
+class StateSettlementResponseError extends Error {
+  readonly code = 'INVALID_RESPONSE'
+
+  constructor(reason: unknown) {
+    super(`状态结算模型返回了无效结果：${errorChain(reason)}`)
+    this.name = 'StateSettlementResponseError'
+  }
+}
+
+function boundedFailureText(value: string, max: number): string {
+  const text = value.trim()
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`
+}
+
+function providerFailureDetail(failure: LlmFailure): RoleplayStagedStateFailureDetail {
+  return {
+    code: boundedFailureText(failure.code, MAX_FAILURE_CODE_LENGTH) || 'UNKNOWN',
+    message: boundedFailureText(failure.message, MAX_FAILURE_MESSAGE_LENGTH) || '模型请求失败',
+    ...(failure.status === undefined ? {} : { status: failure.status }),
+    ...(failure.providerRetryAfterMs === undefined ? {} : {
+      providerRetryAfterMs: failure.providerRetryAfterMs,
+    }),
+  }
+}
+
+function thrownFailureDetail(reason: unknown): RoleplayStagedStateFailureDetail {
+  const kind = roleplayActModelFailure(reason)
+  const code = reason instanceof StateSettlementResponseError
+    ? reason.code
+    : isHarnessError(reason)
+      ? reason.code
+      : kind === 'aborted'
+        ? 'ABORTED'
+        : 'STATE_WORKER_ERROR'
+  return {
+    code: boundedFailureText(code, MAX_FAILURE_CODE_LENGTH),
+    message: boundedFailureText(errorChain(reason), MAX_FAILURE_MESSAGE_LENGTH) || '后台状态结算失败',
+  }
+}
+
+function validFailureDetail(value: unknown): value is RoleplayStagedStateFailureDetail {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const detail = value as Partial<RoleplayStagedStateFailureDetail>
+  return typeof detail.code === 'string' && detail.code.length > 0
+    && detail.code.length <= MAX_FAILURE_CODE_LENGTH
+    && typeof detail.message === 'string' && detail.message.length > 0
+    && detail.message.length <= MAX_FAILURE_MESSAGE_LENGTH
+    && (detail.status === undefined
+      || (Number.isSafeInteger(detail.status) && detail.status! >= 100 && detail.status! <= 599))
+    && (detail.providerRetryAfterMs === undefined
+      || (Number.isFinite(detail.providerRetryAfterMs) && detail.providerRetryAfterMs! > 0))
+}
+
+function stateSettlementFailureMessage(
+  failure: RoleplayActModelFailureKind,
+  detail: RoleplayStagedStateFailureDetail | undefined,
+): string {
+  return detail === undefined
+    ? `后台状态结算失败（${failure}）`
+    : `后台状态结算失败（${detail.code}）：${detail.message}`
+}
 
 function boundedSettlementText(text: string): string {
   return text.length <= MAX_SETTLEMENT_TEXT_LENGTH
@@ -321,11 +398,11 @@ function terminalForCoverage(
   const requests = events.filter((event): event is SessionEvent<'agent-rp/staged-state-request'> =>
     event.type === 'agent-rp/staged-state-request' && event.data.turn === turn
       && event.data.throughEventSeq === throughEventSeq)
-  return requests.some((request) => {
-    const result = events.find((event): event is SessionEvent<'agent-rp/staged-state-result'> =>
-      event.type === 'agent-rp/staged-state-result' && event.data.requestSeq === request.seq)
-    return result !== undefined && (request.data.stage !== 'proposal' || result.data.result.kind === 'failure')
-  })
+  const latest = requests.at(-1)
+  if (latest === undefined) return false
+  const result = events.find((event): event is SessionEvent<'agent-rp/staged-state-result'> =>
+    event.type === 'agent-rp/staged-state-result' && event.data.requestSeq === latest.seq)
+  return result !== undefined && (latest.data.stage !== 'proposal' || result.data.result.kind === 'failure')
 }
 
 type StateSettlementDispatchOutcome =
@@ -340,6 +417,7 @@ type StateSettlementDispatchOutcome =
       readonly outcome: 'failed'
       readonly requestEvent: SessionEvent<'agent-rp/staged-state-request'>
       readonly resultEvent: SessionEvent<'agent-rp/staged-state-result'>
+      readonly detail: RoleplayStagedStateFailureDetail
     }
 
 interface StateSettlementDispatchInputBase {
@@ -358,6 +436,52 @@ type StateSettlementDispatchInput = StateSettlementDispatchInputBase & (
   | { readonly stage: 'proposal'; readonly proposalResultSeq?: never }
   | { readonly stage: 'verification'; readonly proposalResultSeq: number }
 )
+
+function retryPolicy(
+  ctx: Context,
+  provider: string,
+): ResolvedRetryPolicy | undefined {
+  try {
+    return ctx.llm.providerRetryPolicy(provider)
+  } catch {
+    // Preserve the original request failure when its provider route has already disappeared.
+    return undefined
+  }
+}
+
+function retryDelayMs(
+  input: StateSettlementDispatchInput,
+  detail: RoleplayStagedStateFailureDetail,
+): number | undefined {
+  if (detail.code === 'ABORTED' || input.request.signal?.aborted === true) return undefined
+  if (detail.code === 'INVALID_RESPONSE') return 0
+  const policy = retryPolicy(input.ctx, input.request.provider)
+  if (policy === undefined) return undefined
+  if (policy.mode === 'normal'
+    && (policy.maxRetries < 1 || !policy.retryableCodes.includes(detail.code))) return undefined
+  if (detail.providerRetryAfterMs !== undefined && detail.providerRetryAfterMs > 0) {
+    if (detail.providerRetryAfterMs <= policy.maxDelayMs) return detail.providerRetryAfterMs
+    if (policy.mode === 'normal') return undefined
+  }
+  const jitter = 1 - policy.jitterRatio + 2 * policy.jitterRatio * Math.random()
+  return Math.min(policy.initialDelayMs * jitter, policy.maxDelayMs)
+}
+
+function cancellableDelay(delayMs: number, signal: AbortSignal | undefined): Promise<boolean> {
+  if (signal?.aborted === true) return Promise.resolve(false)
+  if (delayMs <= 0) return Promise.resolve(true)
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve(true)
+    }, delayMs)
+    function onAbort(): void {
+      clearTimeout(timer)
+      resolve(false)
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
 
 async function dispatchStateSettlement(
   input: StateSettlementDispatchInput,
@@ -383,6 +507,7 @@ async function dispatchStateSettlement(
     const assembler = new BlockAssembler()
     for await (const chunk of input.ctx.llm.stream(input.request)) assembler.push(chunk)
     if (assembler.finish.kind === 'error' || assembler.finish.kind === 'aborted') {
+      const detail = providerFailureDetail(assembler.finish.failure)
       const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
         format: 0,
         requestId,
@@ -390,16 +515,22 @@ async function dispatchStateSettlement(
         result: {
           kind: 'failure',
           failure: assembler.finish.kind === 'aborted' ? 'aborted' : 'provider',
+          detail,
         },
       })
-      return { outcome: 'failed', requestEvent, resultEvent }
+      return { outcome: 'failed', requestEvent, resultEvent, detail }
     }
     const text = assembler.blocks().flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
-    const operations = parseStateSettlementResponse(text)
-    if (operations.some(operation => !input.target.operations.includes(operation.op))) {
-      throw new Error('Roleplay staged state result uses an operation outside its prepared plan')
+    let operations: readonly MvuStateOperation[]
+    try {
+      operations = parseStateSettlementResponse(text)
+      if (operations.some(operation => !input.target.operations.includes(operation.op))) {
+        throw new Error('Roleplay staged state result uses an operation outside its prepared plan')
+      }
+      applyMvuOperations(input.current, operations)
+    } catch (reason: unknown) {
+      throw new StateSettlementResponseError(reason)
     }
-    applyMvuOperations(input.current, operations)
     const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
       format: 0,
       requestId,
@@ -413,15 +544,39 @@ async function dispatchStateSettlement(
         event.type === 'agent-rp/staged-state-result' && event.data.requestSeq === requestEvent.seq,
     )
     if (resultEvent === undefined) {
+      const detail = thrownFailureDetail(error)
+      const failure = error instanceof StateSettlementResponseError
+        ? 'unknown'
+        : roleplayActModelFailure(error)
       resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
         format: 0,
         requestId,
         requestSeq: requestEvent.seq,
-        result: { kind: 'failure', failure: roleplayActModelFailure(error) },
+        result: { kind: 'failure', failure, detail },
       })
     }
-    return { outcome: 'failed', requestEvent, resultEvent }
+    if (resultEvent.data.result.kind !== 'failure') {
+      throw new Error('Roleplay staged state failure resolved to a successful result')
+    }
+    return {
+      outcome: 'failed',
+      requestEvent,
+      resultEvent,
+      detail: resultEvent.data.result.detail ?? thrownFailureDetail(error),
+    }
   }
+}
+
+async function dispatchStateSettlementWithRetry(
+  input: StateSettlementDispatchInput,
+): Promise<StateSettlementDispatchOutcome> {
+  const first = await dispatchStateSettlement(input)
+  if (first.outcome === 'success') return first
+  if (first.resultEvent.data.result.kind === 'failure'
+    && first.resultEvent.data.result.failure === 'aborted') return first
+  const delayMs = retryDelayMs(input, first.detail)
+  if (delayMs === undefined || !await cancellableDelay(delayMs, input.request.signal)) return first
+  return dispatchStateSettlement(input)
 }
 
 /** Run the state calculation once for the latest completed Agent step. */
@@ -449,7 +604,7 @@ export async function runRoleplayStagedStateSettlement(input: {
     target,
     state.value,
   )
-  const proposal = await dispatchStateSettlement({
+  const proposal = await dispatchStateSettlementWithRetry({
     ctx: input.ctx,
     agent: input.agent,
     turn: input.turn,
@@ -468,7 +623,7 @@ export async function runRoleplayStagedStateSettlement(input: {
       resultEventSeq: proposal.resultEvent.seq,
     }
   }
-  const verification = await dispatchStateSettlement({
+  const verification = await dispatchStateSettlementWithRetry({
     ctx: input.ctx,
     agent: input.agent,
     turn: input.turn,
@@ -586,7 +741,8 @@ export function collectRoleplayStagedStateSettlement(input: {
         }
       } else if (event.data.result.kind !== 'failure'
         || (event.data.result.failure !== 'aborted' && event.data.result.failure !== 'provider'
-          && event.data.result.failure !== 'unknown')) {
+          && event.data.result.failure !== 'unknown')
+        || (event.data.result.detail !== undefined && !validFailureDetail(event.data.result.detail))) {
         throw new Error('Roleplay staged state result is invalid')
       }
       results.set(request.seq, event)
@@ -619,6 +775,6 @@ export function collectRoleplayStagedStateSettlement(input: {
         target: latest.data.target,
         outcome: 'failed',
         operations: [],
-        error: `后台状态结算失败（${result.data.result.failure}）`,
+        error: stateSettlementFailureMessage(result.data.result.failure, result.data.result.detail),
       }
 }
