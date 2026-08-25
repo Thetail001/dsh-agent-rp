@@ -5,6 +5,7 @@ import type { CharacterLibrary } from './character-library.ts'
 import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
 import { readActiveSessionCharacter, type FileAttachmentRef } from './import/session-character.ts'
 import { createPresetSessionSeed } from './import/session-preset.ts'
+import { readActiveSessionWorldInfos } from './import/session-world-info.ts'
 import { appendCharacterWorldSessionSeed, appendWorldInfoLibrarySessionSeed } from './import/world-info-seed.ts'
 import type { PersonaLibrary } from './persona-library.ts'
 import type { PresetLibrary, PresetLibraryEntry } from './preset-library.ts'
@@ -227,8 +228,13 @@ export function roleplayLibraryResourceProviders(libraries: {
         return { events: input.events }
       }
       const world = libraries.worldInfos.asset(id)
+      const primaryScene = input.context.mode === 'scene'
+        && !readActiveSessionWorldInfos(input.events).some(active => active.placement === 'experience')
       return {
-        events: appendWorldInfoLibrarySessionSeed(input.events, world),
+        events: appendWorldInfoLibrarySessionSeed(input.events, world, {
+          placement: 'experience',
+          purpose: primaryScene ? 'scenario' : 'selected',
+        }),
         title: world.upload.name,
       }
     },
