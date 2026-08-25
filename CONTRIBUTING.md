@@ -74,6 +74,7 @@ export function apply(ctx: Context): void {
 - 从最新 `main` 开始，尽量让一次 PR 只解决一个问题。
 - 通常不要提交 `lib/`、临时目录或本地测试产物；维护者合并时统一构建。
 - 使用 `pnpm test` 直接从 TypeScript 源码运行完整测试，或使用 `pnpm run test:focused` 和其他 `test:*` 分组运行覆盖改动行为的聚焦检查；测试不预先打包，类型和发布产物分别由 `pnpm run typecheck` 与 `pnpm run build` 验证。
+- 本地测试产物积累后运行 `pnpm clean:generated`；先查看目标可运行 `pnpm clean:generated -- --dry-run`。该命令保留 `.tmp` 参考资料、依赖和构建产物。
 - 在 PR 中写清复现方式、改动边界和手动验收结果；无需补双语文档或文档站页面。
 - 不要提交 API Key、Token、完整 Session Log 或无权再分发的社区资产。
 

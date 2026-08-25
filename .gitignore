@@ -6,6 +6,12 @@ node_modules/
 .audit-dist/
 .smoke-dist/
 .preset-smoke/
+.benchmark-*
+.diagnose-*
+.inspect-*
+.probe-*
+.check-lore/
 .runtime/
+.runtime-*
 .runtime-web-*.log
 *.tgz
