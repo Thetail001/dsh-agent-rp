@@ -406,6 +406,8 @@ interface WorldInfoImportMeta {
 interface WorldInfoLibrarySeedRecord {
   readonly format: 0;
   readonly worldInfoLibraryId: string;
+  readonly placement: 'actor' | 'experience';
+  readonly purpose: 'character-binding' | 'selected' | 'scenario';
   readonly meta: WorldInfoImportMeta;
 }
 declare module '@deepseek-ai/dsh-session' {
@@ -469,7 +471,7 @@ declare module '@deepseek-ai/dsh-session' {
     'agent-rp/mvu-state': MvuStateSnapshot;
   }
 }
-/** Read and merge the card-owned initial `stat_data` without activating hidden initializer lore. */
+/** Read and merge initial `stat_data` from the effective Session worlds. */
 /** Stable Host-owned identities for Tavern Helper scripts. */
 /** Script-tree namespace that owns one Tavern Helper script. */
 type TavernScriptScope = 'global' | 'preset' | 'character';

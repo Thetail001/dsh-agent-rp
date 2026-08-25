@@ -5,7 +5,11 @@ import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
 import { parseCharacterCardValue } from './import/character-card.ts'
 import { decodeCharacterLibraryLaunch, type CharacterImportMeta, type CharacterLibraryLaunchRecord } from './import/session-character.ts'
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
-import { parseWorldInfoImportMeta, type WorldInfoImportMeta } from './import/session-world-info.ts'
+import {
+  parseWorldInfoImportMeta,
+  worldInfoLibrarySeedSemantics,
+  type WorldInfoImportMeta,
+} from './import/session-world-info.ts'
 import { parseWorldInfoJson } from './import/world-info.ts'
 import type { ActiveSessionPreset, PresetImportMeta } from './import/session-preset.ts'
 import {
@@ -14,7 +18,7 @@ import {
   type ImportedSillyTavernPreset,
 } from './import/sillytavern-preset.ts'
 import { DEFAULT_AGENT_RP_CHARACTER_NAME, type AgentRpProjection } from './projection-types.ts'
-import { applyMvuReply, readCurrentMvuState } from './mvu.ts'
+import { applyMvuReply, readCurrentMvuState, readCurrentMvuStateFromLorebooks } from './mvu.ts'
 import { canEditPresetPrompt, canTogglePresetPrompt } from './preset-configuration.ts'
 import { configurePreset, parsePresetConfigurationRequest } from './preset-configuration-core.ts'
 import { parsePresetLibraryResult } from './preset-library-protocol.ts'
@@ -277,13 +281,16 @@ function cardLorebookSource(meta: CharacterImportMeta, card: ImportedCharacterCa
   }
 }
 
-function standaloneLorebookSource(meta: WorldInfoImportMeta): SessionLorebookSource {
+function worldInfoLorebookSource(
+  meta: WorldInfoImportMeta,
+  source: SessionLorebookSource['source'] = 'standalone',
+): SessionLorebookSource {
   const worldInfo = JSON.parse(JSON.stringify(meta.raw)) as ImportedWorldInfo['raw']
   const parsed = parseWorldInfoJson(JSON.stringify(worldInfo))
   return {
-    id: `standalone:${meta.result.sourceAttachmentId}`,
+    id: `${source}:${meta.result.sourceAttachmentId}`,
     name: meta.result.name,
-    source: 'standalone',
+    source,
     lorebook: parsed.lorebook,
     degradations: meta.result.degradations.filter(value => value !== 'entry-regex'),
   }
@@ -724,6 +731,45 @@ export function createAgentRpProjectionDefinition(
       return { ...withSurface, turnMode: parseRoleplayTurnModeRecord(event.data).mode }
     }
     if (event.type === 'agent-rp/mvu-state') return { ...withSurface, mvu: event.data }
+    if (event.type === 'agent-rp/world-info-library-seed') {
+      try {
+        const semantics = worldInfoLibrarySeedSemantics(event)
+        const meta = parseWorldInfoImportMeta(event.data.meta as unknown as JsonValue)
+        const source = worldInfoLorebookSource(
+          meta,
+          semantics.placement === 'actor' ? 'character' : 'standalone',
+        )
+        const existingCharacterSources = [
+          ...(withSurface.cardLorebook === undefined ? [] : [withSurface.cardLorebook]),
+          ...Object.values(withSurface.standaloneWorldInfos).filter(item => item.source === 'character'),
+        ]
+        const primaryActorWorld = semantics.placement === 'actor' && existingCharacterSources.length === 0
+        const standaloneWorldInfos = primaryActorWorld
+          ? withSurface.standaloneWorldInfos
+          : { ...withSurface.standaloneWorldInfos, [meta.result.sourceAttachmentId]: source }
+        const lorebookSources = [
+          ...(primaryActorWorld
+            ? [source]
+            : withSurface.cardLorebook === undefined ? [] : [withSurface.cardLorebook]),
+          ...Object.values(standaloneWorldInfos),
+        ]
+        const mvu = readCurrentMvuStateFromLorebooks(lorebookSources.map(item => item.lorebook), [])
+        const { mvu: _previousMvu, ...withoutMvu } = withSurface
+        return {
+          ...withoutMvu,
+          standaloneWorldInfos,
+          ...(primaryActorWorld ? {
+            cardLorebook: source,
+            cardWorldInfoCount: source.lorebook.entries.length,
+          } : semantics.placement === 'actor' ? {
+            cardWorldInfoCount: withSurface.cardWorldInfoCount + source.lorebook.entries.length,
+          } : {}),
+          ...(mvu === undefined ? {} : { mvu }),
+        }
+      } catch {
+        return withSurface
+      }
+    }
     const nativeStates = applyRoleplayStateEvent(withSurface.nativeStates, event)
     if (nativeStates !== withSurface.nativeStates) return { ...withSurface, nativeStates }
     if (event.type === 'agent-rp/turn-presentation') {
@@ -805,7 +851,7 @@ export function createAgentRpProjectionDefinition(
         const record = decodeWorldInfoLibraryImport(event.data.text)
         if (record !== undefined) {
           const meta = parseWorldInfoImportMeta(record.meta)
-          directWorldInfo = { key: meta.result.sourceAttachmentId, source: standaloneLorebookSource(meta) }
+          directWorldInfo = { key: meta.result.sourceAttachmentId, source: worldInfoLorebookSource(meta) }
         }
       } catch {
         return withSurface
@@ -901,16 +947,21 @@ export function createAgentRpProjectionDefinition(
       const libraryId = 'characterLibraryId' in event.data.source
         ? event.data.source.characterLibraryId
         : undefined
-      const cardLorebook = cardLorebookSource(event.data.meta, card)
-      const { cardLorebook: _previousLorebook, ...withoutCardLorebook } = withSurface
+      const cardLorebook = libraryId === undefined ? cardLorebookSource(event.data.meta, card) : undefined
+      const mvu = libraryId === undefined ? readCurrentMvuState(card, []) : undefined
+      const {
+        cardLorebook: _previousLorebook,
+        mvu: _previousMvu,
+        ...withoutCardLorebook
+      } = withSurface
       return {
         ...withoutCardLorebook,
         character: libraryId === undefined
           ? projected.character
           : { ...projected.character, avatarLibraryId: libraryId },
-        cardWorldInfoCount: projected.lorebookEntries,
+        cardWorldInfoCount: libraryId === undefined ? projected.lorebookEntries : 0,
         ...(cardLorebook === undefined ? {} : { cardLorebook }),
-        mvu: readCurrentMvuState(card, []) ,
+        ...(mvu === undefined ? {} : { mvu }),
         tavern: initializeTavernHelperState(card.frontend, event.data.meta.result.sourceAttachmentId, withSurface.tavern),
       }
     }
@@ -1147,7 +1198,7 @@ export function createAgentRpProjectionDefinition(
           calls,
           standaloneWorldInfos: {
             ...withSurface.standaloneWorldInfos,
-            [meta.result.sourceAttachmentId]: standaloneLorebookSource(meta),
+            [meta.result.sourceAttachmentId]: worldInfoLorebookSource(meta),
           },
         }
   },

@@ -3,7 +3,7 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
-import { readActiveSessionWorldInfos } from './import/session-world-info.ts'
+import { readActiveSessionWorldInfos, type ActiveSessionWorldInfo } from './import/session-world-info.ts'
 import {
   activeTavernWorldbooks,
   configureWorldInfo,
@@ -15,25 +15,34 @@ import {
 } from './world-info-configuration-core.ts'
 import { readTavernHelperState } from './tavern-helper.ts'
 
+function sessionWorldSource(value: ActiveSessionWorldInfo): SessionLorebookSource {
+  const source = value.placement === 'actor' ? 'character' : 'standalone'
+  return {
+    id: `${source}:${value.result.sourceAttachmentId}`,
+    name: value.result.name,
+    source,
+    lorebook: value.worldInfo.lorebook,
+    degradations: value.result.degradations,
+  }
+}
+
 /** Resolve all imported books in their prompt order from the durable Session log. */
 export function readSessionLorebookSourcesFromEvents(events: readonly SessionEvent[]): readonly SessionLorebookSource[] {
   const active = readActiveSessionCharacter(events)
   const card = active === undefined ? undefined : cardFromImportMeta(active.meta)
+  const worlds = readActiveSessionWorldInfos(events)
+  const hasActorWorldSnapshot = worlds.some(world => world.placement === 'actor')
   return withTavernWorldbooks([
-    ...(card?.lorebook === undefined || active === undefined ? [] : [{
+    // Direct imports and sessions created before character bindings used the
+    // Character Card as their only durable world snapshot.
+    ...(hasActorWorldSnapshot || card?.lorebook === undefined || active === undefined ? [] : [{
       id: `character:${active.result.sourceAttachmentId}`,
       name: card.lorebook.name?.trim() || `${card.nickname?.trim() || card.name}的世界书`,
       source: 'character' as const,
       lorebook: card.lorebook,
       degradations: card.degradations.filter(value => value.startsWith('lorebook-')),
     }]),
-    ...readActiveSessionWorldInfos(events).map(value => ({
-      id: `standalone:${value.result.sourceAttachmentId}`,
-      name: value.result.name,
-      source: 'standalone' as const,
-      lorebook: value.worldInfo.lorebook,
-      degradations: value.result.degradations,
-    })),
+    ...worlds.map(sessionWorldSource),
   ], readTavernHelperState(events))
 }
 

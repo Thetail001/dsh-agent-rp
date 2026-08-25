@@ -7,7 +7,12 @@ import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
 import { createPresetSessionSeed } from './import/session-preset.ts'
 import { createSillyTavernChatSeed, resolveSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
 import { createSillyTavernMigrationSeed } from './import/sillytavern-migration-seed.ts'
-import { appendWorldInfoLibrarySessionSeed, createWorldInfoLibrarySessionSeed } from './import/world-info-seed.ts'
+import {
+  appendCharacterWorldSessionSeed,
+  appendWorldInfoLibrarySessionSeed,
+  characterWorldInfoIds,
+  createWorldInfoLibrarySessionSeed,
+} from './import/world-info-seed.ts'
 import { readActiveSessionCharacter, type FileAttachmentRef } from './import/session-character.ts'
 import type { PresetLibrary, PresetLibraryEntry } from './preset-library.ts'
 import { substituteCardMacros } from './prompt.ts'
@@ -229,9 +234,10 @@ function seedWithWorldInfos(
   seed: readonly SessionEvent[],
   worldInfos: WorldInfoLibrary,
   worldInfoIds: readonly string[] | undefined,
-  excludedId?: string,
+  excludedIds: readonly string[] = [],
 ): readonly SessionEvent[] {
-  const selected = (worldInfoIds ?? worldInfos.defaultIds()).filter(id => id !== excludedId)
+  const excluded = new Set(excludedIds)
+  const selected = (worldInfoIds ?? worldInfos.defaultIds()).filter(id => !excluded.has(id))
   return selected.reduce(
     (events, id) => appendWorldInfoLibrarySessionSeed(events, worldInfos.asset(id)),
     seed,
@@ -294,13 +300,19 @@ export function prepareAgentRpSession(
         request.persona,
         request.characterId,
       )
+    const characterWorldIds = characterWorldInfoIds(resolved.worldBinding)
+    const characterWorldSeed = appendCharacterWorldSessionSeed(
+      characterSeed,
+      resolved.worldBinding,
+      worldInfos,
+    )
     return {
       seed: seedWithPreset(
         seedWithWorldInfos(
-          characterSeed,
+          characterWorldSeed,
           worldInfos,
           request.worldInfoIds,
-          resolved.worldBinding?.primary?.worldInfoId,
+          characterWorldIds,
         ),
         presets,
         request.presetId,
@@ -317,7 +329,7 @@ export function prepareAgentRpSession(
           createWorldInfoLibrarySessionSeed(asset, request.persona),
           worldInfos,
           request.worldInfoIds,
-          request.importId,
+          [request.importId],
         ),
         presets,
         request.presetId,

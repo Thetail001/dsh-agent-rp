@@ -2,7 +2,7 @@
 
 import { snapshotJsonValue, type JsonValue, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
-import type { ImportedCharacterCard } from './import/types.ts'
+import type { ImportedCharacterCard, ImportedLorebook } from './import/types.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
 import { decodeActiveTavernHelperState } from './tavern-helper.ts'
@@ -50,9 +50,13 @@ function unwrapInitializer(content: string): string {
   return source.trim().match(/^```[^\r\n]*\r?\n([\s\S]*?)\r?\n```$/u)?.[1] ?? source
 }
 
-function initializerContents(card: ImportedCharacterCard): string[] {
-  return [...(card.lorebook?.entries ?? [])]
-    .sort((left, right) => left.insertionOrder - right.insertionOrder)
+function orderedLorebookEntries(lorebooks: readonly ImportedLorebook[]) {
+  return lorebooks.flatMap(lorebook => [...lorebook.entries]
+    .sort((left, right) => left.insertionOrder - right.insertionOrder))
+}
+
+function initializerContents(lorebooks: readonly ImportedLorebook[]): string[] {
+  return orderedLorebookEntries(lorebooks)
     .flatMap(entry => {
       const tagged = /<initvar>[\s\S]*?<\/initvar>/iu.test(entry.content)
       const named = /\[initvar\]/iu.test(`${entry.comment ?? ''}\n${entry.name ?? ''}`)
@@ -71,9 +75,11 @@ function mergeInitialRecord(target: Record<string, JsonValue>, source: Record<st
   }
 }
 
-/** Read and merge the card-owned initial `stat_data` without activating hidden initializer lore. */
-export function readInitialMvuState(card: ImportedCharacterCard): JsonValue | undefined {
-  const contents = initializerContents(card)
+/** Read and merge initial `stat_data` from the effective Session worlds. */
+export function readInitialMvuStateFromLorebooks(
+  lorebooks: readonly ImportedLorebook[],
+): JsonValue | undefined {
+  const contents = initializerContents(lorebooks)
   if (contents.length === 0) return undefined
   const merged: Record<string, JsonValue> = {}
   for (const content of contents) {
@@ -88,12 +94,17 @@ export function readInitialMvuState(card: ImportedCharacterCard): JsonValue | un
   return merged
 }
 
-/** Fold the latest durable MVU snapshot, falling back to the card initializer. */
-export function readCurrentMvuState(
-  card: ImportedCharacterCard,
+/** Read an imported card initializer before it has been materialized as Session worlds. */
+export function readInitialMvuState(card: ImportedCharacterCard): JsonValue | undefined {
+  return readInitialMvuStateFromLorebooks(card.lorebook === undefined ? [] : [card.lorebook])
+}
+
+/** Fold the latest durable MVU snapshot over the effective Session worlds. */
+export function readCurrentMvuStateFromLorebooks(
+  lorebooks: readonly ImportedLorebook[],
   events: readonly SessionEvent[],
 ): MvuStateSnapshot | undefined {
-  let statData = readInitialMvuState(card)
+  let statData = readInitialMvuStateFromLorebooks(lorebooks)
   let updateCount = 0
   let lastError: string | undefined
   let source: MvuStateSnapshot['source']
@@ -164,6 +175,14 @@ export function readCurrentMvuState(
   }
 }
 
+/** Fold MVU state for an imported card before world-resource materialization. */
+export function readCurrentMvuState(
+  card: ImportedCharacterCard,
+  events: readonly SessionEvent[],
+): MvuStateSnapshot | undefined {
+  return readCurrentMvuStateFromLorebooks(card.lorebook === undefined ? [] : [card.lorebook], events)
+}
+
 /** Append an exact MVU state selection after a reply-version surface change. */
 export function appendMvuState(
   session: Session,
@@ -177,8 +196,19 @@ export function readCurrentSessionMvuState(
   card: ImportedCharacterCard,
   session: Session,
 ): ReturnType<typeof readCurrentMvuState> {
+  return readCurrentSessionMvuStateFromLorebooks(
+    card.lorebook === undefined ? [] : [card.lorebook],
+    session,
+  )
+}
+
+/** Fold MVU updates from the visible surface over the effective Session worlds. */
+export function readCurrentSessionMvuStateFromLorebooks(
+  lorebooks: readonly ImportedLorebook[],
+  session: Session,
+): ReturnType<typeof readCurrentMvuStateFromLorebooks> {
   const surface = new Set(session.surface.nodes)
-  return readCurrentMvuState(card, session.events.filter(event =>
+  return readCurrentMvuStateFromLorebooks(lorebooks, session.events.filter(event =>
     event.type !== 'assistant/message' || surface.has(event.seq)))
 }
 
@@ -363,32 +393,30 @@ export function applyMvuReply(
   return result
 }
 
-/** Collect the inert card-authored rules needed by a dedicated MVU update call. */
+/** Collect effective World-authored rules for a dedicated MVU update call. */
 export function renderMvuUpdateInstructions(
-  card: ImportedCharacterCard,
+  lorebooks: readonly ImportedLorebook[],
   statData: JsonValue,
 ): string | undefined {
-  const entries = card.lorebook?.entries.filter(entry => entry.enabled
+  const entries = orderedLorebookEntries(lorebooks).filter(entry => entry.enabled
     && !entry.hasDecorators
     && !/<%[\s\S]*?%>/u.test(entry.content)
-    && /(?:变量更新规则|变量输出格式|<UpdateVariable>)/iu.test(entry.content)) ?? []
+    && /(?:变量更新规则|变量输出格式|<UpdateVariable>)/iu.test(entry.content))
   if (entries.length === 0) return undefined
   return entries
-    .sort((left, right) => left.insertionOrder - right.insertionOrder)
     .map(entry => substituteMvuMacros(entry.content, statData))
     .join('\n\n')
 }
 
-/** Collect a card-authored ten-choice contract for a dedicated completion call. */
-export function renderChoiceInstructions(card: ImportedCharacterCard): string | undefined {
+/** Collect a ten-choice contract from the effective Session worlds. */
+export function renderChoiceInstructions(lorebooks: readonly ImportedLorebook[]): string | undefined {
   const symbols = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩']
-  return card.lorebook?.entries
+  return orderedLorebookEntries(lorebooks)
     .filter(entry => entry.enabled
       && entry.constant
       && !entry.hasDecorators
       && !/<%[\s\S]*?%>/u.test(entry.content)
       && symbols.every(symbol => entry.content.includes(`<${symbol}>`) && entry.content.includes(`</${symbol}>`)))
-    .sort((left, right) => left.insertionOrder - right.insertionOrder)
     .map(entry => entry.content)
     .join('\n\n') || undefined
 }

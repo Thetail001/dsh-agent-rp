@@ -13,7 +13,7 @@ import type { ImportedCharacterCard } from './import/types.ts'
 import {
   MVU_ROLEPLAY_MODULE_ID,
   MVU_ROLEPLAY_STATE_ID,
-  readCurrentSessionMvuState,
+  readCurrentSessionMvuStateFromLorebooks,
   type MvuStateSnapshot,
 } from './mvu.ts'
 import { resolveSessionPersonaIdentity } from './session-persona.ts'
@@ -131,21 +131,21 @@ export function resolveSessionRoleplayRuntime(input: {
     source,
     configured: configuredLorebook(source, worldConfiguration).lorebook,
   }))
-  const configuredCardLorebook = lorebooks.find(value => value.source.source === 'character')?.configured
   const card = importedCard === undefined
     ? undefined
     : (() => {
         const { lorebook: _importedLorebook, ...withoutLorebook } = importedCard
-        return configuredCardLorebook === undefined
-          ? withoutLorebook
-          : { ...importedCard, lorebook: configuredCardLorebook }
+        return withoutLorebook
       })()
   const identity = resolveSessionPersonaIdentity(
     events,
     activeCharacter?.result.userName,
     importedChat?.userName,
   )
-  const mvu = card === undefined ? undefined : readCurrentSessionMvuState(card, input.session)
+  const mvu = readCurrentSessionMvuStateFromLorebooks(
+    lorebooks.map(value => value.configured),
+    input.session,
+  )
   const extensions = input.extensions?.resolve(events)
     ?? { modules: [], world: [], state: [], prepare: [], recall: [] }
   const selectedExperience = readRoleplayExperienceSelection(events)

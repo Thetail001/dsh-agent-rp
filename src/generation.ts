@@ -17,10 +17,11 @@ import {
   appendMvuState,
   applyMvuReply,
   MVU_ROLEPLAY_STATE_ID,
-  readCurrentMvuState,
-  readCurrentSessionMvuState,
+  readCurrentMvuStateFromLorebooks,
+  readCurrentSessionMvuStateFromLorebooks,
 } from './mvu.ts'
-import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
+import { configuredLorebook, readWorldInfoConfiguration } from './world-info-configuration-core.ts'
+import { readActiveSessionLorebookSourcesFromEvents } from './world-info-configuration.ts'
 import {
   appendTavernHelperState,
   decodeTavernHelperState,
@@ -350,16 +351,18 @@ function latestReply(
 }
 
 function mvuSnapshot(agent: Agent): GenerationStateRecord['mvu'] {
-  const active = readActiveSessionCharacter(agent.session.events)
-  if (active === undefined) return undefined
-  return readCurrentSessionMvuState(cardFromImportMeta(active.meta), agent.session)
+  const configuration = readWorldInfoConfiguration(agent.session.events)
+  const lorebooks = readActiveSessionLorebookSourcesFromEvents(agent.session.events)
+    .map(source => configuredLorebook(source, configuration).lorebook)
+  return readCurrentSessionMvuStateFromLorebooks(lorebooks, agent.session)
 }
 
 function mvuBeforeReply(agent: Agent, replySeq: number): GenerationStateRecord['mvu'] {
-  const active = readActiveSessionCharacter(agent.session.events)
-  if (active === undefined) return undefined
+  const configuration = readWorldInfoConfiguration(agent.session.events)
+  const lorebooks = readActiveSessionLorebookSourcesFromEvents(agent.session.events)
+    .map(source => configuredLorebook(source, configuration).lorebook)
   const visiblePrefix = new Set(agent.session.surface.nodes.filter(seq => seq < replySeq))
-  return readCurrentMvuState(cardFromImportMeta(active.meta), agent.session.events
+  return readCurrentMvuStateFromLorebooks(lorebooks, agent.session.events
     .slice(0, replySeq)
     .filter(event => event.type !== 'assistant/message' || visiblePrefix.has(event.seq)))
 }

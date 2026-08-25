@@ -34,12 +34,18 @@ export interface ActiveSessionWorldInfo {
   readonly result: WorldInfoImportResult
   readonly meta: WorldInfoImportMeta
   readonly worldInfo: ImportedWorldInfo
+  /** Semantic owner used by the Roleplay runtime after transport parsing. */
+  readonly placement: 'actor' | 'experience'
+  /** Why this immutable snapshot was added to the Session. */
+  readonly purpose: 'character-binding' | 'selected' | 'scenario'
 }
 
 /** Durable model-free activation of one Host-owned World Info source. */
 export interface WorldInfoLibrarySeedRecord {
   readonly format: 0
   readonly worldInfoLibraryId: string
+  readonly placement: 'actor' | 'experience'
+  readonly purpose: 'character-binding' | 'selected' | 'scenario'
   readonly meta: WorldInfoImportMeta
 }
 
@@ -132,7 +138,32 @@ function validateImport(events: readonly SessionEvent[], resultEvent: SessionEve
   if (result.name !== name || result.entryCount !== worldInfo.lorebook.entries.length) {
     throw new Error('import_world_info result summary does not match durable metadata')
   }
-  return { result, meta: { ...meta, raw: worldInfo.raw }, worldInfo }
+  return {
+    result,
+    meta: { ...meta, raw: worldInfo.raw },
+    worldInfo,
+    placement: 'experience',
+    purpose: 'selected',
+  }
+}
+
+/** Resolve explicit or legacy placement metadata from one replayable library seed. */
+export function worldInfoLibrarySeedSemantics(event: SessionEvent<'agent-rp/world-info-library-seed'>): {
+  readonly placement: ActiveSessionWorldInfo['placement']
+  readonly purpose: ActiveSessionWorldInfo['purpose']
+} {
+  const data = event.data as unknown as Record<string, unknown>
+  const placement = data.placement === undefined ? 'experience' : data.placement
+  const purpose = data.purpose === undefined
+    ? (event.seq === 0 ? 'scenario' : 'selected')
+    : data.purpose
+  if ((placement !== 'actor' && placement !== 'experience')
+    || (purpose !== 'character-binding' && purpose !== 'selected' && purpose !== 'scenario')
+    || (purpose === 'character-binding' && placement !== 'actor')
+    || (purpose === 'scenario' && placement !== 'experience')) {
+    throw new Error('世界书启动种子的用途无效')
+  }
+  return { placement, purpose }
 }
 
 /**
@@ -157,7 +188,8 @@ export function readActiveSessionWorldInfos(events: readonly SessionEvent[]): Ac
         || meta.result.entryCount !== worldInfo.lorebook.entries.length) {
         throw new Error('世界书启动种子与内容不一致')
       }
-      active.set(expectedAttachment, { result: meta.result, meta, worldInfo })
+      const semantics = worldInfoLibrarySeedSemantics(event)
+      active.set(expectedAttachment, { result: meta.result, meta, worldInfo, ...semantics })
       continue
     }
     if (event.type === 'command/done' && event.data.kind === 'success') {
@@ -176,7 +208,13 @@ export function readActiveSessionWorldInfos(events: readonly SessionEvent[]): Ac
         || meta.result.entryCount !== worldInfo.lorebook.entries.length) {
         throw new Error('世界书导入结果与来源不一致')
       }
-      active.set(expectedAttachment, { result: meta.result, meta, worldInfo })
+      active.set(expectedAttachment, {
+        result: meta.result,
+        meta,
+        worldInfo,
+        placement: 'experience',
+        purpose: 'selected',
+      })
       continue
     }
     if (event.type !== 'tool/result' || event.data.message.content[0].isError === true) continue
@@ -195,7 +233,8 @@ export function readWorldInfoLibrarySessionSeed(
 ): WorldInfoLibrarySeedRecord | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
-    if (event?.type === 'agent-rp/world-info-library-seed') return event.data
+    if (event?.type === 'agent-rp/world-info-library-seed'
+      && worldInfoLibrarySeedSemantics(event).purpose === 'scenario') return event.data
   }
   return undefined
 }

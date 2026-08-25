@@ -481,10 +481,11 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   let unsupportedMacros = worldMacros.unsupportedCount
   let templateRenders = 0
   let templateFailures = 0
-  const mvuUpdateInstructions = resolved.card === undefined || resolved.mvu === undefined
-    ? undefined : renderMvuUpdateInstructions(resolved.card, resolved.mvu.statData)
-  const choiceInstructions = resolved.card === undefined || resolved.mvu === undefined
-    ? undefined : renderChoiceInstructions(resolved.card)
+  const effectiveLorebooks = resolved.lorebooks.map(value => value.configured)
+  const mvuUpdateInstructions = resolved.mvu === undefined
+    ? undefined : renderMvuUpdateInstructions(effectiveLorebooks, resolved.mvu.statData)
+  const choiceInstructions = resolved.mvu === undefined
+    ? undefined : renderChoiceInstructions(effectiveLorebooks)
   const stateActionTarget: RoleplayStateActionPlan | undefined = resolved.turnMode !== 'agent'
     || resolved.mvu === undefined || mvuUpdateInstructions === undefined
     ? undefined

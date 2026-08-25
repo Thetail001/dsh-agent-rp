@@ -41,7 +41,7 @@ import {
   CharacterWorldBindingStore,
   type CharacterWorldBinding,
 } from './character-world-binding-store.ts'
-import { embeddedWorldInfoAsset } from './embedded-world-info.ts'
+import { characterCardWithWorldInfo, embeddedWorldInfoAsset } from './embedded-world-info.ts'
 import { WorldInfoLibrary } from './world-info-library.ts'
 
 const META_SUFFIX = '.meta.json'
@@ -936,7 +936,12 @@ export class CharacterLibrary {
   exportModified(id: string): CharacterLibraryExportAsset {
     const entry = this.readId(id)
     const parsed = this.parseStored(entry.meta, entry.data)
-    const json = new TextEncoder().encode(`${JSON.stringify(parsed.card.raw, null, 2)}\n`)
+    const binding = this.ensureWorldBinding(id, parsed.card)
+    const worldInfo = binding?.primary === null || binding === undefined
+      ? undefined
+      : this.worldInfos!.asset(binding.primary.worldInfoId).worldInfo
+    const raw = binding === undefined ? parsed.card.raw : characterCardWithWorldInfo(parsed.card, worldInfo)
+    const json = new TextEncoder().encode(`${JSON.stringify(raw, null, 2)}\n`)
     if (entry.meta.transport === 'json') {
       return {
         filename: editedFilename(entry.meta.originalFilename, 'json'),

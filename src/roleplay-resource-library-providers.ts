@@ -5,7 +5,7 @@ import type { CharacterLibrary } from './character-library.ts'
 import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
 import { readActiveSessionCharacter, type FileAttachmentRef } from './import/session-character.ts'
 import { createPresetSessionSeed } from './import/session-preset.ts'
-import { appendWorldInfoLibrarySessionSeed } from './import/world-info-seed.ts'
+import { appendCharacterWorldSessionSeed, appendWorldInfoLibrarySessionSeed } from './import/world-info-seed.ts'
 import type { PersonaLibrary } from './persona-library.ts'
 import type { PresetLibrary, PresetLibraryEntry } from './preset-library.ts'
 import { substituteCardMacros } from './prompt.ts'
@@ -136,17 +136,18 @@ export function roleplayLibraryResourceProviders(libraries: {
         resolved.source.originalFilename,
         resolved.source.mediaType,
       )
+      const characterEvents = createCharacterCardSessionSeed(
+        resolved.card,
+        source,
+        index,
+        substituteCardMacros(greeting, resolved.card, input.context.participantName).trim(),
+        resolved.transport,
+        input.context.participantName,
+        undefined,
+        id,
+      )
       return {
-        events: createCharacterCardSessionSeed(
-          resolved.card,
-          source,
-          index,
-          substituteCardMacros(greeting, resolved.card, input.context.participantName).trim(),
-          resolved.transport,
-          input.context.participantName,
-          undefined,
-          id,
-        ),
+        events: appendCharacterWorldSessionSeed(characterEvents, resolved.worldBinding, libraries.worldInfos),
         title: resolved.detail.displayName,
       }
     },
