@@ -3,6 +3,7 @@ import test from 'node:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
+  tavernScriptFailureReport,
   TavernScriptStatusList,
   type TavernScriptStatusEntry,
 } from '../src/client/tavern-script-status.tsx'
@@ -32,6 +33,8 @@ test('shows one failed background script beside every ready Tavern script', () =
   assert.match(markup, /后台变量脚本/u)
   assert.match(markup, /角色 · 加载失败/u)
   assert.match(markup, /缺少已声明的模块入口/u)
+  assert.match(markup, /data-agent-rp-tavern-copy-failures/u)
+  assert.match(markup, /内容包含脚本名和本地错误，不会自动上传/u)
 })
 
 test('bounds local errors without adding them to compatibility diagnostics', () => {
@@ -43,4 +46,47 @@ test('bounds local errors without adding them to compatibility diagnostics', () 
   assert.match(markup, /x{2000}…/u)
   assert.doesNotMatch(markup, /x{2001}/u)
   assert.doesNotMatch(markup, /data-agent-rp-tavern-phase=/u)
+})
+
+test('copies only failed script details through an explicitly local report', () => {
+  const report = tavernScriptFailureReport([
+    { key: 'ready', name: '正常脚本', scope: 'preset', phase: 'ready' },
+    { key: 'load', name: '模块加载器', scope: 'character', phase: 'load-error', error: '缺少入口' },
+    { key: 'runtime', name: '', scope: 'global', phase: 'runtime-error' },
+  ])
+
+  assert.equal(report, [
+    'Agent RP 酒馆脚本失败详情',
+    '格式: agent-rp-tavern-failures-v0',
+    '失败数: 2',
+    '',
+    '[1] 模块加载器',
+    '范围: 角色',
+    '阶段: 加载失败',
+    '错误:',
+    '缺少入口',
+    '',
+    '[2] 未命名脚本',
+    '范围: 全局',
+    '阶段: 运行失败',
+    '错误:',
+    '未提供本地错误',
+  ].join('\n'))
+  assert.doesNotMatch(report ?? '', /正常脚本/u)
+  assert.equal(tavernScriptFailureReport([{ key: 'ready', name: '正常', scope: 'preset', phase: 'ready' }]), undefined)
+})
+
+test('bounds individual errors and the complete local failure report', () => {
+  const report = tavernScriptFailureReport(Array.from({ length: 40 }, (_, index) => ({
+    key: `failed-${index}`,
+    name: `失败脚本 ${index}`,
+    scope: 'preset' as const,
+    phase: 'runtime-error' as const,
+    error: 'x'.repeat(2_100),
+  })))
+
+  assert.ok(report !== undefined)
+  assert.ok(report.length <= 64 * 1024)
+  assert.match(report, /x{2000}…/u)
+  assert.match(report, /…内容已截断$/u)
 })
