@@ -130,6 +130,7 @@ test('claims character-card images for every Agent joined to the preset, includi
   } as never)
   root.provide('commands' as never, { register: () => () => {} } as never)
   root.provide('attachments' as never, {} as never)
+  root.provide('credentials' as never, {} as never)
   const characterLibraryRoot = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-runtime-library-'))
   context.after(() => { rmSync(characterLibraryRoot, { recursive: true, force: true }) })
   installAgentRp(preset.ctx, resolveConfig({ mode: 'character' }), { characterLibraryRoot })
@@ -253,6 +254,7 @@ test('mounts commands when public DSH omits prompt extension gateways', async (c
     },
   } as never)
   root.provide('attachments' as never, {} as never)
+  root.provide('credentials' as never, {} as never)
   const characterLibraryRoot = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-public-gateway-'))
   context.after(() => { rmSync(characterLibraryRoot, { recursive: true, force: true }) })
 

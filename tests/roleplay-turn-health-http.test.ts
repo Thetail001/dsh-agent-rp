@@ -12,6 +12,7 @@ import {
   parseAgentRpTurnHealthDiagnostic,
 } from '../src/roleplay-turn-health-protocol.ts'
 import { installRoleplayTurnHealthHttp } from '../src/roleplay-turn-health-http.ts'
+import { agentRpPresetGateway } from './agent-preset-fixture.ts'
 
 type RegisteredRoute = Parameters<AgentRpHttpServer['register']>[0]
 
@@ -28,7 +29,9 @@ function routeFor(agent?: Agent): RegisteredRoute {
   const routeCtx = { effect(register: () => unknown) { register() } } as unknown as Context
   const hostCtx = {
     get(name: string) {
-      return name === 'agents' ? { get: (id: SessionId) => id === agent?.session.id ? agent : undefined } : undefined
+      if (name === 'agents') return { get: (id: SessionId) => id === agent?.session.id ? agent : undefined }
+      if (name === 'agentPresets') return agentRpPresetGateway(agent === undefined ? {} : { active: agent })
+      return undefined
     },
   } as unknown as Context
   const server: AgentRpHttpServer = { register(next) { route = next; return () => {} } }

@@ -12,6 +12,7 @@ import {
   parseAgentRpCommandRequest,
 } from '../src/agent-rp-command-protocol.ts'
 import type { AgentRpHttpServer } from '../src/host-http.ts'
+import { agentRpPresetGateway } from './agent-preset-fixture.ts'
 
 type RegisteredRoute = Parameters<AgentRpHttpServer['register']>[0]
 
@@ -134,6 +135,7 @@ test('routes published rc.2 commands through the four-argument executor and pres
   }
   const route = routeFor({
     agents: { get: (id: SessionId) => id === agent.session.id ? agent : undefined },
+    agentPresets: agentRpPresetGateway({ active: agent }),
     commands,
   })
   const result = await invoke(route, { body: request(String(agent.session.id), '/rp-state {"format":0}') })
@@ -180,10 +182,7 @@ test('resumes a cold Agent RP Session and supports the newer three-argument exec
         return { meta: agent.session.header }
       },
     },
-    agentPresets: {
-      async resolve(id: string) { assert.equal(id, 'agent-rp'); return { id } },
-      async mount(_ctx: Context, id: string) { assert.equal(id, 'agent-rp'); mounted += 1 },
-    },
+    agentPresets: agentRpPresetGateway({ active: agent, onMount: () => { mounted += 1 } }),
   })
   const result = await invoke(route, { body: request(String(agent.session.id), '/rp-tavern-trigger') })
   assert.deepEqual(result.json, { format: 0, matched: true, commandId: 'agent-rp-http-current' })
@@ -198,6 +197,7 @@ test('rejects non-roleplay Sessions and non-Agent-RP commands without invoking t
   let executions = 0
   const route = routeFor({
     agents: { get: () => agent },
+    agentPresets: agentRpPresetGateway(),
     commands: { async execute() { executions += 1; return undefined } },
   })
   const wrongSession = await invoke(route, { body: request(String(sessionId), '/rp-state {}') })
