@@ -6,6 +6,7 @@ import {
   BlockAssembler,
   createUserMessage,
   ReasoningEffortId,
+  type ContentBlock,
   type GenerateOptions,
 } from '@deepseek-ai/dsh-llm'
 import { foldSurface, type SessionEvent } from '@deepseek-ai/dsh-session'
@@ -114,33 +115,62 @@ function parseStateSettlementResponse(text: unknown): readonly MvuStateOperation
   return parseRoleplayStateOperations((value as { operations?: unknown }).operations, { allowEmpty: true })
 }
 
-function turnText(
+const MAX_SETTLEMENT_TEXT_LENGTH = 128 * 1024
+
+function boundedSettlementText(text: string): string {
+  return text.length <= MAX_SETTLEMENT_TEXT_LENGTH
+    ? text
+    : text.slice(text.length - MAX_SETTLEMENT_TEXT_LENGTH)
+}
+
+function textContent(content: readonly ContentBlock[]): string {
+  return content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+}
+
+function playerInputText(
+  events: readonly SessionEvent[],
+  planEvent: SessionEvent<'agent-rp/turn-plan'>,
+): string {
+  const input = planEvent.data.reference.input
+  if (new Set(input.pendingMessageIds).size !== input.pendingMessageIds.length) {
+    throw new Error('Roleplay staged settlement plan contains duplicate pending message ids')
+  }
+  const candidates = events.slice(input.sessionSeq, planEvent.seq).flatMap(event =>
+    event.type === 'user/message' ? [event] : [])
+  const text = input.pendingMessageIds.map((id) => {
+    const matches = candidates.filter(event => String(event.data.id) === id)
+    if (matches.length !== 1) {
+      throw new Error(`Roleplay staged settlement player input ${JSON.stringify(id)} is unavailable or ambiguous`)
+    }
+    return textContent(matches[0]!.data.content)
+  }).join('\n\n')
+  return boundedSettlementText(text)
+}
+
+function visibleReplyText(
   events: readonly SessionEvent[],
   turn: number,
-  role: 'user/message' | 'assistant/message',
+  step: number,
+  planEventSeq: number,
   throughEventSeq: number,
 ): string {
   const prefix = events.slice(0, throughEventSeq + 1)
-  const turnStartSeq = prefix.findLast(event => event.type === 'turn/start'
-    && event.data.turn === turn)?.seq ?? -1
-  const text = foldSurface(prefix).nodes.flatMap((seq) => {
+  for (const seq of [...foldSurface(prefix).nodes].reverse()) {
     const event = prefix[seq]
-    if (event === undefined || event.seq <= turnStartSeq || event.type !== role) return []
-    if (role === 'assistant/message') {
-      const assistant = event as SessionEvent<'assistant/message'>
-      if (assistant.data.turn !== turn) return []
-      return assistant.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : [])
-    }
-    const user = event as SessionEvent<'user/message'>
-    return user.data.content.flatMap(block => block.type === 'text' ? [block.text] : [])
-  }).join('\n\n')
-  return text.length <= 128 * 1024 ? text : text.slice(text.length - 128 * 1024)
+    if (event?.type !== 'assistant/message' || event.seq <= planEventSeq
+      || event.data.turn !== turn || event.data.step !== step) continue
+    const text = textContent(event.data.message.content)
+    if (text.trim() !== '') return boundedSettlementText(text)
+  }
+  return ''
 }
 
 function settlementRequest(
   agent: Agent,
   turn: number,
-  visibleThroughEventSeq: number,
+  step: number,
+  planEvent: SessionEvent<'agent-rp/turn-plan'>,
+  surfaceThroughEventSeq: number,
   target: RoleplayStateActionPlan,
   current: unknown,
   signal: AbortSignal,
@@ -164,18 +194,18 @@ function settlementRequest(
       content: [{
         type: 'text',
         text: [
+          '<imported_state_rules>',
+          target.instructions ?? '只更新剧情中明确发生变化的状态。',
+          '</imported_state_rules>',
           '<current_state>',
           JSON.stringify(current),
           '</current_state>',
           '<player_input>',
-          turnText(agent.session.events, turn, 'user/message', visibleThroughEventSeq),
+          playerInputText(agent.session.events, planEvent),
           '</player_input>',
           '<roleplay_reply>',
-          turnText(agent.session.events, turn, 'assistant/message', visibleThroughEventSeq),
+          visibleReplyText(agent.session.events, turn, step, planEvent.seq, surfaceThroughEventSeq),
           '</roleplay_reply>',
-          '<imported_state_rules>',
-          target.instructions ?? '只更新剧情中明确发生变化的状态。',
-          '</imported_state_rules>',
         ].join('\n'),
       }],
     })],
@@ -238,6 +268,8 @@ export async function runRoleplayStagedStateSettlement(input: {
   const request = settlementRequest(
     input.agent,
     input.turn,
+    input.plan.step,
+    planEvent,
     input.agent.session.seq - 1,
     target,
     state.value,

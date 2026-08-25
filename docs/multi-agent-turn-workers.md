@@ -16,4 +16,4 @@ Worker 注册表按 `review`、`settle` 阶段和稳定顺序串行执行。单�
 
 每次 Worker 运行都写入内容无关的 `agent-rp/turn-worker-result`。发给模型的完整审阅请求和终止结果分别写入 `agent-rp/narrative-review-request` 与 `agent-rp/narrative-review-result`；状态结算继续使用 `agent-rp/staged-state-request` 与 `agent-rp/staged-state-result`。这些记录都通过 Host 的 ignorable 插件事件接口进入 Session，能够随会话导出、分支和重放。
 
-正文替换发生在角色 Agent step 关闭之后，因此它属于回合 Worker 的 surface 投影，不计入角色 Agent 的 action receipt。状态结算从同一 Session 前缀折叠 canonical surface，只读取当前可见版本，不会把原文与审阅版重复拼入状态请求。
+正文替换发生在角色 Agent step 关闭之后，因此它属于回合 Worker 的 surface 投影，不计入角色 Agent 的 action receipt。状态结算按当前 plan 记录的 pending message id 读取玩家输入，并从同一 Session 前缀的 canonical surface 读取当前 step 最终可见的角色正文；开场白、插件运行时上下文、其他 step 的回复和已被替换的原文不会进入结算请求。

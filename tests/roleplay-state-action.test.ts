@@ -377,23 +377,53 @@ test('applies one semantic action after turn end and keeps its narrative message
 
 test('settles MVU after the visible reply through a replayable local-provider stage', async () => {
   const { card, session } = cardSession('staged-state-success', 'agent')
-  const { plan, reference, record } = beginTurn(session)
+  session.append('turn/start', { turn: 1 })
+  const openingResolved = resolveSessionRoleplayRuntime({ session, deployment })
+  const openingPlan = prepareRoleplayTurn({ session, deployment, resolved: openingResolved })
+  session.append('step/start', { turn: 1, step: 1 })
+  appendSessionRoleplayTurnPlan(session, 1, 1, openingPlan)
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' },
+      content: [{ type: 'text', text: '门还没锁。这是同一回合中已经结束的角色开场白。' }],
+    }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  session.append('step/end', { turn: 1, step: 1 })
+  const pending = createUserMessage({
+    source: { kind: 'user' },
+    content: [{ type: 'text', text: '今晚的修行让我进步了。' }],
+  })
+  const resolved = resolveSessionRoleplayRuntime({ session, deployment })
+  const plan = prepareRoleplayTurn({ session, pendingMessages: [pending], deployment, resolved })
+  session.append('step/start', { turn: 1, step: 2 })
+  session.append('user/message', pending, { surfaceOp: 'append' })
+  session.append('user/message', createUserMessage({
+    source: { kind: 'plugin', plugin: 'fixture-runtime-context' },
+    content: [{
+      type: 'text',
+      text: 'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
+    }],
+  }), { surfaceOp: 'append' })
+  const record = appendSessionRoleplayTurnPlan(session, 1, 2, plan)
+  const reference = record.data.reference
   session.append('request/header', {
     reason: 'initial',
     header: { config: { provider: 'fixture', model: 'fixture', maxTokens: 8192 } },
   })
   const narrative = session.append('assistant/message', {
     turn: 1,
-    step: 1,
+    step: 2,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [{ type: 'text', text: '白露合上修行笔记，确认自己已经跨过两级门槛。' }],
     }),
   }, { surfaceOp: 'append', sourceEventSeqs: [] })
-  session.append('step/end', { turn: 1, step: 1 })
+  session.append('step/end', { turn: 1, step: 2 })
   const reviewedNarrative = session.append('assistant/message', {
     turn: 1,
-    step: 1,
+    step: 2,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture-review' },
       content: [{ type: 'text', text: '白露合上修行笔记，确认自己已经稳稳跨过两级门槛。' }],
@@ -430,22 +460,41 @@ test('settles MVU after the visible reply through a replayable local-provider st
     ctx: fake,
     agent,
     turn: 1,
-    plan: { step: 1, plan },
+    plan: { step: 2, plan },
     signal: new AbortController().signal,
   })
   await runRoleplayStagedStateSettlement({
     ctx: fake,
     agent,
     turn: 1,
-    plan: { step: 1, plan },
+    plan: { step: 2, plan },
     signal: new AbortController().signal,
   })
   assert.equal(requestCount, 1)
   assert.match(requestSystem, /只返回一个 JSON 对象/u)
   assert.match(requestText, /稳稳跨过两级门槛/u)
   assert.doesNotMatch(requestText, /确认自己已经跨过两级门槛/u)
+  assert.doesNotMatch(requestText, /同一回合中已经结束的角色开场白/u)
+  assert.doesNotMatch(requestText, /Current runtime context/u)
   assert.match(requestText, /变量更新规则/u)
-  assert.equal(session.events.filter(event => event.type === 'assistant/message').length, 2)
+  assert.equal(session.events.filter(event => event.type === 'assistant/message').length, 3)
+  const requestEvent = session.events.find(event => event.type === 'agent-rp/staged-state-request')
+  assert.equal(requestEvent?.type, 'agent-rp/staged-state-request')
+  if (requestEvent?.type !== 'agent-rp/staged-state-request') assert.fail('staged request was not recorded')
+  assert.equal(JSON.stringify(requestEvent.data.dispatch.messages), requestText)
+  assert.equal(requestEvent.data.dispatch.system, requestSystem)
+  const requestBlock = requestEvent.data.dispatch.messages[0]?.content[0]
+  assert.equal(requestBlock?.type, 'text')
+  if (requestBlock?.type !== 'text') assert.fail('staged request text was not recorded')
+  const requestBody = requestBlock.text
+  assert.equal(/<player_input>\n([\s\S]*?)\n<\/player_input>/u.exec(requestBody)?.[1], '今晚的修行让我进步了。')
+  assert.equal(
+    /<roleplay_reply>\n([\s\S]*?)\n<\/roleplay_reply>/u.exec(requestBody)?.[1],
+    '白露合上修行笔记，确认自己已经稳稳跨过两级门槛。',
+  )
+  assert.ok(requestBody.indexOf('<imported_state_rules>') < requestBody.indexOf('<current_state>'))
+  assert.ok(requestBody.indexOf('<current_state>') < requestBody.indexOf('<player_input>'))
+  assert.ok(requestBody.indexOf('<player_input>') < requestBody.indexOf('<roleplay_reply>'))
   const staged = collectRoleplayStagedStateSettlement({
     events: session.events,
     sessionId: String(session.id),
