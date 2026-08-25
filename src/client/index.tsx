@@ -90,6 +90,7 @@ import {
   type TavernScriptSnapshot,
 } from './tavern-runtime.ts'
 import { TavernScriptStatusList } from './tavern-script-status.tsx'
+import { worldInfoFailureReport } from './world-info-failure-report.ts'
 import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
 import type { WorldInfoConfigurationRequest, WorldInfoEditableEntry } from '../world-info-configuration-types.ts'
 import { exportSillyTavernPresetJson } from '../preset-export.ts'
@@ -4946,6 +4947,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
   const [saving, setSaving] = useState(false)
   const [importing, setImporting] = useState(false)
   const [error, setError] = useState<string>()
+  const [copyFailureNotice, setCopyFailureNotice] = useState<string>()
   const [budgetDraft, setBudgetDraft] = useState(worldInfo.tokenBudget === undefined ? '' : String(worldInfo.tokenBudget))
   useEffect(() => { setBudgetDraft(worldInfo.tokenBudget === undefined ? '' : String(worldInfo.tokenBudget)) }, [worldInfo.tokenBudget])
   useEffect(() => {
@@ -4965,6 +4967,8 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
   const enabledCount = allEntries.filter(candidate => candidate.enabled && !candidate.deleted).length
   const blockedCount = allEntries.filter(candidate => !candidate.deleted
     && (candidate.compatibilityBlockers.length > 0 || candidate.hasDecorators)).length
+  const failureReport = worldInfoFailureReport(worldInfo.books)
+  useEffect(() => { setCopyFailureNotice(undefined) }, [failureReport])
   const mutate = (request: WorldInfoConfigurationRequest, after?: () => void): void => {
     setSaving(true)
     setError(undefined)
@@ -5013,6 +5017,20 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
         <button type="button" disabled={importing} onClick={() => { importInputRef.current?.click() }} style={{ ...generationButtonStyle, marginLeft: 'auto' }}>
           {importing ? '导入中…' : '导入世界书'}
         </button>
+        {failureReport !== undefined && <button type="button" data-agent-rp-world-info-copy-failures
+          title="复制包含世界书名、条目标识和稳定失败类别的详情；发送前请检查内容"
+          onClick={() => {
+            if (navigator.clipboard === undefined) {
+              setCopyFailureNotice('无法复制')
+              return
+            }
+            setCopyFailureNotice('正在复制…')
+            void navigator.clipboard.writeText(failureReport).then(() => {
+              setCopyFailureNotice('失败详情已复制')
+            }, () => {
+              setCopyFailureNotice('复制失败')
+            })
+          }} style={generationButtonStyle}>{copyFailureNotice ?? '复制失败详情'}</button>}
         {hasOverrides && <button type="button" disabled={saving} onClick={() => {
           mutate({ operation: 'reset-all', revision: worldInfo.revision }, () => { setEditing(false) })
         }} style={generationButtonStyle}>全部恢复原始设置</button>}

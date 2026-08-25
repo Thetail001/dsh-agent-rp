@@ -1,0 +1,17 @@
+{
+  "name": "EJS 失败取证验收",
+  "entries": {
+    "1": {
+      "uid": 1,
+      "key": [],
+      "keysecondary": [],
+      "comment": "故意的语法错误",
+      "content": "<% if ( %>这段正文不应进入模型提示<% } %>",
+      "constant": true,
+      "selective": false,
+      "order": 100,
+      "position": 0,
+      "disable": false
+    }
+  }
+}

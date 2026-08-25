@@ -56,7 +56,7 @@ body:
     id: evidence
     attributes:
       label: 本地错误或诊断
-      description: Tavern Helper 失败请在“脚本 x/y”中使用“复制失败详情”；其他问题请贴界面错误文字或经过检查的匿名诊断。截图可以直接拖到这里。
+      description: Tavern Helper 失败请在“脚本 x/y”中使用“复制失败详情”；世界书失败请在世界书管理器使用同名按钮；其他问题请贴界面错误文字或经过检查的匿名诊断。截图可以直接拖到这里。
       render: text
 
   - type: input

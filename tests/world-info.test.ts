@@ -65,6 +65,24 @@ test('keeps the manual standalone World Info fixture importable', () => {
   assert.deepEqual((worldInfo.raw as { extensions: object }).extensions, { 'fixture/book': true })
 })
 
+test('keeps the manual EJS failure fixture available for local browser diagnostics', async () => {
+  const worldInfo = parseWorldInfoJsonBytes(readFileSync('tests/fixtures/manual-world-info-ejs-failure.json'))
+  const templateEngine = await EjsTemplateEngine.create()
+  const result = createNativeWorldEngine({
+    renderTemplate: template => templateEngine.render(template, {
+      characterName: '验收角色', userName: '验收玩家', messages: [],
+    }),
+  }).evaluate({
+    format: 0,
+    books: [{ id: 'manual-ejs-failure', lorebook: worldInfo.lorebook }],
+    messages: [],
+  })
+
+  assert.deepEqual(result.beforeCharacter, [])
+  assert.equal(result.books[0]?.inspected.entries[0]?.reason, 'template-error')
+  assert.equal(result.books[0]?.inspected.entries[0]?.template, 'syntax-error')
+})
+
 test('preserves but does not execute advanced World Info behavior', () => {
   const book = parseWorldInfoJson(world({
     regex: {
