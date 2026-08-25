@@ -18,7 +18,9 @@ Character Card、Chat Completion 预设、World Info、MVU、EJS 和 Tavern Help
 
 ## 安装
 
-需要 Node.js 22.19+ 或 24+，以及 pnpm 11。没有 pnpm 时可以先运行 `npm install --global pnpm@11`。Windows 安装器会准备经过验证的 Agent Host、安装或更新 Agent RP，并保留 `~\.dsh` 中已有的角色与会话；它不会静默安装全局工具：
+需要 Node.js 22.19+ 或 24+，以及 pnpm 11。没有 pnpm 时可以先运行 `npm install --global pnpm@11`。安装器会准备经过验证的 Agent Host、安装或更新 Agent RP，并保留 `~/.dsh` 中已有的角色与会话；它不会静默安装全局工具。
+
+### Windows
 
 ```powershell
 $installerPath = Join-Path $env:TEMP 'install-dsh-agent-rp.ps1'
@@ -38,6 +40,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $installerPath -Start
 
 国内 npm registry 较慢时，可在安装器最后一行加 `-ChinaMirror`。这个选项只改变本次安装使用的 npm registry；下载 runner 文件或 Agent RP 源码时访问的是 GitHub，切换 npm 镜像不会修复这一段。
 
+### Linux
+
+普通 Linux 桌面或服务器使用独立安装器。请以以后实际运行 DSH 的非特权用户执行；默认会在 `~/.dsh/bin/dsh-agent-rp` 创建稳定入口：
+
+```bash
+installer_path="$(mktemp)"
+curl -fsSL https://raw.githubusercontent.com/hewzhew/dsh-agent-rp/main/scripts/install-linux.sh -o "$installer_path"
+bash "$installer_path" --start
+```
+
+Debian/Ubuntu 若缺少原生构建工具，可先安装 `build-essential` 与 `python3`。使用自定义 `DSH_HOME` 时必须传入绝对路径；启动器会从自身位置恢复同一个数据目录，不会退回另一个 `~/.dsh`。更新时以同一用户重新运行安装器。
+
+无桌面服务器、systemd、Cloudflare Tunnel 和反向代理部署见 [Linux 服务器部署](docs/linux-server.md)。`--trusted-host` 只允许指定 Host authority 通过 DSH 的可达性围栏，不提供账号、登录或访问控制；对公网暴露时必须另配认证层。
+
 贡献者需要修改源码时，才应克隆仓库并在仓库根目录运行 `pnpm install`、`pnpm run build`，再让 Agent Host 的 `dsh plugin --profile web add .` 指向本地目录。
 
 早期安装器写入的版本不会自动迁移。若启动错误中出现 `.dsh\plugins\dsh-agent-rp`，请先把该目录移出 `plugins` 目录作备份，确认 DSH 能启动后，再按上面的 profile 命令安装。不要删除整个 `.dsh`，会话数据与旧插件目录不是一回事。
@@ -46,18 +62,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $installerPath -Start
 
 ### Android / Termux 预览
 
-ARM64、Android 11 及以上设备可以在 Termux 本机运行，不需要让电脑保持开机。安装器会准备 DSH 的安卓原生依赖、图片解码后备模块、Agent RP 插件与启动命令；首次安装需要编译原生模块，会比普通插件更新慢。
+Termux 路线面向 ARM64、Android 11 及以上设备，目标是在手机本机运行、不让电脑保持开机。旧预览已经验证过安卓原生依赖、图片解码后备模块和本地启动，但当前安装入口正在迁移。
 
-手机安装器默认使用已经验证的 DSH `0.1.0-rc.6`，不会在上游发布新版本时未经验证地自动换底座。
+手机安装器仍固定在旧的 DSH `0.1.0-rc.6`，尚未迁移到当前 Agent Host runner，因此不适用于当前 `main` 的完整 Agent/MVU 回合。现有安装不要为了追随桌面版本而手工覆盖 DSH 包；新的 Termux 安装与更新暂缓，等安卓原生模块和 patched runner 一起完成实机验收后再恢复下面的正式命令。
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/hewzhew/dsh-agent-rp/main/scripts/install-termux.sh | bash
-dsh-agent-rp --port 3080
-```
+旧安装仍可运行原来已经落盘的版本，但不要重新执行旧安装器更新到当前 `main`。
 
 若启动或导入角色卡时遇到问题，运行 `dsh-agent-rp-doctor` 即可得到一份可直接贴到 Issue 的脱敏体检结果。它只检查版本、模块和 Android 文件系统能力，不读取令牌、角色卡或会话内容。
 
-随后在同一部手机的浏览器打开 `http://127.0.0.1:3080`。重新运行安装命令即可更新；角色卡和会话位于 `~/.dsh`，安装器不会删除它们。当前路线只承诺角色聊天所需能力，不把老设备上的 bash 沙箱或编码 Agent 计入手机预览范围。
+运行旧安装后仍可在同一部手机的浏览器打开 `http://127.0.0.1:3080`。角色卡和会话位于 `~/.dsh`；不要删除这个目录。当前路线不把老设备上的 bash 沙箱或编码 Agent 计入手机预览范围。
 
 需要长时间把页面留在后台时，可以先在 Termux 运行 `termux-wake-lock`，结束后运行 `termux-wake-unlock`，避免系统过早挂起本地服务；这不会绕过 Android 的电池优化设置。
 
