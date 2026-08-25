@@ -10,6 +10,8 @@ Agent RP 为受信 DSH 插件分别发布 Host 与浏览器扩展面。扩展插
 
 跨面接口需要分别验证 Host 与浏览器装配：Host 单元测试只能证明服务存在于 Host Context，浏览器测试还必须证明独立 ClientContext 能加载消费插件并完成真实注册。缺失浏览器服务时应在插件激活阶段明确失败，不能把 `ctx.get()` 的 `undefined` 当作“本轮没有贡献”静默跳过。
 
+已安装的 SillyTavern 第三方扩展与角色卡或预设携带的 Tavern Helper 脚本具有不同生命周期。前者的单例宿主、设置身份和验收条件见 [SillyTavern 扩展宿主](st-extension-host.md)；不能把同一扩展 bundle 拼入每个逐脚本 iframe。
+
 ## 浏览器工作台扩展
 
 `@dsh-external/dsh-agent-rp/client-extension/v0` 声明 `agent-rp.workbench.section` 列表 Slot。它位于侧栏的 Agent RP 工作台，现代 `sidebar.destinations` 与旧版 `sidebar.footer.action` 入口共用同一个声明。外部插件必须通过 `ctx.slots.inject()` 等待 Agent RP 声明 Slot，不能依赖客户端 bundle 的下载或执行顺序。
