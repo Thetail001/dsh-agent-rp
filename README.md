@@ -20,6 +20,18 @@ Character Card、Chat Completion 预设、World Info、MVU、EJS 和 Tavern Help
 
 需要 Node.js 22.19+ 或 24+，以及 pnpm 11。没有 pnpm 时可以先运行 `npm install --global pnpm@11`。安装器会准备经过验证的 Agent Host、安装或更新 Agent RP，并保留 `~/.dsh` 中已有的角色与会话；它不会静默安装全局工具。
 
+### DSH Desktop
+
+DSH Desktop 使用自己封装的 Node、pnpm、DSH Host、数据目录和当前激活的 profile，不会复用下面的 Windows Agent Host。当前正式版 DSH Desktop `2.0.2` 及其仓库中的 `2.0.3` 开发版本均固定在未包含安全插件事件写入能力的官方 DSH `0.1.1-rc.2`；把 Agent RP 安装进 Desktop profile 只能按纯对话兼容路径看待，不能完整保存 Agent/MVU 回合。
+
+若只需协助验证纯对话兼容，可以从 Desktop 托盘打开它自带的 DSH Terminal，在当前激活的 profile 中安装插件后重启 Desktop：
+
+```powershell
+dsh plugin add github:hewzhew/dsh-agent-rp#main
+```
+
+这条路径尚未列为完整支持入口。不要运行下面的 Windows 安装器来“覆盖” Desktop；它会创建一个独立 Agent Host，而不会修改 Desktop 安装包内部的运行时。完整支持需要 Desktop Host 提供与 Agent Host 等价的安全插件事件接口，或允许 Desktop 连接到经过验证的外部 Host。
+
 ### Windows
 
 ```powershell
