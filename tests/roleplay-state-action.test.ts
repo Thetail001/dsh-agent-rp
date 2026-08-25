@@ -251,6 +251,9 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
   const sameStep = await root.systemPrompt.assemble({ scope: nativeAgent })
   assert.equal(sameStep.tools.some(tool => tool.name === ROLEPLAY_STATE_ACTION_TOOL), false)
   assert.equal(sameStep.tools.some(tool => tool.name === 'bash'), false)
+  const stateContext = sameStep.contexts.find(value => value.name === 'agent-rp:state')?.text ?? ''
+  assert.match(stateContext, /本轮只读状态/u)
+  assert.match(stateContext, /"state:mvu":\{"角色":\{"等级":1,"称号":"学徒"\}\}/u)
 
   const rawInput = JSON.stringify({ mode: 'conversation', format: 0 })
   const commandId = CommandId('turn-mode-user-selection')
@@ -272,6 +275,7 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
   })
   const dialogueStep = await root.systemPrompt.assemble({ scope: nativeAgent })
   assert.equal(dialogueStep.tools.some(tool => tool.name === ROLEPLAY_STATE_ACTION_TOOL), false)
+  assert.equal(dialogueStep.contexts.find(value => value.name === 'agent-rp:state')?.text, '')
 
   const resumedSession = Session.create(SessionId('state-action-resumed-default'))
   const resumedAgent = { id: resumedSession.id, session: resumedSession } as Agent
@@ -432,8 +436,9 @@ test('settles MVU after the visible reply through a replayable local-provider st
     surfaceOp: { op: 'replace', start: narrative.seq, end: narrative.seq },
     sourceEventSeqs: [narrative.seq],
   })
-  let requestText = ''
-  let requestSystem = ''
+  const requestTexts: string[] = []
+  const requestSystems: string[] = []
+  const requestReasoning: (string | undefined)[] = []
   let requestCount = 0
   const fake = {
     sessions: { flush: async () => true },
@@ -441,12 +446,15 @@ test('settles MVU after the visible reply through a replayable local-provider st
       stream(options: {
         readonly messages: readonly { readonly content: readonly unknown[] }[]
         readonly system?: string
+        readonly reasoningEffort?: string
       }) {
         requestCount += 1
-        requestText = JSON.stringify(options.messages)
-        requestSystem = options.system ?? ''
+        requestTexts.push(JSON.stringify(options.messages))
+        requestSystems.push(options.system ?? '')
+        requestReasoning.push(options.reasoningEffort)
         return (async function* () {
-          const text = '{"operations":[{"op":"delta","path":"/角色/等级","value":2}]}'
+          const delta = requestCount === 1 ? 1 : 2
+          const text = `{"operations":[{"operation":"delta","path":"/角色/等级","value":${String(delta)}}]}`
           yield { type: 'block-start', index: 0, blockType: 'text' }
           yield { type: 'text-delta', index: 0, text }
           yield { type: 'block-end', index: 0, block: { type: 'text', text } }
@@ -470,15 +478,28 @@ test('settles MVU after the visible reply through a replayable local-provider st
     plan: { step: 2, plan },
     signal: new AbortController().signal,
   })
-  assert.equal(requestCount, 1)
+  assert.equal(requestCount, 2)
+  const requestText = requestTexts[0] ?? ''
+  const requestSystem = requestSystems[0] ?? ''
+  const verificationText = requestTexts[1] ?? ''
+  const verificationSystem = requestSystems[1] ?? ''
   assert.match(requestSystem, /只返回一个 JSON 对象/u)
+  assert.match(requestSystem, /回合、计数器、阶段和关联实体/u)
+  assert.match(requestSystem, /字段名 op（不要写 operation）/u)
+  assert.match(requestSystem, /从 <current_state> JSON 根开始的完整绝对 JSON Pointer/u)
   assert.match(requestText, /稳稳跨过两级门槛/u)
   assert.doesNotMatch(requestText, /确认自己已经跨过两级门槛/u)
   assert.doesNotMatch(requestText, /同一回合中已经结束的角色开场白/u)
   assert.doesNotMatch(requestText, /Current runtime context/u)
   assert.match(requestText, /变量更新规则/u)
+  assert.match(verificationSystem, /独立状态核验器/u)
+  assert.match(verificationSystem, /从 current_state 直接到核验后状态/u)
+  assert.match(verificationText, /<proposal_operations>/u)
+  assert.match(verificationText, /<candidate_state>/u)
+  assert.deepEqual(requestReasoning, ['off', 'low'])
   assert.equal(session.events.filter(event => event.type === 'assistant/message').length, 3)
-  const requestEvent = session.events.find(event => event.type === 'agent-rp/staged-state-request')
+  const requestEvent = session.events.find(event => event.type === 'agent-rp/staged-state-request'
+    && event.data.stage === 'proposal')
   assert.equal(requestEvent?.type, 'agent-rp/staged-state-request')
   if (requestEvent?.type !== 'agent-rp/staged-state-request') assert.fail('staged request was not recorded')
   assert.equal(JSON.stringify(requestEvent.data.dispatch.messages), requestText)
@@ -495,6 +516,38 @@ test('settles MVU after the visible reply through a replayable local-provider st
   assert.ok(requestBody.indexOf('<imported_state_rules>') < requestBody.indexOf('<current_state>'))
   assert.ok(requestBody.indexOf('<current_state>') < requestBody.indexOf('<player_input>'))
   assert.ok(requestBody.indexOf('<player_input>') < requestBody.indexOf('<roleplay_reply>'))
+  const proposalResult = session.events.find(event => event.type === 'agent-rp/staged-state-result'
+    && event.data.requestSeq === requestEvent.seq)
+  const verificationRequest = session.events.find(event => event.type === 'agent-rp/staged-state-request'
+    && event.data.stage === 'verification')
+  assert.equal(proposalResult?.type, 'agent-rp/staged-state-result')
+  assert.equal(verificationRequest?.type, 'agent-rp/staged-state-request')
+  if (proposalResult?.type !== 'agent-rp/staged-state-result'
+    || verificationRequest?.type !== 'agent-rp/staged-state-request') {
+    assert.fail('staged verification chain was not recorded')
+  }
+  assert.equal(proposalResult.data.result.kind, 'success')
+  if (proposalResult.data.result.kind !== 'success') assert.fail('staged proposal unexpectedly failed')
+  assert.deepEqual(proposalResult.data.result.operations, [{ op: 'delta', path: '/角色/等级', value: 1 }])
+  assert.throws(() => collectRoleplayStagedStateSettlement({
+    events: session.events.slice(0, proposalResult.seq + 1),
+    sessionId: String(session.id),
+    turn: 1,
+    plans: [reference],
+  }), /no independent verification/u)
+  const legacyRequest = {
+    ...requestEvent,
+    data: { ...requestEvent.data, stage: undefined },
+  } as SessionEvent<'agent-rp/staged-state-request'>
+  const legacyEvents = session.events.slice(0, proposalResult.seq + 1).map(event =>
+    event.seq === legacyRequest.seq ? legacyRequest : event)
+  assert.deepEqual(collectRoleplayStagedStateSettlement({
+    events: legacyEvents,
+    sessionId: String(session.id),
+    turn: 1,
+    plans: [reference],
+  })?.operations, [{ op: 'delta', path: '/角色/等级', value: 1 }])
+  assert.equal(verificationRequest.data.proposalResultSeq, proposalResult.seq)
   const staged = collectRoleplayStagedStateSettlement({
     events: session.events,
     sessionId: String(session.id),
@@ -502,7 +555,36 @@ test('settles MVU after the visible reply through a replayable local-provider st
     plans: [reference],
   })
   assert.equal(staged?.outcome, 'success')
+  if (staged === undefined) assert.fail('staged verification was not collected')
   assert.deepEqual(staged?.operations, [{ op: 'delta', path: '/角色/等级', value: 2 }])
+  const verificationResult = session.events[staged.resultEventSeq]
+  assert.equal(verificationResult?.type, 'agent-rp/staged-state-result')
+  if (verificationResult?.type !== 'agent-rp/staged-state-result') {
+    assert.fail('staged verification result was not recorded')
+  }
+  const failedVerification = {
+    ...verificationResult,
+    data: {
+      ...verificationResult.data,
+      result: { kind: 'failure' as const, failure: 'aborted' as const },
+    },
+  }
+  const failedEvents = session.events.map(event =>
+    event.seq === failedVerification.seq ? failedVerification : event)
+  assert.deepEqual(collectRoleplayStagedStateSettlement({
+    events: failedEvents,
+    sessionId: String(session.id),
+    turn: 1,
+    plans: [reference],
+  }), {
+    requestEventSeq: verificationRequest.seq,
+    resultEventSeq: failedVerification.seq,
+    throughEventSeq: verificationRequest.data.throughEventSeq,
+    target: verificationRequest.data.target,
+    outcome: 'failed',
+    operations: [],
+    error: '后台状态结算失败（aborted）',
+  })
   assert.equal(session.events[record.seq]?.type, 'agent-rp/turn-plan')
 
   session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })

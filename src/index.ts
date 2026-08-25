@@ -142,7 +142,7 @@ import {
   ROLEPLAY_RUNTIME_EXTENSIONS_KEY,
   RoleplayRuntimeExtensionRegistry,
 } from './roleplay-runtime-extension.ts'
-import { prepareRoleplayTurn } from './roleplay-turn-plan.ts'
+import { prepareRoleplayTurn, type RoleplayTurnPlan } from './roleplay-turn-plan.ts'
 import { bindRoleplayExternalContext } from './roleplay-turn-context.ts'
 import { RoleplayTurnCoordinator } from './roleplay-turn-coordinator.ts'
 import { appendSessionRoleplayTurnPlan } from './session-roleplay-turn-plan.ts'
@@ -190,6 +190,19 @@ const ROLEPLAY_ARTIFACT_HANDOFF_PROMPT = [
   '刚才的工具返回了图片。只完成一次呈现交接：若结果明确给出稳定 artifact id，调用 stage_roleplay_artifact；否则调用不带 path 的 publish_roleplay_image。',
   '不要输出新的正文；调用失败时不要原样重试。',
 ].join('\n')
+
+function renderRoleplayStateSnapshotContext(plan: RoleplayTurnPlan | undefined): string {
+  if (plan?.act.strategy !== 'agent') return ''
+  const stateIds = new Set(plan.act.stateActions.map(action => action.stateId))
+  const states = Object.fromEntries(plan.stateReads.flatMap(read =>
+    stateIds.has(read.id) && read.value !== undefined ? [[read.id, read.value]] : []))
+  if (Object.keys(states).length === 0) return ''
+  return [
+    '【本轮只读状态】',
+    '以下 JSON 是本轮叙事开始前的当前状态。依据它和已生效规则判断位置、碰撞、回合、阶段及其他正文结果；不要在回复中复述 JSON、内部字段或状态更新。',
+    JSON.stringify(states),
+  ].join('\n')
+}
 
 export { Config }
 export {
@@ -1206,6 +1219,17 @@ export function installAgentRp(
       setStateActionAvailable(agent, false)
     }
     return decision
+  })
+  ctx.systemPrompt.context({
+    name: 'agent-rp:state',
+    order: 69,
+    text: ({ scope }) => {
+      if (scope === undefined) return ''
+      const agent = agentsByScope.get(scope)
+      return agent === undefined || turnCoordinator.currentActLane(agent) !== 'narrative'
+        ? ''
+        : renderRoleplayStateSnapshotContext(turnCoordinator.current(agent))
+    },
   })
   ctx.systemPrompt.context({
     name: 'agent-rp:memory',
