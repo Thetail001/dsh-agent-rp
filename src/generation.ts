@@ -37,13 +37,13 @@ import {
 import type {
   RoleplayTurnPresentation,
 } from './roleplay-turn-presentation-types.ts'
-import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
+import { appendAgentRpSessionEvent, supportsAgentRpSessionEvents } from './session-event-compat.ts'
 
 /** A complete reply-version group snapshot stored after every mutation. */
 export interface GenerationStateRecord {
   readonly format: 0
   readonly groupId: string
-  readonly operation: 'regenerate' | 'continue' | 'select'
+  readonly operation: 'regenerate' | 'continue' | 'select' | 'review'
   readonly originSeq: number
   readonly anchorSeq: number
   readonly assistantSeqs: readonly number[]
@@ -72,6 +72,13 @@ export interface GenerationStateRecord {
     readonly statData: JsonValue
     readonly updateCount: number
     readonly lastError?: string
+  }
+}
+
+declare module '@deepseek-ai/dsh-session' {
+  interface SessionEventMap {
+    /** Ignorable reply-version snapshot written by an automatic post-narrative Worker. */
+    'agent-rp/generation-state': GenerationStateRecord
   }
 }
 
@@ -150,7 +157,8 @@ function parseGenerationState(data: GenerationStateRecord, eventSeq: number): Ac
   const assistantSeqs = uniqueSeqs(data.assistantSeqs, '回复来源序号')
   const versionSeqs = uniqueSeqs(data.versions.map(version => version.seq), '回复版本序号')
   if (data.format !== 0 || !/^[0-9a-f-]{36}$/iu.test(data.groupId)
-    || (data.operation !== 'regenerate' && data.operation !== 'continue' && data.operation !== 'select')
+    || (data.operation !== 'regenerate' && data.operation !== 'continue'
+      && data.operation !== 'select' && data.operation !== 'review')
     || !Number.isSafeInteger(data.originSeq) || data.originSeq < 0
     || !Number.isSafeInteger(data.anchorSeq) || data.anchorSeq < 0
     || !Number.isSafeInteger(data.selectedVersionSeq) || data.selectedVersionSeq < 0
@@ -260,11 +268,59 @@ function appendCurrentReplySurface(
     turn: selected.data.turn,
     step: selected.data.step,
     message: replacementMessage(selected.data.message, content),
-    ...(selected.data.usage === undefined ? {} : { usage: selected.data.usage }),
+    ...(selected.data.usage === undefined || content !== undefined ? {} : { usage: selected.data.usage }),
   }, {
     surfaceOp: { op: 'replace', start, end },
     sourceEventSeqs: sourceSeqs(shadowed, selected.seq),
   })
+}
+
+/** Return the final visible non-empty assistant reply produced in one turn. */
+export function currentVisibleRoleplayReply(
+  agent: Agent,
+  turn: number,
+): Extract<SessionEvent, { type: 'assistant/message' }> | undefined {
+  return [...agent.session.surface.nodes].reverse()
+    .map(seq => agent.session.events[seq])
+    .find((event): event is Extract<SessionEvent, { type: 'assistant/message' }> =>
+      event?.type === 'assistant/message' && event.data.turn === turn && visibleText(event) !== '')
+}
+
+/** Register a reviewed current reply as a selectable version without losing the character Agent's original. */
+export function appendReviewedReplyVersion(
+  agent: Agent,
+  turn: number,
+  reviewedText: string,
+): { readonly originalSeq: number; readonly reviewedSeq: number; readonly stateEventSeq: number } {
+  if (!supportsAgentRpSessionEvents(agent.session)) {
+    throw new Error('当前 DSH Host 无法记录正文 Worker 的可回放结果')
+  }
+  const original = currentVisibleRoleplayReply(agent, turn)
+  if (original === undefined) throw new Error('正文 Worker 找不到本轮可见角色回复')
+  const originalText = visibleText(original)
+  const content: ContentBlock[] = [{ type: 'text', text: reviewedText }]
+  const reviewed = appendCurrentReplySurface(agent, original.seq, original, content)
+  const tavern = readTavernHelperStateSnapshot(agent.session.events)
+  const mvu = mvuSnapshot(agent)
+  const shared = {
+    ...(tavern === undefined ? {} : { tavernStateSeq: tavern.eventSeq }),
+    ...(mvu === undefined ? {} : { mvu }),
+  }
+  const state = appendState({
+    groupId: crypto.randomUUID(),
+    operation: 'review',
+    originSeq: original.seq,
+    anchorSeq: original.seq,
+    assistantSeqs: [original.seq, reviewed.seq],
+    versions: [
+      { seq: original.seq, text: originalText, artifactReplySeqs: [original.seq], ...shared },
+      { seq: reviewed.seq, text: reviewedText.trim(), artifactReplySeqs: [original.seq], ...shared },
+    ],
+    selectedVersionSeq: reviewed.seq,
+    surfaceSeq: reviewed.seq,
+  }, mvu, tavern?.state)
+  const stateEvent = appendAgentRpSessionEvent(agent.session, 'agent-rp/generation-state', state)
+  return { originalSeq: original.seq, reviewedSeq: reviewed.seq, stateEventSeq: stateEvent.seq }
 }
 
 function latestReply(

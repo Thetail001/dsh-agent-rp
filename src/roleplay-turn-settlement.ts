@@ -576,6 +576,10 @@ export function compileRoleplayActReceipt(
     const start = starts.get(event.data.step)
     const end = ends.get(event.data.step)
     if ((start !== undefined && event.seq <= start.seq) || (end !== undefined && event.seq >= end.seq)) {
+      if (event.type === 'assistant/message' && event.surfaceOp !== 'append'
+        && end !== undefined && event.seq > end.seq) {
+        continue
+      }
       throw new Error(`Roleplay act event ${String(event.seq)} falls outside step ${String(event.data.step)}`)
     }
     if (event.type === 'assistant/message') {

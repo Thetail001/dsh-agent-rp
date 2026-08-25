@@ -8,7 +8,7 @@ import {
   ReasoningEffortId,
   type GenerateOptions,
 } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { foldSurface, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { jsonrepair } from 'jsonrepair'
 import {
   roleplayActModelDispatch,
@@ -23,6 +23,7 @@ import { parseRoleplayStateOperations } from './roleplay-state-operations.ts'
 import type { BoundRoleplayTurnPlan, RoleplayTurnPlanReference } from './roleplay-turn-settlement.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import type { MvuStateOperation } from './mvu.ts'
+import type { RoleplayTurnWorkerOutcome } from './roleplay-turn-worker.ts'
 
 /** Exact provider request dispatched after the visible Roleplay reply has finished. */
 export interface RoleplayStagedStateRequestRecord {
@@ -119,10 +120,12 @@ function turnText(
   role: 'user/message' | 'assistant/message',
   throughEventSeq: number,
 ): string {
-  const turnStartSeq = events.findLast(event => event.type === 'turn/start'
+  const prefix = events.slice(0, throughEventSeq + 1)
+  const turnStartSeq = prefix.findLast(event => event.type === 'turn/start'
     && event.data.turn === turn)?.seq ?? -1
-  const text = events.flatMap((event) => {
-    if (event.seq <= turnStartSeq || event.seq > throughEventSeq || event.type !== role) return []
+  const text = foldSurface(prefix).nodes.flatMap((seq) => {
+    const event = prefix[seq]
+    if (event === undefined || event.seq <= turnStartSeq || event.type !== role) return []
     if (role === 'assistant/message') {
       const assistant = event as SessionEvent<'assistant/message'>
       if (assistant.data.turn !== turn) return []
@@ -137,7 +140,7 @@ function turnText(
 function settlementRequest(
   agent: Agent,
   turn: number,
-  throughEventSeq: number,
+  visibleThroughEventSeq: number,
   target: RoleplayStateActionPlan,
   current: unknown,
   signal: AbortSignal,
@@ -165,10 +168,10 @@ function settlementRequest(
           JSON.stringify(current),
           '</current_state>',
           '<player_input>',
-          turnText(agent.session.events, turn, 'user/message', throughEventSeq),
+          turnText(agent.session.events, turn, 'user/message', visibleThroughEventSeq),
           '</player_input>',
           '<roleplay_reply>',
-          turnText(agent.session.events, turn, 'assistant/message', throughEventSeq),
+          turnText(agent.session.events, turn, 'assistant/message', visibleThroughEventSeq),
           '</roleplay_reply>',
           '<imported_state_rules>',
           target.instructions ?? '只更新剧情中明确发生变化的状态。',
@@ -224,18 +227,18 @@ export async function runRoleplayStagedStateSettlement(input: {
   readonly turn: number
   readonly plan: BoundRoleplayTurnPlan
   readonly signal: AbortSignal
-}): Promise<void> {
+}): Promise<RoleplayTurnWorkerOutcome> {
   const target = input.plan.plan.act.stateActions[0]
-  if (target === undefined) return
+  if (target === undefined) return { outcome: 'skipped' }
   const state = input.plan.plan.stateReads.find(read => read.id === target.stateId)
-  if (state?.value === undefined) return
+  if (state?.value === undefined) return { outcome: 'skipped' }
   const planEvent = matchingPlanEvent(input.agent.session.events, input.turn, input.plan)
   const through = stepEnd(input.agent.session.events, input.turn, input.plan.step)
-  if (terminalForCoverage(input.agent.session.events, input.turn, through.seq)) return
+  if (terminalForCoverage(input.agent.session.events, input.turn, through.seq)) return { outcome: 'skipped' }
   const request = settlementRequest(
     input.agent,
     input.turn,
-    through.seq,
+    input.agent.session.seq - 1,
     target,
     state.value,
     input.signal,
@@ -257,7 +260,7 @@ export async function runRoleplayStagedStateSettlement(input: {
     const assembler = new BlockAssembler()
     for await (const chunk of input.ctx.llm.stream(request)) assembler.push(chunk)
     if (assembler.finish.kind === 'error' || assembler.finish.kind === 'aborted') {
-      appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
+      const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
         format: 0,
         requestId,
         requestSeq: requestEvent.seq,
@@ -266,28 +269,39 @@ export async function runRoleplayStagedStateSettlement(input: {
           failure: assembler.finish.kind === 'aborted' ? 'aborted' : 'provider',
         },
       })
-      return
+      return { outcome: 'failed', requestEventSeq: requestEvent.seq, resultEventSeq: resultEvent.seq }
     }
     const text = assembler.blocks().flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
     const operations = parseStateSettlementResponse(text)
     if (operations.some(operation => !target.operations.includes(operation.op))) {
       throw new Error('Roleplay staged state result uses an operation outside its prepared plan')
     }
-    appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
+    const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
       format: 0,
       requestId,
       requestSeq: requestEvent.seq,
       result: { kind: 'success', text, operations },
     })
+    return {
+      outcome: operations.length === 0 ? 'unchanged' : 'applied',
+      requestEventSeq: requestEvent.seq,
+      resultEventSeq: resultEvent.seq,
+    }
   } catch (error: unknown) {
-    if (!input.agent.session.events.some(event => event.type === 'agent-rp/staged-state-result'
-      && event.data.requestSeq === requestEvent.seq)) {
-      appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
+    let resultEvent = input.agent.session.events.find(event => event.type === 'agent-rp/staged-state-result'
+      && event.data.requestSeq === requestEvent.seq)
+    if (resultEvent === undefined) {
+      resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
         format: 0,
         requestId,
         requestSeq: requestEvent.seq,
         result: { kind: 'failure', failure: roleplayActModelFailure(error) },
       })
+    }
+    return {
+      outcome: 'failed',
+      requestEventSeq: requestEvent.seq,
+      ...(resultEvent === undefined ? {} : { resultEventSeq: resultEvent.seq }),
     }
   }
 }

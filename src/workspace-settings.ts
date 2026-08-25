@@ -103,6 +103,16 @@ export interface AgentRpSettings {
   readonly imageProfiles: ImageGenerationProfile[]
   /** Agent tool policy and deployment-owned MCP instructions. */
   readonly toolGuidance: ResolvedToolGuidanceConfig
+  /** Independent model workers run after the character Agent finishes its visible reply. */
+  readonly turnWorkers: RoleplayTurnWorkerSettings
+}
+
+/** Workspace policy for the first deterministic multi-Agent turn pipeline. */
+export interface RoleplayTurnWorkerSettings {
+  /** Let a separate lightweight model pass revise expression without re-running the imported preset. */
+  readonly narrativeReview: {
+    readonly enabled: boolean
+  }
 }
 
 const DEFAULT_IMAGE_PROFILE_ID = 'default'
@@ -170,6 +180,9 @@ export const DEFAULT_AGENT_RP_SETTINGS: AgentRpSettings = {
     settings: DEFAULT_IMAGE_GENERATION_SETTINGS,
   }],
   toolGuidance: DEFAULT_TOOL_GUIDANCE,
+  turnWorkers: {
+    narrativeReview: { enabled: false },
+  },
 }
 
 function text(value: unknown, fallback: string, max: number, label: string): string {
@@ -352,6 +365,19 @@ export function normalizeAgentRpSettings(value: unknown): AgentRpSettings {
   }
   const imageGeneration = normalizeImageGenerationSettings(record.imageGeneration)
   const toolGuidance = normalizeToolGuidanceConfig(record.toolGuidance)
+  const turnWorkersRecord = record.turnWorkers
+  if (turnWorkersRecord !== undefined
+    && (typeof turnWorkersRecord !== 'object' || turnWorkersRecord === null || Array.isArray(turnWorkersRecord))) {
+    throw new Error('回合 Worker 设置无效')
+  }
+  const narrativeReview = (turnWorkersRecord as Record<string, unknown> | undefined)?.narrativeReview
+  if (narrativeReview !== undefined
+    && (typeof narrativeReview !== 'object' || narrativeReview === null || Array.isArray(narrativeReview))) {
+    throw new Error('正文审阅 Worker 设置无效')
+  }
+  const narrativeReviewEnabled = (narrativeReview as Record<string, unknown> | undefined)?.enabled
+    ?? DEFAULT_AGENT_RP_SETTINGS.turnWorkers.narrativeReview.enabled
+  if (typeof narrativeReviewEnabled !== 'boolean') throw new Error('正文审阅 Worker 开关无效')
   let imageProfiles: ImageGenerationProfile[]
   let activeImageProfileId: string
   if (record.imageProfiles === undefined) {
@@ -393,6 +419,7 @@ export function normalizeAgentRpSettings(value: unknown): AgentRpSettings {
     activeImageProfileId,
     imageProfiles,
     toolGuidance,
+    turnWorkers: { narrativeReview: { enabled: narrativeReviewEnabled } },
   }
 }
 

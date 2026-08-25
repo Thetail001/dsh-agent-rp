@@ -206,6 +206,7 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
   await root.plugin(AgentRegistry)
   root.provide('commands' as never, { register: () => () => {} } as never)
   root.provide('attachments' as never, {} as never)
+  root.provide('credentials' as never, {} as never)
   const presetKey = {}
   const preset = createScope(root, presetKey)
   const characterLibraryRoot = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-state-action-'))
@@ -390,6 +391,17 @@ test('settles MVU after the visible reply through a replayable local-provider st
     }),
   }, { surfaceOp: 'append', sourceEventSeqs: [] })
   session.append('step/end', { turn: 1, step: 1 })
+  const reviewedNarrative = session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture-review' },
+      content: [{ type: 'text', text: '白露合上修行笔记，确认自己已经稳稳跨过两级门槛。' }],
+    }),
+  }, {
+    surfaceOp: { op: 'replace', start: narrative.seq, end: narrative.seq },
+    sourceEventSeqs: [narrative.seq],
+  })
   let requestText = ''
   let requestSystem = ''
   let requestCount = 0
@@ -430,9 +442,10 @@ test('settles MVU after the visible reply through a replayable local-provider st
   })
   assert.equal(requestCount, 1)
   assert.match(requestSystem, /只返回一个 JSON 对象/u)
-  assert.match(requestText, /白露合上修行笔记/u)
+  assert.match(requestText, /稳稳跨过两级门槛/u)
+  assert.doesNotMatch(requestText, /确认自己已经跨过两级门槛/u)
   assert.match(requestText, /变量更新规则/u)
-  assert.equal(session.events.filter(event => event.type === 'assistant/message').length, 1)
+  assert.equal(session.events.filter(event => event.type === 'assistant/message').length, 2)
   const staged = collectRoleplayStagedStateSettlement({
     events: session.events,
     sessionId: String(session.id),
@@ -458,7 +471,7 @@ test('settles MVU after the visible reply through a replayable local-provider st
       resultEventSeqs: [staged!.resultEventSeq],
     },
   })
-  assert.equal(readRoleplayTurnSettlements(session.events)[0]?.reply?.eventSeq, narrative.seq)
+  assert.equal(readRoleplayTurnSettlements(session.events)[0]?.reply?.eventSeq, reviewedNarrative.seq)
   assert.equal(collectRoleplayStagedStateSettlement({
     events: session.events,
     sessionId: String(session.id),

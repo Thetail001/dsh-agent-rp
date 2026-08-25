@@ -3525,6 +3525,51 @@ type ToolStrategyDraft = {
   custom: Array<{ id: string; enabled: boolean; text: string }>
 }
 
+function TurnWorkerSettingsPanel({ settings, writable, onSave }: {
+  readonly settings: AgentRpSettings
+  readonly writable: boolean
+  readonly onSave: (settings: AgentRpSettings) => void
+}) {
+  const enabled = settings.turnWorkers.narrativeReview.enabled
+  return <section style={{ borderTop: '1px solid var(--dsw-alias-border-l2, #34343a)', marginTop: '26px', paddingTop: '23px' }}>
+    <div style={{ alignItems: 'flex-start', display: 'flex', gap: '14px', justifyContent: 'space-between' }}>
+      <div>
+        <h3 style={{ fontSize: '15px', margin: 0 }}>多 Agent 回合</h3>
+        <p style={{ fontSize: '12px', lineHeight: 1.65, margin: '6px 0 0', opacity: .58 }}>
+          角色 Agent、正文审阅 Worker 与状态结算 Worker 使用彼此隔离的请求，按固定顺序完成一轮
+        </p>
+      </div>
+      <label style={{ alignItems: 'center', cursor: writable ? 'pointer' : 'default', display: 'flex', flex: '0 0 auto', fontSize: '12px', gap: '7px', whiteSpace: 'nowrap' }}>
+        <input type="checkbox" checked={enabled} disabled={!writable} onChange={event => {
+          onSave({
+            ...settings,
+            turnWorkers: { narrativeReview: { enabled: event.target.checked } },
+          })
+        }} />正文审阅
+      </label>
+    </div>
+    <div style={{ display: 'grid', gap: '8px', marginTop: '14px' }}>
+      {[
+        ['1', '角色 Agent · 正文', '使用角色卡、世界书与所选预设完成剧情和工具行动'],
+        ['2', '正文审阅 Worker', enabled
+          ? '已启用：只审表达，不重新注入酒馆预设；原文与审阅版都可切换'
+          : '已关闭：不会产生额外模型请求，可随时启用'],
+        ['3', '状态结算 Worker', 'Agent 模式存在结构化状态时自动运行，只读取最终可见正文'],
+      ].map(([index, title, detail]) => <div key={index} style={{
+        alignItems: 'flex-start', border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '10px',
+        display: 'grid', gap: '9px', gridTemplateColumns: '22px minmax(0, 1fr)', padding: '10px 11px',
+      }}>
+        <span aria-hidden="true" style={{ alignItems: 'center', background: `color-mix(in srgb, ${color} 15%, transparent)`, borderRadius: '999px', color, display: 'flex', fontSize: '11px', height: '22px', justifyContent: 'center' }}>{index}</span>
+        <span><strong style={{ display: 'block', fontSize: '12px', fontWeight: 620 }}>{title}</strong>
+          <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '3px', opacity: .55 }}>{detail}</span></span>
+      </div>)}
+    </div>
+    {enabled && <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '9px 0 0', opacity: .56 }}>
+      每个 Agent 回合会增加一次轻量模型请求；失败时保留角色 Agent 原文并继续后台结算
+    </p>}
+  </section>
+}
+
 function copyToolStrategy(value: AgentRpSettings['toolGuidance']): ToolStrategyDraft {
   return { ...value, custom: value.custom.map(entry => ({ ...entry })) }
 }
@@ -3768,6 +3813,7 @@ function WorkspaceSettingsSection({
       </div>
     </details>
     <NativeIdentitySettingsPanel />
+    <TurnWorkerSettingsPanel settings={settings} writable={writable} onSave={write} />
     <ToolStrategySettingsPanel settings={settings} writable={writable} onSave={write} />
     <ImageGenerationSettingsPanel settings={settings} writable={writable} onSave={write} />
     {snapshot.status === 'loading' && <p role="status" style={{ fontSize: '12px', marginTop: '14px', opacity: .55 }}>正在读取设置…</p>}

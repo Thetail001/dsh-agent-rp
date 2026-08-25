@@ -162,6 +162,8 @@ import {
   ROLEPLAY_STATE_ACTION_TOOL,
 } from './roleplay-state-action.ts'
 import { runRoleplayStagedStateSettlement } from './roleplay-staged-state-settlement.ts'
+import { createRoleplayNarrativeReviewWorker } from './roleplay-narrative-review-worker.ts'
+import { ROLEPLAY_TURN_WORKERS_KEY, RoleplayTurnWorkerRegistry } from './roleplay-turn-worker.ts'
 import { readRoleplayExperienceSelection } from './roleplay-experience-selection.ts'
 import {
   installRoleplayActorRevisionCapability,
@@ -748,6 +750,38 @@ export function installAgentRp(
   const worldInfoLibrary = new WorldInfoLibrary()
   const generatedImageLibrary = new GeneratedImageLibrary()
   const workspaceSettings = new WorkspaceSettingsStore()
+  let turnWorkers: RoleplayTurnWorkerRegistry
+  try {
+    turnWorkers = ctx.get(ROLEPLAY_TURN_WORKERS_KEY) ?? new RoleplayTurnWorkerRegistry()
+  } catch {
+    turnWorkers = new RoleplayTurnWorkerRegistry()
+  }
+  ctx.effect(
+    () => turnWorkers.register(createRoleplayNarrativeReviewWorker(
+      () => workspaceSettings.get().turnWorkers.narrativeReview.enabled,
+    )),
+    'agent-rp: narrative review Worker',
+  )
+  ctx.effect(
+    () => turnWorkers.register({
+      id: 'state-settlement',
+      phase: 'settle',
+      async run(input) {
+        if (input.plan.plan.act.stateActions.length === 0) return { outcome: 'skipped' }
+        const hasInlineStateAction = input.agent.session.events.some((event) => {
+          if (event.type !== 'tool/result' || event.data.turn !== input.turn || event.data.error !== undefined) return false
+          const block = event.data.message.content[0]
+          const intent = readRoleplayStateActionIntent(event.data.meta)
+          return block?.type === 'tool-result' && block.isError !== true
+            && intent?.turn === input.turn && intent.sessionId === String(input.agent.session.id)
+        })
+        return hasInlineStateAction
+          ? { outcome: 'skipped' }
+          : runRoleplayStagedStateSettlement(input)
+      },
+    }),
+    'agent-rp: state settlement Worker',
+  )
   let worldbookCharacters: WorldbookCharacterContextRegistry | undefined
   let runtimeExtensions: RoleplayRuntimeExtensionRegistry | undefined
   try {
@@ -1222,21 +1256,11 @@ export function installAgentRp(
     if (agentsByScope.get(agent) !== agent || !supportsAgentRpSessionEvents(agent.session)) return
     const plans = turnCoordinator.plansForTurn(agent, turn)
     const latest = plans.at(-1)
-    if (latest?.plan.act.strategy !== 'agent' || latest.plan.act.stateActions.length === 0) return
-    // A legacy or explicitly invoked inline action already owns this turn;
-    // never calculate and apply the same state transition twice.
-    const hasInlineStateAction = agent.session.events.some((event) => {
-      if (event.type !== 'tool/result' || event.data.turn !== turn || event.data.error !== undefined) return false
-      const block = event.data.message.content[0]
-      const intent = readRoleplayStateActionIntent(event.data.meta)
-      return block?.type === 'tool-result' && block.isError !== true
-        && intent?.turn === turn && intent.sessionId === String(agent.session.id)
-    })
-    if (hasInlineStateAction) return
+    if (latest?.plan.act.strategy !== 'agent') return
     try {
-      await runRoleplayStagedStateSettlement({ ctx, agent, turn, plan: latest, signal })
+      await turnWorkers.run({ ctx, agent, turn, plan: latest, signal })
     } catch (error: unknown) {
-      ctx.logger.warn(`agent-rp: staged state settlement skipped: ${error instanceof Error ? error.message : String(error)}`)
+      ctx.logger.warn(`agent-rp: post-narrative Worker pipeline skipped: ${error instanceof Error ? error.message : String(error)}`)
     }
   })
   ctx.on('session/event', (session, event) => {
@@ -1523,6 +1547,8 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
   if (resolved.mode === 'host') {
     const runtimeExtensions = new RoleplayRuntimeExtensionRegistry()
     ctx.provide(ROLEPLAY_RUNTIME_EXTENSIONS_KEY, runtimeExtensions)
+    const turnWorkers = new RoleplayTurnWorkerRegistry()
+    ctx.provide(ROLEPLAY_TURN_WORKERS_KEY, turnWorkers)
     const resourceCatalog = new RoleplayResourceCatalog()
     const tavernResourcePreflight = new TavernResourcePreflightRegistry()
     ctx.provide(TAVERN_RESOURCE_PREFLIGHT_KEY, tavernResourcePreflight)

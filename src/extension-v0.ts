@@ -35,6 +35,17 @@ export type {
 } from './roleplay-runtime-extension.ts'
 
 export {
+  registerRoleplayTurnWorker,
+  ROLEPLAY_TURN_WORKERS_KEY,
+} from './roleplay-turn-worker.ts'
+export type {
+  RoleplayTurnWorker,
+  RoleplayTurnWorkerInput,
+  RoleplayTurnWorkerOutcome,
+  RoleplayTurnWorkerPhase,
+} from './roleplay-turn-worker.ts'
+
+export {
   registerRoleplayActorRevisionProvider,
   ROLEPLAY_ACTOR_DEFINITION_FIELDS,
   ROLEPLAY_ACTOR_REVISION_REGISTRY_KEY,

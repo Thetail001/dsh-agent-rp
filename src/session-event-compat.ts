@@ -13,6 +13,9 @@ export const AGENT_RP_SESSION_EVENT_TYPES = [
   'agent-rp/character-card-seed',
   'agent-rp/memory-seed',
   'agent-rp/mvu-state',
+  'agent-rp/generation-state',
+  'agent-rp/narrative-review-request',
+  'agent-rp/narrative-review-result',
   'agent-rp/native-prompt-policy-seed',
   'agent-rp/persona-seed',
   'agent-rp/sillytavern-chat-import',
@@ -29,6 +32,7 @@ export const AGENT_RP_SESSION_EVENT_TYPES = [
   'agent-rp/turn-plan',
   'agent-rp/turn-presentation',
   'agent-rp/turn-settlement',
+  'agent-rp/turn-worker-result',
   'agent-rp/world-info-library-seed',
 ] as const
 

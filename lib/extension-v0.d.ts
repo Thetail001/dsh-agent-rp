@@ -1,6 +1,8 @@
 import { JsonValue, SessionEvent } from "@deepseek-ai/dsh-session";
 import { Context } from "@deepseek-ai/cordis";
 import { ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
+import { Agent } from "@deepseek-ai/dsh-agent";
+
 /** Reusable resource categories that can be selected independently for an experience. */
 declare const ROLEPLAY_RESOURCE_KINDS: readonly ["actor", "persona", "world", "prompt-policy"];
 type RoleplayResourceKind = typeof ROLEPLAY_RESOURCE_KINDS[number];
@@ -876,6 +878,10 @@ declare module '@deepseek-ai/dsh-session' {
   }
 }
 /** A plan bound to the concrete model step that consumed it. */
+interface BoundRoleplayTurnPlan {
+  readonly step: number;
+  readonly plan: RoleplayTurnPlan;
+}
 /** Model-facing tool that records semantic state work without mutating state mid-turn. */
 declare const ROLEPLAY_STATE_ACTION_TOOL = "apply_roleplay_state";
 /** Prepared capability contract frozen before one model step. */
@@ -1124,6 +1130,62 @@ declare class RoleplayRuntimeExtensionRegistry {
 }
 /** Register through the caller's Cordis scope so plugin unload always revokes the module. */
 declare function registerRoleplayRuntimeExtension(ctx: Context, definition: RoleplayRuntimeExtensionDefinition): void;
+/** Host service shared by Agent RP profiles and trusted Worker plugins. */
+declare const ROLEPLAY_TURN_WORKERS_KEY = "agentRp.turnWorkers";
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Trusted Host plugins can register bounded post-narrative Workers here. */
+    'agentRp.turnWorkers': RoleplayTurnWorkerRegistry;
+  }
+}
+/** Ordered phases after the character Agent has committed its visible narrative. */
+type RoleplayTurnWorkerPhase = 'review' | 'settle';
+/** Stable terminal outcome returned by one independent Worker. */
+interface RoleplayTurnWorkerOutcome {
+  readonly outcome: 'applied' | 'unchanged' | 'skipped' | 'failed';
+  readonly requestEventSeq?: number;
+  readonly resultEventSeq?: number;
+}
+/** Content-free diagnostic for one Worker execution. */
+interface RoleplayTurnWorkerResultRecord extends RoleplayTurnWorkerOutcome {
+  readonly format: 0;
+  readonly sessionId: string;
+  readonly turn: number;
+  readonly step: number;
+  readonly workerId: string;
+  readonly phase: RoleplayTurnWorkerPhase;
+}
+declare module '@deepseek-ai/dsh-session' {
+  interface SessionEventMap {
+    /** Ignorable content-free result from one deterministic post-narrative Worker. */
+    'agent-rp/turn-worker-result': RoleplayTurnWorkerResultRecord;
+  }
+}
+/** Runtime inputs shared by every Worker in one closed Agent step. */
+interface RoleplayTurnWorkerInput {
+  readonly ctx: Context;
+  readonly agent: Agent;
+  readonly turn: number;
+  readonly plan: BoundRoleplayTurnPlan;
+  readonly signal: AbortSignal;
+}
+/** One independently registered responsibility in the post-narrative pipeline. */
+interface RoleplayTurnWorker {
+  readonly id: string;
+  readonly phase: RoleplayTurnWorkerPhase;
+  readonly order?: number;
+  run(input: RoleplayTurnWorkerInput): Promise<RoleplayTurnWorkerOutcome>;
+}
+/** Registry and serial executor for bounded post-narrative Workers. */
+declare class RoleplayTurnWorkerRegistry {
+  #private;
+  /** Register one stable Worker id and return its disposer. */
+  register(worker: RoleplayTurnWorker): () => void;
+  /** Run every registered Worker serially in review-before-settle order. */
+  run(input: RoleplayTurnWorkerInput): Promise<readonly RoleplayTurnWorkerResultRecord[]>;
+}
+/** Register one trusted Host Worker through the versioned Agent RP extension service. */
+declare function registerRoleplayTurnWorker(ctx: Context, worker: RoleplayTurnWorker): void;
 declare const ROLEPLAY_ACTOR_REVISION_REGISTRY_KEY = "agentRp.actorRevisions";
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -1271,4 +1333,4 @@ declare function readRoleplayArtifactAutoStageIntent(value: JsonValue | undefine
 /** Versioned public contract for independent DSH plugins extending Agent RP. */
 /** The API version encoded by the `@dsh-external/dsh-agent-rp/extension/v0` export. */
 declare const AGENT_RP_EXTENSION_API_VERSION: 0;
-export { AGENT_RP_EXTENSION_API_VERSION, ROLEPLAY_ACTOR_DEFINITION_FIELDS, ROLEPLAY_ACTOR_REVISION_REGISTRY_KEY, ROLEPLAY_ARTIFACT_AUTO_STAGE_FORMAT, ROLEPLAY_RESOURCE_CATALOG_KEY, ROLEPLAY_RESOURCE_KINDS, ROLEPLAY_RUNTIME_EXTENSIONS_KEY, type RoleplayActorDefinition, type RoleplayActorDefinitionField, type RoleplayActorRevisionChanges, RoleplayActorRevisionConflictError, type RoleplayActorRevisionInput, type RoleplayActorRevisionProvider, type RoleplayActorRevisionSnapshot, type RoleplayArtifactAutoStageIntent, type RoleplayResourceDescriptor, type RoleplayResourceDetail, type RoleplayResourceKind, type RoleplayResourceMaterialization, type RoleplayResourceMaterializationContext, type RoleplayResourceMaterializationInput, type RoleplayResourceProvider, type RoleplayResourceReference, type RoleplayResourceSelection, type RoleplayRuntimeExtensionDefinition, type RoleplayRuntimeExtensionResolution, type RoleplayRuntimeExtensionResolveInput, type RoleplayToolImageArtifact, TAVERN_RESOURCE_PREFLIGHT_KEY, TOOL_ARTIFACT_PRESENTATION_FORMAT, type TavernResourcePreflightContributor, type TavernResourcePreflightResolveInput, type ToolArtifactPresentationMeta, readRoleplayArtifactAutoStageIntent, readToolArtifactPresentationMeta, registerRoleplayActorRevisionProvider, registerRoleplayResourceProvider, registerRoleplayRuntimeExtension, registerTavernResourcePreflightContributor, roleplayToolArtifactPresentationMeta };
+export { AGENT_RP_EXTENSION_API_VERSION, ROLEPLAY_ACTOR_DEFINITION_FIELDS, ROLEPLAY_ACTOR_REVISION_REGISTRY_KEY, ROLEPLAY_ARTIFACT_AUTO_STAGE_FORMAT, ROLEPLAY_RESOURCE_CATALOG_KEY, ROLEPLAY_RESOURCE_KINDS, ROLEPLAY_RUNTIME_EXTENSIONS_KEY, ROLEPLAY_TURN_WORKERS_KEY, type RoleplayActorDefinition, type RoleplayActorDefinitionField, type RoleplayActorRevisionChanges, RoleplayActorRevisionConflictError, type RoleplayActorRevisionInput, type RoleplayActorRevisionProvider, type RoleplayActorRevisionSnapshot, type RoleplayArtifactAutoStageIntent, type RoleplayResourceDescriptor, type RoleplayResourceDetail, type RoleplayResourceKind, type RoleplayResourceMaterialization, type RoleplayResourceMaterializationContext, type RoleplayResourceMaterializationInput, type RoleplayResourceProvider, type RoleplayResourceReference, type RoleplayResourceSelection, type RoleplayRuntimeExtensionDefinition, type RoleplayRuntimeExtensionResolution, type RoleplayRuntimeExtensionResolveInput, type RoleplayToolImageArtifact, type RoleplayTurnWorker, type RoleplayTurnWorkerInput, type RoleplayTurnWorkerOutcome, type RoleplayTurnWorkerPhase, TAVERN_RESOURCE_PREFLIGHT_KEY, TOOL_ARTIFACT_PRESENTATION_FORMAT, type TavernResourcePreflightContributor, type TavernResourcePreflightResolveInput, type ToolArtifactPresentationMeta, readRoleplayArtifactAutoStageIntent, readToolArtifactPresentationMeta, registerRoleplayActorRevisionProvider, registerRoleplayResourceProvider, registerRoleplayRuntimeExtension, registerRoleplayTurnWorker, registerTavernResourcePreflightContributor, roleplayToolArtifactPresentationMeta };

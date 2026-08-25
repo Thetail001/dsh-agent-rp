@@ -86,6 +86,19 @@ test('retains Thetail tool guidance settings without importing provider-specific
   }), /imageMode/u)
 })
 
+test('normalizes the optional narrative review Worker without changing older settings files', () => {
+  assert.deepEqual(normalizeAgentRpSettings({ workspaceMode: 'all', workspaceIds: [] }).turnWorkers,
+    { narrativeReview: { enabled: false } })
+  assert.deepEqual(normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [],
+    turnWorkers: { narrativeReview: { enabled: true } },
+  }).turnWorkers, { narrativeReview: { enabled: true } })
+  assert.throws(() => normalizeAgentRpSettings({
+    workspaceMode: 'all', workspaceIds: [],
+    turnWorkers: { narrativeReview: { enabled: 'yes' } },
+  }), /正文审阅 Worker 开关/u)
+})
+
 test('updates one workspace through the active policy list', () => {
   const excluded = setAgentRpWorkspaceEntry(DEFAULT_AGENT_RP_SETTINGS, 'workspace-a', false)
   assert.deepEqual(excluded.workspaceExcludedIds, ['workspace-a'])
