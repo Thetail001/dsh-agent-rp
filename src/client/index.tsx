@@ -7664,7 +7664,7 @@ function PresetManagerDialog({
             暂未映射：{preservedSampling.join('、')}；导出副本时仍会保留
           </p>}
           <p style={{ fontSize: '11px', lineHeight: 1.55, margin: '16px 1px 0', opacity: 0.46 }}>
-            修改只影响当前角色会话。未填写的参数跟随会话与模型设置
+            “保存到此会话”只影响当前角色会话；“保存为可复用预设”会在预设库中新建副本，供之后的会话选择。未填写的参数跟随会话与模型设置
           </p>
           {preset.extensionStatus.length > 0 && <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', margin: '12px 1px 0' }}>
             {preset.extensionStatus.map(item => <div key={item.name} style={{ fontSize: '10px', lineHeight: 1.45, opacity: item.state === 'unsupported' ? 0.72 : 0.44 }}>
@@ -7691,7 +7691,7 @@ function PresetManagerDialog({
         <button type="button" disabled={saving} onClick={() => { setLibraryOpen(true); void onLibrary({ operation: 'list' }) }} style={secondaryButtonStyle}>预设库</button>
         <button type="button" disabled={saving} onClick={() => { setInspectionOpen(true) }} style={secondaryButtonStyle}>运行检查</button>
         <button type="button" disabled={saving} onClick={exportCopy} title={preset.omittedExtensions.length === 0 ? '导出当前配置' : `不包含未执行扩展：${preset.omittedExtensions.join('、')}`} style={secondaryButtonStyle}>导出副本</button>
-        <button type="button" disabled={saving} onClick={() => { void saveToLibrary() }} style={secondaryButtonStyle}>另存为预设</button>
+        <button type="button" disabled={saving} onClick={() => { void saveToLibrary() }} style={secondaryButtonStyle}>保存到预设库</button>
         <button type="button" disabled={saving} onClick={onClose} style={secondaryButtonStyle}>取消</button>
         <button type="button" disabled={saving} onClick={() => { void save() }} style={primaryButtonStyle}>{saving ? '保存中…' : '保存到此会话'}</button>
       </footer>
