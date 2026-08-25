@@ -296,7 +296,12 @@ export function prepareAgentRpSession(
       )
     return {
       seed: seedWithPreset(
-        seedWithWorldInfos(characterSeed, worldInfos, request.worldInfoIds),
+        seedWithWorldInfos(
+          characterSeed,
+          worldInfos,
+          request.worldInfoIds,
+          resolved.worldBinding?.primary?.worldInfoId,
+        ),
         presets,
         request.presetId,
       ),

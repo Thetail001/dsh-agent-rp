@@ -1,5 +1,6 @@
 /** Agent RP profile bundle and preset-scoped character runtime. */
 
+import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -97,6 +98,7 @@ import { executePresetLibraryCommand } from './preset-library-command.ts'
 import { installTavernExecutionHttp, installTavernPreflightHttp } from './tavern-preflight-http.ts'
 import { TavernExecutionPlanCache } from './tavern-preflight.ts'
 import { CharacterLibrary } from './character-library.ts'
+import { CharacterWorldBindingStore } from './character-world-binding-store.ts'
 import { executeCharacterLibraryCommand } from './character-library-command.ts'
 import { installCharacterLibraryHttp } from './character-library-http.ts'
 import {
@@ -737,9 +739,22 @@ export function installAgentRp(
     highRiskToolRestrictions.clear()
   }, 'agent-rp: capability gates')
   const presetLibrary = new PresetLibrary()
-  const characterLibrary = new CharacterLibrary(options.characterLibraryRoot === undefined
+  const portableLibraryRoot = options.characterLibraryRoot === undefined
+    ? undefined
+    : dirname(options.characterLibraryRoot)
+  const worldBindings = new CharacterWorldBindingStore(portableLibraryRoot === undefined
     ? {}
-    : { root: options.characterLibraryRoot })
+    : { root: join(portableLibraryRoot, 'character-world-bindings') })
+  const worldInfoLibrary = new WorldInfoLibrary({
+    ...(portableLibraryRoot === undefined ? {} : { root: join(portableLibraryRoot, 'world-info-imports') }),
+    bindings: worldBindings,
+  })
+  const characterLibrary = new CharacterLibrary({
+    ...(options.characterLibraryRoot === undefined ? {} : { root: options.characterLibraryRoot }),
+    worldInfoLibrary,
+    worldBindings,
+  })
+  characterLibrary.migrateEmbeddedWorldInfos()
   const actorRevisions = new RoleplayActorRevisionRegistry()
   ctx.provide(ROLEPLAY_ACTOR_REVISION_REGISTRY_KEY, actorRevisions)
   ctx.effect(
@@ -747,7 +762,6 @@ export function installAgentRp(
     'agent-rp: character-library actor revisions',
   )
   const chatLibrary = new SillyTavernChatLibrary()
-  const worldInfoLibrary = new WorldInfoLibrary()
   const generatedImageLibrary = new GeneratedImageLibrary()
   const workspaceSettings = new WorkspaceSettingsStore()
   let turnWorkers: RoleplayTurnWorkerRegistry
@@ -1556,11 +1570,13 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
     ctx.provide(WORLDBOOK_CHARACTER_CONTEXT_KEY as never, worldbookCharacters as never)
     installWorldbookSnapshotCoalescing(ctx)
     const ejsTemplateEngine = await loadEjsTemplateEngine(ctx)
-    const characterLibrary = new CharacterLibrary()
+    const worldBindings = new CharacterWorldBindingStore()
+    const worldInfoLibrary = new WorldInfoLibrary({ bindings: worldBindings })
+    const characterLibrary = new CharacterLibrary({ worldInfoLibrary, worldBindings })
+    characterLibrary.migrateEmbeddedWorldInfos()
     const personaLibrary = new PersonaLibrary()
     const presetLibrary = new PresetLibrary()
     const chatLibrary = new SillyTavernChatLibrary()
-    const worldInfoLibrary = new WorldInfoLibrary()
     const workspaceSettings = new WorkspaceSettingsStore()
     const generatedImageLibrary = new GeneratedImageLibrary()
     for (const provider of roleplayLibraryResourceProviders({

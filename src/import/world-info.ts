@@ -9,7 +9,7 @@ import type {
 } from './types.ts'
 
 /** Maximum decoded JSON accepted from one standalone World Info file. */
-export const MAX_WORLD_INFO_JSON_BYTES = 2 * 1024 * 1024
+export const MAX_WORLD_INFO_JSON_BYTES = 8 * 1024 * 1024
 
 type JsonObject = { [key: string]: JsonValue }
 
@@ -107,13 +107,16 @@ function parseEntry(
     || entry.cooldown !== undefined && entry.cooldown !== null
     || entry.delay !== undefined && entry.delay !== null
   const recursive = entry.excludeRecursion === true || entry.preventRecursion === true || entry.delayUntilRecursion === true
-  const useRegex = [...keys, ...secondaryKeys].some(isDelimitedRegex)
+  const explicitRegex = boolean(entry.useRegex ?? entry.use_regex, `${path}.useRegex`, false)
+  const useRegex = explicitRegex || [...keys, ...secondaryKeys].some(isDelimitedRegex)
   const decorated = hasDecorator(content)
   const uid = entry.uid
   if (uid !== undefined && uid !== null && typeof uid !== 'string' && typeof uid !== 'number') {
     throw new Error(`${path}.uid must be a string or number`)
   }
-  const displayName = optionalString(entry.comment, `${path}.comment`)
+  const authoredName = optionalString(entry.name, `${path}.name`)
+  const authoredComment = optionalString(entry.comment, `${path}.comment`)
+  const displayName = authoredName ?? authoredComment
   const placement = position === 4 ? atDepthPlacement(entry.depth, entry.role) : undefined
   const validAtDepth = position !== 4 || placement !== undefined
   const supportedPosition = (position === 0 || position === 1 || position === 4) && validAtDepth
@@ -134,9 +137,12 @@ function parseEntry(
   ]
   const scanDepth = optionalFiniteNumber(entry.scanDepth, `${path}.scanDepth`)
   if (scanDepth !== undefined && scanDepth < 0) throw new Error(`${path}.scanDepth must not be negative`)
+  const priority = optionalFiniteNumber(entry.priority, `${path}.priority`)
+  const extensions = entry.extensions === undefined ? undefined : object(entry.extensions, `${path}.extensions`)
   return {
     sourceId: uid === undefined || uid === null ? id : String(uid),
     ...(displayName === undefined ? {} : { name: displayName }),
+    ...(authoredName === undefined || authoredComment === undefined ? {} : { comment: authoredComment }),
     keys,
     secondaryKeys,
     content,
@@ -150,7 +156,8 @@ function parseEntry(
     ...(scanDepth === undefined ? {} : { scanDepth }),
     position: position === 0 ? 'before_char' : position === 4 ? 'at_depth' : 'after_char',
     ...(placement ?? {}),
-    ignoreBudget: false,
+    ...(priority === undefined ? {} : { priority }),
+    ignoreBudget: boolean(extensions?.ignore_budget, `${path}.extensions.ignore_budget`, false),
     useRegex,
     hasDecorators: decorated,
     ...(compatibilityBlockers.length === 0 ? {} : { compatibilityBlockers }),
@@ -192,10 +199,21 @@ export function parseWorldInfoJson(json: string): ImportedWorldInfo {
   const degradations = new Set<WorldInfoImportDegradation>()
   const lorebookEntries = values.map(([id, entry]) => parseEntry(entry, id, degradations))
   const name = optionalString(root.name, 'World Info name')
+  const scanDepth = optionalFiniteNumber(root.scan_depth, 'World Info scan_depth')
+  const extensions = root.extensions === undefined ? undefined : object(root.extensions, 'World Info extensions')
+  const extensionTokenBudget = optionalFiniteNumber(extensions?.token_budget, 'World Info extensions.token_budget')
+  const tokenBudget = optionalFiniteNumber(root.token_budget, 'World Info token_budget') ?? extensionTokenBudget
+  if (scanDepth !== undefined && scanDepth < 0) throw new Error('World Info scan_depth must not be negative')
+  if (tokenBudget !== undefined && tokenBudget < 0) throw new Error('World Info token_budget must not be negative')
   return {
     format: 0,
     ...(name === undefined ? {} : { name }),
-    lorebook: { recursiveScanning: false, entries: lorebookEntries },
+    lorebook: {
+      ...(scanDepth === undefined ? {} : { scanDepth }),
+      ...(tokenBudget === undefined ? {} : { tokenBudget }),
+      recursiveScanning: boolean(root.recursive_scanning, 'World Info recursive_scanning', false),
+      entries: lorebookEntries,
+    },
     degradations: [...degradations].sort(),
     raw,
   }

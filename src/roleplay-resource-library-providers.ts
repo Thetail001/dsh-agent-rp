@@ -3,7 +3,7 @@
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { CharacterLibrary } from './character-library.ts'
 import { createCharacterCardSessionSeed } from './import/character-card-seed.ts'
-import type { FileAttachmentRef } from './import/session-character.ts'
+import { readActiveSessionCharacter, type FileAttachmentRef } from './import/session-character.ts'
 import { createPresetSessionSeed } from './import/session-preset.ts'
 import { appendWorldInfoLibrarySessionSeed } from './import/world-info-seed.ts'
 import type { PersonaLibrary } from './persona-library.ts'
@@ -216,7 +216,16 @@ export function roleplayLibraryResourceProviders(libraries: {
     }),
     materialize: input => {
       noVariant(input)
-      const world = libraries.worldInfos.asset(libraryId(input.selection.id, 'standalone:library:'))
+      const id = libraryId(input.selection.id, 'standalone:library:')
+      const activeCharacter = readActiveSessionCharacter(input.events)
+      const binding = activeCharacter?.result.libraryId === undefined
+        ? undefined
+        : libraries.characters.worldBinding(activeCharacter.result.libraryId)
+      if (binding?.primary?.worldInfoId === id
+        || binding?.additional.some(reference => reference.worldInfoId === id)) {
+        return { events: input.events }
+      }
+      const world = libraries.worldInfos.asset(id)
       return {
         events: appendWorldInfoLibrarySessionSeed(input.events, world),
         title: world.upload.name,

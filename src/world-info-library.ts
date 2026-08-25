@@ -7,6 +7,7 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { MAX_WORLD_INFO_JSON_BYTES, parseWorldInfoJsonBytes } from './import/world-info.ts'
 import type { ImportedWorldInfo } from './import/types.ts'
 import type { WorldInfoLibraryUpload } from './world-info-library-protocol.ts'
+import type { CharacterWorldBindingStore } from './character-world-binding-store.ts'
 
 const ID_PATTERN = /^world-info-[a-f0-9]{32}$/u
 
@@ -25,9 +26,14 @@ export interface WorldInfoLibraryAsset extends ResolvedWorldInfoUpload {
 /** Content-addressed store for original World Info JSON bytes. */
 export class WorldInfoLibrary {
   readonly root: string
+  private readonly bindings: CharacterWorldBindingStore | undefined
 
-  constructor(options: { readonly root?: string } = {}) {
+  constructor(options: {
+    readonly root?: string
+    readonly bindings?: CharacterWorldBindingStore
+  } = {}) {
     this.root = resolve(options.root ?? dshHomePath('agent-rp', 'world-info-imports'))
+    this.bindings = options.bindings
   }
 
   /** Validate and retain one browser-selected World Info JSON file. */
@@ -81,6 +87,8 @@ export class WorldInfoLibrary {
   /** Remove one reusable source without affecting Sessions that already logged its lossless snapshot. */
   remove(id: string): WorldInfoLibraryUpload {
     const upload = this.resolve(id).upload
+    const characterIds = this.bindings?.referencingCharacters(id) ?? []
+    if (characterIds.length > 0) throw new Error('这本世界书仍由角色绑定，请先解除角色世界绑定')
     for (const suffix of ['.json', '.name', '.default']) {
       const path = join(this.root, `${id}${suffix}`)
       if (existsSync(path)) unlinkSync(path)

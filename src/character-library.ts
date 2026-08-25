@@ -37,6 +37,12 @@ import {
   cardRemoteResourceApprovalKey, cardRemoteResourceRequirements,
   characterRemoteResourceOrigin, isCharacterRemoteResourceType,
 } from './card-remote-resource.ts'
+import {
+  CharacterWorldBindingStore,
+  type CharacterWorldBinding,
+} from './character-world-binding-store.ts'
+import { embeddedWorldInfoAsset } from './embedded-world-info.ts'
+import { WorldInfoLibrary } from './world-info-library.ts'
 
 const META_SUFFIX = '.meta.json'
 const OVERLAY_SUFFIX = '.overlay.json'
@@ -132,6 +138,8 @@ export interface CharacterLibraryFileImport {
 /** Filesystem location override used by focused checks and portable deployments. */
 export interface CharacterLibraryOptions {
   readonly root?: string
+  readonly worldInfoLibrary?: WorldInfoLibrary
+  readonly worldBindings?: CharacterWorldBindingStore
 }
 
 interface CharacterLibraryAsset {
@@ -157,6 +165,7 @@ export interface ResolvedCharacterLibraryEntry {
     readonly originalFilename: string
     readonly mediaType: string
   }
+  readonly worldBinding?: CharacterWorldBinding
 }
 
 export interface CharacterLibraryAvatar {
@@ -808,9 +817,16 @@ export class CharacterLibrary {
   readonly root: string
   private readonly parsed = new Map<string, CachedParsedStoredCharacter>()
   private parsedSourceBytes = 0
+  private readonly worldInfos: WorldInfoLibrary | undefined
+  private readonly worldBindings: CharacterWorldBindingStore | undefined
 
   constructor(options: CharacterLibraryOptions = {}) {
     this.root = resolve(options.root ?? dshHomePath('agent-rp', 'characters'))
+    if ((options.worldInfoLibrary === undefined) !== (options.worldBindings === undefined)) {
+      throw new Error('角色库必须同时配置世界书库与角色世界绑定存储')
+    }
+    this.worldInfos = options.worldInfoLibrary
+    this.worldBindings = options.worldBindings
   }
 
   /** List active or archived cards newest first without returning greeting bodies or file bytes. */
@@ -827,6 +843,7 @@ export class CharacterLibrary {
   get(id: string): CharacterLibraryDetail {
     const meta = this.readMetadata(id)
     const parsed = this.parseStoredId(meta)
+    this.ensureWorldBinding(id, parsed.card)
     const detail = characterDetail(meta, parsed, true)
     this.rememberIndex(meta, detail)
     return detail
@@ -836,6 +853,7 @@ export class CharacterLibrary {
   overview(id: string): CharacterLibraryDetail {
     const meta = this.readMetadata(id)
     const parsed = this.parseStoredId(meta)
+    this.ensureWorldBinding(id, parsed.card)
     const detail = characterDetail(meta, parsed, false)
     this.rememberIndex(meta, detail)
     return detail
@@ -847,6 +865,7 @@ export class CharacterLibrary {
     if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('invalid World Info limit')
     const meta = this.readMetadata(id)
     const card = this.parseStoredId(meta).card
+    this.ensureWorldBinding(id, card)
     if (card.lorebook === undefined) return undefined
     return {
       ...(card.lorebook.name === undefined ? {} : { name: card.lorebook.name }),
@@ -860,6 +879,7 @@ export class CharacterLibrary {
   resolve(id: string): ResolvedCharacterLibraryEntry {
     const meta = this.readMetadata(id)
     const parsed = this.parseStoredId(meta)
+    const worldBinding = this.ensureWorldBinding(id, parsed.card)
     return {
       detail: characterDetail(meta, parsed, true),
       card: parsed.card,
@@ -871,7 +891,28 @@ export class CharacterLibrary {
         originalFilename: meta.originalFilename,
         mediaType: meta.mediaType,
       },
+      ...(worldBinding === undefined ? {} : { worldBinding }),
     }
+  }
+
+  /** Resolve the reusable default world composition for one character. */
+  worldBinding(id: string): CharacterWorldBinding | undefined {
+    const meta = this.readMetadata(id)
+    return this.ensureWorldBinding(id, this.parseStoredId(meta).card)
+  }
+
+  /** Materialize binding records for cards imported before resource separation. */
+  migrateEmbeddedWorldInfos(): number {
+    if (this.worldBindings === undefined) return 0
+    if (!existsSync(this.root)) return 0
+    let migrated = 0
+    for (const filename of readdirSync(this.root).filter(value => value.endsWith(META_SUFFIX))) {
+      const meta = this.readMetadata(filename.slice(0, -META_SUFFIX.length))
+      if (this.worldBindings.get(meta.id) !== undefined) continue
+      this.ensureWorldBinding(meta.id, this.parseStoredId(meta).card)
+      migrated += 1
+    }
+    return migrated
   }
 
   /** Load the original immutable asset by opaque id. */
@@ -1271,6 +1312,7 @@ export class CharacterLibrary {
         renameSync(source, target)
         staged.push({ source, target })
       }
+      this.worldBindings?.removeCharacter(id)
     } catch (error: unknown) {
       for (const entry of staged.reverse()) {
         if (existsSync(entry.target) && !existsSync(entry.source)) renameSync(entry.target, entry.source)
@@ -1281,6 +1323,15 @@ export class CharacterLibrary {
     if (cached !== undefined) this.parsedSourceBytes -= cached.sourceBytes
     this.parsed.delete(id)
     for (const entry of staged) rmSync(entry.target, { force: true })
+  }
+
+  private ensureWorldBinding(id: string, card: ImportedCharacterCard): CharacterWorldBinding | undefined {
+    if (this.worldInfos === undefined || this.worldBindings === undefined) return undefined
+    const existing = this.worldBindings.get(id)
+    if (existing !== undefined) return existing
+    const embedded = embeddedWorldInfoAsset(card)
+    const world = embedded === undefined ? undefined : this.worldInfos.importFile(embedded)
+    return this.worldBindings.bindEmbedded(id, world?.id)
   }
 
   private assertId(id: string): void {
