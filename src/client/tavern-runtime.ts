@@ -24,6 +24,7 @@ import type {
   TavernInjectedPrompt, TavernScriptTree, TavernScriptTreeScope, TavernWorldbookBindings, TavernWorldbookEntry,
 } from '../tavern-helper.ts'
 import { embeddedNativeIdentityRelayRuntime } from './embedded-identity.ts'
+import { inlineScriptJson } from './inline-script-json.ts'
 import {
   TAVERN_COMPARE_VERSIONS_GZIP_BASE64, TAVERN_JQUERY_GZIP_BASE64, TAVERN_JSON5_GZIP_BASE64,
   TAVERN_JSON_REPAIR_GZIP_BASE64, TAVERN_KLONA_GZIP_BASE64, TAVERN_LODASH_GZIP_BASE64,
@@ -342,10 +343,6 @@ function tavernPreloadScript(preload: TavernScriptPreload): string {
   }
 }
 
-function safeJson(value: unknown): string {
-  return JSON.stringify(value).replace(/</gu, '\\u003c').replace(/\u2028/gu, '\\u2028').replace(/\u2029/gu, '\\u2029')
-}
-
 function runtimeSource(
   snapshot: TavernScriptSnapshot,
   compatibilityMarkers: readonly string[],
@@ -353,9 +350,9 @@ function runtimeSource(
 ): string {
   return `
 'use strict';
-var __dshSnapshot=${externalBootstrap ? 'globalThis.__dshBootSnapshot' : safeJson(snapshot)};
+var __dshSnapshot=${externalBootstrap ? 'globalThis.__dshBootSnapshot' : inlineScriptJson(snapshot)};
 if(!__dshSnapshot||typeof __dshSnapshot!=='object')throw new Error('酒馆脚本初始状态不可用');
-var __dshDeclaredCompatibilityMarkers=${safeJson(compatibilityMarkers)};
+var __dshDeclaredCompatibilityMarkers=${inlineScriptJson(compatibilityMarkers)};
 var __dshScopes=__dshSnapshot.scopes;
 var __dshMessages=__dshSnapshot.messages;
 var __dshCharacterRegexScripts=__dshSnapshot.characterRegexScripts??[];
@@ -800,9 +797,9 @@ export function tavernScriptFrameSource(
   const moduleFacade = plan.mode === 'module'
     ? 'const __dshModuleWindow=document.__dshScriptWindow;const window=__dshModuleWindow,parent=__dshModuleWindow,top=__dshModuleWindow,self=__dshModuleWindow,globalThis=__dshModuleWindow;\n'
     : ''
-  const encoded = safeJson(`${moduleFacade}${source}\n//# sourceURL=dsh-agent-rp:${snapshot.scriptScope}:${script.id}`)
+  const encoded = inlineScriptJson(`${moduleFacade}${source}\n//# sourceURL=dsh-agent-rp:${snapshot.scriptScope}:${script.id}`)
   const approvedStyles = new Set(snapshot.approvedStyleOrigins ?? [])
-  const stylesheetDependencies = safeJson((plan.stylesheetDependencies ?? []).filter(dependency => {
+  const stylesheetDependencies = inlineScriptJson((plan.stylesheetDependencies ?? []).filter(dependency => {
     try {
       return approvedStyles.has(new URL(dependency.url).origin)
     } catch {
@@ -810,9 +807,9 @@ export function tavernScriptFrameSource(
     }
   }))
   const stylesheetSetup = `window.__dshResolvedStylesheets=Object.freeze(${stylesheetDependencies}.map(Object.freeze));`
-  const moduleDependencies = safeJson(plan.moduleDependencies ?? [])
+  const moduleDependencies = inlineScriptJson(plan.moduleDependencies ?? [])
   const dependencies = (plan.inlineDependencies ?? []).map((dependency, index) =>
-    `await __dshRunClassic(${safeJson(`${dependency}\n//# sourceURL=dsh-agent-rp-dependency:${index + 1}`)})`).join(';')
+    `await __dshRunClassic(${inlineScriptJson(`${dependency}\n//# sourceURL=dsh-agent-rp-dependency:${index + 1}`)})`).join(';')
   const origins = [...new Set([...BUILT_IN_TAVERN_SCRIPT_ORIGINS, ...snapshot.approvedScriptOrigins])]
     .map(origin => new URL(origin).origin).join(' ')
   const libraries = [
@@ -837,7 +834,7 @@ export function tavernScriptFrameSource(
     }
   })
   const execute = plan.mode === 'module'
-    ? `var __dshModuleFacade=${safeJson(moduleFacade)},__dshRemoteModulePlans=${moduleDependencies},__dshRemoteModuleById=new Map(__dshRemoteModulePlans.map(function(plan){return [plan.id,plan]})),__dshRemoteModuleUrls=new Map(),__dshRemoteModuleResolving=new Set();function __dshRemoteModuleUrl(id){var existing=__dshRemoteModuleUrls.get(id);if(existing)return existing;if(__dshRemoteModuleResolving.has(id))throw new Error('远程模块依赖存在循环，无法在隔离环境中加载');var plan=__dshRemoteModuleById.get(id);if(!plan)throw new Error('远程模块依赖图不完整');__dshRemoteModuleResolving.add(id);try{var value=__dshModuleFacade+plan.source;for(var dependencyId of plan.dependencies){var dependency=__dshRemoteModuleById.get(dependencyId);if(!dependency)throw new Error('远程模块依赖图不完整');value=value.replaceAll(dependency.placeholder,__dshRemoteModuleUrl(dependencyId))}var url=URL.createObjectURL(new Blob([value+'\\n//# sourceURL=dsh-agent-rp-module:'+plan.id],{type:'text/javascript'}));__dshRemoteModuleUrls.set(id,url);return url}finally{__dshRemoteModuleResolving.delete(id)}}var __dshEntrySource=${encoded};for(var __dshRemotePlan of __dshRemoteModulePlans)__dshEntrySource=__dshEntrySource.replaceAll(__dshRemotePlan.placeholder,__dshRemoteModuleUrl(__dshRemotePlan.id));var __dshModuleUrl=URL.createObjectURL(new Blob([__dshEntrySource],{type:'text/javascript'}));try{await import(__dshModuleUrl)}finally{URL.revokeObjectURL(__dshModuleUrl);for(var __dshRemoteUrl of __dshRemoteModuleUrls.values())URL.revokeObjectURL(__dshRemoteUrl)}`
+    ? `var __dshModuleFacade=${inlineScriptJson(moduleFacade)},__dshRemoteModulePlans=${moduleDependencies},__dshRemoteModuleById=new Map(__dshRemoteModulePlans.map(function(plan){return [plan.id,plan]})),__dshRemoteModuleUrls=new Map(),__dshRemoteModuleResolving=new Set();function __dshRemoteModuleUrl(id){var existing=__dshRemoteModuleUrls.get(id);if(existing)return existing;if(__dshRemoteModuleResolving.has(id))throw new Error('远程模块依赖存在循环，无法在隔离环境中加载');var plan=__dshRemoteModuleById.get(id);if(!plan)throw new Error('远程模块依赖图不完整');__dshRemoteModuleResolving.add(id);try{var value=__dshModuleFacade+plan.source;for(var dependencyId of plan.dependencies){var dependency=__dshRemoteModuleById.get(dependencyId);if(!dependency)throw new Error('远程模块依赖图不完整');value=value.replaceAll(dependency.placeholder,__dshRemoteModuleUrl(dependencyId))}var url=URL.createObjectURL(new Blob([value+'\\n//# sourceURL=dsh-agent-rp-module:'+plan.id],{type:'text/javascript'}));__dshRemoteModuleUrls.set(id,url);return url}finally{__dshRemoteModuleResolving.delete(id)}}var __dshEntrySource=${encoded};for(var __dshRemotePlan of __dshRemoteModulePlans)__dshEntrySource=__dshEntrySource.replaceAll(__dshRemotePlan.placeholder,__dshRemoteModuleUrl(__dshRemotePlan.id));var __dshModuleUrl=URL.createObjectURL(new Blob([__dshEntrySource],{type:'text/javascript'}));try{await import(__dshModuleUrl)}finally{URL.revokeObjectURL(__dshModuleUrl);for(var __dshRemoteUrl of __dshRemoteModuleUrls.values())URL.revokeObjectURL(__dshRemoteUrl)}`
     : `await __dshRunClassic(${encoded})`
   const preload = preloads.length === 0 ? '' : `await Promise.all([${preloads.join(',')}]);`
   const mobileCompatibility = plan.compatibilityMarkers.includes('__小手机脚本_loaded__')
