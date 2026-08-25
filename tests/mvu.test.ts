@@ -12,7 +12,7 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
-import { appendMvuState, readCurrentMvuState, readCurrentSessionMvuState, readInitialMvuState } from '../src/mvu.ts'
+import { applyMvuReply, appendMvuState, readCurrentMvuState, readCurrentSessionMvuState, readInitialMvuState } from '../src/mvu.ts'
 import { installMvuStreamCompletion } from '../src/mvu-stream.ts'
 import { ROLEPLAY_TURN_PHASES } from '../src/roleplay-runtime.ts'
 import { readRoleplayTurnRecords } from '../src/roleplay-turn-record.ts'
@@ -79,6 +79,17 @@ test('adopts browser-initialized MVU state when a card has no static initializer
   assert.deepEqual(readCurrentMvuState(card, session.events), {
     statData: { 角色: { 等级: 1 } }, updateCount: 0,
   })
+})
+
+test('rejects incomplete legacy MVU blocks instead of treating them as empty updates', () => {
+  assert.throws(
+    () => applyMvuReply({}, '<UpdateVariable><JSONPatch>[]</JSONPatch>'),
+    /UpdateVariable 缺少闭合标签/u,
+  )
+  assert.throws(
+    () => applyMvuReply({}, '<UpdateVariable><JSONPatch>[]</UpdateVariable>'),
+    /JSONPatch 缺少闭合标签/u,
+  )
 })
 
 test('excludes shadowed reply updates while retaining durable script state', () => {

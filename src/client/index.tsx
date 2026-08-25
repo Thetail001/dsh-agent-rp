@@ -4026,6 +4026,10 @@ function RoleplayHeader({
     : compileCardFrameDocument(statusHtml, {
       origin: window.location.origin,
       statData: projection.mvu.statData,
+      identity: {
+        characterName: projection.characterName,
+        ...(projection.userName === undefined ? {} : { userName: projection.userName }),
+      },
       ...(characterDetail === undefined ? {} : { character: characterDetail }),
       ...(projection.tavern === undefined ? {} : { variableScopes: projection.tavern.scopes }),
     })
@@ -4089,7 +4093,7 @@ function RoleplayHeader({
             data-agent-rp-source-session={sessionId}
             onClick={() => { setSettingsOpen(false); setLibraryOpen(true) }} style={headerMenuItemStyle}>角色库</button>
           <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setPersonaOpen(true) }} style={headerMenuItemStyle}>你的身份</button>
-          {statusSource !== undefined && <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setStatusOpen(true) }} style={headerMenuItemStyle}>当前状态</button>}
+          {statusSource !== undefined && <button className="agent-rp-mobile-only" type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setStatusOpen(true) }} style={headerMenuItemStyle}>当前状态{projection.mvu?.lastError === undefined ? '' : ' · 更新失败'}</button>}
           <button type="button" role="menuitem" onClick={() => { setSettingsOpen(false); setMigrationOpen(true) }} style={headerMenuItemStyle}>迁移聊天</button>
           <button type="button" role="menuitem" disabled={exporting} onClick={() => {
             setExporting(true)
@@ -4141,7 +4145,7 @@ function RoleplayHeader({
       {statusSource !== undefined && <button className="agent-rp-header-primary-action" type="button" onClick={() => { setStatusOpen(true) }} style={{
         background: `color-mix(in srgb, ${color} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
         borderRadius: '8px', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '12px', padding: '6px 10px',
-      }}>当前状态</button>}
+      }}>当前状态{projection.mvu?.lastError === undefined ? '' : ' · 更新失败'}</button>}
     </div>
     {migrationOpen && <SillyTavernImportDialog
       runtimeDiagnostics={runtimeDiagnostics}
@@ -4194,8 +4198,16 @@ function RoleplayHeader({
             background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '22px', marginLeft: 'auto', padding: '4px',
           }}>×</button>
         </div>
+        {projection.mvu?.lastError !== undefined && <p role="alert" style={{
+          background: 'color-mix(in srgb, var(--dsw-alias-state-danger, #d64d5f) 10%, transparent)',
+          border: '1px solid color-mix(in srgb, var(--dsw-alias-state-danger, #d64d5f) 30%, transparent)',
+          borderRadius: '8px', color: 'var(--dsw-alias-state-danger, #e88989)', fontSize: '12px',
+          lineHeight: 1.55, margin: '14px 0 0', padding: '9px 10px',
+        }}>最近一次状态更新失败：{projection.mvu.lastError}</p>}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px', marginTop: '20px' }}>
           {projection.userName !== undefined && <span style={chipStyle}>你是 {projection.userName}</span>}
+          <span style={chipStyle}>回合 · {projection.turnMode === 'agent' ? 'Agent 分阶段' : '兼容对话'}</span>
+          {summary?.agentPreset !== undefined && <span style={chipStyle}>Agent 能力 · {summary.agentPreset}</span>}
           {projection.importedMessageCount > 0 && <span style={chipStyle}>{projection.importedMessageCount} 条历史消息</span>}
           {projection.worldInfoCount > 0 && <span style={chipStyle}>{projection.worldInfoCount} 条世界书设定</span>}
           {characterRegexScripts.length > 0 && <span style={chipStyle}>角色卡正则 · {characterRegexScripts.length} 条</span>}
@@ -4250,6 +4262,13 @@ function RoleplayHeader({
         <DetailSection title="角色简介" text={projection.description} />
         <DetailSection title="性格" text={projection.personality} />
         <DetailSection title="当前场景" text={projection.scenario} />
+        <DetailSection title="Agent 回合诊断" text={[
+          `回合策略：${projection.turnMode === 'agent' ? '正文完成后独立结算状态' : '兼容正文内的旧式状态更新'}`,
+          `Agent 能力预设：${summary?.agentPreset ?? '未记录'}`,
+          projection.lastRequest === undefined
+            ? '最近一次模型请求：尚无记录'
+            : `最近一次模型工具：${projection.lastRequest.toolNames.length === 0 ? '无' : projection.lastRequest.toolNames.join('、')}`,
+        ].join('\n')} />
         {projection.persona !== undefined && <DetailSection title={`Persona · ${projection.persona.name}`} text={
           projection.persona.description || '没有额外人物设定'
         } />}
@@ -4282,6 +4301,7 @@ function RoleplayHeader({
     {statusOpen && statusSource !== undefined && <RoleplayStatusDialog
       characterName={displayName}
       source={statusSource}
+      {...(projection.mvu?.lastError === undefined ? {} : { stateError: projection.mvu.lastError })}
       onClose={() => { setStatusOpen(false) }}
     />}
     {libraryOpen && <CharacterLibraryDialog
@@ -8312,9 +8332,10 @@ function ImageGenerationCommandCard({ node, sessionId, runImageGeneration }: Com
   </article>
 }
 
-function RoleplayStatusDialog({ characterName, source, onClose }: {
+function RoleplayStatusDialog({ characterName, source, stateError, onClose }: {
   readonly characterName: string
   readonly source: string
+  readonly stateError?: string
   readonly onClose: () => void
 }) {
   return <div data-agent-rp-dialog role="dialog" aria-modal="true" aria-label="当前状态" style={{
@@ -8331,6 +8352,12 @@ function RoleplayStatusDialog({ characterName, source, onClose }: {
         borderRadius: '50%', color: '#edf4ff', cursor: 'pointer', display: 'flex', fontSize: '20px',
         height: '34px', justifyContent: 'center', position: 'absolute', right: '12px', top: '12px', width: '34px', zIndex: 2,
       }}>×</button>
+      {stateError !== undefined && <div role="alert" style={{
+        background: 'color-mix(in srgb, var(--dsw-alias-state-danger, #d64d5f) 10%, var(--dsw-alias-bg-base, #111216))',
+        borderBottom: '1px solid color-mix(in srgb, var(--dsw-alias-state-danger, #d64d5f) 26%, transparent)',
+        color: 'var(--dsw-alias-state-danger, #e88989)', fontSize: '12px', lineHeight: 1.5,
+        padding: '12px 58px 12px 14px',
+      }}>最近一次状态更新失败：{stateError}</div>}
       <iframe title={`${characterName}的当前状态`} sandbox="allow-scripts" srcDoc={source} style={{
         background: 'transparent', border: 0, colorScheme: 'dark', display: 'block', height: 'min(760px, 82vh)', width: '100%',
       }} />

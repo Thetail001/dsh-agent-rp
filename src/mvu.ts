@@ -291,11 +291,19 @@ export function parseMvuStateOperation(value: unknown): MvuStateOperation {
 }
 
 function patchArrays(text: string): MvuStateOperation[][] {
+  const openingCount = text.match(/<UpdateVariable(?:variable)?>/giu)?.length ?? 0
+  const closingCount = text.match(/<\/UpdateVariable(?:variable)?>/giu)?.length ?? 0
+  if (openingCount !== closingCount) throw new Error('UpdateVariable 缺少闭合标签')
   const blocks = [...text.matchAll(/<UpdateVariable(?:variable)?>\s*([\s\S]*?)\s*<\/UpdateVariable(?:variable)?>/giu)]
+  if (blocks.length !== openingCount) throw new Error('UpdateVariable 结构无效')
   return blocks.map(match => {
     const body = match[1] ?? ''
+    const jsonPatchOpeningCount = body.match(/<JSONPatch>/giu)?.length ?? 0
+    const jsonPatchClosingCount = body.match(/<\/JSONPatch>/giu)?.length ?? 0
+    if (jsonPatchOpeningCount !== jsonPatchClosingCount) throw new Error('JSONPatch 缺少闭合标签')
+    if (jsonPatchOpeningCount !== 1) throw new Error('UpdateVariable 必须包含一个 JSONPatch')
     const encoded = body.match(/<JSONPatch>\s*([\s\S]*?)\s*<\/JSONPatch>/iu)?.[1]
-    if (encoded === undefined) throw new Error('UpdateVariable is missing JSONPatch')
+    if (encoded === undefined) throw new Error('JSONPatch 结构无效')
     const parsed: unknown = JSON.parse(encoded)
     if (!Array.isArray(parsed)) throw new Error('MVU JSONPatch must be an array')
     return parsed.map(parseMvuStateOperation)

@@ -179,6 +179,21 @@ test('exposes implemented prompt-template support and bounded successful script 
   assert.doesNotMatch(source, /invalid marker/u)
 })
 
+test('projects identity macros into status data without changing the stored value', () => {
+  const statData = {
+    activity: '刚洗完澡，看见{{user}}',
+    nested: ['{{char}}递给<user>一封信'],
+  }
+  const source = compileCardFrameDocument('<!doctype html><html><body>panel</body></html>', {
+    origin: 'http://127.0.0.1:3091',
+    statData,
+    identity: { characterName: '白露', userName: '旅人' },
+  })
+
+  assert.match(source, /var __dshStatData=\{"activity":"刚洗完澡，看见旅人","nested":\["白露递给旅人一封信"\]\}/u)
+  assert.equal(statData.activity, '刚洗完澡，看见{{user}}')
+})
+
 test('projects only the current card scripts into the isolated SillyTavern character facade', () => {
   const source = compileCardFrameDocument(`<!doctype html><html><head><meta name="card-head-marker"></head><body><script>
     const getGlobal = key => window[key] || window.parent?.[key] || window.top?.[key]
