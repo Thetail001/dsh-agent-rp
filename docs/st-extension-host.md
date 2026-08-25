@@ -2,7 +2,7 @@
 
 本文约束“已安装的 SillyTavern 第三方扩展”在 Agent RP 中的宿主生命周期。它不描述角色卡或预设携带的 Tavern Helper 脚本；后者继续由现有的逐脚本 iframe 运行时承载。
 
-当前功能分支已提供浏览器注册表、单例 document 与版本化客户端注册服务。每个自包含 ESM bundle 在共享 document 中只导入一次，热注册和撤销会合并为一次完整重建；当前 Session 切换只发送 `dsh-agent-rp-session-change` 浏览器事件，不会重新导入扩展。这层基础装配尚未提供完整 ST 页面 API，因此不能宣称支持任意 ST 第三方扩展。社区插件也不能通过向每个 Tavern Helper iframe 拼接相同源码来模拟页面级扩展加载。
+当前功能分支已提供浏览器注册表、单例 document、版本化客户端注册服务、独立设置持久化和当前 Session 重新绑定。每个自包含 ESM bundle 在共享 document 中只导入一次，热注册和撤销会合并为一次完整重建；当前 Session 切换只发送 `dsh-agent-rp-session-change` 浏览器事件，不会重新导入扩展。这层基础装配尚未提供完整 ST 页面 API，因此不能宣称支持任意 ST 第三方扩展。社区插件也不能通过向每个 Tavern Helper iframe 拼接相同源码来模拟页面级扩展加载。
 
 ## 上游生命周期
 
@@ -38,6 +38,8 @@
 扩展设置使用固定的安装集合身份持久化，不复用 `tavernExtensionSettingsIdentity(characterId, presetId, scope)`，也不会抢占旧浏览器全局设置的迁移资格。共享 document 提供 `extension_settings`、`saveSettings()` 和 `saveSettingsDebounced()`；角色卡和预设的 `extension_settings` 兼容对象继续属于各自的 Tavern 脚本树，不能覆盖安装型扩展设置。
 
 ## 实现验收
+
+独立 DSH Client 插件已经在真实 3080 页面完成基础宿主验收：三个扩展按顺序启动，其中一个扩展的预期失败未阻断另外两个；设置容器可见，IndexedDB 设置在页面重载后恢复；连续切换两个 Session 时共享 iframe 保持单例、扩展没有重新导入，并且收到两次准确的 Session 变更。该验收使用独立开发插件，不等同于公开 ST 扩展兼容性验证。
 
 可运行实现至少需要证明：
 
