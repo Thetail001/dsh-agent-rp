@@ -2,7 +2,7 @@
 
 本文约束“已安装的 SillyTavern 第三方扩展”在 Agent RP 中的宿主生命周期。它不描述角色卡或预设携带的 Tavern Helper 脚本；后者继续由现有的逐脚本 iframe 运行时承载。
 
-当前 `main` 尚未提供可运行的 ST 扩展宿主。社区插件可以使用版本化 Host 与浏览器扩展协议接入 Agent RP 工作台，但不能通过向每个 Tavern Helper iframe 拼接相同源码来模拟页面级扩展加载。
+当前功能分支已提供浏览器注册表、单例 document 与版本化客户端注册服务。每个自包含 ESM bundle 在共享 document 中只导入一次，热注册和撤销会合并为一次完整重建；这层基础装配尚未提供完整 ST 页面 API、当前 Session 绑定与独立设置持久化，因此不能宣称支持任意 ST 第三方扩展。社区插件也不能通过向每个 Tavern Helper iframe 拼接相同源码来模拟页面级扩展加载。
 
 ## 上游生命周期
 
@@ -25,9 +25,9 @@
 
 ## 客户端注册
 
-扩展宿主的注册表属于 Agent RP 的浏览器插件面。独立 DSH 插件应在自己的 `./client` 中注册 manifest 与构建产物，并通过 `dsh.client.inject` 等待版本化的 Agent RP 客户端服务。Host `ctx.provide()` 与同名服务键不会把对象送入浏览器；需要 Host 数据时必须使用明确的客户端服务、RPC、HTTP 或 Session 投影。
+扩展宿主的注册表属于 Agent RP 的浏览器插件面。独立 DSH 插件应在自己的 `./client` 中通过 `agentRpStExtensions` 注册 manifest 与构建产物，并在 `dsh.client.inject` 中声明同名服务。Host `ctx.provide()` 与同名服务键不会把对象送入浏览器；需要 Host 数据时必须使用明确的客户端服务、RPC、HTTP 或 Session 投影。
 
-注册和撤销必须更新可订阅的 revision。当前扩展宿主应在 revision 变化时以确定顺序重建一次；只提供 `sources()` 快照而不通知现有运行时，会使热安装、插件卸载和 HMR 保留过期代码。一个扩展失败不得阻止后续扩展启动，也不得让角色卡和预设 Tavern Helper 帧停止工作。
+注册和撤销会更新可订阅的 revision；同一 JavaScript 任务中的连续变化合并为一次确定顺序的重建。旧 iframe 随重建或 Client 插件卸载一并撤销，过期 generation 的消息不会改变当前宿主状态。一个扩展失败不会阻止后续扩展启动，也不会让角色卡和预设 Tavern Helper 帧停止工作。
 
 扩展源码不能直接拼进 HTML `<script>` 文本。宿主必须使用不会被 `</script>`、行分隔符或 source map 注释截断的传输与执行格式，并同时限制扩展数量、单项字节数和聚合字节数。
 

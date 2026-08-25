@@ -8,6 +8,9 @@ const bundle = readFileSync(new URL(
 if (!bundle.includes('agent-rp.workbench.section')) {
   throw new Error('Published client extension fixture lost the Agent RP workbench Slot')
 }
+if (!bundle.includes('agentRpStExtensions')) {
+  throw new Error('Published client extension fixture lost the installed ST extension service')
+}
 if (bundle.includes('@dsh-external/dsh-agent-rp') || /\brequire\s*\(/u.test(bundle)) {
   throw new Error('Published client extension fixture retained a runtime dependency on Agent RP')
 }

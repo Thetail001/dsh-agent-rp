@@ -1,22 +1,15 @@
 /** Browser-owned registry for installed SillyTavern extension bundles. */
 
+import type {
+  AgentRpInstalledStExtensionRegistration,
+  AgentRpInstalledStExtensionService,
+} from '../client-extension-v0.ts'
+
 const MAX_EXTENSION_COUNT = 64
 const MAX_EXTENSION_SOURCE_BYTES = 2 * 1024 * 1024
 const MAX_EXTENSION_STYLE_BYTES = 512 * 1024
 const MAX_EXTENSION_TOTAL_BYTES = 8 * 1024 * 1024
 const extensionIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u
-
-/** One installed ST extension contributed by a trusted DSH client plugin. */
-export interface InstalledStExtensionRegistration {
-  readonly id: string
-  readonly displayName: string
-  readonly loadingOrder: number
-  readonly dependencies?: readonly string[]
-  /** Self-contained ESM bundle evaluated in the singleton extension document. */
-  readonly source: string
-  /** Optional stylesheet text installed in the same isolated document. */
-  readonly style?: string
-}
 
 /** Immutable ordered extension entry owned by the registry. */
 export interface InstalledStExtensionEntry {
@@ -60,7 +53,7 @@ function compareEntries(left: InstalledStExtensionEntry, right: InstalledStExten
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0
 }
 
-function immutableEntry(registration: InstalledStExtensionRegistration): {
+function immutableEntry(registration: AgentRpInstalledStExtensionRegistration): {
   readonly entry: InstalledStExtensionEntry
   readonly bytes: number
 } {
@@ -96,7 +89,7 @@ function immutableEntry(registration: InstalledStExtensionRegistration): {
 }
 
 /** Reactive registry shared by Agent RP and trusted browser-side extension plugins. */
-export class InstalledStExtensionRegistry {
+export class InstalledStExtensionRegistry implements AgentRpInstalledStExtensionService {
   readonly #records = new Map<string, RegistrationRecord>()
   readonly #listeners = new Set<() => void>()
   #snapshot: InstalledStExtensionSnapshot = Object.freeze({
@@ -117,7 +110,7 @@ export class InstalledStExtensionRegistry {
   }
 
   /** Register one extension and return an idempotent, stale-safe revocation. */
-  register(registration: InstalledStExtensionRegistration): () => void {
+  register(registration: AgentRpInstalledStExtensionRegistration): () => void {
     const { entry, bytes } = immutableEntry(registration)
     if (this.#records.has(entry.id)) {
       throw new Error(`Installed ST extension ${JSON.stringify(entry.id)} is already registered`)

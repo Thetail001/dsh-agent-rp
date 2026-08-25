@@ -45,6 +45,33 @@ export function apply(ctx: ClientContext): void {
 
 浏览器协议文件很小，可以由扩展的构建器打入自己的 client bundle。`dsh.client.inject` 只是客户端模块图的依赖说明，不负责激活顺序；Slot 声明等待由上面的 `ctx.slots.inject()` 完成。
 
+## 安装型 ST 扩展实验接口
+
+功能分支中的 `agentRpStExtensions` 客户端服务接收独立插件已经打包完成的 ESM 与可选 CSS。注册发生在插件的浏览器 `apply()` 中；把服务键加入 `inject` 后，Cordis 会等待 Agent RP 提供浏览器注册表，调用方的 effect 则负责在插件卸载时撤销扩展。
+
+```ts
+import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import {
+  AGENT_RP_ST_EXTENSION_SERVICE,
+} from '@dsh-external/dsh-agent-rp/client-extension/v0'
+
+export const inject = [AGENT_RP_ST_EXTENSION_SERVICE]
+
+export function apply(ctx: ClientContext): void {
+  ctx.effect(() => ctx.agentRpStExtensions.register({
+    id: 'community.worldbook',
+    displayName: '社区世界书',
+    loadingOrder: 10,
+    source: bundledExtensionSource,
+    style: bundledExtensionStyle,
+  }))
+}
+```
+
+`source` 必须是自包含的浏览器 ESM，不能保留文件系统相对导入。注册表会限制数量和字节数，将同步注册合并为一次有序重建，并在一个 ClientContext 中只创建一个共享 document；角色卡或预设拥有多少 Tavern Helper 脚本都不会复制安装型扩展。
+
+这仍是宿主装配接口，不是“任意 ST 插件已经兼容”的承诺。ST 页面 API、当前 Session 绑定、独立设置持久化和公开插件实测完成前，社区插件不能假定 SillyTavern 全局对象已经齐全；验收缺口见 [SillyTavern 扩展宿主](st-extension-host.md)。
+
 ## Host 扩展
 
 `@dsh-external/dsh-agent-rp/extension/v0` 提供资源、运行时模块、回合 Worker、角色修订与 Tavern 预检注册。Host 插件应把使用的 Agent RP 服务键加入 Cordis `inject`，再在 `apply()` 中调用对应注册函数；注册函数使用调用方的 effect 生命周期，插件卸载时会撤销贡献。

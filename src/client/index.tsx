@@ -16,12 +16,17 @@ import {
   IconLoadingOutline16, IconPlayOutline16, IconRefreshOutline16, IconSparkle16, IconWarningOutline16,
   Menu, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import { AGENT_RP_WORKBENCH_SECTION_SLOT } from '../client-extension-v0.ts'
+import {
+  AGENT_RP_ST_EXTENSION_SERVICE,
+  AGENT_RP_WORKBENCH_SECTION_SLOT,
+} from '../client-extension-v0.ts'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { createPortal } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { installStExtensionHost } from './st-extension-host.ts'
+import { InstalledStExtensionRegistry } from './st-extension-registry.ts'
 
 interface SidebarDestinationOwnerProps {
   readonly wide: boolean
@@ -12611,6 +12616,14 @@ export const inject = ['connection', 'conversationEvents', 'slots', 'sessions', 
 
 /** Register the Agent RP header, composer presentation, and import affordance. */
 export function apply(ctx: ClientContext): void {
+  const installedStExtensions = new InstalledStExtensionRegistry()
+  ctx.provide(AGENT_RP_ST_EXTENSION_SERVICE, installedStExtensions)
+  ctx.effect(() => installStExtensionHost(
+    window,
+    document,
+    installedStExtensions,
+    message => { ctx.logger.warn(message) },
+  ))
   installRoleplayArtifactTail(ctx)
   const runtimeDiagnostics = new AgentRpRuntimeDiagnosticRegistry()
   ctx.effect(() => installAgentRpRuntimeDiagnostic(window, runtimeDiagnostics))

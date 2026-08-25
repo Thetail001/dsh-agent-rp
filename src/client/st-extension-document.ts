@@ -12,6 +12,87 @@ export interface StExtensionDocumentOptions {
   readonly token: string
 }
 
+/** One bounded report emitted by the current singleton extension document. */
+export type StExtensionHostMessage =
+  | {
+    readonly source: 'dsh-agent-rp-st-extension-host'
+    readonly token: string
+    readonly action: 'extension-state'
+    readonly extensionId: string
+    readonly status: 'loaded' | 'failed'
+    readonly error?: string
+  }
+  | {
+    readonly source: 'dsh-agent-rp-st-extension-host'
+    readonly token: string
+    readonly action: 'host-state'
+    readonly status: 'ready' | 'failed'
+    readonly loaded: readonly string[]
+    readonly failed: readonly string[]
+    readonly error?: string
+  }
+  | {
+    readonly source: 'dsh-agent-rp-st-extension-host'
+    readonly token: string
+    readonly action: 'settings-surface'
+    readonly hasContent: boolean
+  }
+
+function boundedIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 128
+}
+
+function boundedError(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 8_000
+}
+
+function identifierList(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.length <= 64 && value.every(boundedIdentifier)
+    && new Set(value).size === value.length
+}
+
+/**
+ * Parse a lifecycle report only when it belongs to the current iframe generation.
+ * @param value - Untrusted browser message payload.
+ * @param token - Current Host-generated frame token.
+ * @returns Valid bounded report, or `undefined` for unrelated input.
+ */
+export function parseStExtensionHostMessage(value: unknown, token: string): StExtensionHostMessage | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const message = value as Record<string, unknown>
+  if (message.source !== 'dsh-agent-rp-st-extension-host' || message.token !== token) return undefined
+  if (message.action === 'settings-surface') {
+    if (typeof message.hasContent !== 'boolean') return undefined
+    return {
+      source: 'dsh-agent-rp-st-extension-host', token,
+      action: 'settings-surface', hasContent: message.hasContent,
+    }
+  }
+  if (message.action === 'extension-state') {
+    if (!boundedIdentifier(message.extensionId)
+      || (message.status !== 'loaded' && message.status !== 'failed')
+      || (message.status === 'loaded' && message.error !== undefined)
+      || (message.status === 'failed' && !boundedError(message.error))) return undefined
+    return {
+      source: 'dsh-agent-rp-st-extension-host', token,
+      action: 'extension-state', extensionId: message.extensionId, status: message.status,
+      ...(message.status === 'failed' ? { error: message.error as string } : {}),
+    }
+  }
+  if (message.action !== 'host-state' || (message.status !== 'ready' && message.status !== 'failed')
+    || !identifierList(message.loaded) || !identifierList(message.failed)) return undefined
+  const loaded = message.loaded
+  const failed = message.failed
+  if (loaded.some(id => failed.includes(id))
+    || (message.status === 'ready' && message.error !== undefined)
+    || (message.status === 'failed' && !boundedError(message.error))) return undefined
+  return {
+    source: 'dsh-agent-rp-st-extension-host', token,
+    action: 'host-state', status: message.status, loaded, failed,
+    ...(message.status === 'failed' ? { error: message.error as string } : {}),
+  }
+}
+
 function documentNonce(value: string): string {
   if (!documentNoncePattern.test(value)) throw new Error('Installed ST extension document nonce is invalid')
   return value

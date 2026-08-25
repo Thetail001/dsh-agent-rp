@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { compileStExtensionDocument } from '../src/client/st-extension-document.ts'
+import {
+  compileStExtensionDocument,
+  parseStExtensionHostMessage,
+} from '../src/client/st-extension-document.ts'
 import type { InstalledStExtensionEntry } from '../src/client/st-extension-registry.ts'
 
 function entry(
@@ -64,4 +67,44 @@ test('rejects a nonce that could escape the CSP attribute', () => {
     nonce: 'bad\" nonce',
     token: 'token',
   }), /nonce is invalid/u)
+})
+
+test('accepts only bounded lifecycle reports for the current frame token', () => {
+  assert.deepEqual(parseStExtensionHostMessage({
+    source: 'dsh-agent-rp-st-extension-host',
+    token: 'current',
+    action: 'host-state',
+    status: 'ready',
+    loaded: ['extension.a'],
+    failed: ['extension.b'],
+  }, 'current'), {
+    source: 'dsh-agent-rp-st-extension-host',
+    token: 'current',
+    action: 'host-state',
+    status: 'ready',
+    loaded: ['extension.a'],
+    failed: ['extension.b'],
+  })
+  assert.equal(parseStExtensionHostMessage({
+    source: 'dsh-agent-rp-st-extension-host',
+    token: 'stale',
+    action: 'settings-surface',
+    hasContent: true,
+  }, 'current'), undefined)
+  assert.equal(parseStExtensionHostMessage({
+    source: 'dsh-agent-rp-st-extension-host',
+    token: 'current',
+    action: 'extension-state',
+    extensionId: 'extension.a',
+    status: 'failed',
+    error: '',
+  }, 'current'), undefined)
+  assert.equal(parseStExtensionHostMessage({
+    source: 'dsh-agent-rp-st-extension-host',
+    token: 'current',
+    action: 'host-state',
+    status: 'ready',
+    loaded: ['extension.a'],
+    failed: ['extension.a'],
+  }, 'current'), undefined)
 })

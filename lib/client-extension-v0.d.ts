@@ -4,6 +4,33 @@ import { PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 declare const AGENT_RP_CLIENT_EXTENSION_API_VERSION: 0;
 /** Ordered external sections rendered inside the Agent RP sidebar workbench. */
 declare const AGENT_RP_WORKBENCH_SECTION_SLOT: "agent-rp.workbench.section";
+/** Client Cordis service used by independent plugins to install ST extension bundles. */
+declare const AGENT_RP_ST_EXTENSION_SERVICE: "agentRpStExtensions";
+/** One installed ST extension contributed by a trusted DSH client plugin. */
+interface AgentRpInstalledStExtensionRegistration {
+  readonly id: string;
+  readonly displayName: string;
+  readonly loadingOrder: number;
+  readonly dependencies?: readonly string[];
+  /** Self-contained ESM bundle evaluated in the singleton extension document. */
+  readonly source: string;
+  /** Optional stylesheet text installed in the same document. */
+  readonly style?: string;
+}
+/** Public write-only face of the singleton ST extension registry. */
+interface AgentRpInstalledStExtensionService {
+  /**
+   * Install one extension for the calling plugin's lifetime.
+   * @param registration - Stable manifest identity and browser build output.
+   * @returns Idempotent revocation for explicit early removal.
+   */
+  register(registration: AgentRpInstalledStExtensionRegistration): () => void;
+}
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    agentRpStExtensions: AgentRpInstalledStExtensionService;
+  }
+}
 /** Host actions available to one independent workbench section. */
 interface AgentRpWorkbenchSectionOwnerProps {
   /** Close the Agent RP workbench after the extension opens its own surface. */
@@ -21,4 +48,4 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 /** Props received by a registered Agent RP workbench section component. */
 type AgentRpWorkbenchSectionProps = PropsRuntime<typeof AGENT_RP_WORKBENCH_SECTION_SLOT>;
-export { AGENT_RP_CLIENT_EXTENSION_API_VERSION, AGENT_RP_WORKBENCH_SECTION_SLOT, AgentRpWorkbenchSectionOwnerProps, AgentRpWorkbenchSectionProps };
+export { AGENT_RP_CLIENT_EXTENSION_API_VERSION, AGENT_RP_ST_EXTENSION_SERVICE, AGENT_RP_WORKBENCH_SECTION_SLOT, AgentRpInstalledStExtensionRegistration, AgentRpInstalledStExtensionService, AgentRpWorkbenchSectionOwnerProps, AgentRpWorkbenchSectionProps };

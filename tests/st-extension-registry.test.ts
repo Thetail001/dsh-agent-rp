@@ -2,14 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   InstalledStExtensionRegistry,
-  type InstalledStExtensionRegistration,
 } from '../src/client/st-extension-registry.ts'
+import type { AgentRpInstalledStExtensionRegistration } from '../src/client-extension-v0.ts'
 
 function extension(
   id: string,
   loadingOrder: number,
-  overrides: Partial<InstalledStExtensionRegistration> = {},
-): InstalledStExtensionRegistration {
+  overrides: Partial<AgentRpInstalledStExtensionRegistration> = {},
+): AgentRpInstalledStExtensionRegistration {
   return {
     id,
     displayName: id,

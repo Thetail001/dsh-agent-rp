@@ -1,0 +1,145 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { installStExtensionHost } from '../src/client/st-extension-host.ts'
+import { InstalledStExtensionRegistry } from '../src/client/st-extension-registry.ts'
+
+class FakeFrame {
+  readonly contentWindow = {}
+  readonly dataset: Record<string, string> = {}
+  readonly attributes = new Map<string, string>()
+  hidden = false
+  referrerPolicy = ''
+  removed = false
+  srcdoc = ''
+  title = ''
+
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value)
+  }
+
+  remove(): void {
+    this.removed = true
+  }
+}
+
+class FakeDocument {
+  readonly frames: FakeFrame[] = []
+  readonly body = {
+    append: (frame: FakeFrame): void => { this.frames.push(frame) },
+  }
+
+  createElement(name: string): FakeFrame {
+    assert.equal(name, 'iframe')
+    return new FakeFrame()
+  }
+}
+
+class FakeWindow {
+  readonly listeners = new Set<(event: MessageEvent<unknown>) => void>()
+
+  addEventListener(name: string, listener: EventListenerOrEventListenerObject): void {
+    assert.equal(name, 'message')
+    this.listeners.add(listener as (event: MessageEvent<unknown>) => void)
+  }
+
+  removeEventListener(name: string, listener: EventListenerOrEventListenerObject): void {
+    assert.equal(name, 'message')
+    this.listeners.delete(listener as (event: MessageEvent<unknown>) => void)
+  }
+
+  dispatch(source: object, data: unknown): void {
+    for (const listener of this.listeners) listener({ source, data } as MessageEvent<unknown>)
+  }
+}
+
+async function flushRebuild(): Promise<void> {
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
+test('coalesces registrations into one frame, rebuilds once, and tears down completely', async () => {
+  const registry = new InstalledStExtensionRegistry()
+  const document = new FakeDocument()
+  const window = new FakeWindow()
+  const warnings: string[] = []
+  const dispose = installStExtensionHost(
+    window as unknown as Window,
+    document as unknown as Document,
+    registry,
+    message => { warnings.push(message) },
+  )
+  const revokeA = registry.register({
+    id: 'extension.a', displayName: 'A', loadingOrder: 0, source: 'export {}',
+  })
+  const revokeB = registry.register({
+    id: 'extension.b', displayName: 'B', loadingOrder: 1, source: 'export {}',
+  })
+  await flushRebuild()
+
+  assert.equal(document.frames.length, 1)
+  const first = document.frames[0] as FakeFrame
+  assert.equal(first.hidden, true)
+  assert.equal(first.attributes.get('sandbox'), 'allow-scripts allow-same-origin allow-forms')
+  assert.match(first.srcdoc, /extension\.a/u)
+  assert.match(first.srcdoc, /extension\.b/u)
+
+  window.dispatch(first.contentWindow, {
+    source: 'dsh-agent-rp-st-extension-host',
+    token: JSON.parse(first.srcdoc.match(/const boot=(\{.*?\});const entries/u)?.[1] ?? '{}').token,
+    action: 'host-state', status: 'ready', loaded: ['extension.a'], failed: ['extension.b'],
+  })
+  assert.equal(first.dataset.agentRpStExtensionPhase, 'ready')
+  assert.equal(first.dataset.agentRpStExtensionLoaded, '1')
+  assert.equal(first.dataset.agentRpStExtensionFailed, '1')
+
+  registry.register({
+    id: 'extension.c', displayName: 'C', loadingOrder: 2, source: 'export {}',
+  })
+  await flushRebuild()
+  assert.equal(document.frames.length, 2)
+  assert.equal(first.removed, true)
+
+  revokeA()
+  revokeB()
+  await flushRebuild()
+  assert.equal(document.frames.length, 3)
+  dispose()
+  assert.equal(document.frames.at(-1)?.removed, true)
+  assert.equal(window.listeners.size, 0)
+  assert.deepEqual(warnings, [])
+})
+
+test('ignores stale frames and reports bounded current-frame failures', async () => {
+  const registry = new InstalledStExtensionRegistry()
+  const document = new FakeDocument()
+  const window = new FakeWindow()
+  const warnings: string[] = []
+  const dispose = installStExtensionHost(
+    window as unknown as Window,
+    document as unknown as Document,
+    registry,
+    message => { warnings.push(message) },
+  )
+  registry.register({
+    id: 'extension.failure', displayName: 'Failure', loadingOrder: 0, source: 'throw new Error()',
+  })
+  await flushRebuild()
+  const frame = document.frames[0] as FakeFrame
+  const token = JSON.parse(frame.srcdoc.match(/const boot=(\{.*?\});const entries/u)?.[1] ?? '{}').token as string
+  window.dispatch({}, {
+    source: 'dsh-agent-rp-st-extension-host', token,
+    action: 'extension-state', extensionId: 'extension.failure', status: 'failed', error: 'stale',
+  })
+  window.dispatch(frame.contentWindow, {
+    source: 'dsh-agent-rp-st-extension-host', token,
+    action: 'extension-state', extensionId: 'extension.failure', status: 'failed', error: 'boom',
+  })
+  window.dispatch(frame.contentWindow, {
+    source: 'dsh-agent-rp-st-extension-host', token,
+    action: 'settings-surface', hasContent: true,
+  })
+
+  assert.deepEqual(warnings, ['agent-rp: installed ST extension "extension.failure" failed: boom'])
+  assert.equal(frame.dataset.agentRpStExtensionSettings, 'visible')
+  dispose()
+})
