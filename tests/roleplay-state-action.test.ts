@@ -418,7 +418,7 @@ test('settles MVU after the visible reply through a replayable local-provider st
   const reference = record.data.reference
   session.append('request/header', {
     reason: 'initial',
-    header: { config: { provider: 'fixture', model: 'fixture', maxTokens: 8192 } },
+    header: { config: { provider: 'fixture', model: 'fixture', maxTokens: 128 } },
   })
   const narrative = session.append('assistant/message', {
     turn: 1,
@@ -443,6 +443,7 @@ test('settles MVU after the visible reply through a replayable local-provider st
   const requestTexts: string[] = []
   const requestSystems: string[] = []
   const requestReasoning: (string | undefined)[] = []
+  const requestMaxTokens: (number | undefined)[] = []
   const requestModels: Array<{ readonly provider: string; readonly model: string }> = []
   let requestCount = 0
   const fake = {
@@ -454,11 +455,13 @@ test('settles MVU after the visible reply through a replayable local-provider st
         readonly messages: readonly { readonly content: readonly unknown[] }[]
         readonly system?: string
         readonly reasoningEffort?: string
+        readonly maxTokens?: number
       }) {
         requestCount += 1
         requestTexts.push(JSON.stringify(options.messages))
         requestSystems.push(options.system ?? '')
         requestReasoning.push(options.reasoningEffort)
+        requestMaxTokens.push(options.maxTokens)
         requestModels.push({ provider: options.provider, model: options.model })
         return (async function* () {
           const delta = requestCount === 1 ? 1 : 2
@@ -505,6 +508,7 @@ test('settles MVU after the visible reply through a replayable local-provider st
   assert.match(verificationSystem, /从 current_state 直接到核验后状态/u)
   assert.doesNotMatch(verificationText, /<proposal_operations>|<candidate_state>/u)
   assert.deepEqual(requestReasoning, ['off', 'low'])
+  assert.deepEqual(requestMaxTokens, [4096, 4096])
   assert.deepEqual(requestModels, [
     { provider: 'fixture', model: 'fixture' },
     { provider: 'fast-fixture', model: 'verification-fixture' },
