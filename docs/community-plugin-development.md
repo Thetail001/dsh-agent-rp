@@ -2,6 +2,14 @@
 
 Agent RP 为受信 DSH 插件分别发布 Host 与浏览器扩展面。扩展插件保留自己的存储、HTTP 接口和界面状态；Agent RP 只提供组合位置与回合生命周期，不把角色库对象、会话内部回调、Host DOM 或隔离脚本权限交给插件。
 
+## Host 与浏览器不是共享 Context
+
+一个声明 `dsh.client` 的包包含 Host 与浏览器两张独立的插件面。Host 的 `apply(ctx)` 在 DSH 进程中运行，`./client` 的 `apply(ctx: ClientContext)` 由页面中的客户端模块系统加载；两者各有自己的 Cordis Context 和服务表。Host 调用 `ctx.provide('example', value)` 不会让浏览器中的 `ctx.get('example')` 取得同一个对象，即使服务键、profile 和包都相同。
+
+只影响界面的注册表、Slot 贡献和运行时垫片应由插件的 `./client` 面注册，并在 `dsh.client.inject` 中声明所需浏览器服务。需要把 Host 数据送到浏览器时，应使用 DSH 客户端服务、Typert RPC、受控 HTTP 接口或可投影的 Session 事件；不能用同名服务键、共享模块变量或“单进程 web profile”代替传输协议。
+
+跨面接口需要分别验证 Host 与浏览器装配：Host 单元测试只能证明服务存在于 Host Context，浏览器测试还必须证明独立 ClientContext 能加载消费插件并完成真实注册。缺失浏览器服务时应在插件激活阶段明确失败，不能把 `ctx.get()` 的 `undefined` 当作“本轮没有贡献”静默跳过。
+
 ## 浏览器工作台扩展
 
 `@dsh-external/dsh-agent-rp/client-extension/v0` 声明 `agent-rp.workbench.section` 列表 Slot。它位于侧栏的 Agent RP 工作台，现代 `sidebar.destinations` 与旧版 `sidebar.footer.action` 入口共用同一个声明。外部插件必须通过 `ctx.slots.inject()` 等待 Agent RP 声明 Slot，不能依赖客户端 bundle 的下载或执行顺序。
