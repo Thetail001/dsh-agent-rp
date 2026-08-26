@@ -57,7 +57,11 @@ Web Host 与每个 Agent 能力预设运行在彼此独立的 Cordis 根，DSH �
 
 公开扩展验收固定使用 Woven Imprint 的提交 [`2356815`](https://github.com/virtaava/sillytavern-woven-imprint/tree/23568156ed86111dc81d59c6d9df9338892e1178)。未改写的 11,384 字节入口与样式在真实 3080 页面启动，生成可从 Agent RP 工作台打开的设置界面，并在 sidecar 不存在时明确显示不可达；关闭功能后重载页面可以恢复设置。关闭并重新打开设置对话框时，iframe 身份和扩展启动计数保持不变。连续切换两个 Session 没有重新导入扩展，撤销注册会重建共享 document 并移除 Woven Imprint，重新注册后设置仍然保留。页面角色对象同时暴露 ST 使用的根级 `description`、`personality` 和原始 `data`，真实追加消息在快照同步后按顺序进入扩展事件源。
 
-Woven Imprint 的该提交没有在 `manifest.json` 声明它已经公开的 `wovenImprintInterceptor`，并且源码中的 `GENERATION_STARTED` 监听器没有返回异步记忆请求。Agent RP 的本地适配注册因此明确填写 `generateInterceptor: 'wovenImprintInterceptor'` 与 `generationStartedEvent: 'interceptor-only'`：生成事件仍会发送给其他扩展，Woven 自己只执行一次可等待的记忆查询。真实 sidecar 与模型请求验收完成前，这仍是功能分支能力，不是“Woven 已正式支持”的发布承诺。
+Woven Imprint 的该提交没有在 `manifest.json` 声明它已经公开的 `wovenImprintInterceptor`，并且源码中的 `GENERATION_STARTED` 监听器没有返回异步记忆请求。Agent RP 的本地适配注册因此明确填写 `generateInterceptor: 'wovenImprintInterceptor'` 与 `generationStartedEvent: 'interceptor-only'`：生成事件仍会发送给其他扩展，Woven 自己只执行一次可等待的记忆查询。
+
+真实贯通验收中，单次生成使 sidecar 记忆请求计数恰好增加一；同一回合在用户消息与 plan 之前持久化了新的 Tavern Helper 状态修订，`agent-rp/turn-plan` 也记录了该状态读取。使用 DSH JSONL 持久化插件正式展开批量事件，再以相同 EJS 能力精确重放该 plan，得到的 `in_chat` system 提示包含 sidecar 返回的唯一标记；将其应用于当时的消息前缀后，最终 provider messages 仍包含同一标记。这证明固定版本 Woven 的 sidecar 到 provider 请求链路已经贯通，但仍只是功能分支上的适配证据，不承诺其他 ST 扩展无需适配即可运行。
+
+验收不得用模型是否复述标记替代请求证据。模型可能受旧会话中相反回答、角色提示或采样影响，即使 provider messages 已经包含标记也会给出不同答案。故障定位先检查 sidecar 请求增量、Session 状态修订、可重放 turn plan 和最终 provider messages；只有这些确定性证据全部通过后，才允许在没有旧回答干扰的全新会话执行一次语义冒烟测试。
 
 可运行实现至少需要证明：
 
@@ -71,6 +75,6 @@ Woven Imprint 的该提交没有在 `manifest.json` 声明它已经公开的 `wo
 - 没有在线共享 document 时 Agent 请求不等待；有在线 document 时，提示写入完成早于浏览器完成回报，浏览器完成回报早于本轮 Roleplay plan 重建。
 - 快速浏览器在 system prompt 开始等待前完成时，本轮仍能消费该结果；失联浏览器、Session 切换和 iframe 重建会在上限内释放请求。
 - `GENERATION_STARTED`、manifest interceptor 顺序、`setExtensionPrompt()` 的四种位置与三种角色、提示删除、过滤器和提示上限都有覆盖。
-- 至少一个公开 ST 扩展通过真实 3080 导入、启动、设置持久化、Session 切换和卸载验收；测试结束后可以用受管数据重置清理。
+- 至少一个公开 ST 扩展通过真实 3080 导入、启动、设置持久化、Session 切换、卸载和 sidecar 到 provider messages 的生成贯通验收；测试结束后可以用受管数据重置清理。
 
 在这些条件完成前，版本化公共接口不应宣称支持任意 ST 第三方扩展。每脚本兼容垫片可以作为另一项较窄能力发布，但名称和文档必须明确它不会创建页面级扩展宿主。

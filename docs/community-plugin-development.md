@@ -73,7 +73,7 @@ export function apply(ctx: ClientContext): void {
 
 `generateInterceptor` 是可选的 ST manifest 全局函数名；声明后，Agent RP 会在 `GENERATION_STARTED` 之后等待它，再把 `setExtensionPrompt()` 结果写入当前 Session。只有上游源码的生成事件监听与该 interceptor 明确重复时，才同时设置 `generationStartedEvent: 'interceptor-only'`。
 
-这仍是宿主装配接口，不是“任意 ST 插件已经兼容”的承诺。当前 Session 绑定、独立设置持久化、页面快照、追加消息事件和生成前提示写入已有源码回归；完整 ST 页面 API 与公开扩展的真实 sidecar 到模型请求验收仍未完成。社区插件不能假定 SillyTavern 全局对象已经齐全；验收缺口见 [SillyTavern 扩展宿主](st-extension-host.md)。
+这仍是宿主装配接口，不是“任意 ST 插件已经兼容”的承诺。当前 Session 绑定、独立设置持久化、页面快照、追加消息事件和生成前提示写入已有源码回归；固定版本的 Woven Imprint 也已完成真实 sidecar、Session 状态和最终 provider messages 的贯通验收。完整 ST 页面 API 与其他公开扩展仍需逐项验证，社区插件不能假定 SillyTavern 全局对象已经齐全；验收范围见 [SillyTavern 扩展宿主](st-extension-host.md)。
 
 ## Host 扩展
 
