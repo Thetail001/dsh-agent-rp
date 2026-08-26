@@ -144,7 +144,7 @@ function runCardActionOptionsFixture(message: CardChatFixtureMessage): {
   }
 }
 
-test('stamps only browser-activated card actions in the Host-owned compatibility shell', () => {
+test('stamps only browser-activated actions and relays trigger grants for Host validation', () => {
   const url = cardFrameCompatibilityUrl('<!doctype html><html><body>panel</body></html>', 'frame-token:0')
   const shell = Buffer.from(url.slice(url.indexOf(',') + 1), 'base64').toString('utf8')
   assert.match(shell, /requestId:pendingSend,playerAction:true,value/u)
@@ -198,7 +198,7 @@ test('stamps only browser-activated card actions in the Host-owned compatibility
     source: 'dsh-agent-rp-card', action: 'trigger-slash', value: '/trigger',
   }
   assert.equal(dispatch(firstTrigger), false)
-  assert.equal(firstTrigger.playerAction, true)
+  assert.equal(firstTrigger.playerAction, undefined)
   const secondTrigger: Record<string, unknown> = {
     source: 'dsh-agent-rp-card', action: 'trigger-slash', value: '/trigger',
   }
