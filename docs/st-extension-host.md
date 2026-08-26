@@ -2,7 +2,7 @@
 
 本文约束“已安装的 SillyTavern 第三方扩展”在 Agent RP 中的宿主生命周期。它不描述角色卡或预设携带的 Tavern Helper 脚本；后者继续由现有的逐脚本 iframe 运行时承载。
 
-当前功能分支已提供浏览器注册表、单例 document、版本化客户端注册服务、独立设置持久化和当前 Session 重新绑定。安装型宿主从 DSH Session 列表的 `agentRp` 投影生成页面快照，同一 Session 的投影更新也会同步到共享 document；当前只发布不会发起 Host 请求的只读 `SillyTavern.getContext()` 数据和本地事件源。每个自包含 ESM bundle 在共享 document 中只导入一次，热注册和撤销会合并为一次完整重建；当前 Session 切换发送 `dsh-agent-rp-session-change` 浏览器事件，不会重新导入扩展。这层基础装配尚未提供完整 ST 页面 API，因此不能宣称支持任意 ST 第三方扩展。社区插件也不能通过向每个 Tavern Helper iframe 拼接相同源码来模拟页面级扩展加载。
+当前功能分支已提供浏览器注册表、单例 document、版本化客户端注册服务、独立设置持久化和当前 Session 重新绑定。安装型宿主从 DSH Session 列表的 `agentRp` 投影生成页面快照，同一 Session 的投影更新也会同步到共享 document；当前只发布不会发起 Host 请求的只读 `SillyTavern.getContext()` 数据、本地事件源和页面级设置保存方法。每个自包含 ESM bundle 在共享 document 中只导入一次，热注册和撤销会合并为一次完整重建；当前 Session 切换发送 `dsh-agent-rp-session-change` 浏览器事件，不会重新导入扩展。这层基础装配尚未提供完整 ST 页面 API，因此不能宣称支持任意 ST 第三方扩展。社区插件也不能通过向每个 Tavern Helper iframe 拼接相同源码来模拟页面级扩展加载。
 
 ## 上游生命周期
 
@@ -39,7 +39,11 @@
 
 ## 实现验收
 
-独立 DSH Client 插件已经在真实 3080 页面完成基础宿主验收：三个扩展按顺序启动，其中一个扩展的预期失败未阻断另外两个；设置容器可见，IndexedDB 设置在页面重载后恢复；连续切换两个 Session 时共享 iframe 保持单例、扩展没有重新导入，且只收到两次准确的 Session 变更。最终 `getContext().chatId`、Host Session 与选中 Session 一致；同一 Session 的投影同步不会误发 Session 变更事件。该验收使用独立开发插件，不等同于公开 ST 扩展兼容性验证。
+独立 DSH Client 插件已经在真实 3080 页面完成基础宿主验收：三个扩展按顺序启动，其中一个扩展的预期失败未阻断另外两个；设置容器可见，IndexedDB 设置在页面重载后恢复；连续切换两个 Session 时共享 iframe 保持单例、扩展没有重新导入，且只收到两次准确的 Session 变更。最终 `getContext().chatId`、Host Session 与选中 Session 一致；同一 Session 的投影同步不会误发 Session 变更事件。
+
+公开扩展验收固定使用 Woven Imprint 的提交 [`2356815`](https://github.com/virtaava/sillytavern-woven-imprint/tree/23568156ed86111dc81d59c6d9df9338892e1178)。未改写的 11,384 字节入口与样式在真实 3080 页面启动，生成设置界面，并在 sidecar 不存在时明确显示不可达；关闭功能后重载页面可以恢复设置。连续切换两个 Session 没有重新导入扩展，撤销注册会重建共享 document 并移除 Woven Imprint，重新注册后设置仍然保留。
+
+这项验收只证明自包含入口、只读上下文、设置、Session 绑定与卸载生命周期。安装型宿主仍禁止网络连接，没有提供 `setExtensionPrompt()` 写通道，也尚未把 DSH 请求阶段转换成 ST 的生成与消息事件；因此 Woven Imprint 的 sidecar 记录和记忆注入还不能工作。设置 document 目前仍隐藏，玩家也不能从产品界面打开该扩展的设置面板。
 
 可运行实现至少需要证明：
 
