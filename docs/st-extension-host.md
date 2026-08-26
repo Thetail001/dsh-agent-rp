@@ -33,7 +33,7 @@
 
 ## 设置与界面
 
-宿主提供单例 `#extensions_settings` 和 `#extensions_settings2`，并允许扩展按 ST 约定挂载界面。空容器不应让 Agent RP 自动打开面板；加入可见内容后，界面应通过现有工作台或独立扩展面板出现。当前基础宿主已经检测容器内容，但可见面板接入仍属于验收缺口。
+宿主提供单例 `#extensions_settings` 和 `#extensions_settings2`，并允许扩展按 ST 约定挂载界面。空容器不会显示入口；加入可见内容后，Agent RP 工作台显示“ST 扩展设置”，并打开常驻的侧边对话框。关闭对话框只隐藏外壳，不移动、销毁或重新导入其中的共享 iframe。iframe 使用浏览器的深色系统前景色承接没有自带文字颜色的扩展界面，扩展仍可用自己的样式覆盖它。
 
 扩展设置使用固定的安装集合身份持久化，不复用 `tavernExtensionSettingsIdentity(characterId, presetId, scope)`，也不会抢占旧浏览器全局设置的迁移资格。共享 document 提供 `extension_settings`、`saveSettings()` 和 `saveSettingsDebounced()`；角色卡和预设的 `extension_settings` 兼容对象继续属于各自的 Tavern 脚本树，不能覆盖安装型扩展设置。
 
@@ -41,9 +41,9 @@
 
 独立 DSH Client 插件已经在真实 3080 页面完成基础宿主验收：三个扩展按顺序启动，其中一个扩展的预期失败未阻断另外两个；设置容器可见，IndexedDB 设置在页面重载后恢复；连续切换两个 Session 时共享 iframe 保持单例、扩展没有重新导入，且只收到两次准确的 Session 变更。最终 `getContext().chatId`、Host Session 与选中 Session 一致；同一 Session 的投影同步不会误发 Session 变更事件。
 
-公开扩展验收固定使用 Woven Imprint 的提交 [`2356815`](https://github.com/virtaava/sillytavern-woven-imprint/tree/23568156ed86111dc81d59c6d9df9338892e1178)。未改写的 11,384 字节入口与样式在真实 3080 页面启动，生成设置界面，并在 sidecar 不存在时明确显示不可达；关闭功能后重载页面可以恢复设置。连续切换两个 Session 没有重新导入扩展，撤销注册会重建共享 document 并移除 Woven Imprint，重新注册后设置仍然保留。
+公开扩展验收固定使用 Woven Imprint 的提交 [`2356815`](https://github.com/virtaava/sillytavern-woven-imprint/tree/23568156ed86111dc81d59c6d9df9338892e1178)。未改写的 11,384 字节入口与样式在真实 3080 页面启动，生成可从 Agent RP 工作台打开的设置界面，并在 sidecar 不存在时明确显示不可达；关闭功能后重载页面可以恢复设置。关闭并重新打开设置对话框时，iframe 身份和扩展启动计数保持不变。连续切换两个 Session 没有重新导入扩展，撤销注册会重建共享 document 并移除 Woven Imprint，重新注册后设置仍然保留。
 
-这项验收只证明自包含入口、只读上下文、设置、Session 绑定与卸载生命周期。安装型宿主仍禁止网络连接，没有提供 `setExtensionPrompt()` 写通道，也尚未把 DSH 请求阶段转换成 ST 的生成与消息事件；因此 Woven Imprint 的 sidecar 记录和记忆注入还不能工作。设置 document 目前仍隐藏，玩家也不能从产品界面打开该扩展的设置面板。
+这项验收只证明自包含入口、只读上下文、可见设置、Session 绑定与卸载生命周期。安装型宿主仍禁止网络连接，没有提供 `setExtensionPrompt()` 写通道，也尚未把 DSH 请求阶段转换成 ST 的生成与消息事件；因此 Woven Imprint 的 sidecar 记录和记忆注入还不能工作。
 
 可运行实现至少需要证明：
 

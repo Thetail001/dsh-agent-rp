@@ -42,6 +42,7 @@ test('builds one shared settings document and transports extension source withou
   assert.match(source, /\\u003c\/script>\\u003cscript>globalThis\.injected/u)
   assert.match(source, /\\u2028/u)
   assert.match(source, /script-src 'nonce-nonce_1234567890_safe' blob:/u)
+  assert.match(source, /background:transparent;color:CanvasText;color-scheme:dark/u)
   assert.match(source, /URL\.createObjectURL\(new Blob/u)
   assert.match(source, /await import\(url\)/u)
   assert.match(source, /globalThis\.extension_settings=clone\(boot\.settings\)/u)

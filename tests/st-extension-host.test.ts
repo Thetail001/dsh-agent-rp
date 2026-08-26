@@ -6,6 +6,7 @@ import {
   type StExtensionSessionBinding,
 } from '../src/client/st-extension-host.ts'
 import { InstalledStExtensionRegistry } from '../src/client/st-extension-registry.ts'
+import { InstalledStExtensionSurface } from '../src/client/st-extension-surface.tsx'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
 
 class FakeFrame {
@@ -15,6 +16,7 @@ class FakeFrame {
   }
   readonly dataset: Record<string, string> = {}
   readonly attributes = new Map<string, string>()
+  readonly style: Record<string, string> = {}
   hidden = false
   referrerPolicy = ''
   removed = false
@@ -231,4 +233,58 @@ test('ignores stale frames and reports bounded current-frame failures', async ()
   assert.deepEqual(warnings, ['agent-rp: installed ST extension "extension.failure" failed: boom'])
   assert.equal(frame.dataset.agentRpStExtensionSettings, 'visible')
   dispose()
+})
+
+test('mounts a visible frame in the product surface and synchronizes its state', async () => {
+  const registry = new InstalledStExtensionRegistry()
+  const document = new FakeDocument()
+  const window = new FakeWindow()
+  const sessions = new FakeSessionSource()
+  const surface = new InstalledStExtensionSurface()
+  const mounted: FakeFrame[] = []
+  surface.bindFrameMount(frame => { mounted.push(frame as unknown as FakeFrame) })
+  const dispose = installStExtensionHost(
+    window as unknown as Window,
+    document as unknown as Document,
+    registry,
+    sessions,
+    { read: async () => ({}), write: async settings => settings },
+    () => undefined,
+    surface,
+  )
+  registry.register({
+    id: 'extension.settings', displayName: 'Settings', loadingOrder: 0, source: 'export {}',
+  })
+  await flushRebuild()
+
+  assert.equal(document.frames.length, 0)
+  assert.equal(mounted.length, 1)
+  const first = mounted[0] as FakeFrame
+  assert.equal(first.hidden, false)
+  assert.equal(first.style.height, '100%')
+  const token = JSON.parse(first.srcdoc.match(/const boot=(\{.*?\});const entries/u)?.[1] ?? '{}').token as string
+  window.dispatch(first.contentWindow, {
+    source: 'dsh-agent-rp-st-extension-host', token,
+    action: 'settings-surface', hasContent: true,
+  })
+  window.dispatch(first.contentWindow, {
+    source: 'dsh-agent-rp-st-extension-host', token,
+    action: 'host-state', status: 'ready', loaded: ['extension.settings'], failed: [],
+  })
+  surface.open()
+  assert.deepEqual(surface.getSnapshot(), {
+    available: true,
+    failed: 0,
+    loaded: 1,
+    open: true,
+    phase: 'ready',
+    registryRevision: 1,
+  })
+
+  surface.close()
+  assert.equal(first.removed, false)
+  assert.equal(mounted.length, 1)
+  dispose()
+  assert.equal(first.removed, true)
+  assert.equal(surface.getSnapshot().phase, 'idle')
 })

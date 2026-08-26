@@ -6,6 +6,7 @@ import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import type { AgentRpProjection } from '../projection-types.ts'
 import { tavernPageSnapshot } from './tavern-snapshot.ts'
+import type { InstalledStExtensionSurface } from './st-extension-surface.tsx'
 
 type ExtensionSettings = Readonly<Record<string, JsonValue>>
 
@@ -42,6 +43,7 @@ export function installStExtensionHost(
   sessionSource: StExtensionSessionSource,
   settingsStore: StExtensionSettingsStore,
   warn: (message: string) => void,
+  surface?: InstalledStExtensionSurface,
 ): () => void {
   let active = true
   let scheduled = false
@@ -57,6 +59,7 @@ export function installStExtensionHost(
   })
 
   const removeFrame = (): void => {
+    if (frame !== undefined) surface?.detachFrame(frame)
     frame?.remove()
     frame = undefined
     token = undefined
@@ -79,7 +82,7 @@ export function installStExtensionHost(
       next.dataset.agentRpStExtensionHost = ''
       next.dataset.agentRpStExtensionPhase = 'booting'
       next.dataset.agentRpStExtensionRevision = String(snapshot.revision)
-      next.hidden = true
+      next.hidden = surface === undefined
       next.referrerPolicy = 'no-referrer'
       next.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms')
       next.srcdoc = compileStExtensionDocument({
@@ -93,7 +96,8 @@ export function installStExtensionHost(
         token,
       })
       frame = next
-      hostDocument.body.append(next)
+      if (surface === undefined) hostDocument.body.append(next)
+      else surface.attachFrame(next, snapshot.revision)
     })
   }
   const schedule = (): void => {
@@ -128,6 +132,7 @@ export function installStExtensionHost(
     }
     if (message.action === 'settings-surface') {
       frame.dataset.agentRpStExtensionSettings = message.hasContent ? 'visible' : 'empty'
+      surface?.setAvailable(message.hasContent)
       return
     }
     if (message.action === 'extension-state') {
@@ -139,6 +144,7 @@ export function installStExtensionHost(
     frame.dataset.agentRpStExtensionPhase = message.status
     frame.dataset.agentRpStExtensionLoaded = String(message.loaded.length)
     frame.dataset.agentRpStExtensionFailed = String(message.failed.length)
+    surface?.setHostState(message.status, message.loaded.length, message.failed.length)
     if (message.status === 'failed') warn(`agent-rp: installed ST extension host failed: ${message.error}`)
   }
 

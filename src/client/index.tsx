@@ -27,6 +27,11 @@ import { createRoot, type Root } from 'react-dom/client'
 import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { installStExtensionHost } from './st-extension-host.ts'
 import { InstalledStExtensionRegistry } from './st-extension-registry.ts'
+import {
+  InstalledStExtensionSurface,
+  InstalledStExtensionWorkbenchSection,
+  installStExtensionSurface,
+} from './st-extension-surface.tsx'
 
 interface SidebarDestinationOwnerProps {
   readonly wide: boolean
@@ -12361,8 +12366,10 @@ export const inject = ['connection', 'conversationEvents', 'slots', 'sessions', 
 /** Register the Agent RP header, composer presentation, and import affordance. */
 export function apply(ctx: ClientContext): void {
   const installedStExtensions = new InstalledStExtensionRegistry()
+  const installedStExtensionSurface = new InstalledStExtensionSurface()
   const installedStSettingsOwner = installedStExtensionSettingsIdentity()
   ctx.provide(AGENT_RP_ST_EXTENSION_SERVICE, installedStExtensions)
+  ctx.effect(() => installStExtensionSurface(window, document, installedStExtensionSurface))
   ctx.effect(() => installStExtensionHost(
     window,
     document,
@@ -12385,6 +12392,7 @@ export function apply(ctx: ClientContext): void {
       write: settings => writeTavernExtensionSettings(installedStSettingsOwner, settings),
     },
     message => { ctx.logger.warn(message) },
+    installedStExtensionSurface,
   ))
   installRoleplayArtifactTail(ctx)
   const runtimeDiagnostics = new AgentRpRuntimeDiagnosticRegistry()
@@ -13120,6 +13128,9 @@ export function apply(ctx: ClientContext): void {
       children: { [AGENT_RP_WORKBENCH_SECTION_SLOT]: { kind: 'list', scope: 'root' } },
     }, props => <SidebarRoleplayFooterAction {...props} {...sidebarRoleplayWorkbenchProps} />)
   })
+  ctx.slots.inject(AGENT_RP_WORKBENCH_SECTION_SLOT, () => ctx.slots.register({
+    name: AGENT_RP_WORKBENCH_SECTION_SLOT, id: 'agent-rp-installed-st-extension-settings', order: 40,
+  }, props => <InstalledStExtensionWorkbenchSection {...props} surface={installedStExtensionSurface} />))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-tavern-variables',
   }, () => null))
