@@ -24,7 +24,10 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { createPortal } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
-import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import {
+  type CSSProperties, type ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef,
+  useState, useSyncExternalStore,
+} from 'react'
 import { installStExtensionHost } from './st-extension-host.ts'
 import { createStExtensionGenerationClient } from './st-extension-generation.ts'
 import { InstalledStExtensionRegistry } from './st-extension-registry.ts'
@@ -41,6 +44,7 @@ interface SidebarDestinationOwnerProps {
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
+    'shell.overlay': { kind: 'list'; scope: 'root'; owner: Record<string, never> }
     'sidebar.destinations': { kind: 'list'; scope: 'root'; owner: SidebarDestinationOwnerProps }
     'conversation.chat.turnActions': { kind: 'list'; scope: 'session'; owner: TurnTailOwnerProps }
   }
@@ -172,6 +176,10 @@ import { installAgentRpNativeBack } from './native-back.ts'
 import { installAgentRpNativeShare } from './native-share.ts'
 import { loadAgentRpTurnHealth } from './roleplay-turn-health.ts'
 import type { AgentRpTurnHealthDiagnostic } from '../roleplay-turn-health-protocol.ts'
+import {
+  createSessionLaunchNoticeSource,
+  type SessionLaunchNoticeSource,
+} from './session-launch-notice.ts'
 import {
   classifySillyTavernJsonFile,
   selectSillyTavernDraft,
@@ -4064,7 +4072,9 @@ function RpDistributionBridgeSection({
   return <section style={{ margin: '0 auto', maxWidth: '720px', padding: '8px 4px 32px' }}>
     <h2 style={{ fontSize: '18px', margin: '0 0 8px' }}>RP 互通</h2>
     <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '0 0 18px', opacity: .62 }}>
-      在 Agent RP 与本机模块化 RP 之间复制角色卡、预设、Persona 和世界书。复制不会修改来源库或现有会话
+      实验性可选工具：需要在这台电脑上另行安装并启动 <a href="https://github.com/yhny1001/dsh-rp-distribution"
+        target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>dsh-rp-distribution</a>。它用于在两套 RP
+      运行时之间复制角色卡、预设、Persona、世界书或迁移会话；普通游玩和 Tavern Helper 均不需要它。复制不会修改来源库或现有会话
     </p>
     <div style={{ alignItems: 'end', display: 'grid', gap: '8px', gridTemplateColumns: 'minmax(0, 1fr) auto' }}>
       <label style={{ display: 'grid', fontSize: '12px', gap: '6px' }}>
@@ -12361,6 +12371,32 @@ function avatarLoader(ctx: ClientContext) {
   }
 }
 
+function SessionLaunchNoticeToast({ source }: { readonly source: SessionLaunchNoticeSource }): ReactElement | null {
+  const notice = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot)
+  useEffect(() => {
+    if (notice === undefined) return
+    const timer = window.setTimeout(() => { source.clear(notice.id) }, 12_000)
+    return () => { window.clearTimeout(timer) }
+  }, [notice, source])
+  if (notice === undefined) return null
+  return <div role="alert" data-agent-rp-session-launch-notice style={{
+    position: 'absolute', top: '18px', right: '18px', width: 'min(420px, calc(100vw - 36px))',
+    border: '1px solid color-mix(in srgb, #d5a64c 62%, transparent)', borderRadius: '12px',
+    background: 'var(--dsw-alias-bg-layer-2, #252528)', boxShadow: '0 14px 40px rgba(0,0,0,.32)',
+    color: 'var(--dsw-alias-label-primary, #f2f2f2)', padding: '12px 38px 12px 14px',
+    pointerEvents: 'auto', zIndex: 1,
+  }}>
+    <strong style={{ display: 'block', fontSize: '13px', lineHeight: 1.45 }}>新角色会话未加入工作区</strong>
+    <span style={{ display: 'block', fontSize: '12px', lineHeight: 1.55, marginTop: '3px', opacity: .76 }}>
+      {notice.message}
+    </span>
+    <button type="button" aria-label="关闭工作区提示" onClick={() => { source.clear(notice.id) }} style={{
+      position: 'absolute', top: '7px', right: '8px', width: '26px', height: '26px', border: 0,
+      borderRadius: '7px', background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: '18px',
+    }}>×</button>
+  </div>
+}
+
 /** Client services required by the Roleplay shell. */
 export const inject = ['connection', 'conversationEvents', 'slots', 'sessions', 'workspaces']
 
@@ -12405,6 +12441,7 @@ export function apply(ctx: ClientContext): void {
     return () => { style.remove() }
   })
   const workspaceSettings = createWorkspaceSettingsSource()
+  const sessionLaunchNotices = createSessionLaunchNoticeSource()
   const workspaceList: WorkspaceListSource = {
     getSnapshot: () => ctx.workspaces.list.getSnapshot(),
     subscribe: listener => ctx.workspaces.list.subscribe(listener),
@@ -12575,6 +12612,7 @@ export function apply(ctx: ClientContext): void {
       throw new Error('角色会话已创建，但客户端尚未收到它；请刷新页面后重试')
     }
     ctx.sessions.open(sessionId)
+    if (value.workspaceWarning !== undefined) sessionLaunchNotices.publish(value.workspaceWarning)
     return sessionId
   }
   const rewriteTurn = async (sourceSessionId: SessionId, turn: number, draft: string): Promise<void> => {
@@ -13121,6 +13159,9 @@ export function apply(ctx: ClientContext): void {
   }, props => <RpDistributionBridgeSection {...props} listCharacters={listCharacters} listPresets={listPresets}
     listPersonas={listPersonas} listWorldInfos={listWorldInfos}
     probe={probeRpDistribution} transfer={transferRpDistribution} receive={receiveRpDistribution} />))
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay', id: 'agent-rp-session-launch-notice', order: 20,
+  }, () => <SessionLaunchNoticeToast source={sessionLaunchNotices} />))
   const sidebarRoleplayWorkbenchProps: SidebarRoleplayWorkbenchProps = {
     runtimeDiagnostics, workspaceSettings, workspaceList, listCharacters, readCharacter, setCharacterArchived, deleteCharacter,
     importCharacterFile, prepareChatMigration: prepareChatMigrationFromBlankSession,

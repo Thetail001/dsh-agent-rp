@@ -9,6 +9,7 @@ const declared = new Set([
 const builtins = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`)])
 const missing = new Map()
 const clientBuiltins = new Set()
+let hostSource
 
 function packageName(specifier) {
   if (specifier.startsWith('@')) return specifier.split('/').slice(0, 2).join('/')
@@ -23,6 +24,7 @@ for (const file of [
   '../lib/client.js',
 ]) {
   const source = readFileSync(new URL(file, import.meta.url), 'utf8')
+  if (file === '../lib/index.js') hostSource = source
   const specifiers = [
     ...source.matchAll(/\bfrom\s+["']([^"']+)["']/gu),
     ...source.matchAll(/\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/gu),
@@ -40,6 +42,13 @@ for (const file of [
     locations.push(file.slice(3))
     missing.set(dependency, locations)
   }
+}
+
+if (hostSource === undefined || !/\bfrom\s+["']es-module-lexer\/js["']/u.test(hostSource)) {
+  throw new Error('Published Host bundle must retain es-module-lexer/js as a declared runtime import')
+}
+if (hostSource.includes('"use asm"')) {
+  throw new Error('Published Host bundle must not transform the es-module-lexer asm.js implementation')
 }
 
 const extension = await import('@dsh-external/dsh-agent-rp/extension/v0')

@@ -5,6 +5,7 @@ function isHostExternal(id: string): boolean {
   return id.startsWith('node:') || id.startsWith('@deepseek-ai/')
     || id === 'quickjs-emscripten-core'
     || id === '@jitl/quickjs-singlefile-mjs-release-sync'
+    || id === 'es-module-lexer/js'
 }
 
 export function host(entry: Readonly<Record<string, string>>): UserConfig {
