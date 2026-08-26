@@ -106,6 +106,7 @@ export function worldInfoFailureReport(
         ...(entry.error.name === undefined ? [] : [`错误名称: ${entry.error.name}`]),
         `错误消息: ${entry.error.message}`,
         ...(entry.error.stack === undefined ? [] : ['调用栈:', entry.error.stack]),
+        ...(entry.error.truncated === true ? ['错误已截断: 是'] : []),
       ] : []),
       '',
     ]),

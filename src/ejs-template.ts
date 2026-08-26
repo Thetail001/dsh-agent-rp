@@ -107,6 +107,8 @@ export interface EjsTemplateErrorDetail {
   readonly name?: string
   readonly message: string
   readonly stack?: string
+  /** At least one runtime-provided field exceeded the local diagnostic limit. */
+  readonly truncated?: true
 }
 
 /** Result of one isolated template evaluation. */
@@ -474,19 +476,36 @@ function failureKind(value: unknown): EjsTemplateFailureKind {
   return 'runtime-error'
 }
 
+const MAX_TEMPLATE_ERROR_NAME_LENGTH = 240
+const MAX_TEMPLATE_ERROR_MESSAGE_LENGTH = 2_000
+const MAX_TEMPLATE_ERROR_STACK_LENGTH = 4_000
+
+function boundedTemplateErrorField(value: string, limit: number): { readonly text: string; readonly truncated: boolean } {
+  return value.length <= limit
+    ? { text: value, truncated: false }
+    : { text: `${value.slice(0, limit)}…`, truncated: true }
+}
+
 function templateErrorDetail(value: unknown): EjsTemplateErrorDetail | undefined {
   if (typeof value === 'object' && value !== null) {
     const record = value as { readonly name?: unknown; readonly message?: unknown; readonly stack?: unknown }
-    const name = typeof record.name === 'string' && record.name.trim() !== '' ? record.name : undefined
-    const message = typeof record.message === 'string' && record.message !== '' ? record.message : undefined
-    const stack = typeof record.stack === 'string' && record.stack !== '' ? record.stack : undefined
+    const name = typeof record.name === 'string' && record.name.trim() !== ''
+      ? boundedTemplateErrorField(record.name, MAX_TEMPLATE_ERROR_NAME_LENGTH) : undefined
+    const message = typeof record.message === 'string' && record.message !== ''
+      ? boundedTemplateErrorField(record.message, MAX_TEMPLATE_ERROR_MESSAGE_LENGTH) : undefined
+    const stack = typeof record.stack === 'string' && record.stack !== ''
+      ? boundedTemplateErrorField(record.stack, MAX_TEMPLATE_ERROR_STACK_LENGTH) : undefined
     if (message !== undefined) return {
-      ...(name === undefined ? {} : { name }),
-      message,
-      ...(stack === undefined ? {} : { stack }),
+      ...(name === undefined ? {} : { name: name.text }),
+      message: message.text,
+      ...(stack === undefined ? {} : { stack: stack.text }),
+      ...(name?.truncated === true || message.truncated || stack?.truncated === true ? { truncated: true as const } : {}),
     }
   }
-  if (typeof value === 'string' && value !== '') return { message: value }
+  if (typeof value === 'string' && value !== '') {
+    const message = boundedTemplateErrorField(value, MAX_TEMPLATE_ERROR_MESSAGE_LENGTH)
+    return { message: message.text, ...(message.truncated ? { truncated: true as const } : {}) }
+  }
   if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
     return { message: String(value) }
   }

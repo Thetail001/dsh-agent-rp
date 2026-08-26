@@ -83,6 +83,21 @@ test('includes the complete EJS runtime error only when Debug output is requeste
   ].join('\n'))
 })
 
+test('marks EJS runtime details that were bounded before projection', () => {
+  const report = worldInfoFailureReport([{
+    name: '控制器世界书',
+    source: 'character',
+    entries: [{
+      sourceId: '105',
+      reason: 'template-error',
+      template: 'runtime-error',
+      templateError: { message: 'bounded error…', truncated: true },
+    }],
+  }], { includeDebugErrors: true })
+
+  assert.match(report ?? '', /错误已截断: 是/u)
+})
+
 test('returns no report when every World Info entry completed normal evaluation', () => {
   assert.equal(worldInfoFailureReport([{
     name: '空世界', source: 'standalone', entries: [{ sourceId: '1', reason: 'primary-unmatched' }],

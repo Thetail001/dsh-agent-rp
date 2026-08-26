@@ -45,6 +45,19 @@ test('bounds pending EJS and preserves rejected runtime errors for Debug reports
   assert.match(rejected.error?.stack ?? '', /agent-rp:ejs/u)
 })
 
+test('bounds runtime-provided EJS error fields before projecting Debug details', () => {
+  const result = engine.render('<% throw new Error("x".repeat(10_000)) %>', {
+    characterName: '角色', userName: '用户', messages: [],
+  })
+
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.equal(result.kind, 'runtime-error')
+  assert.equal(result.error?.truncated, true)
+  assert.ok((result.error?.message.length ?? Infinity) <= 2_001)
+  assert.ok((result.error?.stack?.length ?? Infinity) <= 4_001)
+})
+
 test('bounds all templates rendered through one prompt context', () => {
   const render = engine.createRenderer({ characterName: '角色', userName: '用户', messages: [] })
   for (let index = 0; index < 256; index += 1) {

@@ -45,12 +45,6 @@ function utf8Length(value: string): number {
   return UTF8_ENCODER.encode(value).byteLength
 }
 
-function embeddedEntryLength(entry: unknown): number {
-  const serialized = JSON.stringify(entry, null, 2)
-  const continuationLines = serialized.match(/\n/gu)?.length ?? 0
-  return utf8Length(serialized) + continuationLines * 8
-}
-
 function section<T>(all: readonly T[], included: readonly T[]): AgentRpDebugFailureSection<T> {
   return {
     total: all.length,
@@ -82,23 +76,17 @@ function debugErrorsWithinLimit(
     ...snapshot,
     debugErrors: current(),
   })
-  let currentLength = utf8Length(serializeAgentRpCopiedDiagnostic(currentReport()))
   const tryInclude = <T,>(
     failures: readonly T[],
     included: T[],
     index: number,
-  ): boolean => {
+  ): void => {
     const entry = failures[index]
-    if (entry === undefined) return false
-    const nextIncluded = included.length + 1
-    const lengthIncrease = embeddedEntryLength(entry)
-      + (included.length === 0 ? 16 : 10)
-      + String(nextIncluded).length - String(included.length).length
-      + (nextIncluded === failures.length ? 1 : 0)
-    if (currentLength + lengthIncrease > MAX_AGENT_RP_COPIED_DIAGNOSTIC_BYTES) return false
+    if (entry === undefined) return
     included.push(entry)
-    currentLength += lengthIncrease
-    return true
+    if (utf8Length(serializeAgentRpCopiedDiagnostic(currentReport())) > MAX_AGENT_RP_COPIED_DIAGNOSTIC_BYTES) {
+      included.pop()
+    }
   }
 
   while (tavernIndex < tavernFailures.length || worldInfoIndex < worldInfoFailures.length) {

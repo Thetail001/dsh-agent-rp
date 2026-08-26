@@ -4015,10 +4015,10 @@ function WorkspaceSettingsSection({
         }} />
         <span>
           <strong style={{ display: 'block', fontSize: '13px', fontWeight: 580 }}>
-            在诊断复制中包含完整错误信息
+            在诊断复制中包含详细错误信息
           </strong>
           <span style={{ display: 'block', fontSize: '12px', lineHeight: 1.55, marginTop: '3px', opacity: .56 }}>
-            开启后，“复制诊断”会包含失败脚本和世界书错误，世界书“复制失败详情”还会包含 EJS 错误名称、消息和调用栈。错误消息可能包含模板运行时值；报告超过长度上限时会明确标记截断。诊断不会自动上传。
+            开启后，“复制诊断”会包含失败脚本和世界书错误，世界书“复制失败详情”还会包含有长度上限的 EJS 错误名称、消息和调用栈。错误消息可能包含模板运行时值；截断会在报告中明确标记。诊断不会自动上传。
           </span>
         </span>
       </label>

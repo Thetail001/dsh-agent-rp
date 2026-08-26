@@ -229,3 +229,21 @@ test('skips an oversized World Info error and still includes later failures that
   assert.ok(new TextEncoder().encode(serializeAgentRpCopiedDiagnostic(result)).byteLength
     <= MAX_AGENT_RP_COPIED_DIAGNOSTIC_BYTES)
 })
+
+test('measures the final escaped UTF-8 JSON instead of estimating entry growth', () => {
+  const result = collectAgentRpCopiedDiagnostic(snapshot, {
+    debugEnabled: true,
+    tavernScripts: Array.from({ length: 80 }, (_, index) => ({
+      key: `preset:${index}`,
+      name: `换行\\引号\"${index}`,
+      scope: 'preset' as const,
+      phase: 'runtime-error' as const,
+      error: `${'\\\"\n'.repeat(900)}🚨`,
+    })),
+    worldInfoBooks: [],
+  })
+
+  const bytes = new TextEncoder().encode(serializeAgentRpCopiedDiagnostic(result)).byteLength
+  assert.ok(bytes <= MAX_AGENT_RP_COPIED_DIAGNOSTIC_BYTES)
+  assert.equal(result.debugErrors?.tavernScripts?.truncated, true)
+})
