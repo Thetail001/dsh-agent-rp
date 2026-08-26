@@ -7,8 +7,20 @@ import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import type { AgentRpProjection } from '../projection-types.ts'
 import { tavernPageSnapshot } from './tavern-snapshot.ts'
 import type { InstalledStExtensionSurface } from './st-extension-surface.tsx'
+import { advanceTavernTranscript, type TavernTranscriptCursor } from './tavern-transcript.ts'
 
 type ExtensionSettings = Readonly<Record<string, JsonValue>>
+
+interface StExtensionPageEvent {
+  readonly role: 'user' | 'assistant'
+  readonly seq: number
+}
+
+function transcriptPageEvents(
+  messages: readonly NonNullable<AgentRpProjection['tavern']>['messages'][number][],
+): readonly StExtensionPageEvent[] {
+  return messages.map(message => ({ role: message.role, seq: message.seq }))
+}
 
 /** Persistent settings operations owned by the installed extension collection. */
 export interface StExtensionSettingsStore {
@@ -48,8 +60,15 @@ export function installStExtensionHost(
   let active = true
   let scheduled = false
   let frame: HTMLIFrameElement | undefined
+  let frameReady = false
+  let pendingSync: 'session-bind' | 'page-sync' | undefined
+  let pendingEvents: readonly StExtensionPageEvent[] = []
   let token: string | undefined
   let sessionBinding = sessionSource.current()
+  let transcriptCursor: TavernTranscriptCursor | undefined = advanceTavernTranscript(
+    undefined,
+    sessionBinding?.projection?.tavern?.messages ?? [],
+  ).cursor
   let settings: ExtensionSettings = {}
   let settingsWrites: Promise<void> = Promise.resolve()
   const settingsReady = settingsStore.read().then(value => {
@@ -62,6 +81,9 @@ export function installStExtensionHost(
     if (frame !== undefined) surface?.detachFrame(frame)
     frame?.remove()
     frame = undefined
+    frameReady = false
+    pendingSync = undefined
+    pendingEvents = []
     token = undefined
   }
   const rebuild = (): void => {
@@ -105,18 +127,53 @@ export function installStExtensionHost(
     scheduled = true
     queueMicrotask(rebuild)
   }
+  const postBinding = (action: 'session-bind' | 'page-sync'): void => {
+    frame?.contentWindow?.postMessage({
+      source: 'dsh-agent-rp-host', action, token,
+      sessionId: sessionBinding?.sessionId ?? null,
+      snapshot: sessionBinding?.projection === undefined
+        ? null
+        : tavernPageSnapshot(sessionBinding.projection, sessionBinding.sessionId, settings),
+    }, '*')
+  }
+  const postEvents = (events: readonly StExtensionPageEvent[]): void => {
+    for (const event of events) {
+      const message = sessionBinding?.projection?.tavern?.messages.find(candidate => (
+        candidate.seq === event.seq && candidate.role === event.role
+      ))
+      if (message === undefined) continue
+      frame?.contentWindow?.postMessage({
+        source: 'dsh-agent-rp-host', action: 'page-event', token,
+        eventType: message.role === 'user' ? 'message_sent' : 'message_received',
+        args: message.role === 'user' ? [message.messageId] : [message.messageId, 'normal'],
+      }, '*')
+    }
+  }
   const bindSession = (): void => {
     const next = sessionSource.current()
     if (next?.sessionId === sessionBinding?.sessionId && next?.projection === sessionBinding?.projection) return
     const sessionChanged = next?.sessionId !== sessionBinding?.sessionId
+    const advanced = advanceTavernTranscript(
+      sessionChanged ? undefined : transcriptCursor,
+      next?.projection?.tavern?.messages ?? [],
+    )
+    transcriptCursor = advanced.cursor
     sessionBinding = next
-    frame?.contentWindow?.postMessage({
-      source: 'dsh-agent-rp-host', action: sessionChanged ? 'session-bind' : 'page-sync', token,
-      sessionId: next?.sessionId ?? null,
-      snapshot: next?.projection === undefined
-        ? null
-        : tavernPageSnapshot(next.projection, next.sessionId, settings),
-    }, '*')
+    if (frame === undefined) return
+    const action = sessionChanged ? 'session-bind' : 'page-sync'
+    const events = sessionChanged ? [] : transcriptPageEvents(advanced.appended)
+    if (!frameReady) {
+      if (action === 'session-bind') {
+        pendingSync = action
+        pendingEvents = []
+      } else {
+        pendingSync ??= action
+        pendingEvents = [...pendingEvents, ...events]
+      }
+      return
+    }
+    postBinding(action)
+    postEvents(events)
   }
   const receive = (event: MessageEvent<unknown>): void => {
     if (frame === undefined || token === undefined || event.source !== frame.contentWindow) return
@@ -145,6 +202,11 @@ export function installStExtensionHost(
     frame.dataset.agentRpStExtensionLoaded = String(message.loaded.length)
     frame.dataset.agentRpStExtensionFailed = String(message.failed.length)
     surface?.setHostState(message.status, message.loaded.length, message.failed.length)
+    frameReady = true
+    if (pendingSync !== undefined) postBinding(pendingSync)
+    postEvents(pendingEvents)
+    pendingSync = undefined
+    pendingEvents = []
     if (message.status === 'failed') warn(`agent-rp: installed ST extension host failed: ${message.error}`)
   }
 

@@ -31,6 +31,9 @@ import {
   TAVERN_PINIA_GZIP_BASE64, TAVERN_VUE_GZIP_BASE64, TAVERN_YAML_GZIP_BASE64, TAVERN_ZOD_GZIP_BASE64,
 } from './tavern-vendor-sources.generated.ts'
 
+export { advanceTavernTranscript } from './tavern-transcript.ts'
+export type { TavernTranscriptCursor } from './tavern-transcript.ts'
+
 export {
   BUILT_IN_TAVERN_SCRIPT_ORIGINS, resolveTavernScriptExecution, TavernScriptOriginApprovalError,
   validatedTavernCompatibilityMarkers,
@@ -269,14 +272,6 @@ export interface TavernScriptSnapshot extends TavernPageSnapshot {
   readonly injectedPrompts?: readonly Omit<TavernInjectedPrompt, 'scriptId' | 'scriptScope'>[]
 }
 
-/** Last visible transcript message observed by the Host event bridge. */
-export interface TavernTranscriptCursor {
-  readonly last?: {
-    readonly seq: number
-    readonly role: 'user' | 'assistant'
-  }
-}
-
 /** Resolve SillyTavern regex depth from transcript order without counting Host-only flow nodes. */
 export function tavernMessageDepth(
   messages: readonly { readonly messageId: number }[] | undefined,
@@ -285,30 +280,6 @@ export function tavernMessageDepth(
   if (messages === undefined || messageId === undefined) return undefined
   const index = messages.findIndex(message => message.messageId === messageId)
   return index < 0 ? undefined : messages.length - index - 1
-}
-
-/**
- * Find messages appended after a previously observed transcript tail.
- *
- * A missing cursor establishes an initial baseline. If the old tail disappeared,
- * the transcript was rewritten and the new state becomes the baseline without
- * replaying historical messages.
- */
-export function advanceTavernTranscript<Message extends {
-  readonly seq: number
-  readonly role: 'user' | 'assistant'
-}>(
-  previous: TavernTranscriptCursor | undefined,
-  messages: readonly Message[],
-): { readonly cursor: TavernTranscriptCursor; readonly appended: readonly Message[] } {
-  const last = messages.at(-1)
-  const cursor: TavernTranscriptCursor = last === undefined
-    ? {}
-    : { last: { seq: last.seq, role: last.role } }
-  if (previous === undefined) return { cursor, appended: [] }
-  if (previous.last === undefined) return { cursor, appended: messages }
-  const anchor = messages.findIndex(message => message.seq === previous.last!.seq && message.role === previous.last!.role)
-  return { cursor, appended: anchor < 0 ? [] : messages.slice(anchor + 1) }
 }
 
 const DOMPURIFY_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/dompurify@3.3.0/dist/purify.min.js'
