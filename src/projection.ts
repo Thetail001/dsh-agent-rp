@@ -764,8 +764,13 @@ export function createAgentRpProjectionDefinition(
           meta,
           semantics.placement === 'actor' ? 'character' : 'standalone',
         )
+        const provisionalLibraryCardLorebook = semantics.placement === 'actor'
+          && withSurface.character.avatarLibraryId !== undefined
+          && withSurface.cardLorebook?.id === `character:library:${withSurface.character.avatarLibraryId}`
         const existingCharacterSources = [
-          ...(withSurface.cardLorebook === undefined ? [] : [withSurface.cardLorebook]),
+          ...(withSurface.cardLorebook === undefined || provisionalLibraryCardLorebook
+            ? []
+            : [withSurface.cardLorebook]),
           ...Object.values(withSurface.standaloneWorldInfos).filter(item => item.source === 'character'),
         ]
         const primaryActorWorld = semantics.placement === 'actor' && existingCharacterSources.length === 0
@@ -972,8 +977,8 @@ export function createAgentRpProjectionDefinition(
       const libraryId = 'characterLibraryId' in event.data.source
         ? event.data.source.characterLibraryId
         : undefined
-      const cardLorebook = libraryId === undefined ? cardLorebookSource(event.data.meta, card) : undefined
-      const mvu = libraryId === undefined ? readCurrentMvuState(card, []) : undefined
+      const cardLorebook = cardLorebookSource(event.data.meta, card)
+      const mvu = readCurrentMvuState(card, [])
       const {
         cardLorebook: _previousLorebook,
         mvu: _previousMvu,
@@ -984,7 +989,7 @@ export function createAgentRpProjectionDefinition(
         character: libraryId === undefined
           ? projected.character
           : { ...projected.character, avatarLibraryId: libraryId },
-        cardWorldInfoCount: libraryId === undefined ? projected.lorebookEntries : 0,
+        cardWorldInfoCount: projected.lorebookEntries,
         ...(cardLorebook === undefined ? {} : { cardLorebook }),
         ...(mvu === undefined ? {} : { mvu }),
         tavern: initializeTavernHelperState(card.frontend, event.data.meta.result.sourceAttachmentId, withSurface.tavern),

@@ -175,7 +175,8 @@ test('edits a character world composition across future launch, runtime, project
       greetingIndex: 0,
     },
   )
-  const oldSession = Session.create(SessionId('character-world-binding-old-runtime'), oldPrepared.seed)
+  const legacySeed = oldPrepared.seed.filter(event => event.type !== 'agent-rp/world-info-library-seed')
+  const oldSession = Session.create(SessionId('character-world-binding-old-runtime'), legacySeed)
 
   const primary = worlds.importFile({ filename: '新主世界.json', data: worldInfoBytes('新主世界', '主世界采用新的潮汐纪年。') })
   const supporting = worlds.importFile({ filename: '附加世界.json', data: worldInfoBytes('附加世界', '附加世界记录港口航线。') })
@@ -246,8 +247,22 @@ test('edits a character world composition across future launch, runtime, project
   assert.ok(projection.worldInfo.books.every(book => book.source === 'character'))
   assert.deepEqual(projection.mvu?.statData, { 角色: { 等级: 1 } })
 
-  assert.equal(readSessionLorebookSourcesFromEvents(oldSession.events).length, 1)
-  assert.equal(readSessionLorebookSourcesFromEvents(oldSession.events)[0]?.id, `character:library:${embeddedWorldId}`)
+  const oldSources = readSessionLorebookSourcesFromEvents(oldSession.events)
+  assert.equal(oldSources.length, 1)
+  assert.equal(oldSources[0]?.source, 'character')
+  const oldRuntime = resolveSessionRoleplayRuntime({
+    session: oldSession,
+    deployment: resolveConfig({ characterName: 'fallback' }),
+  })
+  assert.equal(oldRuntime.lorebooks.length, 1)
+  let oldProjectionState = agentRpProjectionDefinition.init()
+  for (const event of oldSession.events) {
+    oldProjectionState = agentRpProjectionDefinition.apply(oldProjectionState, event)
+  }
+  const oldProjection = agentRpProjectionDefinition.wire.view(oldProjectionState)
+  assert.equal(oldProjection.worldInfo.books.length, 1)
+  assert.equal(oldProjection.worldInfo.books[0]?.source, 'character')
+  assert.deepEqual(oldProjection.mvu?.statData, { 角色: { 等级: 1 } })
   assert.deepEqual(characters.asset(character.id).data, bytes)
   const exported = JSON.parse(new TextDecoder().decode(characters.exportModified(character.id).data)) as {
     data: { character_book: { entries: readonly Record<string, unknown>[] } }
