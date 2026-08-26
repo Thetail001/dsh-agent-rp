@@ -1111,6 +1111,34 @@ test('persists script-owned prompt injections and projects only model-visible en
   assert.deepEqual(decoded?.lastMutation, { scope: 'injection', scriptScope: 'character', scriptId: 'status' })
 })
 
+test('persists installed-extension prompts without inventing a role-card script owner', () => {
+  const initial = initializeTavernHelperState({
+    regexScripts: [], tavernHelperScriptNames: [], tavernHelperVariables: {}, tavernHelperScripts: [],
+  }, 'card-1')
+  const request = parseTavernHelperMutationRequest(JSON.stringify({
+    format: 0,
+    operation: 'replace-installed-extension-prompts',
+    prompts: [{
+      id: 'woven_imprint_memory', position: 'in_chat', depth: 2, role: 'system',
+      content: '长篇记忆', shouldScan: true, once: false,
+    }],
+  }))
+  const decoded = decodeTavernHelperState(encodeTavernHelperState(
+    applyTavernHelperMutation(initial, request),
+  ))
+
+  assert.deepEqual(decoded?.installedExtensionPrompts, [{
+    id: 'woven_imprint_memory', position: 'in_chat', depth: 2, role: 'system',
+    content: '长篇记忆', shouldScan: true, once: false,
+  }])
+  assert.deepEqual(tavernInjectedInChatPrompts(decoded), [
+    { role: 'system', content: '长篇记忆', depth: 2, order: 100 },
+  ])
+  assert.deepEqual(tavernInjectedScanText(decoded), ['长篇记忆'])
+  assert.deepEqual(decoded?.lastMutation, { scope: 'installed-extension-injection' })
+  assert.equal('scriptId' in decoded!.installedExtensionPrompts![0]!, false)
+})
+
 test('includes durable Tavern Helper injections in auxiliary prompt previews', async () => {
   const session = Session.create(SessionId('injected-preview'))
   const initial = initializeTavernHelperState({

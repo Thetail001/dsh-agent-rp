@@ -21,7 +21,8 @@ import {
   type TavernScriptPreload,
 } from '../tavern-script-resolver.ts'
 import type {
-  TavernInjectedPrompt, TavernScriptTree, TavernScriptTreeScope, TavernWorldbookBindings, TavernWorldbookEntry,
+  TavernInjectedPrompt, TavernInstalledExtensionPrompt, TavernScriptTree, TavernScriptTreeScope,
+  TavernWorldbookBindings, TavernWorldbookEntry,
 } from '../tavern-helper.ts'
 import { embeddedNativeIdentityRelayRuntime } from './embedded-identity.ts'
 import { inlineScriptJson } from './inline-script-json.ts'
@@ -212,6 +213,8 @@ export interface TavernPageSnapshot {
   readonly preset?: TavernScriptPresetSnapshot
   /** Host-persisted SillyTavern extension settings shared by this page lifecycle. */
   readonly extensionSettings?: JsonRecord
+  /** Durable prompts owned by the singleton installed-extension page. */
+  readonly installedExtensionPrompts?: readonly TavernInstalledExtensionPrompt[]
   readonly scopes: {
     readonly global: JsonRecord
     readonly preset: JsonRecord

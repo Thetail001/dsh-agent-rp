@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
+import LlmRuntime from '@deepseek-ai/dsh-llm'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -83,6 +84,7 @@ test('refuses to claim an existing user preset with the reserved id', (context) 
 
 test('claims character-card images for every Agent joined to the preset, including Agents joined after publication', async (context) => {
   const root = new Context()
+  await root.plugin(LlmRuntime)
   await root.plugin(AgentRegistry)
   const presetKey = {}
   const preset = createScope(root, presetKey)
@@ -133,7 +135,15 @@ test('claims character-card images for every Agent joined to the preset, includi
   root.provide('credentials' as never, {} as never)
   const characterLibraryRoot = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-runtime-library-'))
   context.after(() => { rmSync(characterLibraryRoot, { recursive: true, force: true }) })
-  installAgentRp(preset.ctx, resolveConfig({ mode: 'character' }), { characterLibraryRoot })
+  let agentParentCtx: Context | undefined
+  await preset.ctx.plugin({
+    inject: ['llm', 'systemPrompt', 'tools'],
+    apply(pluginCtx: Context) {
+      installAgentRp(pluginCtx, resolveConfig({ mode: 'character' }), { characterLibraryRoot })
+      agentParentCtx = pluginCtx
+    },
+  })
+  assert.ok(agentParentCtx)
   const consumer = claims.get('dsh-agent-rp')
   const chatImporter = importers.get('dsh-agent-rp:sillytavern-chat')
   const cardImporter = importers.get('dsh-agent-rp:character-card')
@@ -153,8 +163,8 @@ test('claims character-card images for every Agent joined to the preset, includi
     id: SessionId('later-joined-character'),
     session: Session.create(SessionId('later-joined-character')),
   } as Agent
-  const joined = createScope(root, joinedAgent, { parent: presetKey })
-  const laterJoined = createScope(root, laterJoinedAgent, { parent: presetKey })
+  const joined = createScope(agentParentCtx, joinedAgent, { parent: presetKey })
+  const laterJoined = createScope(agentParentCtx, laterJoinedAgent, { parent: presetKey })
   const sibling = createScope(root, siblingAgent)
   Object.assign(joinedAgent, { ctx: joined.ctx })
   Object.assign(laterJoinedAgent, { ctx: laterJoined.ctx })

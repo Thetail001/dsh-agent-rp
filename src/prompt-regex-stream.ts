@@ -206,6 +206,51 @@ function isAgentLoopDispatch(options: GenerateOptions): boolean {
     || (options.sessionId !== undefined && options.purpose === undefined && Object.isFrozen(options))
 }
 
+function preparePromptRegexStreamOptions(
+  options: GenerateOptions,
+  agentForSession: (sessionId: string) => Agent | undefined,
+  promptPlanForAgent: (agent: Agent) => RoleplayTurnPromptPlan | undefined,
+): GenerateOptions | undefined {
+  if (!isAgentLoopDispatch(options) || options.sessionId === undefined) return undefined
+  const agent = agentForSession(String(options.sessionId))
+  if (agent === undefined) return undefined
+  const plan = promptPlanForAgent(agent)
+  if (plan === undefined) return undefined
+  const hasManagedSurface = dialogueNodes(agent.session)
+    .some(node => sourceMarker(messageOf(node.current).source) !== undefined)
+  const hasPromptScripts = plan.transforms.operations.length > 0
+  if (!hasPromptScripts && !hasManagedSurface
+    && plan.beforeHistory.length === 0 && plan.afterHistory.length === 0 && plan.inChat.length === 0
+    && plan.includeHistory && plan.continuation === undefined) return undefined
+  let messages = options.messages
+  if (hasPromptScripts || hasManagedSurface) {
+    const trace = applyPromptRegexSurface(agent.session, plan.transforms)
+    if (trace !== undefined && trace.replacementCount > 0) messages = [...agent.session.deriveMessages()]
+  }
+  return {
+    ...options,
+    messages: prepareSillyTavernProviderMessages(messages, plan),
+  }
+}
+
+function installPromptRegexStreamHandler(
+  ctx: Context,
+  prepare: (options: GenerateOptions) => GenerateOptions | undefined,
+): () => void {
+  return ctx.on('llm/stream', (options, next) => {
+    const prepared = prepare(options)
+    return prepared === undefined ? next() : ctx.llm.stream(prepared)
+  }, { global: true, prepend: true })
+}
+
+function llmStreamOwnerContext(ctx: Context): Context {
+  const owner = Reflect.get(ctx.llm as object, 'ctx') as Partial<Context> | undefined
+  if (owner === undefined || typeof owner.on !== 'function') {
+    throw new Error('DSH LLM runtime does not expose its event context')
+  }
+  return owner as Context
+}
+
 /** Apply one request's prompt view to the durable model surface. */
 export function applyPromptRegexSurface(
   session: Session,
@@ -275,26 +320,21 @@ export function installPromptRegexStream(
   ctx: Context,
   agentForSession: (sessionId: string) => Agent | undefined,
   promptPlanForAgent: (agent: Agent) => RoleplayTurnPromptPlan | undefined = () => undefined,
+): () => void {
+  return installPromptRegexStreamHandler(
+    ctx,
+    options => preparePromptRegexStreamOptions(options, agentForSession, promptPlanForAgent),
+  )
+}
+
+/** Install the provider seam on the exact context that owns one Agent Loop. */
+export function installAgentPromptRegexStream(
+  agent: Agent,
+  promptPlanForAgent: (agent: Agent) => RoleplayTurnPromptPlan | undefined = () => undefined,
 ): void {
-  ctx.on('llm/stream', (options, next) => {
-    if (!isAgentLoopDispatch(options) || options.sessionId === undefined) return next()
-    const agent = agentForSession(String(options.sessionId))
-    if (agent === undefined) return next()
-    const plan = promptPlanForAgent(agent)
-    if (plan === undefined) return next()
-    const hasManagedSurface = dialogueNodes(agent.session).some(node => sourceMarker(messageOf(node.current).source) !== undefined)
-    const hasPromptScripts = plan.transforms.operations.length > 0
-    if (!hasPromptScripts && !hasManagedSurface
-      && plan.beforeHistory.length === 0 && plan.afterHistory.length === 0 && plan.inChat.length === 0
-      && plan.includeHistory && plan.continuation === undefined) return next()
-    let messages = options.messages
-    if (hasPromptScripts || hasManagedSurface) {
-      const trace = applyPromptRegexSurface(agent.session, plan.transforms)
-      if (trace !== undefined && trace.replacementCount > 0) messages = [...agent.session.deriveMessages()]
-    }
-    return ctx.llm.stream({
-      ...options,
-      messages: prepareSillyTavernProviderMessages(messages, plan),
-    })
-  }, { global: true, prepend: true })
+  agent.ctx.effect(() => installPromptRegexStream(
+    llmStreamOwnerContext(agent.ctx),
+    sessionId => sessionId === String(agent.session.id) ? agent : undefined,
+    promptPlanForAgent,
+  ), `agent-rp: provider message preparation for ${agent.session.id}`)
 }

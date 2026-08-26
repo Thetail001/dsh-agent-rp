@@ -211,6 +211,9 @@ export function tavernPageSnapshot(
     ...(projection.persona === undefined ? {} : { persona: projection.persona }),
     ...(preset === undefined ? {} : { preset }),
     extensionSettings,
+    ...(state?.installedExtensionPrompts === undefined ? {} : {
+      installedExtensionPrompts: state.installedExtensionPrompts,
+    }),
     scopes: {
       global: state?.scopes.global ?? {},
       preset: state?.scopes.preset ?? {},

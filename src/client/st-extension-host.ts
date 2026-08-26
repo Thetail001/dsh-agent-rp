@@ -8,6 +8,11 @@ import type { AgentRpProjection } from '../projection-types.ts'
 import { tavernPageSnapshot } from './tavern-snapshot.ts'
 import type { InstalledStExtensionSurface } from './st-extension-surface.tsx'
 import { advanceTavernTranscript, type TavernTranscriptCursor } from './tavern-transcript.ts'
+import type { TavernInstalledExtensionPrompt } from '../tavern-helper.ts'
+import type {
+  StExtensionGenerationRequest,
+} from '../st-extension-generation-protocol.ts'
+import type { StExtensionGenerationClient } from './st-extension-generation.ts'
 
 type ExtensionSettings = Readonly<Record<string, JsonValue>>
 
@@ -40,6 +45,24 @@ export interface StExtensionSessionSource {
   readonly subscribe: (listener: () => void) => () => void
 }
 
+/** Durable write and long-poll transport for generation-time extension prompts. */
+export interface StExtensionGenerationBridge {
+  readonly client: StExtensionGenerationClient
+  readonly replacePrompts: (
+    sessionId: SessionId,
+    prompts: readonly TavernInstalledExtensionPrompt[],
+  ) => Promise<void>
+}
+
+interface PendingFrameGeneration {
+  readonly frame: HTMLIFrameElement
+  readonly request: StExtensionGenerationRequest
+  readonly sessionId: SessionId
+  promptWrite: Promise<void>
+  ready: boolean
+  readonly finish: (result: { readonly outcome: 'applied' | 'failed'; readonly error?: string }) => void
+}
+
 /**
  * Mount one rebuildable extension iframe for a browser ClientContext.
  * @param hostWindow - Browser window receiving reports from the current frame.
@@ -56,6 +79,7 @@ export function installStExtensionHost(
   settingsStore: StExtensionSettingsStore,
   warn: (message: string) => void,
   surface?: InstalledStExtensionSurface,
+  generation?: StExtensionGenerationBridge,
 ): () => void {
   let active = true
   let scheduled = false
@@ -71,13 +95,100 @@ export function installStExtensionHost(
   ).cursor
   let settings: ExtensionSettings = {}
   let settingsWrites: Promise<void> = Promise.resolve()
+  let generationLoopAbort: AbortController | undefined
+  let pendingGeneration: PendingFrameGeneration | undefined
   const settingsReady = settingsStore.read().then(value => {
     settings = value
   }, (error: unknown) => {
     warn(`agent-rp: installed ST extension settings failed to load: ${String(error)}`)
   })
 
+  const stopGenerationLoop = (): void => {
+    generationLoopAbort?.abort()
+    generationLoopAbort = undefined
+  }
+
+  const runFrameGeneration = (
+    request: StExtensionGenerationRequest,
+    currentSessionId: SessionId,
+    currentFrame: HTMLIFrameElement,
+    currentToken: string,
+    signal: AbortSignal,
+  ): Promise<{ readonly outcome: 'applied' | 'failed'; readonly error?: string }> => new Promise(resolve => {
+    if (signal.aborted) {
+      resolve({ outcome: 'failed', error: 'extension document changed before generation' })
+      return
+    }
+    let settled = false
+    const finish = (result: { readonly outcome: 'applied' | 'failed'; readonly error?: string }): void => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', abort)
+      if (pendingGeneration?.request.requestId === request.requestId) pendingGeneration = undefined
+      resolve(result)
+    }
+    const abort = (): void => {
+      finish({ outcome: 'failed', error: 'extension document changed during generation' })
+    }
+    pendingGeneration = {
+      frame: currentFrame,
+      request,
+      sessionId: currentSessionId,
+      promptWrite: Promise.resolve(),
+      ready: false,
+      finish,
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    currentFrame.contentWindow?.postMessage({
+      source: 'dsh-agent-rp-host', action: 'generation-start', token: currentToken,
+      requestId: request.requestId, sessionId: request.sessionId, turn: request.turn,
+    }, '*')
+  })
+
+  const startGenerationLoop = (): void => {
+    stopGenerationLoop()
+    const currentFrame = frame
+    const currentToken = token
+    const currentSessionId = sessionBinding?.sessionId
+    if (!active || generation === undefined || !frameReady || currentFrame === undefined
+      || currentToken === undefined || currentSessionId === undefined) return
+    const controller = new AbortController()
+    generationLoopAbort = controller
+    void (async () => {
+      while (active && !controller.signal.aborted && frame === currentFrame
+        && token === currentToken && sessionBinding?.sessionId === currentSessionId) {
+        let request: StExtensionGenerationRequest | undefined
+        try {
+          request = await generation.client.poll(String(currentSessionId), controller.signal)
+        } catch (error: unknown) {
+          if (!controller.signal.aborted) {
+            warn(`agent-rp: installed ST extension generation poll failed: ${String(error)}`)
+          }
+          return
+        }
+        if (request === undefined) continue
+        const result = request.sessionId === String(currentSessionId)
+          ? await runFrameGeneration(request, currentSessionId, currentFrame, currentToken, controller.signal)
+          : { outcome: 'failed' as const, error: 'generation request Session does not match browser host' }
+        try {
+          await generation.client.complete({
+            format: 0,
+            operation: 'complete',
+            requestId: request.requestId,
+            sessionId: request.sessionId,
+            ...result,
+          })
+        } catch (error: unknown) {
+          if (!controller.signal.aborted) {
+            warn(`agent-rp: installed ST extension generation completion failed: ${String(error)}`)
+          }
+        }
+      }
+    })()
+  }
+
   const removeFrame = (): void => {
+    stopGenerationLoop()
     if (frame !== undefined) surface?.detachFrame(frame)
     frame?.remove()
     frame = undefined
@@ -173,6 +284,7 @@ export function installStExtensionHost(
     }
     postBinding(action)
     postEvents(events)
+    if (sessionChanged) startGenerationLoop()
   }
   const receive = (event: MessageEvent<unknown>): void => {
     if (frame === undefined || token === undefined || event.source !== frame.contentWindow) return
@@ -191,6 +303,32 @@ export function installStExtensionHost(
       surface?.setAvailable(message.hasContent)
       return
     }
+    if (message.action === 'injections-replace') {
+      const pending = pendingGeneration
+      if (generation === undefined || pending === undefined || pending.frame !== frame
+        || pending.request.requestId !== message.requestId
+        || pending.request.sessionId !== message.sessionId || pending.ready) return
+      pending.promptWrite = pending.promptWrite.then(() => generation.replacePrompts(
+        pending.sessionId,
+        message.prompts,
+      ))
+      return
+    }
+    if (message.action === 'generation-ready') {
+      const pending = pendingGeneration
+      if (pending === undefined || pending.frame !== frame
+        || pending.request.requestId !== message.requestId
+        || pending.request.sessionId !== message.sessionId || pending.ready) return
+      pending.ready = true
+      void pending.promptWrite.then(() => {
+        pending.finish(message.outcome === 'applied'
+          ? { outcome: 'applied' }
+          : { outcome: 'failed', ...(message.error === undefined ? {} : { error: message.error }) })
+      }, (error: unknown) => {
+        pending.finish({ outcome: 'failed', error: String(error).slice(0, 8_000) })
+      })
+      return
+    }
     if (message.action === 'extension-state') {
       if (message.status === 'failed') {
         warn(`agent-rp: installed ST extension ${JSON.stringify(message.extensionId)} failed: ${message.error}`)
@@ -201,11 +339,12 @@ export function installStExtensionHost(
     frame.dataset.agentRpStExtensionLoaded = String(message.loaded.length)
     frame.dataset.agentRpStExtensionFailed = String(message.failed.length)
     surface?.setHostState(message.status, message.loaded.length, message.failed.length)
-    frameReady = true
+    frameReady = message.status === 'ready'
     if (pendingSync !== undefined) postBinding(pendingSync)
     postEvents(pendingEvents)
     pendingSync = undefined
     pendingEvents = []
+    if (frameReady) startGenerationLoop()
     if (message.status === 'failed') warn(`agent-rp: installed ST extension host failed: ${message.error}`)
   }
 

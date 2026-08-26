@@ -62,6 +62,7 @@ export function apply(ctx: ClientContext): void {
     id: 'community.worldbook',
     displayName: '社区世界书',
     loadingOrder: 10,
+    generateInterceptor: 'communityWorldbookInterceptor',
     source: bundledExtensionSource,
     style: bundledExtensionStyle,
   }))
@@ -70,7 +71,9 @@ export function apply(ctx: ClientContext): void {
 
 `source` 必须是自包含的浏览器 ESM，不能保留文件系统相对导入。注册表会限制数量和字节数，将同步注册合并为一次有序重建，并在一个 ClientContext 中只创建一个共享 document；角色卡或预设拥有多少 Tavern Helper 脚本都不会复制安装型扩展。
 
-这仍是宿主装配接口，不是“任意 ST 插件已经兼容”的承诺。当前 Session 绑定、独立设置持久化和只读 `SillyTavern.getContext()` 页面快照已经通过真实 Client 插件验收；完整 ST 页面 API、Host 写操作消息桥和公开 ST 扩展实测仍未完成。社区插件不能假定 SillyTavern 全局对象已经齐全；验收缺口见 [SillyTavern 扩展宿主](st-extension-host.md)。
+`generateInterceptor` 是可选的 ST manifest 全局函数名；声明后，Agent RP 会在 `GENERATION_STARTED` 之后等待它，再把 `setExtensionPrompt()` 结果写入当前 Session。只有上游源码的生成事件监听与该 interceptor 明确重复时，才同时设置 `generationStartedEvent: 'interceptor-only'`。
+
+这仍是宿主装配接口，不是“任意 ST 插件已经兼容”的承诺。当前 Session 绑定、独立设置持久化、页面快照、追加消息事件和生成前提示写入已有源码回归；完整 ST 页面 API 与公开扩展的真实 sidecar 到模型请求验收仍未完成。社区插件不能假定 SillyTavern 全局对象已经齐全；验收缺口见 [SillyTavern 扩展宿主](st-extension-host.md)。
 
 ## Host 扩展
 

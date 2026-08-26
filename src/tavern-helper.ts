@@ -180,6 +180,8 @@ export interface TavernHelperState {
   readonly scriptTrees?: Readonly<Partial<Record<TavernScriptTreeScope, readonly TavernScriptTree[]>>>
   /** Script-authored prompts retained for subsequent model requests in this chat. */
   readonly injectedPrompts?: readonly TavernInjectedPrompt[]
+  /** Page-level prompts owned by the singleton installed-extension collection. */
+  readonly installedExtensionPrompts?: readonly TavernInstalledExtensionPrompt[]
   /** Script-owned, replayable session panels translated from the isolated compatibility DOM. */
   readonly statusPanels?: readonly TavernStatusPanel[]
   /** Contiguous transcript prefix excluded from the Session surface but retained for Tavern APIs. */
@@ -190,7 +192,8 @@ export interface TavernHelperState {
   readonly deletedWorldbookNames?: readonly string[]
   readonly worldbookBindings?: TavernWorldbookBindings
   readonly lastMutation?: {
-    readonly scope: TavernVariableScope | 'worldbook' | 'injection' | 'script-tree' | 'presentation'
+    readonly scope: TavernVariableScope | 'worldbook' | 'injection' | 'installed-extension-injection'
+      | 'script-tree' | 'presentation'
     readonly scriptScope?: TavernScriptTreeScope
     readonly scriptId?: string
     /** Stable Host identity of the assistant reply whose browser event caused this write. */
@@ -240,6 +243,9 @@ export interface TavernInjectedPrompt {
   readonly shouldScan: boolean
   readonly once: boolean
 }
+
+/** One global SillyTavern extension prompt without a role-card script owner. */
+export type TavernInstalledExtensionPrompt = Omit<TavernInjectedPrompt, 'scriptScope' | 'scriptId'>
 
 /** One bounded status panel slot owned by an authenticated Tavern Helper script. */
 export interface TavernStatusPanel {
@@ -293,6 +299,13 @@ export interface TavernInjectionMutationRequest {
   readonly prompts: readonly Omit<TavernInjectedPrompt, 'scriptId' | 'scriptScope'>[]
 }
 
+/** Replace the global prompt collection owned by installed page extensions. */
+export interface TavernInstalledExtensionInjectionMutationRequest {
+  readonly format: 0
+  readonly operation: 'replace-installed-extension-prompts'
+  readonly prompts: readonly TavernInstalledExtensionPrompt[]
+}
+
 /** Replace or remove the single session panel owned by one script. */
 export interface TavernStatusPanelMutationRequest {
   readonly format: 0
@@ -309,7 +322,8 @@ type WithTavernMutationCause<Request> = Request extends unknown
 /** One validated mutation sent by an isolated Tavern Helper script. */
 export type TavernHelperMutationRequest = WithTavernMutationCause<TavernHelperVariableMutationRequest
   | TavernWorldbookMutationRequest | TavernChatMutationRequest | TavernInjectionMutationRequest
-  | TavernScriptTreeMutationRequest | TavernStatusPanelMutationRequest>
+  | TavernInstalledExtensionInjectionMutationRequest | TavernScriptTreeMutationRequest
+  | TavernStatusPanelMutationRequest>
 
 const STATE_PREFIX = 'agent-rp-tavern-helper-v0:'
 const STATE_ATTACHMENT_PREFIX = 'agent-rp-tavern-helper-attachment-v0:'
@@ -684,6 +698,14 @@ function injectedPrompts(
   return prompts
 }
 
+function installedExtensionPrompts(value: unknown): readonly TavernInstalledExtensionPrompt[] {
+  return injectedPrompts(value, { scriptScope: 'global', scriptId: 'installed-st-extensions' }).map(({
+    scriptScope: _scriptScope,
+    scriptId: _scriptId,
+    ...prompt
+  }) => prompt)
+}
+
 function statusPanelOwner(value: unknown, label: string): TavernStatusPanel['owner'] {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`${label} owner is invalid`)
@@ -795,6 +817,8 @@ export function initializeTavernHelperState(
     scripts,
     ...(scriptTrees === undefined ? {} : { scriptTrees }),
     ...(prompts === undefined ? {} : { injectedPrompts: prompts }),
+    ...(previous?.installedExtensionPrompts === undefined
+      ? {} : { installedExtensionPrompts: previous.installedExtensionPrompts }),
     ...(panels === undefined ? {} : { statusPanels: panels }),
     ...(previous?.worldbooks === undefined ? {} : { worldbooks: previous.worldbooks }),
     ...(previous?.deletedWorldbookNames === undefined ? {} : { deletedWorldbookNames: previous.deletedWorldbookNames }),
@@ -999,6 +1023,13 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
       }) => prompt),
     }, cause)
   }
+  if (value.format === 0 && value.operation === 'replace-installed-extension-prompts') {
+    return withMutationCause({
+      format: 0,
+      operation: value.operation,
+      prompts: installedExtensionPrompts(value.prompts),
+    }, cause)
+  }
   if (value.format !== 0 || (value.scope !== 'global' && value.scope !== 'preset'
     && value.scope !== 'character' && value.scope !== 'chat' && value.scope !== 'message'
     && value.scope !== 'script')) {
@@ -1109,6 +1140,14 @@ export function applyTavernHelperMutation(
         lastMutation: lastMutation(request, {
           scope: 'injection', scriptScope: request.scriptScope, scriptId: request.scriptId,
         }),
+      }
+    }
+    if (request.operation === 'replace-installed-extension-prompts') {
+      return {
+        ...state,
+        revision: state.revision + 1,
+        installedExtensionPrompts: request.prompts,
+        lastMutation: lastMutation(request, { scope: 'installed-extension-injection' }),
       }
     }
     if (request.operation === 'replace-worldbook') {
@@ -1223,6 +1262,8 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
   if (parsedInjectedPrompts?.some(prompt => !hasParsedScript(prompt.scriptScope, prompt.scriptId)) === true) {
     throw new Error('Tavern Helper injected prompts reference an unknown scriptId')
   }
+  const parsedInstalledExtensionPrompts = parsed.installedExtensionPrompts === undefined
+    ? undefined : installedExtensionPrompts(parsed.installedExtensionPrompts)
   const parsedStatusPanels = parsed.statusPanels === undefined ? undefined : statusPanels(parsed.statusPanels)
   if (parsedStatusPanels?.some(panel => !hasParsedScript(
     panel.owner.scriptScope, panel.owner.scriptId,
@@ -1275,7 +1316,7 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     if (value.scope !== 'global' && value.scope !== 'preset' && value.scope !== 'character'
       && value.scope !== 'chat' && value.scope !== 'message' && value.scope !== 'script'
       && value.scope !== 'worldbook' && value.scope !== 'injection' && value.scope !== 'script-tree'
-      && value.scope !== 'presentation') {
+      && value.scope !== 'installed-extension-injection' && value.scope !== 'presentation') {
       throw new Error('Tavern Helper last mutation scope is invalid')
     }
     if (value.scriptId !== undefined && typeof value.scriptId !== 'string') {
@@ -1302,6 +1343,8 @@ export function decodeTavernHelperState(text: string | undefined): TavernHelperS
     scripts: parsedScripts,
     ...(parsedScriptTrees === undefined ? {} : { scriptTrees: parsedScriptTrees }),
     ...(parsedInjectedPrompts === undefined ? {} : { injectedPrompts: parsedInjectedPrompts }),
+    ...(parsedInstalledExtensionPrompts === undefined
+      ? {} : { installedExtensionPrompts: parsedInstalledExtensionPrompts }),
     ...(parsedStatusPanels === undefined ? {} : { statusPanels: parsedStatusPanels }),
     ...(hiddenPrefix === undefined ? {} : { hiddenPrefix }),
     ...(parsedWorldbooks === undefined ? {} : { worldbooks: parsedWorldbooks }),
@@ -1424,7 +1467,7 @@ export function tavernInjectedInChatPrompts(state: TavernHelperState | undefined
   readonly depth: number
   readonly order: number
 }[] {
-  return (state?.injectedPrompts ?? []).flatMap(prompt => prompt.position === 'in_chat' && prompt.content.trim() !== ''
+  return allInjectedPrompts(state).flatMap(prompt => prompt.position === 'in_chat' && prompt.content.trim() !== ''
     ? [{ role: prompt.role, content: prompt.content, depth: prompt.depth, order: 100 }]
     : [])
 }
@@ -1437,16 +1480,20 @@ export function tavernInjectedOrderedPrompts(
   readonly role: 'system' | 'assistant' | 'user'
   readonly content: string
 }[] {
-  return (state?.injectedPrompts ?? []).flatMap(prompt => prompt.position === position && prompt.content.trim() !== ''
+  return allInjectedPrompts(state).flatMap(prompt => prompt.position === position && prompt.content.trim() !== ''
     ? [{ role: prompt.role, content: prompt.content }]
     : [])
 }
 
 /** Return script prompt text that participates in the next lorebook scan. */
 export function tavernInjectedScanText(state: TavernHelperState | undefined): readonly string[] {
-  return (state?.injectedPrompts ?? []).flatMap(prompt => prompt.shouldScan && prompt.content.trim() !== ''
+  return allInjectedPrompts(state).flatMap(prompt => prompt.shouldScan && prompt.content.trim() !== ''
     ? [prompt.content]
     : [])
+}
+
+function allInjectedPrompts(state: TavernHelperState | undefined): readonly TavernInstalledExtensionPrompt[] {
+  return [...(state?.injectedPrompts ?? []), ...(state?.installedExtensionPrompts ?? [])]
 }
 
 /** Fold the latest Tavern Helper state from private command results. */

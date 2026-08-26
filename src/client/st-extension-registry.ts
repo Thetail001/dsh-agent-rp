@@ -17,6 +17,8 @@ export interface InstalledStExtensionEntry {
   readonly displayName: string
   readonly loadingOrder: number
   readonly dependencies: readonly string[]
+  readonly generateInterceptor?: string
+  readonly generationStartedEvent?: 'emit' | 'interceptor-only'
   readonly source: string
   readonly style?: string
 }
@@ -73,6 +75,17 @@ function immutableEntry(registration: AgentRpInstalledStExtensionRegistration): 
     throw new Error('Installed ST extension dependencies must be unique')
   }
   if (dependencies.includes(id)) throw new Error('Installed ST extension cannot depend on itself')
+  const generateInterceptor = registration.generateInterceptor === undefined
+    ? undefined
+    : stableId(registration.generateInterceptor, 'Installed ST extension generateInterceptor')
+  const generationStartedEvent = registration.generationStartedEvent
+  if (generationStartedEvent !== undefined && generationStartedEvent !== 'emit'
+    && generationStartedEvent !== 'interceptor-only') {
+    throw new Error('Installed ST extension generationStartedEvent is invalid')
+  }
+  if (generationStartedEvent === 'interceptor-only' && generateInterceptor === undefined) {
+    throw new Error('Installed ST extension interceptor-only generation requires generateInterceptor')
+  }
   const source = boundedText(registration.source, 'Installed ST extension source', MAX_EXTENSION_SOURCE_BYTES)
   const style = registration.style === undefined
     ? undefined
@@ -82,6 +95,8 @@ function immutableEntry(registration: AgentRpInstalledStExtensionRegistration): 
     displayName: display.text,
     loadingOrder: registration.loadingOrder,
     dependencies: Object.freeze(dependencies),
+    ...(generateInterceptor === undefined ? {} : { generateInterceptor }),
+    ...(generationStartedEvent === undefined ? {} : { generationStartedEvent }),
     source: source.text,
     ...(style === undefined ? {} : { style: style.text }),
   })

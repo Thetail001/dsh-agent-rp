@@ -92,7 +92,9 @@ import { installBundledAgentRpPreset } from './preset.ts'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { createAgentRpProjectionDefinition } from './projection.ts'
 import { installMvuStreamCompletion } from './mvu-stream.ts'
-import { installPromptRegexStream } from './prompt-regex-stream.ts'
+import {
+  installAgentPromptRegexStream,
+} from './prompt-regex-stream.ts'
 import { configurePresetFromCommand } from './preset-configuration.ts'
 import { PresetLibrary } from './preset-library.ts'
 import { installPresetLibraryHttp } from './preset-library-http.ts'
@@ -183,6 +185,12 @@ import { installRoleplayImageGenerationTool } from './roleplay-image-generation-
 import { installAgentRpCapabilityPresetHttp } from './agent-capability-preset.ts'
 import { roleplayToolCallFollowsVisibleReply } from './roleplay-tool-continuation.ts'
 import { renderRoleplayTurnStateContext } from './roleplay-runtime-context.ts'
+import {
+  beginStExtensionGeneration,
+  registerStExtensionGenerationCoordinator,
+  StExtensionGenerationCoordinator,
+} from './st-extension-generation.ts'
+import { installStExtensionGenerationHttp } from './st-extension-generation-http.ts'
 
 /** Cordis plugin identity. */
 export const name = 'dsh-agent-rp'
@@ -731,7 +739,11 @@ export function installAgentRp(
   const rememberRestrictions = new Map<Agent, () => void>()
   const stateActionRestrictions = new Map<Agent, () => void>()
   const highRiskToolRestrictions = new Map<Agent, () => void>()
-  const pendingMessagesByAgent = new WeakMap<Agent, { turn: number; messages: UserMessage[] }>()
+  const pendingMessagesByAgent = new WeakMap<Agent, {
+    readonly turn: number
+    readonly messages: UserMessage[]
+    stExtensionGeneration?: StExtensionGenerationCoordinator
+  }>()
   const turnCoordinator = new RoleplayTurnCoordinator<Agent>()
   let settlementRuntimeActive = true
   ctx.effect(() => () => {
@@ -1094,23 +1106,106 @@ export function installAgentRp(
       }
     },
   }), 'agent-rp: SillyTavern preset importer')
+  const roleplayPersonaText = (agent: Agent): string => {
+    if (turnCoordinator.currentActLane(agent) === 'artifact-handoff') {
+      return ROLEPLAY_ARTIFACT_HANDOFF_PROMPT
+    }
+    return turnCoordinator.current(agent)?.prompt.systemPromptText ?? renderCharacterPrompt(config)
+  }
+  const preparePendingRoleplayPlan = (
+    agent: Agent,
+    pending: { readonly turn: number; readonly messages: readonly UserMessage[] },
+  ) => {
+    const resolved = resolveSessionRoleplayRuntime({
+      session: agent.session,
+      deployment: config,
+      memoryWriteAvailable: rememberIntentByAgent.get(agent) === true,
+      templateEngineAvailable: options.ejsTemplateEngine !== undefined,
+      ...(runtimeExtensions === undefined ? {} : { extensions: runtimeExtensions }),
+    })
+    const plan = prepareRoleplayTurn({
+      session: agent.session,
+      pendingMessages: pending.messages,
+      deployment: config,
+      resolved,
+      toolGuidance: workspaceSettings.get().toolGuidance,
+      ...(options.ejsTemplateEngine === undefined ? {} : { templateEngine: options.ejsTemplateEngine }),
+    })
+    turnCoordinator.prepare(agent, plan)
+    roleplayArtifactCapability.prepare(agent, plan.tools)
+    roleplayImageGenerationCapability.prepare(agent, plan.tools, pending.turn)
+    return plan
+  }
   ctx.systemPrompt.section({
     name: 'deployment:persona',
     order: 0,
     text: ({ scope }) => {
       const agent = scope === undefined ? undefined : agentsByScope.get(scope)
       if (agent === undefined) return renderCharacterPrompt(config)
-      pendingMessagesByAgent.delete(agent)
-      if (turnCoordinator.currentActLane(agent) === 'artifact-handoff') {
-        return ROLEPLAY_ARTIFACT_HANDOFF_PROMPT
-      }
-      return turnCoordinator.current(agent)?.prompt.systemPromptText ?? renderCharacterPrompt(config)
+      return roleplayPersonaText(agent)
     },
-    complete: true,
+  })
+  ctx.on('system-prompt/assemble', async (_assembly, assemblyContext, next) => {
+    const agent = assemblyContext.scope === undefined ? undefined : agentsByScope.get(assemblyContext.scope)
+    if (agent === undefined) {
+      const transformed = await next()
+      return {
+        ...transformed,
+        sections: [{ name: 'deployment:persona', text: renderCharacterPrompt(config) }],
+      }
+    }
+    const pending = pendingMessagesByAgent.get(agent)
+    if (pending?.stExtensionGeneration !== undefined) {
+      const signal = assemblyContext.signal ?? new AbortController().signal
+      const barrier = await pending.stExtensionGeneration.wait(String(agent.session.id), pending.turn, signal)
+      if (barrier.outcome === 'applied') {
+        try {
+          preparePendingRoleplayPlan(agent, pending)
+        } catch (error: unknown) {
+          ctx.logger.warn(`agent-rp: installed ST extension prompt refresh failed: ${String(error)}`)
+        }
+      } else if (barrier.outcome === 'failed' && barrier.error !== undefined
+        && barrier.error !== 'generation aborted') {
+        ctx.logger.warn(`agent-rp: installed ST extension generation failed: ${barrier.error}`)
+      }
+    }
+    let transformed
+    try {
+      transformed = await next()
+    } finally {
+      if (pending !== undefined && pendingMessagesByAgent.get(agent) === pending) {
+        pendingMessagesByAgent.delete(agent)
+      }
+    }
+    const plan = turnCoordinator.currentActLane(agent) === 'narrative'
+      ? turnCoordinator.current(agent)
+      : undefined
+    return {
+      ...transformed,
+      sections: [{ name: 'deployment:persona', text: roleplayPersonaText(agent) }],
+      contexts: transformed.contexts.map(context => {
+        if (context.name === 'agent-rp:state') {
+          return { ...context, text: renderRoleplayTurnStateContext(plan) }
+        }
+        if (context.name === 'agent-rp:memory') {
+          return { ...context, text: plan?.memory.contextText ?? '' }
+        }
+        if (context.name === 'agent-rp:artifact-tools') {
+          return { ...context, text: plan?.tools.guidance.contextText ?? '' }
+        }
+        return context
+      }),
+    }
   })
   ctx.on('agent/created', ({ agent }) => {
     agentsByScope.set(agent, agent)
     agentsBySession.set(String(agent.session.id), agent)
+    installAgentPromptRegexStream(
+      agent,
+      current => turnCoordinator.currentActLane(current) === 'narrative'
+        ? turnCoordinator.current(current)?.prompt
+        : undefined,
+    )
     setRememberAvailable(agent, false)
     setStateActionAvailable(agent, false)
     const highRiskToolCandidates = [
@@ -1183,13 +1278,6 @@ export function installAgentRp(
     }
     worldbookCharacterDisposers.clear()
   }, 'agent-rp: worldbook character contexts')
-  installPromptRegexStream(
-    ctx,
-    sessionId => agentsBySession.get(sessionId),
-    agent => turnCoordinator.currentActLane(agent) === 'narrative'
-      ? turnCoordinator.current(agent)?.prompt
-      : undefined,
-  )
   installMvuStreamCompletion(
     ctx,
     sessionId => agentsBySession.get(sessionId),
@@ -1206,24 +1294,10 @@ export function installAgentRp(
     pending.messages.push(message)
     pendingMessagesByAgent.set(agent, pending)
     setRememberAvailable(agent, pending.messages.some(requestsPersistentMemory))
-    const resolved = resolveSessionRoleplayRuntime({
-      session: agent.session,
-      deployment: config,
-      memoryWriteAvailable: rememberIntentByAgent.get(agent) === true,
-      templateEngineAvailable: options.ejsTemplateEngine !== undefined,
-      ...(runtimeExtensions === undefined ? {} : { extensions: runtimeExtensions }),
-    })
-    const plan = prepareRoleplayTurn({
-      session: agent.session,
-      pendingMessages: pending.messages,
-      deployment: config,
-      resolved,
-      toolGuidance: workspaceSettings.get().toolGuidance,
-      ...(options.ejsTemplateEngine === undefined ? {} : { templateEngine: options.ejsTemplateEngine }),
-    })
-    turnCoordinator.prepare(agent, plan)
-    roleplayArtifactCapability.prepare(agent, plan.tools)
-    roleplayImageGenerationCapability.prepare(agent, plan.tools, turn)
+    preparePendingRoleplayPlan(agent, pending)
+    const stExtensionGeneration = pending.stExtensionGeneration
+      ?? beginStExtensionGeneration(String(agent.session.id), turn)
+    if (stExtensionGeneration !== undefined) pending.stExtensionGeneration = stExtensionGeneration
     // Inbox claims are published synchronously before SystemPrompt assembly.
     // The restriction must be settled here so the same assembly sees the tool schema.
     // Agent mode settles state after the visible reply at turn-stopping; the
@@ -1601,6 +1675,12 @@ async function loadEjsTemplateEngine(ctx: Context): Promise<EjsTemplateEngine | 
 export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> {
   const resolved = resolveConfig(config)
   if (resolved.mode === 'host') {
+    const stExtensionGeneration = new StExtensionGenerationCoordinator()
+    const unregisterStExtensionGeneration = registerStExtensionGenerationCoordinator(stExtensionGeneration)
+    ctx.effect(() => () => {
+      unregisterStExtensionGeneration()
+      stExtensionGeneration.dispose()
+    }, 'agent-rp: installed ST extension generation lifetime')
     const runtimeExtensions = new RoleplayRuntimeExtensionRegistry()
     ctx.provide(ROLEPLAY_RUNTIME_EXTENSIONS_KEY, runtimeExtensions)
     const turnWorkers = new RoleplayTurnWorkerRegistry()
@@ -1684,6 +1764,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         installImageGenerationHttp(webCtx, generatedImageLibrary, webCtx.credentials, server)
         installTavernGenerationHttp(webCtx, server)
         installTavernModelListHttp(webCtx, server)
+        installStExtensionGenerationHttp(webCtx, server, stExtensionGeneration)
         installRpDistributionBridgeHttp(
           webCtx,
           characterLibrary,

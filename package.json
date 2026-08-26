@@ -74,6 +74,7 @@
     "test:session-launch": "node scripts/run-source-tests.mjs session-launch",
     "test:turn-audit": "node scripts/run-source-tests.mjs turn-audit",
     "test:turn-recovery": "node scripts/run-source-tests.mjs turn-recovery",
+    "test:provider-seam": "node scripts/run-source-tests.mjs provider-seam",
     "test:focused": "node scripts/run-source-tests.mjs focused",
     "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit"
   },

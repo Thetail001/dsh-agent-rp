@@ -6,7 +6,7 @@ import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { AttachmentId, type ImageAttachmentRef, type SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
-import { CallId, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { CallId, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type JsonValue } from '@deepseek-ai/dsh-session'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
@@ -341,6 +341,7 @@ test('rejects paths, old-turn ids, and unrecorded artifacts instead of guessing'
 
 test('replaces the full roleplay prompt with a narrow artifact handoff after visible prose', async (context) => {
   const root = new Context()
+  await root.plugin(LlmRuntime)
   await root.plugin(SystemPrompt)
   await root.plugin(ToolRegistry)
   await root.plugin(AgentRegistry)
@@ -356,7 +357,7 @@ test('replaces the full roleplay prompt with a narrow artifact handoff after vis
   }
   let agentParentCtx: Context | undefined
   await preset.ctx.plugin({
-    inject: ['systemPrompt', 'tools'],
+    inject: ['llm', 'systemPrompt', 'tools'],
     apply(pluginCtx: Context) {
       pluginCtx.tools.register({
         name: 'fixture_generate_image',

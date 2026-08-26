@@ -26,6 +26,7 @@ import { createPortal } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { installStExtensionHost } from './st-extension-host.ts'
+import { createStExtensionGenerationClient } from './st-extension-generation.ts'
 import { InstalledStExtensionRegistry } from './st-extension-registry.ts'
 import {
   InstalledStExtensionSurface,
@@ -12368,32 +12369,28 @@ export function apply(ctx: ClientContext): void {
   const installedStExtensions = new InstalledStExtensionRegistry()
   const installedStExtensionSurface = new InstalledStExtensionSurface()
   const installedStSettingsOwner = installedStExtensionSettingsIdentity()
+  const installedStExtensionSessionSource = {
+    current: () => {
+      const state = ctx.sessions.list.getSnapshot()
+      const sessionId = state.current
+      if (sessionId === undefined) return undefined
+      const projection = state.byId[sessionId]?.projectionValues?.agentRp
+      return {
+        sessionId,
+        ...(projection === undefined ? {} : { projection }),
+      }
+    },
+    subscribe: (listener: () => void) => ctx.sessions.list.subscribe(listener),
+  }
+  const installedStExtensionSettingsStore = {
+    read: () => readTavernExtensionSettings(installedStSettingsOwner, window.localStorage),
+    write: (settings: Readonly<Record<string, JsonValue>>) => writeTavernExtensionSettings(
+      installedStSettingsOwner,
+      settings,
+    ),
+  }
   ctx.provide(AGENT_RP_ST_EXTENSION_SERVICE, installedStExtensions)
   ctx.effect(() => installStExtensionSurface(window, document, installedStExtensionSurface))
-  ctx.effect(() => installStExtensionHost(
-    window,
-    document,
-    installedStExtensions,
-    {
-      current: () => {
-        const state = ctx.sessions.list.getSnapshot()
-        const sessionId = state.current
-        if (sessionId === undefined) return undefined
-        const projection = state.byId[sessionId]?.projectionValues?.agentRp
-        return {
-          sessionId,
-          ...(projection === undefined ? {} : { projection }),
-        }
-      },
-      subscribe: listener => ctx.sessions.list.subscribe(listener),
-    },
-    {
-      read: () => readTavernExtensionSettings(installedStSettingsOwner, window.localStorage),
-      write: settings => writeTavernExtensionSettings(installedStSettingsOwner, settings),
-    },
-    message => { ctx.logger.warn(message) },
-    installedStExtensionSurface,
-  ))
   installRoleplayArtifactTail(ctx)
   const runtimeDiagnostics = new AgentRpRuntimeDiagnosticRegistry()
   ctx.effect(() => installAgentRpRuntimeDiagnostic(window, runtimeDiagnostics))
@@ -12974,6 +12971,24 @@ export function apply(ctx: ClientContext): void {
     const response = await executeAgentRpCommand(sessionId, `/rp-tavern-variables ${JSON.stringify(request)}`)
     if (!response.matched) throw new Error('当前 Host 未启用酒馆脚本变量桥')
   }
+  const installedStGenerationClient = createStExtensionGenerationClient()
+  ctx.effect(() => installStExtensionHost(
+    window,
+    document,
+    installedStExtensions,
+    installedStExtensionSessionSource,
+    installedStExtensionSettingsStore,
+    message => { ctx.logger.warn(message) },
+    installedStExtensionSurface,
+    {
+      client: installedStGenerationClient,
+      replacePrompts: (sessionId, prompts) => runTavernMutation(sessionId, {
+        format: 0,
+        operation: 'replace-installed-extension-prompts',
+        prompts,
+      }),
+    },
+  ))
   const runTavernTrigger: RunTavernTrigger = async sessionId => {
     const response = await executeAgentRpCommand(sessionId, '/rp-tavern-trigger')
     if (!response.matched) throw new Error('当前 Host 未启用酒馆脚本生成桥')

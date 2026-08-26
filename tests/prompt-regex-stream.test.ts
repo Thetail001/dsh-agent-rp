@@ -16,7 +16,11 @@ import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import type { ImportedCharacterCard, ImportedRegexScript } from '../src/import/types.ts'
 import { roleplayVisibleDialogue, roleplayVisibleTranscript } from '../src/prompt.ts'
-import { applyPromptRegexSurface, installPromptRegexStream } from '../src/prompt-regex-stream.ts'
+import {
+  applyPromptRegexSurface,
+  installAgentPromptRegexStream,
+  installPromptRegexStream,
+} from '../src/prompt-regex-stream.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
 import type {
   RoleplayPromptRegexTransform,
@@ -359,6 +363,52 @@ test('routes a continuation-only plan through the final provider message seam', 
   ]), [
     ['user', '请开始'],
     ['assistant', '上一段回复 '],
+  ])
+})
+
+test('installs provider preparation on the exact LLM service context', () => {
+  type StreamHandler = (options: GenerateOptions, next: () => unknown) => unknown
+  let handler: StreamHandler | undefined
+  let captured: GenerateOptions | undefined
+  const llmCtx = {
+    on(event: string, callback: StreamHandler) {
+      assert.equal(event, 'llm/stream')
+      handler = callback
+      return () => {}
+    },
+    llm: {
+      stream(options: GenerateOptions) {
+        captured = options
+        return undefined
+      },
+    },
+  } as unknown as Context
+  const agentCtx = {
+    llm: { ctx: llmCtx },
+    effect(install: () => () => void) { install() },
+    on() { throw new Error('listener installed on the Agent composition context') },
+  } as unknown as Context
+  const session = Session.create(SessionId('agent-owned-provider-seam'))
+  const agent = { ctx: agentCtx, session } as Agent
+  installAgentPromptRegexStream(agent, () => promptPlan({
+    inChat: [{ role: 'system', content: 'Agent 根提示', depth: 0, order: 100 }],
+  }))
+
+  assert.ok(handler)
+  handler(Object.freeze({
+    provider: 'mock',
+    model: 'mock',
+    sessionId: session.id,
+    messages: [createUserMessage({
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: '请开始' }],
+    })],
+  }) as GenerateOptions, () => undefined)
+  assert.deepEqual(captured?.messages.map(item => [
+    item.role, item.content[0]?.type === 'text' ? item.content[0].text : '',
+  ]), [
+    ['user', '请开始'],
+    ['system', 'Agent 根提示'],
   ])
 })
 

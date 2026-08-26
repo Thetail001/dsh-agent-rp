@@ -56,6 +56,7 @@ const groups = {
   'session-launch': ['session-launch.test.ts', 'character-world-binding.test.ts'],
   'turn-audit': ['roleplay-turn-audit.test.ts'],
   'turn-recovery': ['session-roleplay-turn-recovery.test.ts'],
+  'provider-seam': ['provider-seam-integration.test.ts', 'roleplay-state-action.test.ts'],
 }
 
 const groupName = process.argv[2] ?? 'all'
@@ -71,6 +72,7 @@ const concurrency = process.env['AGENT_RP_TEST_CONCURRENCY'] ?? '4'
 if (!/^[1-9][0-9]*$/u.test(concurrency)) {
   throw new Error('AGENT_RP_TEST_CONCURRENCY must be a positive integer')
 }
+const reporter = process.env['AGENT_RP_TEST_REPORTER'] ?? './scripts/concise-test-reporter.mjs'
 
 process.stderr.write(`[source-tests] ${groupName}: ${String(selected.length)} files\n`)
 const child = spawn(process.execPath, [
@@ -78,6 +80,7 @@ const child = spawn(process.execPath, [
   'tsx/esm',
   '--test',
   `--test-concurrency=${concurrency}`,
+  `--test-reporter=${reporter}`,
   ...selected.map(name => resolve(testsRoot, name)),
 ], {
   cwd: root,

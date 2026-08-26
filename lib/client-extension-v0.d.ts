@@ -12,6 +12,10 @@ interface AgentRpInstalledStExtensionRegistration {
   readonly displayName: string;
   readonly loadingOrder: number;
   readonly dependencies?: readonly string[];
+  /** Optional manifest global invoked and awaited after GENERATION_STARTED. */
+  readonly generateInterceptor?: string;
+  /** Skip this extension's GENERATION_STARTED listeners when its interceptor replaces them. */
+  readonly generationStartedEvent?: 'emit' | 'interceptor-only';
   /** Self-contained ESM bundle evaluated in the singleton extension document. */
   readonly source: string;
   /** Optional stylesheet text installed in the same document. */

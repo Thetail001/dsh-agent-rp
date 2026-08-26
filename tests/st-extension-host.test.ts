@@ -446,3 +446,91 @@ test('drops a queued append removed by a same-Session transcript rewrite', async
   ])
   dispose()
 })
+
+test('persists generation prompts before acknowledging the selected browser barrier', async () => {
+  const registry = new InstalledStExtensionRegistry()
+  const document = new FakeDocument()
+  const window = new FakeWindow()
+  const sessions = new FakeSessionSource()
+  const polls: {
+    readonly sessionId: string
+    readonly signal: AbortSignal
+    readonly resolve: (request: {
+      readonly format: 0
+      readonly requestId: string
+      readonly sessionId: string
+      readonly turn: number
+    } | undefined) => void
+  }[] = []
+  const completions: unknown[] = []
+  const writes: unknown[] = []
+  let releaseWrite!: () => void
+  const writeBarrier = new Promise<void>(resolve => { releaseWrite = resolve })
+  const dispose = installStExtensionHost(
+    window as unknown as Window,
+    document as unknown as Document,
+    registry,
+    sessions,
+    { read: async () => ({}), write: async settings => settings },
+    () => undefined,
+    undefined,
+    {
+      client: {
+        clientId: 'browser-a',
+        poll: (sessionId, signal) => new Promise(resolve => {
+          polls.push({ sessionId, signal, resolve })
+        }),
+        complete: async value => { completions.push(value) },
+      },
+      replacePrompts: async (sessionId, prompts) => {
+        writes.push({ sessionId, prompts })
+        await writeBarrier
+      },
+    },
+  )
+  registry.register({
+    id: 'extension.memory', displayName: 'Memory', loadingOrder: 0,
+    generateInterceptor: 'memoryInterceptor', source: 'export {}',
+  })
+  await flushRebuild()
+  const frame = document.frames[0] as FakeFrame
+  const token = JSON.parse(frame.srcdoc.match(/const boot=(\{.*?\});const entries/u)?.[1] ?? '{}').token as string
+  window.dispatch(frame.contentWindow, {
+    source: 'dsh-agent-rp-st-extension-host', token,
+    action: 'host-state', status: 'ready', loaded: ['extension.memory'], failed: [],
+  })
+  assert.equal(polls.length, 1)
+  assert.equal(polls[0]?.sessionId, 'session-a')
+  polls[0]?.resolve({ format: 0, requestId: 'request-a', sessionId: 'session-a', turn: 4 })
+  await flushRebuild()
+  assert.deepEqual(frame.messages.at(-1), {
+    source: 'dsh-agent-rp-host', action: 'generation-start', token,
+    requestId: 'request-a', sessionId: 'session-a', turn: 4,
+  })
+
+  const prompts = [{
+    id: 'woven_imprint_memory', position: 'in_chat' as const, depth: 2, role: 'system' as const,
+    content: '本轮记忆', shouldScan: false, once: false as const,
+  }]
+  window.dispatch(frame.contentWindow, {
+    source: 'dsh-agent-rp-st-extension-host', token, action: 'injections-replace',
+    requestId: 'request-a', sessionId: 'session-a', prompts,
+  })
+  window.dispatch(frame.contentWindow, {
+    source: 'dsh-agent-rp-st-extension-host', token, action: 'generation-ready',
+    requestId: 'request-a', sessionId: 'session-a', outcome: 'applied',
+  })
+  await flushRebuild()
+  assert.deepEqual(writes, [{ sessionId: 'session-a', prompts }])
+  assert.deepEqual(completions, [])
+  releaseWrite()
+  for (let index = 0; index < 8 && completions.length === 0; index += 1) await Promise.resolve()
+  assert.deepEqual(completions, [{
+    format: 0, operation: 'complete', requestId: 'request-a', sessionId: 'session-a', outcome: 'applied',
+  }])
+  for (let index = 0; index < 4 && polls.length < 2; index += 1) await Promise.resolve()
+  assert.equal(polls.length, 2)
+
+  dispose()
+  assert.equal(polls[1]?.signal.aborted, true)
+})

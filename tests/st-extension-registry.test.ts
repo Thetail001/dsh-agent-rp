@@ -24,7 +24,10 @@ test('publishes stable immutable snapshots in manifest order and revokes idempot
   const initial = registry.getSnapshot()
   const revisions: number[] = []
   const unsubscribe = registry.subscribe(() => { revisions.push(registry.getSnapshot().revision) })
-  const revokeB = registry.register(extension('extension.b', 20))
+  const revokeB = registry.register(extension('extension.b', 20, {
+    generateInterceptor: 'extensionBInterceptor',
+    generationStartedEvent: 'interceptor-only',
+  }))
   const afterB = registry.getSnapshot()
   const revokeC = registry.register(extension('extension.c', 10))
   const revokeA = registry.register(extension('extension.a', 10))
@@ -37,6 +40,8 @@ test('publishes stable immutable snapshots in manifest order and revokes idempot
   assert.equal(Object.isFrozen(registry.getSnapshot()), true)
   assert.equal(Object.isFrozen(registry.getSnapshot().entries), true)
   assert.equal(Object.isFrozen(registry.getSnapshot().entries[0]?.dependencies), true)
+  assert.equal(registry.getSnapshot().entries.at(-1)?.generateInterceptor, 'extensionBInterceptor')
+  assert.equal(registry.getSnapshot().entries.at(-1)?.generationStartedEvent, 'interceptor-only')
 
   revokeB()
   revokeB()
@@ -72,6 +77,12 @@ test('rejects malformed manifests, duplicates, self dependencies, and per-entry 
   assert.throws(() => registry.register(extension(' bad', 0)), /must match/u)
   assert.throws(() => registry.register(extension('extension.name', 0, { displayName: ' padded ' })), /surrounding/u)
   assert.throws(() => registry.register(extension('extension.order', 1.5)), /safe integer/u)
+  assert.throws(() => registry.register(extension('extension.interceptor', 0, {
+    generateInterceptor: 'bad interceptor',
+  })), /must match/u)
+  assert.throws(() => registry.register(extension('extension.interceptor-only', 0, {
+    generationStartedEvent: 'interceptor-only',
+  })), /requires generateInterceptor/u)
   assert.throws(() => registry.register(extension('extension.self', 0, {
     dependencies: ['extension.self'],
   })), /depend on itself/u)

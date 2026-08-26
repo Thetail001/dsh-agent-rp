@@ -12,6 +12,10 @@ import {
   createAssistantMessage,
   createToolResultMessage,
   createUserMessage,
+  LlmAdapter,
+  default as LlmRuntime,
+  type GenerateOptions,
+  type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { createScope } from '@deepseek-ai/dsh-scope'
@@ -37,6 +41,7 @@ import {
   readRoleplayTurnMode,
 } from '../src/roleplay-turn-mode.ts'
 import { executeRoleplayTurnModeCommand } from '../src/roleplay-turn-mode-command.ts'
+import { executeTavernHelperMutation } from '../src/tavern-helper-command.ts'
 import { prepareRoleplayTurn, type RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
 import {
   projectRoleplayTurnPlan,
@@ -47,12 +52,35 @@ import { resolveSessionRoleplayRuntime } from '../src/session-roleplay-runtime.t
 import { recoverSessionRoleplayTurns } from '../src/session-roleplay-turn-recovery.ts'
 import {
   appendSessionRoleplayTurnPlan,
+  readSessionRoleplayTurnPlans,
+  replaySessionRoleplayTurnPlan,
 } from '../src/session-roleplay-turn-plan.ts'
+import {
+  registerStExtensionGenerationCoordinator,
+  StExtensionGenerationCoordinator,
+} from '../src/st-extension-generation.ts'
 import { installIgnorableSessionEventFixture } from './session-event-fixture.ts'
 
 installIgnorableSessionEventFixture()
 
 const deployment = resolveConfig({ characterName: '状态行动测试角色' })
+
+class RecordingAdapter extends LlmAdapter {
+  readonly requests: GenerateOptions[] = []
+
+  override resolveModel(provider: string, model: string): Promise<{ provider: string; id: string; name: string }> {
+    return Promise.resolve({ provider, id: model, name: model })
+  }
+
+  override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.requests.push(options)
+    yield { type: 'block-start', index: 0, blockType: 'text' }
+    yield { type: 'text-delta', index: 0, text: 'ok' }
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: 'ok' } }
+    yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+}
 
 function mvuCard() {
   return parseCharacterCardJson(JSON.stringify({
@@ -202,19 +230,24 @@ async function executeAndAppend(
 
 test('keeps state arithmetic out of the actor step and does not migrate resumed logs', async (context) => {
   const root = new Context()
+  await root.plugin(LlmRuntime)
   await root.plugin(SystemPrompt)
   await root.plugin(ToolRegistry)
   await root.plugin(AgentRegistry)
+  const provider = new RecordingAdapter()
+  root.llm.registerAdapter(['fixture'], provider)
   root.provide('commands' as never, { register: () => () => {} } as never)
   root.provide('attachments' as never, {} as never)
   root.provide('credentials' as never, {} as never)
+  const stGeneration = new StExtensionGenerationCoordinator()
+  const unregisterStGeneration = registerStExtensionGenerationCoordinator(stGeneration)
   const presetKey = {}
   const preset = createScope(root, presetKey)
   const characterLibraryRoot = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-state-action-'))
   let installed = false
   let agentParentCtx: Context | undefined
   await preset.ctx.plugin({
-    inject: ['systemPrompt', 'tools'],
+    inject: ['llm', 'systemPrompt', 'tools'],
     apply(pluginCtx: Context) {
       pluginCtx.tools.register(defineTool({
         name: 'bash',
@@ -256,6 +289,71 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
   assert.match(stateContext, /本轮只读状态/u)
   assert.match(stateContext, /"state:mvu":\{"角色":\{"等级":1,"称号":"学徒"\}\}/u)
 
+  const browserPoll = stGeneration.poll(String(native.session.id), 'browser-a', new AbortController().signal)
+  native.session.append('turn/start', { turn: 2 })
+  const memoryPending = createUserMessage({
+    source: { kind: 'user' },
+    content: [{ type: 'text', text: '想起我们约好把钥匙藏在钟下。' }],
+  })
+  agentEvents(root, nativeAgent).emit('agent/inbox/claimed', { message: memoryPending, turn: 2 })
+  const generationRequest = await browserPoll
+  assert.notEqual(generationRequest, undefined)
+  const mutationCommand = CommandId('installed-extension-generation-write')
+  native.session.append('command/run', {
+    commandId: mutationCommand,
+    name: 'rp-tavern-variables',
+    source: { kind: 'user' },
+  })
+  const mutation = executeTavernHelperMutation({
+    agent: nativeAgent,
+    rawInput: JSON.stringify({
+      format: 0,
+      operation: 'replace-installed-extension-prompts',
+      prompts: [{
+        id: 'woven_imprint_memory', position: 'before', depth: 0, role: 'system',
+        content: 'Woven 屏障记忆：钥匙藏在钟下。', shouldScan: false, once: false,
+      }],
+    }),
+  })
+  native.session.append('command/done', { commandId: mutationCommand, ...mutation })
+  stGeneration.complete({
+    format: 0,
+    operation: 'complete',
+    requestId: generationRequest!.requestId,
+    sessionId: generationRequest!.sessionId,
+    clientId: 'browser-a',
+    outcome: 'applied',
+  })
+  await root.systemPrompt.assemble({ scope: nativeAgent })
+  native.session.append('step/start', { turn: 2, step: 1 })
+  native.session.append('user/message', memoryPending, { surfaceOp: 'append' })
+  await agentEvents(root, nativeAgent).waterfall('agent/request', {
+    turn: 2,
+    step: 1,
+    signal: new AbortController().signal,
+  }, () => Promise.resolve({ provider: 'fixture', model: 'fixture' }))
+  const memoryPlanRecord = readSessionRoleplayTurnPlans(native.session.events).at(-1)
+  assert.notEqual(memoryPlanRecord, undefined)
+  const memoryPlan = replaySessionRoleplayTurnPlan({
+    session: native.session,
+    record: memoryPlanRecord!,
+    deployment,
+  })
+  assert.equal(memoryPlan.prompt.afterHistory.some(prompt => (
+    prompt.content === 'Woven 屏障记忆：钥匙藏在钟下。'
+  )), true)
+  for await (const _chunk of root.llm.stream(Object.freeze({
+    provider: 'fixture',
+    model: 'fixture',
+    sessionId: native.session.id,
+    messages: native.session.deriveMessages(),
+  }) as GenerateOptions)) {
+    // Exhaust the real provider stream so the recording adapter observes the final request.
+  }
+  assert.equal(provider.requests.length, 1)
+  assert.match(provider.requests[0]!.messages.flatMap(message => message.content.flatMap(block =>
+    block.type === 'text' ? [block.text] : [])).join('\n'), /Woven 屏障记忆：钥匙藏在钟下。/u)
+
   const rawInput = JSON.stringify({ mode: 'conversation', format: 0 })
   const commandId = CommandId('turn-mode-user-selection')
   native.session.append('command/run', {
@@ -266,13 +364,13 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
   })
   executeRoleplayTurnModeCommand({ commandId, agent: nativeAgent, rawInput })
   assert.equal(readRoleplayTurnMode(Session.create(native.session.id, native.session.events).events), 'conversation')
-  native.session.append('turn/start', { turn: 2 })
+  native.session.append('turn/start', { turn: 3 })
   agentEvents(root, nativeAgent).emit('agent/inbox/claimed', {
     message: createUserMessage({
       source: { kind: 'user' },
       content: [{ type: 'text', text: '继续聊，不进行 Agent 结算。' }],
     }),
-    turn: 2,
+    turn: 3,
   })
   const dialogueStep = await root.systemPrompt.assemble({ scope: nativeAgent })
   assert.equal(dialogueStep.tools.some(tool => tool.name === ROLEPLAY_STATE_ACTION_TOOL), false)
@@ -297,6 +395,8 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
   assert.equal(readRoleplayTurnMode(freshSession.events), 'agent')
 
   context.after(async () => {
+    unregisterStGeneration()
+    stGeneration.dispose()
     disposeFresh()
     disposeResumed()
     disposeNative()
