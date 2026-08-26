@@ -166,7 +166,7 @@ function CardFrameView({
 /** Render compiled Markdown and isolated light-frontend segments. */
 export function CharacterDisplay({
   appearance, capabilityToken, compilation, statData, characterName, character, compatibilityMarkers, greetingChoices,
-  onFrameRegistration, onReady, preview = false, tavernHelperScripts, variableScopes,
+  onFrameRegistration, onReady, preview = false, tavernHelperScripts, userName, variableScopes,
 }: {
   readonly appearance?: CardFrameAppearance
   readonly capabilityToken?: string
@@ -177,6 +177,7 @@ export function CharacterDisplay({
   readonly compatibilityMarkers?: readonly string[]
   readonly greetingChoices?: CardFrameGreetingChoices
   readonly tavernHelperScripts?: readonly ImportedTavernHelperScript[]
+  readonly userName?: string
   readonly variableScopes?: NonNullable<AgentRpProjection['tavern']>['scopes']
   readonly onFrameRegistration?: (token: string, frame: HTMLIFrameElement | null) => void
   readonly onReady?: () => void
@@ -189,12 +190,13 @@ export function CharacterDisplay({
     ...(character === undefined ? {} : { character }),
     ...(compatibilityMarkers === undefined ? {} : { compatibilityMarkers }),
     ...(greetingChoices === undefined ? {} : { greetingChoices }),
+    ...(userName === undefined ? {} : { userName }),
     ...(tavernHelperScripts === undefined ? {} : {
       currentCharacter: { name: characterName, tavernHelperScripts },
     }),
     ...(variableScopes === undefined ? {} : { variableScopes }),
     ...(capabilityToken === undefined ? {} : { capabilityToken }),
-  }), [appearance, capabilityToken, character, characterName, compatibilityMarkers, compilation, greetingChoices, statData, tavernHelperScripts, variableScopes])
+  }), [appearance, capabilityToken, character, characterName, compatibilityMarkers, compilation, greetingChoices, statData, tavernHelperScripts, userName, variableScopes])
   useLayoutEffect(() => { onReady?.() }, [onReady])
   return <div data-agent-rp-character-display data-agent-rp-display-diagnostics={cardFrameDiagnosticSummary(compiled.diagnostics)}
     style={{ display: 'grid', gap: '10px', minWidth: 0 }}>

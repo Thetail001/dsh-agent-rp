@@ -33,6 +33,8 @@
 
 完整 HTML 轻前端里的 `getChatMessages(range, option)` 会同步返回消息数组。状态栏若发现 `Array.isArray(getChatMessages(...))` 为 `false` 或返回值是 Promise，说明浏览器仍在使用旧的 Agent RP 客户端资源；请更新插件、重启 Host，并在复现信息中附上页面实际加载的 `client.js?rev=...` 地址。
 
+行动按钮调用 `createChatMessages` 时只能在玩家点击产生的浏览器激活期间追加一条用户消息；保存成功后紧随其后的 `/trigger` 只消费一次短时许可。页面加载后自动出现用户消息、一次点击创建多条消息或不点击就开始回复都属于 Host 校验失效；点击后既没有用户消息也没有回复时，请同时记录轻前端根节点的 `data-agent-rp-capability-state` 与外层 iframe 的 `data-agent-rp-capability-request`，以区分点击校验、Session 保存和生成触发阶段。
+
 ## 新角色会话进入「未分组」
 
 从某个工作区里的空白会话打开 Agent RP 并开始游玩时，新角色会话应加入同一工作区。Agent RP 设置中的工作区开关只控制该工作区是否显示 Agent RP 入口，不负责把任意来源会话强制放进该工作区。

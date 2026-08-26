@@ -154,13 +154,15 @@ import {
 } from './character-library-client.ts'
 import { CharacterContentEditor } from './character-content-editor.tsx'
 import {
-  parseCardCapabilityRequest, parseCardChatSendCapabilityRequest, parseCardChatSessionMutateCapabilityRequest,
+  parseCardCapabilityRequest, parseCardChatSendCapabilityRequest,
   parseCardExternalWindowCapabilityRequest,
   parseCardExternalWindowControlRequest, parseCardExternalWindowDeliveryReport,
   parseCardNativeIdentityCapabilityRequest,
   parseCardResourceBlockedReport, parseCardRuntimeReport,
+  parseCardUserMessageAppendCapabilityRequest,
   parseCardVariableReplaceRequest,
 } from './card-capability.ts'
+import { CardPlayerActionCoordinator } from './card-player-action.ts'
 import {
   collectAgentRpBrowserCompatibilitySnapshot,
   installAgentRpBrowserCompatibilityDiagnostic,
@@ -11509,8 +11511,7 @@ function roleplayComposerDockComponent(
       readonly root: Root
       signature: string
     }>()
-    const pendingCardMutations = new WeakSet<Window>()
-    const pendingCardSends = new WeakSet<Window>()
+    const cardPlayerActions = new CardPlayerActionCoordinator<Window>()
     const cardVariableMutationQueues = new WeakMap<Window, Promise<void>>()
     const hiddenTranscriptDetails = new Map<HTMLElement, { readonly display: string; readonly priority: string }>()
     const legacyConversationNotices = new Set<HTMLElement>()
@@ -11706,50 +11707,47 @@ function roleplayComposerDockComponent(
           respond(false, '当前角色会话尚未准备好发送消息')
           return
         }
-        if (pendingCardSends.has(target)) {
-          respond(false, '上一条卡片消息仍在发送')
-          return
-        }
-        pendingCardSends.add(target)
         const variableWrites = cardVariableMutationQueues.get(target) ?? Promise.resolve()
-        void variableWrites.catch(() => undefined).then(() => conversation.send(chatSendRequest.value)).then(() => {
-          respond(true)
-        }, reason => {
-          ctx.logger.warn(`agent-rp: card chat send failed: ${String(reason)}`)
-          respond(false, '消息发送失败')
-        }).finally(() => {
-          pendingCardSends.delete(target)
+        void cardPlayerActions.run(target, chatSendRequest.playerAction, () => (
+          variableWrites.catch(() => undefined).then(() => conversation.send(chatSendRequest.value))
+        )).then(result => {
+          if (result.status === 'completed') respond(true)
+          else if (result.status === 'activation-required') respond(false, '需要点击后才能发送消息')
+          else if (result.status === 'busy') respond(false, '上一项卡片操作仍在进行')
+          else {
+            ctx.logger.warn(`agent-rp: card chat send failed: ${String(result.reason)}`)
+            respond(false, '消息发送失败')
+          }
         })
         return
       }
-      const chatSessionMutationRequest = parseCardChatSessionMutateCapabilityRequest(event.data)
-      if (chatSessionMutationRequest !== undefined) {
-        const sourceFrame = registeredCardFrame(chatSessionMutationRequest.token, event.source)
+      const userMessageAppendRequest = parseCardUserMessageAppendCapabilityRequest(event.data)
+      if (userMessageAppendRequest !== undefined) {
+        const sourceFrame = registeredCardFrame(userMessageAppendRequest.token, event.source)
         if (sourceFrame === undefined) return
-        sourceFrame.dataset.agentRpCapabilityRequest = chatSessionMutationRequest.capability
+        sourceFrame.dataset.agentRpCapabilityRequest = userMessageAppendRequest.capability
         const target = event.source as Window
         const respond = (ok: boolean, error?: string): void => {
           target.postMessage({
-            source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'chat.session.mutate',
-            requestId: chatSessionMutationRequest.requestId, ok,
+            source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'chat.user-message.append',
+            requestId: userMessageAppendRequest.requestId, ok,
             ...(error === undefined ? {} : { error }),
           }, '*')
         }
-        if (pendingCardMutations.has(target)) {
-          respond(false, '上一条卡片会话变更仍在保存')
-          return
-        }
-        pendingCardMutations.add(target)
-        void runTavernMutation(sessionId, {
-          format: 0, operation: 'create-chat-messages',
-          messages: chatSessionMutationRequest.messages, insertAt: 'end',
-        }).then(() => {
-          respond(true)
-        }, reason => {
-          ctx.logger.warn(`agent-rp: card chat session mutation failed: ${String(reason)}`)
-          respond(false, '卡片用户消息保存失败')
-        }).finally(() => {
-          pendingCardMutations.delete(target)
+        const variableWrites = cardVariableMutationQueues.get(target) ?? Promise.resolve()
+        void cardPlayerActions.run(target, userMessageAppendRequest.playerAction, () => variableWrites.catch(() => undefined).then(() => (
+          runTavernMutation(sessionId, {
+            format: 0, operation: 'create-chat-messages',
+            messages: [{ role: 'user', message: userMessageAppendRequest.message }], insertAt: 'end',
+          })
+        )), { grantTrigger: true }).then(result => {
+          if (result.status === 'completed') respond(true)
+          else if (result.status === 'activation-required') respond(false, '需要点击后才能创建用户消息')
+          else if (result.status === 'busy') respond(false, '上一项卡片操作仍在进行')
+          else {
+            ctx.logger.warn(`agent-rp: card user message append failed: ${String(result.reason)}`)
+            respond(false, '卡片用户消息保存失败')
+          }
         })
         return
       }
@@ -11772,20 +11770,16 @@ function roleplayComposerDockComponent(
           respond(false, '这条开场已不属于当前角色卡')
           return
         }
-        if (pendingCardMutations.has(target)) {
-          respond(false, '正在切换开场')
-          return
-        }
-        pendingCardMutations.add(target)
-        void runTavernMutation(sessionId, {
+        void cardPlayerActions.run(target, capabilityRequest.playerAction, () => runTavernMutation(sessionId, {
           format: 0, operation: 'set-chat-messages', messages: [{ message_id: 0, message: selectedGreeting }],
-        }).then(() => {
-          respond(true)
-        }, reason => {
-          ctx.logger.warn(`agent-rp: card greeting switch failed: ${String(reason)}`)
-          respond(false, '开场切换失败')
-        }).finally(() => {
-          pendingCardMutations.delete(target)
+        })).then(result => {
+          if (result.status === 'completed') respond(true)
+          else if (result.status === 'activation-required') respond(false, '需要点击后才能切换开场')
+          else if (result.status === 'busy') respond(false, '上一项卡片操作仍在进行')
+          else {
+            ctx.logger.warn(`agent-rp: card greeting switch failed: ${String(result.reason)}`)
+            respond(false, '开场切换失败')
+          }
         })
         return
       }
@@ -11827,6 +11821,7 @@ function roleplayComposerDockComponent(
       const message = event.data as {
         readonly source?: unknown
         readonly action?: unknown
+        readonly playerAction?: unknown
         readonly token?: unknown
         readonly value?: unknown
       }
@@ -11861,15 +11856,30 @@ function roleplayComposerDockComponent(
         return
       }
       if (command?.kind === 'trigger') {
-        void runTavernTrigger(sessionId).catch((reason: unknown) => {
-          ctx.logger.warn(`agent-rp: Tavern /trigger failed: ${String(reason)}`)
+        void cardPlayerActions.trigger(
+          event.source as Window, message.playerAction === true, () => runTavernTrigger(sessionId),
+        ).then(result => {
+          if (result.status === 'failed') {
+            ctx.logger.warn(`agent-rp: card /trigger failed: ${String(result.reason)}`)
+          } else if (result.status === 'activation-required') {
+            sourceFrame.dataset.agentRpCapabilityRequest = 'trigger-user-activation-required'
+          }
         })
         return
       }
       if (command?.kind !== 'send' && command?.kind !== 'set-input') return
       const scoped = ctx.sessions.scope(sessionId)
       const conversation = scoped?.get('conversation') as IConversation | undefined
-      void conversation?.send(command.text)
+      if (conversation === undefined) return
+      void cardPlayerActions.run(
+        event.source as Window, message.playerAction === true, () => conversation.send(command.text),
+      ).then(result => {
+        if (result.status === 'failed') {
+          ctx.logger.warn(`agent-rp: card slash send failed: ${String(result.reason)}`)
+        } else if (result.status === 'activation-required') {
+          sourceFrame.dataset.agentRpCapabilityRequest = 'slash-send-user-activation-required'
+        }
+      })
     }
     const mountRenderedDisplay = (
       item: HTMLElement,
@@ -11889,6 +11899,7 @@ function roleplayComposerDockComponent(
         activeProjection.mvu?.statData,
         activeProjection.tavern?.scopes,
         activeProjection.characterName,
+        activeProjection.userName,
         activeCharacterDetail?.id,
         activeCharacterDetail?.imageAssets,
         activeCharacterDetail?.displayExtensions.filter(extension => extension.enabled),
@@ -11929,6 +11940,7 @@ function roleplayComposerDockComponent(
           compatibilityMarkers={activeCompatibilityMarkers}
           tavernHelperScripts={activeCharacterScripts}
           {...(activeProjection.tavern === undefined ? {} : { variableScopes: activeProjection.tavern.scopes })}
+          {...(activeProjection.userName === undefined ? {} : { userName: activeProjection.userName })}
           {...(greetingChoices === undefined ? {} : { greetingChoices })}
           {...(activeCharacterDetail === undefined ? {} : { character: activeCharacterDetail })}
           onFrameRegistration={registerFrame}

@@ -108,6 +108,21 @@ test('publishes truthful Session variable ownership and runtime-specific payload
     'card-frame-v0': { requestBytes: 64 * 1024, resultBytes: 4096 },
   })
 
+  const userMessageAppend = AGENT_RP_CAPABILITIES['chat.user-message.append']
+  assert.equal(userMessageAppend.effect, 'session-write')
+  assert.equal(userMessageAppend.approval, 'player-action')
+  assert.equal(userMessageAppend.approvalPersistence, 'none')
+  assert.equal(userMessageAppend.statePersistence, 'session')
+  assert.equal(userMessageAppend.stateOwner, 'session')
+  assert.equal(userMessageAppend.modelVisible, true)
+  assert.deepEqual(userMessageAppend.runtimePolicies, {
+    'card-frame-v0': { requestBytes: 64 * 1024, resultBytes: 4096 },
+  })
+  const cardCapabilities = CARD_FRONTEND_CAPABILITY_MANIFEST.requirements
+    .map(requirement => requirement.capability) as readonly string[]
+  assert.equal(cardCapabilities.includes('chat.user-message.append'), true)
+  assert.equal(cardCapabilities.includes('chat.session.mutate'), false)
+
   const variables = AGENT_RP_CAPABILITIES['session.variables.replace']
   assert.equal(variables.stateOwner, 'session')
   assert.equal(variables.statePersistence, 'session')
@@ -131,7 +146,6 @@ test('publishes truthful Session variable ownership and runtime-specific payload
   assert.equal(chatMutation.stateOwner, 'session')
   assert.equal(chatMutation.modelVisible, true)
   assert.deepEqual(chatMutation.runtimePolicies, {
-    'card-frame-v0': { requestBytes: 64 * 1024, resultBytes: 4096 },
     'tavern-script-frame-v0': { requestBytes: 2 * 1024 * 1024, resultBytes: 4096 },
   })
 

@@ -31,7 +31,7 @@ export type CardRuntimePhase = typeof CARD_RUNTIME_PHASES[number]
 /** One registered light-frontend capability and its fixed security policy. */
 export const CARD_CAPABILITIES = {
   'chat.send': AGENT_RP_CAPABILITIES['chat.send'],
-  'chat.session.mutate': AGENT_RP_CAPABILITIES['chat.session.mutate'],
+  'chat.user-message.append': AGENT_RP_CAPABILITIES['chat.user-message.append'],
   'greeting.select': AGENT_RP_CAPABILITIES['greeting.select'],
   'ui.external-window.open': AGENT_RP_CAPABILITIES['ui.external-window.open'],
   'identity.native.attest': AGENT_RP_CAPABILITIES['identity.native.attest'],
@@ -39,7 +39,7 @@ export const CARD_CAPABILITIES = {
 
 const CARD_CHAT_SEND_REQUEST_BYTES = AGENT_RP_CAPABILITIES['chat.send']
   .runtimePolicies['card-frame-v0'].requestBytes
-const CARD_CHAT_SESSION_MUTATE_REQUEST_BYTES = AGENT_RP_CAPABILITIES['chat.session.mutate']
+const CARD_USER_MESSAGE_APPEND_REQUEST_BYTES = AGENT_RP_CAPABILITIES['chat.user-message.append']
   .runtimePolicies['card-frame-v0'].requestBytes
 const CARD_VARIABLE_REQUEST_BYTES = AGENT_RP_CAPABILITIES['session.variables.replace']
   .runtimePolicies['card-frame-v0'].requestBytes
@@ -55,6 +55,7 @@ export interface CardGreetingSelectRequest {
   readonly capability: 'greeting.select'
   readonly token: string
   readonly requestId: string
+  readonly playerAction: true
   readonly greetingIndex: number
 }
 
@@ -65,19 +66,19 @@ export interface CardChatSendRequest {
   readonly capability: 'chat.send'
   readonly token: string
   readonly requestId: string
+  readonly playerAction: true
   readonly value: string
 }
 
-/** One bounded request to append one user message without triggering model generation. */
-export interface CardChatSessionMutateCapabilityRequest {
+/** One bounded player request to append one user message without triggering model generation. */
+export interface CardUserMessageAppendCapabilityRequest {
   readonly source: 'dsh-agent-rp-card'
   readonly action: 'capability-request'
-  readonly capability: 'chat.session.mutate'
+  readonly capability: 'chat.user-message.append'
   readonly token: string
   readonly requestId: string
-  readonly operation: 'create-chat-messages'
-  readonly messages: readonly [{ readonly role: 'user'; readonly message: string }]
-  readonly insertAt: 'end'
+  readonly playerAction: true
+  readonly message: string
 }
 
 /** One external HTTPS window request from a registered light frontend. */
@@ -146,12 +147,13 @@ export interface CardRuntimeReport {
 export function parseCardChatSendCapabilityRequest(value: unknown): CardChatSendRequest | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const record = value as Record<string, unknown>
-  const fields = new Set(['source', 'action', 'capability', 'token', 'requestId', 'value'])
+  const fields = new Set(['source', 'action', 'capability', 'token', 'requestId', 'playerAction', 'value'])
   if (Object.keys(record).some(key => !fields.has(key))
     || record.source !== 'dsh-agent-rp-card' || record.action !== 'capability-request'
     || record.capability !== 'chat.send'
     || typeof record.token !== 'string' || !/^[\w:-]{1,128}$/u.test(record.token)
     || typeof record.requestId !== 'string' || !/^card-chat-send-[1-9]\d{0,8}$/u.test(record.requestId)
+    || record.playerAction !== true
     || typeof record.value !== 'string' || record.value.trim() === '') return undefined
   try {
     const serialized = JSON.stringify(record)
@@ -162,44 +164,35 @@ export function parseCardChatSendCapabilityRequest(value: unknown): CardChatSend
   }
   return {
     source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'chat.send',
-    token: record.token, requestId: record.requestId, value: record.value,
+    token: record.token, requestId: record.requestId, playerAction: true, value: record.value,
   }
 }
 
-/** Parse one bounded light-frontend request to append one user message. */
-export function parseCardChatSessionMutateCapabilityRequest(
+/** Parse one bounded light-frontend request to append one player-authored message. */
+export function parseCardUserMessageAppendCapabilityRequest(
   value: unknown,
-): CardChatSessionMutateCapabilityRequest | undefined {
+): CardUserMessageAppendCapabilityRequest | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const record = value as Record<string, unknown>
-  const fields = new Set([
-    'source', 'action', 'capability', 'token', 'requestId', 'operation', 'messages', 'insertAt',
-  ])
+  const fields = new Set(['source', 'action', 'capability', 'token', 'requestId', 'playerAction', 'message'])
   if (Object.keys(record).some(key => !fields.has(key))
     || record.source !== 'dsh-agent-rp-card' || record.action !== 'capability-request'
-    || record.capability !== 'chat.session.mutate'
+    || record.capability !== 'chat.user-message.append'
     || typeof record.token !== 'string' || !/^[\w:-]{1,128}$/u.test(record.token)
     || typeof record.requestId !== 'string'
-    || !/^card-chat-session-mutate-[1-9]\d{0,8}$/u.test(record.requestId)
-    || record.operation !== 'create-chat-messages' || record.insertAt !== 'end'
-    || !Array.isArray(record.messages) || record.messages.length !== 1) return undefined
-  const message = record.messages[0]
-  if (typeof message !== 'object' || message === null || Array.isArray(message)) return undefined
-  const messageRecord = message as Record<string, unknown>
-  if (Object.keys(messageRecord).some(key => key !== 'role' && key !== 'message')
-    || messageRecord.role !== 'user' || typeof messageRecord.message !== 'string'
-    || messageRecord.message.trim() === '') return undefined
+    || !/^card-user-message-append-[1-9]\d{0,8}$/u.test(record.requestId)
+    || record.playerAction !== true
+    || typeof record.message !== 'string' || record.message.trim() === '') return undefined
   try {
     const serialized = JSON.stringify(record)
     if (serialized === undefined
-      || new TextEncoder().encode(serialized).byteLength > CARD_CHAT_SESSION_MUTATE_REQUEST_BYTES) return undefined
+      || new TextEncoder().encode(serialized).byteLength > CARD_USER_MESSAGE_APPEND_REQUEST_BYTES) return undefined
   } catch {
     return undefined
   }
   return {
-    source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'chat.session.mutate',
-    token: record.token, requestId: record.requestId, operation: 'create-chat-messages',
-    messages: [{ role: 'user', message: messageRecord.message }], insertAt: 'end',
+    source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'chat.user-message.append',
+    token: record.token, requestId: record.requestId, playerAction: true, message: record.message,
   }
 }
 
@@ -207,17 +200,18 @@ export function parseCardChatSessionMutateCapabilityRequest(
 export function parseCardCapabilityRequest(value: unknown): CardGreetingSelectRequest | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const record = value as Record<string, unknown>
-  const fields = new Set(['source', 'action', 'capability', 'token', 'requestId', 'greetingIndex'])
+  const fields = new Set(['source', 'action', 'capability', 'token', 'requestId', 'playerAction', 'greetingIndex'])
   if (Object.keys(record).some(key => !fields.has(key))) return undefined
   if (record.source !== 'dsh-agent-rp-card' || record.action !== 'capability-request'
     || record.capability !== 'greeting.select'
     || typeof record.token !== 'string' || !/^[\w:-]{1,128}$/u.test(record.token)
     || typeof record.requestId !== 'string' || !/^card-capability-[1-9]\d{0,8}$/u.test(record.requestId)
+    || record.playerAction !== true
     || typeof record.greetingIndex !== 'number' || !Number.isSafeInteger(record.greetingIndex)
     || record.greetingIndex < 0 || record.greetingIndex > 255) return undefined
   return {
     source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'greeting.select',
-    token: record.token, requestId: record.requestId, greetingIndex: record.greetingIndex,
+    token: record.token, requestId: record.requestId, playerAction: true, greetingIndex: record.greetingIndex,
   }
 }
 

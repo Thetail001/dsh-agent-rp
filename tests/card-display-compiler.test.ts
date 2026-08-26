@@ -19,9 +19,9 @@ import {
   parseCardExternalWindowControlRequest, parseCardExternalWindowDeliveryReport,
   parseCardNativeIdentityCapabilityRequest,
   parseCardResourceBlockedReport, parseCardRuntimeReport,
+  parseCardUserMessageAppendCapabilityRequest,
   parseCardVariableReplaceRequest,
 } from '../src/client/card-capability.ts'
-import * as cardCapability from '../src/client/card-capability.ts'
 import { cardRemoteResourceRequirements } from '../src/card-remote-resource.ts'
 import { AGENT_RP_CAPABILITIES } from '../src/extension-capability.ts'
 import { validExternalWindowMessage } from '../src/client/external-window.ts'
@@ -93,6 +93,8 @@ function cardChatRuntimeStatements(documentSource: string): string {
 
 function cardCreateMessageRuntimeStatements(documentSource: string): string {
   const statements = [
+    /^var __dshCurrentCharacter=[^\r\n]*$/mu,
+    /^var __dshCardUserName=[^\r\n]*$/mu,
     /^var __dshCardChat=[^\r\n]*$/mu,
     /^var __dshCardPending=[^\r\n]*$/mu,
     /^function __dshSetCardCapabilityState[^\r\n]*$/mu,
@@ -142,9 +144,71 @@ function runCardActionOptionsFixture(message: CardChatFixtureMessage): {
   }
 }
 
+test('stamps only browser-activated card actions in the Host-owned compatibility shell', () => {
+  const url = cardFrameCompatibilityUrl('<!doctype html><html><body>panel</body></html>', 'frame-token:0')
+  const shell = Buffer.from(url.slice(url.indexOf(',') + 1), 'base64').toString('utf8')
+  assert.match(shell, /requestId:pendingSend,playerAction:true,value/u)
+  const relay = shell.match(/<script>([\s\S]*?)<\/script>/u)?.[1]
+  assert.ok(relay)
+  const innerResults: unknown[] = []
+  const inner = { postMessage: (message: unknown): void => { innerResults.push(message) } }
+  const parent = {}
+  let receiveMessage: ((event: {
+    readonly source: unknown
+    readonly data: Record<string, unknown>
+    stopImmediatePropagation: () => void
+  }) => void) | undefined
+  const sandbox: Record<string, unknown> = {
+    addEventListener(type: string, listener: typeof receiveMessage): void {
+      if (type === 'message') receiveMessage = listener
+    },
+    Date,
+    document: { getElementById: () => ({ contentWindow: inner }) },
+    navigator: { userActivation: { isActive: false } },
+    parent,
+    Set,
+  }
+  const context = createContext(sandbox)
+  runInContext(relay, context)
+  assert.notEqual(receiveMessage, undefined)
+  const dispatch = (data: Record<string, unknown>, source: unknown = inner): boolean => {
+    let stopped = false
+    receiveMessage?.({ source, data, stopImmediatePropagation: () => { stopped = true } })
+    return stopped
+  }
+
+  const automatic: Record<string, unknown> = {
+    source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'chat.user-message.append',
+    requestId: 'card-user-message-append-1', playerAction: true,
+  }
+  assert.equal(dispatch(automatic), true)
+  assert.equal(automatic.playerAction, undefined)
+  assert.equal(innerResults.length, 1)
+
+  runInContext('navigator.userActivation.isActive=true', context)
+  const clicked = { ...automatic }
+  assert.equal(dispatch(clicked), false)
+  assert.equal(clicked.playerAction, true)
+
+  dispatch({
+    source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'chat.user-message.append', ok: true,
+  }, parent)
+  runInContext('navigator.userActivation.isActive=false', context)
+  const firstTrigger: Record<string, unknown> = {
+    source: 'dsh-agent-rp-card', action: 'trigger-slash', value: '/trigger',
+  }
+  assert.equal(dispatch(firstTrigger), false)
+  assert.equal(firstTrigger.playerAction, true)
+  const secondTrigger: Record<string, unknown> = {
+    source: 'dsh-agent-rp-card', action: 'trigger-slash', value: '/trigger',
+  }
+  assert.equal(dispatch(secondTrigger), true)
+  assert.equal(secondTrigger.playerAction, undefined)
+})
+
 test('creates one user message through the isolated card facade before one trigger', async () => {
   const source = compileCardFrameDocument('<!doctype html><html><body>panel</body></html>', {
-    origin: 'http://127.0.0.1:3091', capabilityToken: 'frame-token:0',
+    origin: 'http://127.0.0.1:3091', capabilityToken: 'frame-token:0', userName: '旅人',
   })
   const posted: unknown[] = []
   let receiveHostMessage: ((event: { readonly source: unknown; readonly data: unknown }) => void) | undefined
@@ -178,38 +242,40 @@ test('creates one user message through the isolated card facade before one trigg
   assert.equal(typeof createChatMessages, 'function')
   assert.equal(typeof getChatMessages, 'function')
   assert.equal(typeof triggerSlash, 'function')
-  const pending = (createChatMessages as (
+  const create = createChatMessages as (
     messages: readonly { readonly role: 'user'; readonly message: string }[],
     option: { readonly refresh: 'affected' },
-  ) => Promise<void>)([{ role: 'user', message: '继续调查线索' }], { refresh: 'affected' })
+  ) => Promise<void>
+  runInContext('navigator.userActivation.isActive=false', context)
+  await assert.rejects(create(
+    [{ role: 'user', message: '后台伪造消息' }], { refresh: 'affected' },
+  ), /需要点击后才能创建用户消息/u)
+  assert.equal(posted.length, 0)
+  runInContext('navigator.userActivation.isActive=true', context)
+  const pending = create([{ role: 'user', message: '继续调查线索' }], { refresh: 'affected' })
 
   assert.equal(posted.length, 1)
   const request = posted[0] as Record<string, unknown>
   assert.deepEqual(request, {
-    source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'chat.session.mutate',
-    token: 'frame-token:0', requestId: 'card-chat-session-mutate-1',
-    operation: 'create-chat-messages', messages: [{ role: 'user', message: '继续调查线索' }], insertAt: 'end',
+    source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'chat.user-message.append',
+    token: 'frame-token:0', requestId: 'card-user-message-append-1', message: '继续调查线索',
   })
 
-  const parser = Reflect.get(cardCapability, 'parseCardChatSessionMutateCapabilityRequest')
-  assert.equal(typeof parser, 'function')
-  assert.deepEqual((parser as (value: unknown) => unknown)(request), request)
-  assert.equal((parser as (value: unknown) => unknown)({
-    ...request, messages: [{ role: 'user', message: '' }],
-  }), undefined)
-  assert.equal((parser as (value: unknown) => unknown)({
-    ...request, messages: [{ role: 'assistant', message: '越权内容' }],
-  }), undefined)
-  assert.equal((parser as (value: unknown) => unknown)({ ...request, insertAt: 0 }), undefined)
-  assert.equal((parser as (value: unknown) => unknown)({ ...request, operation: 'delete-chat-messages' }), undefined)
-  assert.equal((parser as (value: unknown) => unknown)({ ...request, sessionId: 'another-session' }), undefined)
-  assert.equal((parser as (value: unknown) => unknown)({
-    ...request, messages: [{ role: 'user', message: '猫'.repeat(30_000) }],
+  const hostRequest = { ...request, playerAction: true }
+  assert.deepEqual(parseCardUserMessageAppendCapabilityRequest(hostRequest), hostRequest)
+  assert.equal(parseCardUserMessageAppendCapabilityRequest(request), undefined)
+  assert.equal(parseCardUserMessageAppendCapabilityRequest({ ...hostRequest, message: '' }), undefined)
+  assert.equal(parseCardUserMessageAppendCapabilityRequest({ ...hostRequest, role: 'assistant' }), undefined)
+  assert.equal(parseCardUserMessageAppendCapabilityRequest({ ...hostRequest, insertAt: 0 }), undefined)
+  assert.equal(parseCardUserMessageAppendCapabilityRequest({ ...hostRequest, operation: 'delete-chat-messages' }), undefined)
+  assert.equal(parseCardUserMessageAppendCapabilityRequest({ ...hostRequest, sessionId: 'another-session' }), undefined)
+  assert.equal(parseCardUserMessageAppendCapabilityRequest({
+    ...hostRequest, message: '猫'.repeat(30_000),
   }), undefined)
 
   assert.notEqual(receiveHostMessage, undefined)
   sandbox.__testHostData = {
-    source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'chat.session.mutate',
+    source: 'dsh-agent-rp-host', action: 'capability-result', capability: 'chat.user-message.append',
     requestId: request.requestId, ok: true,
   }
   runInContext('__testReceiveHostMessage({ source: parent, data: __testHostData })', context)
@@ -226,6 +292,7 @@ test('creates one user message through the isolated card facade before one trigg
   assert.deepEqual({ role: chat[1]?.role, message: chat[1]?.message, is_user: chat[1]?.is_user }, {
     role: 'user', message: '继续调查线索', is_user: true,
   })
+  assert.equal(chat[1]?.name, '旅人')
   assert.equal(posted.filter(message => (
     message as { readonly action?: unknown }
   ).action === 'trigger-slash').length, 1)
@@ -711,10 +778,10 @@ test('accepts only bounded registered variable replacements from light frontends
 test('accepts only bounded registered greeting capability requests', () => {
   assert.deepEqual(parseCardCapabilityRequest({
     source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'greeting.select',
-    token: 'frame-token:0', requestId: 'card-capability-1', greetingIndex: 1,
+    token: 'frame-token:0', requestId: 'card-capability-1', playerAction: true, greetingIndex: 1,
   }), {
     source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'greeting.select',
-    token: 'frame-token:0', requestId: 'card-capability-1', greetingIndex: 1,
+    token: 'frame-token:0', requestId: 'card-capability-1', playerAction: true, greetingIndex: 1,
   })
   assert.equal(parseCardCapabilityRequest({
     source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'chat.write',
@@ -737,13 +804,15 @@ test('accepts only bounded registered greeting capability requests', () => {
 test('accepts only bounded registered player chat sends', () => {
   const request = {
     source: 'dsh-agent-rp-card', action: 'capability-request', capability: 'chat.send',
-    token: 'frame-token:0', requestId: 'card-chat-send-1', value: '签订契约并开始',
+    token: 'frame-token:0', requestId: 'card-chat-send-1', playerAction: true, value: '签订契约并开始',
   } as const
   assert.deepEqual(parseCardChatSendCapabilityRequest(request), request)
   assert.equal(parseCardChatSendCapabilityRequest({ ...request, value: '' }), undefined)
   assert.equal(parseCardChatSendCapabilityRequest({ ...request, requestId: 'card-chat-send-0' }), undefined)
   assert.equal(parseCardChatSendCapabilityRequest({ ...request, value: '猫'.repeat(30_000) }), undefined)
-  assert.equal(parseCardChatSendCapabilityRequest({ ...request, userActivated: true }), undefined)
+  assert.equal(parseCardChatSendCapabilityRequest({ ...request, playerAction: false }), undefined)
+  const { playerAction: _playerAction, ...unstamped } = request
+  assert.equal(parseCardChatSendCapabilityRequest(unstamped), undefined)
 })
 
 test('accepts only bounded HTTPS resource reports from registered frame tokens', () => {
