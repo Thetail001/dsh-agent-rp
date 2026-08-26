@@ -108,3 +108,47 @@ test('does not grant a trigger when the Session mutation fails', async () => {
   })
   assert.equal(triggers, 0)
 })
+
+test('revokes an append trigger grant when a later player action is accepted', async () => {
+  const first = actionSource('frame-1')
+  const second = actionSource('frame-2')
+  const coordinator = new CardPlayerActionCoordinator<CardPlayerActionSource>()
+
+  assert.deepEqual(await coordinator.run(first, true, async () => undefined, { grantTrigger: true }), {
+    status: 'completed',
+  })
+  assert.deepEqual(await coordinator.run(second, true, async () => undefined), { status: 'completed' })
+
+  let triggers = 0
+  assert.deepEqual(await coordinator.trigger(first, false, async () => { triggers += 1 }), {
+    status: 'activation-required',
+  })
+  assert.equal(triggers, 0)
+})
+
+test('keeps a grant through a rejected action but revokes it when a later accepted action fails', async () => {
+  const first = actionSource('frame-1')
+  const second = actionSource('frame-2')
+  const coordinator = new CardPlayerActionCoordinator<CardPlayerActionSource>()
+  const failure = new Error('save failed')
+
+  assert.deepEqual(await coordinator.run(first, true, async () => undefined, { grantTrigger: true }), {
+    status: 'completed',
+  })
+  assert.deepEqual(await coordinator.run(second, false, async () => undefined), { status: 'activation-required' })
+  let triggers = 0
+  assert.deepEqual(await coordinator.trigger(first, false, async () => { triggers += 1 }), { status: 'completed' })
+  assert.equal(triggers, 1)
+
+  assert.deepEqual(await coordinator.run(first, true, async () => undefined, { grantTrigger: true }), {
+    status: 'completed',
+  })
+  const result = await coordinator.run(second, true, async () => { throw failure })
+  assert.equal(result.status, 'failed')
+  assert.equal(result.status === 'failed' ? result.reason : undefined, failure)
+
+  assert.deepEqual(await coordinator.trigger(first, false, async () => { triggers += 1 }), {
+    status: 'activation-required',
+  })
+  assert.equal(triggers, 1)
+})

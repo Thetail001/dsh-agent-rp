@@ -14,12 +14,16 @@ export interface CardPlayerActionOptions {
 
 const cardTriggerGrantMs = 30_000
 
-/** Serialize player actions for one Session and issue single-use trigger grants. */
+/**
+ * Serialize player actions for one Session and issue single-use trigger grants.
+ * A later accepted player action revokes every earlier grant, including when that action fails.
+ */
 export class CardPlayerActionCoordinator<Source extends object> {
   readonly #now: () => number
   #pendingAction: { readonly source: Source; readonly work: Promise<CardPlayerActionResult> } | undefined
   #triggering = false
-  readonly #triggerGrants = new WeakMap<Source, number>()
+  #triggerGrantGeneration = 0
+  readonly #triggerGrants = new WeakMap<Source, { readonly expiresAt: number; readonly generation: number }>()
 
   /**
    * Create a coordinator for one active Session.
@@ -47,8 +51,14 @@ export class CardPlayerActionCoordinator<Source extends object> {
   ): Promise<CardPlayerActionResult> {
     if (!playerActivated) return { status: 'activation-required' }
     if (this.#pendingAction !== undefined || this.#triggering) return { status: 'busy' }
+    const grantGeneration = ++this.#triggerGrantGeneration
     const work: Promise<CardPlayerActionResult> = Promise.resolve().then(action).then((): CardPlayerActionResult => {
-      if (options.grantTrigger === true) this.#triggerGrants.set(source, this.#now() + cardTriggerGrantMs)
+      if (options.grantTrigger === true) {
+        this.#triggerGrants.set(source, {
+          expiresAt: this.#now() + cardTriggerGrantMs,
+          generation: grantGeneration,
+        })
+      }
       return { status: 'completed' }
     }, (reason): CardPlayerActionResult => ({ status: 'failed', reason }))
     this.#pendingAction = { source, work }
@@ -81,10 +91,14 @@ export class CardPlayerActionCoordinator<Source extends object> {
         const result = await pending.work
         if (result.status !== 'completed') return result
       }
-      const grantExpiresAt = this.#triggerGrants.get(source)
+      const grant = this.#triggerGrants.get(source)
+      const grantAvailable = grant?.generation === this.#triggerGrantGeneration && grant.expiresAt >= this.#now()
+      if (!grantAvailable && !playerActivated) {
+        if (grant !== undefined) this.#triggerGrants.delete(source)
+        return { status: 'activation-required' }
+      }
       this.#triggerGrants.delete(source)
-      if ((grantExpiresAt === undefined || grantExpiresAt < this.#now())
-        && !playerActivated) return { status: 'activation-required' }
+      this.#triggerGrantGeneration += 1
       try {
         await trigger()
         return { status: 'completed' }
