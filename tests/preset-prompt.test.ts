@@ -207,6 +207,68 @@ test('keeps changing world context behind the reusable dialogue prefix', () => {
   assert.equal(text(later.at(-1)), '当前位置：航线 3')
 })
 
+test('keeps changing state after stable world context across continuous turns and tool transactions', () => {
+  const stableRuntimeSnapshot = message(
+    'user',
+    'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n【长期记忆】钥匙藏在钟下。',
+  )
+  const history = [
+    message('user', '第一轮'),
+    stableRuntimeSnapshot,
+    message('assistant', '第一轮完成'),
+    message('user', '第二轮'),
+  ]
+  const longWorld = `【稳定世界书】${'海城终年多雾。'.repeat(2_000)}`
+  const plan = (state: string) => ({
+    beforeHistory: [{ role: 'system' as const, content: '稳定角色契约' }],
+    afterHistory: [
+      { role: 'system' as const, content: longWorld },
+      { role: 'system' as const, content: `【本轮只读状态】${state}` },
+    ],
+    inChat: [],
+    includeHistory: true,
+  })
+  const second = prepareSillyTavernProviderMessages(history, plan('回合=2'))
+  const thirdHistory = [
+    ...history,
+    message('assistant', '第二轮完成'),
+    message('user', '第三轮'),
+  ]
+  const thirdUnchanged = prepareSillyTavernProviderMessages(thirdHistory, plan('回合=2'))
+  const thirdChanged = prepareSillyTavernProviderMessages(thirdHistory, plan('回合=3'))
+  const signature = (value: Message): string => JSON.stringify({ role: value.role, content: value.content })
+  const textOf = (value: Message | undefined): string | undefined => {
+    const block = value?.content[0]
+    return block?.type === 'text' ? block.text : undefined
+  }
+  const firstDifference = (left: readonly Message[], right: readonly Message[]): number => {
+    const through = Math.min(left.length, right.length)
+    for (let index = 0; index < through; index += 1) {
+      if (signature(left[index]!) !== signature(right[index]!)) return index
+    }
+    return through
+  }
+
+  assert.equal(firstDifference(second, thirdUnchanged), 1 + history.length)
+  assert.equal(firstDifference(thirdUnchanged, thirdChanged), thirdChanged.length - 1)
+  assert.equal(textOf(thirdChanged.at(-2)), longWorld)
+
+  const callId = CallId('continuous-turn-tool')
+  const call = createAssistantMessage({
+    source: { provider: 'fixture', model: 'fixture' },
+    content: [{ type: 'tool-call', id: callId, name: 'inspect_board', arguments: '{}' }],
+  })
+  const result = createToolResultMessage({
+    callId,
+    content: [{ type: 'text', text: '棋子位于航线 3' }],
+    isError: false,
+  })
+  const withTool = prepareSillyTavernProviderMessages([...thirdHistory, call, result], plan('回合=3'))
+  assert.deepEqual(withTool.slice(-2), [call, result])
+  assert.match(textOf(withTool.at(-3)) ?? '', /【本轮只读状态】回合=3/u)
+  assert.equal(textOf(withTool.at(-4)), longWorld)
+})
+
 test('moves only the leading system run into the reusable provider system field', () => {
   assert.deepEqual(splitRoleplaySystemPrompt({
     beforeHistory: [

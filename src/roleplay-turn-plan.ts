@@ -47,6 +47,7 @@ import {
 } from './roleplay-runtime.ts'
 import type { ResolvedSessionRoleplayRuntime } from './session-roleplay-runtime.ts'
 import { ROLEPLAY_STATE_MODULE_ID } from './roleplay-state.ts'
+import { renderRoleplayStateContext } from './roleplay-runtime-context.ts'
 import {
   tavernInjectedInChatPrompts,
   tavernInjectedOrderedPrompts,
@@ -489,7 +490,10 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   let templateFailures = 0
   const effectiveLorebooks = resolved.lorebooks.map(value => value.configured)
   const mvuUpdateInstructions = resolved.mvu === undefined
-    ? undefined : renderMvuUpdateInstructions(effectiveLorebooks, resolved.mvu.statData)
+    ? undefined : renderMvuUpdateInstructions(effectiveLorebooks, resolved.mvu.statData, {
+        characterName,
+        ...(userName === undefined ? {} : { userName }),
+      })
   const choiceInstructions = resolved.mvu === undefined
     ? undefined : renderChoiceInstructions(effectiveLorebooks)
   const stateActionTarget: RoleplayStateActionPlan | undefined = resolved.turnMode !== 'agent'
@@ -589,7 +593,7 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
   const nativeWorldAfter = snapshot.prompt.strategy === 'modules'
     ? [] : loreAfter.map(content => ({ role: 'system' as const, content }))
   const deferredInjectedBefore = providerPrompt.includeHistory ? injectedPrompts.beforeHistory : []
-  const prompt: RoleplayTurnPromptPlan = {
+  let prompt: RoleplayTurnPromptPlan = {
     ...providerPrompt,
     beforeHistory: [
       ...(providerPrompt.includeHistory ? [] : injectedPrompts.beforeHistory),
@@ -639,6 +643,13 @@ export function prepareRoleplayTurn(input: PrepareRoleplayTurnInput): RoleplayTu
     }
     return binding
   })
+  const stateContext = renderRoleplayStateContext(stateReads, transforms)
+  if (stateContext !== '') {
+    prompt = {
+      ...prompt,
+      afterHistory: [...prompt.afterHistory, { role: 'system', content: stateContext }],
+    }
+  }
   const memoryHistory = readAgentRpMemoryHistory(input.session.events)
   const memory: RoleplayMemoryPlan = {
     ...snapshot.memory,

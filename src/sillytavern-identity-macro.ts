@@ -43,3 +43,21 @@ export function projectSillyTavernIdentityMacros(
     projectSillyTavernIdentityMacros(item, identity),
   ]))
 }
+
+const JSON_STRING_TOKEN = /"(?:\\.|[^"\\])*"/gu
+
+/**
+ * Serialize a model-visible JSON projection without exposing its braces to DSH prompt interpolation.
+ * @param value - persisted JSON projected into a prompt.
+ * @param identity - active character and optional player identity.
+ * @returns valid JSON whose parsed value contains resolved identities and unchanged remaining braces.
+ */
+export function stringifySillyTavernPromptJson(
+  value: JsonValue,
+  identity: SillyTavernIdentityMacroValues,
+): string {
+  return JSON.stringify(projectSillyTavernIdentityMacros(value, identity)).replace(
+    JSON_STRING_TOKEN,
+    token => token.replace(/\{/gu, '\\u007b').replace(/\}/gu, '\\u007d'),
+  )
+}

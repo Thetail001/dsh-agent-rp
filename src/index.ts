@@ -184,7 +184,6 @@ import {
 import { installRoleplayImageGenerationTool } from './roleplay-image-generation-tool.ts'
 import { installAgentRpCapabilityPresetHttp } from './agent-capability-preset.ts'
 import { roleplayToolCallFollowsVisibleReply } from './roleplay-tool-continuation.ts'
-import { renderRoleplayTurnStateContext } from './roleplay-runtime-context.ts'
 import {
   beginStExtensionGeneration,
   registerStExtensionGenerationCoordinator,
@@ -1184,9 +1183,6 @@ export function installAgentRp(
       ...transformed,
       sections: [{ name: 'deployment:persona', text: roleplayPersonaText(agent) }],
       contexts: transformed.contexts.map(context => {
-        if (context.name === 'agent-rp:state') {
-          return { ...context, text: renderRoleplayTurnStateContext(plan) }
-        }
         if (context.name === 'agent-rp:memory') {
           return { ...context, text: plan?.memory.contextText ?? '' }
         }
@@ -1311,17 +1307,6 @@ export function installAgentRp(
       setStateActionAvailable(agent, false)
     }
     return decision
-  })
-  ctx.systemPrompt.context({
-    name: 'agent-rp:state',
-    order: 69,
-    text: ({ scope }) => {
-      if (scope === undefined) return ''
-      const agent = agentsByScope.get(scope)
-      return agent === undefined || turnCoordinator.currentActLane(agent) !== 'narrative'
-        ? ''
-        : renderRoleplayTurnStateContext(turnCoordinator.current(agent))
-    },
   })
   ctx.systemPrompt.context({
     name: 'agent-rp:memory',

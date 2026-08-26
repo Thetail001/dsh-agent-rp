@@ -82,7 +82,7 @@ class RecordingAdapter extends LlmAdapter {
   }
 }
 
-function mvuCard() {
+function mvuCard(options: { readonly ruleContent?: string } = {}) {
   return parseCharacterCardJson(JSON.stringify({
     spec: 'chara_card_v2',
     spec_version: '2.0',
@@ -117,7 +117,8 @@ function mvuCard() {
           id: 2,
           comment: '变量更新规则',
           keys: ['__mvu_rules__'],
-          content: '变量更新规则：剧情推进时更新等级，旧格式要求回复末尾输出 <UpdateVariable>。',
+          content: options.ruleContent
+            ?? '变量更新规则：剧情推进时更新等级，旧格式要求回复末尾输出 <UpdateVariable>。',
           enabled: true,
           insertion_order: 2,
           constant: false,
@@ -128,15 +129,19 @@ function mvuCard() {
   }))
 }
 
-function cardSession(id: string, mode: 'conversation' | 'agent') {
-  const card = mvuCard()
+function cardSession(
+  id: string,
+  mode: 'conversation' | 'agent',
+  options: { readonly ruleContent?: string; readonly userName?: string } = {},
+) {
+  const card = mvuCard(options)
   const seed = createCharacterCardSessionSeed(card, {
     kind: 'file',
     attachmentId: AttachmentId(`sha256:${id}`),
     bytes: 100,
     name: `${id}.json`,
     mediaType: 'application/json',
-  }, 0, '')
+  }, 0, '', undefined, options.userName)
   const session = Session.create(SessionId(id), seed)
   if (mode === 'agent') ensureDefaultRoleplayTurnMode(session, 'agent')
   return { card, session }
@@ -285,9 +290,7 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
   const sameStep = await root.systemPrompt.assemble({ scope: nativeAgent })
   assert.equal(sameStep.tools.some(tool => tool.name === ROLEPLAY_STATE_ACTION_TOOL), false)
   assert.equal(sameStep.tools.some(tool => tool.name === 'bash'), false)
-  const stateContext = sameStep.contexts.find(value => value.name === 'agent-rp:state')?.text ?? ''
-  assert.match(stateContext, /本轮只读状态/u)
-  assert.match(stateContext, /"state:mvu":\{"角色":\{"等级":1,"称号":"学徒"\}\}/u)
+  assert.equal(sameStep.contexts.some(value => value.name === 'agent-rp:state'), false)
 
   const browserPoll = stGeneration.poll(String(native.session.id), 'browser-a', new AbortController().signal)
   native.session.append('turn/start', { turn: 2 })
@@ -342,6 +345,8 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
   assert.equal(memoryPlan.prompt.afterHistory.some(prompt => (
     prompt.content === 'Woven 屏障记忆：钥匙藏在钟下。'
   )), true)
+  assert.match(memoryPlan.prompt.afterHistory.at(-1)?.content ?? '', /本轮只读状态/u)
+  assert.match(memoryPlan.prompt.afterHistory.at(-1)?.content ?? '', /"state:mvu":\{"角色":\{"等级":1,"称号":"学徒"\}\}/u)
   for await (const _chunk of root.llm.stream(Object.freeze({
     provider: 'fixture',
     model: 'fixture',
@@ -374,9 +379,7 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
   })
   const dialogueStep = await root.systemPrompt.assemble({ scope: nativeAgent })
   assert.equal(dialogueStep.tools.some(tool => tool.name === ROLEPLAY_STATE_ACTION_TOOL), false)
-  const dialogueState = dialogueStep.contexts.find(value => value.name === 'agent-rp:state')?.text ?? ''
-  assert.match(dialogueState, /本轮只读状态/u)
-  assert.match(dialogueState, /"state:mvu":\{"角色":\{"等级":1,"称号":"学徒"\}\}/u)
+  assert.equal(dialogueStep.contexts.some(value => value.name === 'agent-rp:state'), false)
 
   const resumedSession = Session.create(SessionId('state-action-resumed-default'))
   const resumedAgent = { id: resumedSession.id, session: resumedSession } as Agent
@@ -484,7 +487,17 @@ test('applies one semantic action after turn end and keeps its narrative message
 })
 
 test('settles MVU after the visible reply through a replayable local-provider stage', async () => {
-  const { card, session } = cardSession('staged-state-success', 'agent')
+  const { card, session } = cardSession('staged-state-success', 'agent', {
+    ruleContent: '变量更新规则：{{char}}依据{{user}}的行动更新等级。',
+    userName: '星野',
+  })
+  appendMvuState(session, {
+    statData: {
+      角色: { 等级: 1, 称号: '学徒' },
+      记录: '{{user}}刚把笔记交给{{char}}；保留 {{unknown}}。',
+    },
+    updateCount: 1,
+  })
   session.append('turn/start', { turn: 1 })
   const openingResolved = resolveSessionRoleplayRuntime({ session, deployment })
   const openingPlan = prepareRoleplayTurn({ session, deployment, resolved: openingResolved })
@@ -603,7 +616,8 @@ test('settles MVU after the visible reply through a replayable local-provider st
   assert.doesNotMatch(requestText, /确认自己已经跨过两级门槛/u)
   assert.doesNotMatch(requestText, /同一回合中已经结束的角色开场白/u)
   assert.doesNotMatch(requestText, /Current runtime context/u)
-  assert.match(requestText, /变量更新规则/u)
+  assert.match(requestText, /变量更新规则：白露依据星野的行动更新等级/u)
+  assert.doesNotMatch(requestText, /\{\{(?:user|char)\}\}/u)
   assert.match(verificationSystem, /独立状态核验器/u)
   assert.match(verificationSystem, /从 current_state 直接到核验后状态/u)
   assert.doesNotMatch(verificationText, /<proposal_operations>|<candidate_state>/u)
@@ -624,6 +638,13 @@ test('settles MVU after the visible reply through a replayable local-provider st
   assert.equal(requestBlock?.type, 'text')
   if (requestBlock?.type !== 'text') assert.fail('staged request text was not recorded')
   const requestBody = requestBlock.text
+  const currentStateText = /<current_state>\n([\s\S]*?)\n<\/current_state>/u.exec(requestBody)?.[1]
+  assert.ok(currentStateText)
+  assert.doesNotMatch(currentStateText, /\{\{(?:user|char|unknown)\}\}/u)
+  assert.deepEqual(JSON.parse(currentStateText), {
+    角色: { 等级: 1, 称号: '学徒' },
+    记录: '星野刚把笔记交给白露；保留 {{unknown}}。',
+  })
   assert.equal(/<player_input>\n([\s\S]*?)\n<\/player_input>/u.exec(requestBody)?.[1], '今晚的修行让我进步了。')
   assert.equal(
     /<roleplay_reply>\n([\s\S]*?)\n<\/roleplay_reply>/u.exec(requestBody)?.[1],
@@ -710,8 +731,11 @@ test('settles MVU after the visible reply through a replayable local-provider st
     turns: [1],
   })
   assert.deepEqual(readCurrentSessionMvuState(card, session), {
-    statData: { 角色: { 等级: 3, 称号: '学徒' } },
-    updateCount: 1,
+    statData: {
+      角色: { 等级: 3, 称号: '学徒' },
+      记录: '{{user}}刚把笔记交给{{char}}；保留 {{unknown}}。',
+    },
+    updateCount: 2,
     source: {
       kind: 'agent-action',
       turn: 1,

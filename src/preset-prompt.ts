@@ -401,7 +401,7 @@ export function prepareSillyTavernProviderMessages(
   return applySillyTavernContinuation(injectSillyTavernPromptPlan(messages, plan), plan.continuation)
 }
 
-/** Assemble every ordered module, splitting post-history instructions into a runtime context. */
+/** Assemble every ordered module around the retained chat history. */
 export function assembleSillyTavernPreset(
   preset: ImportedSillyTavernPreset,
   inputs: PresetPromptInputs,

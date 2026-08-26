@@ -4,6 +4,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { CommandId } from '@deepseek-ai/dsh-commands'
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { renderContextSections } from '@deepseek-ai/dsh-system-prompt'
 import { resolveConfig } from '../src/config.ts'
 import { renderCharacterPrompt } from '../src/prompt.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
@@ -242,11 +243,48 @@ test('keeps state-free turns unchanged and compiles exact native state into prep
   }])
   assert.doesNotMatch(plan.prompt.systemPromptText, /state:scene|浓雾/u)
   assert.match(renderRoleplayTurnStateContext(plan), /本轮只读状态[\s\S]*"state:scene"[\s\S]*"浓雾"/u)
+  assert.equal(plan.prompt.afterHistory.at(-1)?.content, renderRoleplayTurnStateContext(plan))
   assert.deepEqual(plan.prepare.modules.find(module => module.moduleId === ROLEPLAY_STATE_MODULE_ID), {
     moduleId: ROLEPLAY_STATE_MODULE_ID,
     outcome: 'applied',
     contributions: 1,
   })
+})
+
+test('projects identity macros without exposing state-owned braces to DSH interpolation', () => {
+  const session = Session.create(SessionId('native-state-prompt-macros'))
+  appendRoleplayState(session, {
+    id: 'state:scene',
+    expectedRevision: 0,
+    writerModuleId: 'roleplay:fixture',
+    value: {
+      actor: '{{char}}',
+      player: '{{user}}',
+      preserved: '{{unknown}} / {literal}',
+      nested: { label: '仍由 {{char}} 看见 {{user}}' },
+    },
+  })
+  const resolved = resolveSessionRoleplayRuntime({ session, deployment })
+  const plan = prepareRoleplayTurn({ session, deployment, resolved })
+  const context = renderRoleplayTurnStateContext(plan)
+  const serialized = context.split('\n').at(-1)
+
+  assert.ok(serialized)
+  assert.doesNotMatch(context, /\{\{(?:user|char|unknown)\}\}/u)
+  assert.deepEqual(JSON.parse(serialized), {
+    'state:scene': {
+      actor: '岚',
+      player: '用户',
+      preserved: '{{unknown}} / {literal}',
+      nested: { label: '仍由 岚 看见 用户' },
+    },
+  })
+  assert.deepEqual(renderContextSections({
+    sections: [],
+    contexts: [{ name: 'agent-rp:state', text: context }],
+    tools: [],
+    variables: { provider: 'fixture', model: 'fixture', cwd: 'D:\\fixture' },
+  }), [{ name: 'agent-rp:state', text: context }])
 })
 
 test('carries native state changes through settle and present without a format-specific branch', () => {

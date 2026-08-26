@@ -30,6 +30,7 @@ import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import { applyMvuOperations, type MvuStateOperation } from './mvu.ts'
 import type { RoleplayTurnWorkerOutcome } from './roleplay-turn-worker.ts'
 import type { RoleplayWorkerModelSelection } from './workspace-settings.ts'
+import { stringifySillyTavernPromptJson } from './sillytavern-identity-macro.ts'
 
 interface RoleplayStagedStateRequestBase {
   readonly format: 0
@@ -275,13 +276,14 @@ function settlementEvidence(
   surfaceThroughEventSeq: number,
   target: RoleplayStateActionPlan,
   current: JsonValue,
+  identity: { readonly characterName: string; readonly userName?: string },
 ): string {
   return [
     '<imported_state_rules>',
     target.instructions ?? '只更新剧情中明确发生变化的状态。',
     '</imported_state_rules>',
     '<current_state>',
-    JSON.stringify(current),
+    stringifySillyTavernPromptJson(current, identity),
     '</current_state>',
     '<player_input>',
     playerInputText(agent.session.events, planEvent),
@@ -603,6 +605,12 @@ export async function runRoleplayStagedStateSettlement(input: {
     input.agent.session.seq - 1,
     target,
     state.value,
+    {
+      characterName: input.plan.plan.prompt.transforms.actorName,
+      ...(input.plan.plan.prompt.transforms.participantName === undefined
+        ? {}
+        : { userName: input.plan.plan.prompt.transforms.participantName }),
+    },
   )
   const proposal = await dispatchStateSettlementWithRetry({
     ctx: input.ctx,

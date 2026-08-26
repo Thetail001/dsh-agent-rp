@@ -27,6 +27,7 @@ import {
   roleplayVisibleTranscript,
 } from '../src/prompt.ts'
 import { assembleSillyTavernPreset, prepareSillyTavernProviderMessages } from '../src/preset-prompt.ts'
+import { renderRoleplayTurnStateContext } from '../src/roleplay-runtime-context.ts'
 import {
   prepareRoleplayTurn,
   resolveRoleplayPrepareModuleOutcomes,
@@ -489,6 +490,7 @@ test('routes active world depth entries through the shared provider-message plan
     ['user', '较早消息'],
     ['user', '深度一的玩家侧世界提示。'],
     ['assistant', '最近消息'],
+    ['system', renderRoleplayTurnStateContext(plan)],
   ])
   assert.deepEqual(plan.recall.modules.find(module => module.moduleId === 'roleplay:world'), {
     moduleId: 'roleplay:world', outcome: 'applied', contributions: 1,
@@ -671,6 +673,7 @@ test('compiles modular prompts, EJS, MVU, generation, and script injections into
     { role: 'system', content: '脚本前置注入' },
     ...direct.afterHistory,
     { role: 'system', content: '脚本后置注入' },
+    { role: 'system', content: renderRoleplayTurnStateContext(plan) },
   ])
   assert.deepEqual(plan.prompt.continuation, direct.continuation)
   assert.deepEqual(plan.prompt.inChat.slice(0, direct.inChat.length), direct.inChat)

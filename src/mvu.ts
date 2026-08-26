@@ -7,6 +7,10 @@ import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
 import { decodeActiveTavernHelperState } from './tavern-helper.ts'
 import { decodeGenerationMvuCheckpoint } from './generation-command-result.ts'
+import {
+  substituteSillyTavernIdentityMacros,
+  type SillyTavernIdentityMacroValues,
+} from './sillytavern-identity-macro.ts'
 
 export const MVU_ROLEPLAY_MODULE_ID = 'adapter:mvu'
 export const MVU_ROLEPLAY_STATE_ID = 'state:mvu'
@@ -397,6 +401,7 @@ export function applyMvuReply(
 export function renderMvuUpdateInstructions(
   lorebooks: readonly ImportedLorebook[],
   statData: JsonValue,
+  identity: SillyTavernIdentityMacroValues,
 ): string | undefined {
   const entries = orderedLorebookEntries(lorebooks).filter(entry => entry.enabled
     && !entry.hasDecorators
@@ -404,7 +409,7 @@ export function renderMvuUpdateInstructions(
     && /(?:变量更新规则|变量输出格式|<UpdateVariable>)/iu.test(entry.content))
   if (entries.length === 0) return undefined
   return entries
-    .map(entry => substituteMvuMacros(entry.content, statData))
+    .map(entry => substituteSillyTavernIdentityMacros(substituteMvuMacros(entry.content, statData), identity))
     .join('\n\n')
 }
 
