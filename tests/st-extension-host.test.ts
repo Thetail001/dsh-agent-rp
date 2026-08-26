@@ -151,7 +151,7 @@ test('coalesces registrations into one frame, rebuilds once, and tears down comp
   assert.equal(document.frames.length, 1)
   const first = document.frames[0] as FakeFrame
   assert.equal(first.hidden, true)
-  assert.equal(first.attributes.get('sandbox'), 'allow-scripts allow-same-origin allow-forms')
+  assert.equal(first.attributes.has('sandbox'), false)
   assert.match(first.srcdoc, /extension\.a/u)
   assert.match(first.srcdoc, /extension\.b/u)
   assert.match(first.srcdoc, /fixture/u)

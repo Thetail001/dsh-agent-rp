@@ -106,7 +106,6 @@ export function installStExtensionHost(
       next.dataset.agentRpStExtensionRevision = String(snapshot.revision)
       next.hidden = surface === undefined
       next.referrerPolicy = 'no-referrer'
-      next.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms')
       next.srcdoc = compileStExtensionDocument({
         entries: snapshot.entries,
         nonce,

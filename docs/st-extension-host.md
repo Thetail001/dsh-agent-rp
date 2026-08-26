@@ -29,6 +29,8 @@
 
 注册和撤销会更新可订阅的 revision；同一 JavaScript 任务中的连续变化合并为一次确定顺序的重建。旧 iframe 随重建或 Client 插件卸载一并撤销，过期 generation 的消息不会改变当前宿主状态。一个扩展失败不会阻止后续扩展启动，也不会让角色卡和预设 Tavern Helper 帧停止工作。
 
+安装型扩展与注册它的 DSH Client 插件采用同一信任级别：Client 插件本来就能访问页面和网络，因此共享 iframe 是可整体撤销的 document 生命周期容器，不是额外的安全沙箱。扩展网络请求按浏览器同源、CORS 和混合内容规则执行。角色卡与预设携带的脚本不是已安装插件，继续运行在逐脚本隔离 iframe 中，不能借用安装型扩展的页面权限。
+
 扩展源码不能直接拼进 HTML `<script>` 文本。宿主必须使用不会被 `</script>`、行分隔符或 source map 注释截断的传输与执行格式，并同时限制扩展数量、单项字节数和聚合字节数。
 
 ## 设置与界面
@@ -43,7 +45,7 @@
 
 公开扩展验收固定使用 Woven Imprint 的提交 [`2356815`](https://github.com/virtaava/sillytavern-woven-imprint/tree/23568156ed86111dc81d59c6d9df9338892e1178)。未改写的 11,384 字节入口与样式在真实 3080 页面启动，生成可从 Agent RP 工作台打开的设置界面，并在 sidecar 不存在时明确显示不可达；关闭功能后重载页面可以恢复设置。关闭并重新打开设置对话框时，iframe 身份和扩展启动计数保持不变。连续切换两个 Session 没有重新导入扩展，撤销注册会重建共享 document 并移除 Woven Imprint，重新注册后设置仍然保留。页面角色对象同时暴露 ST 使用的根级 `description`、`personality` 和原始 `data`，真实追加消息在快照同步后按顺序进入扩展事件源。
 
-这项验收只证明自包含入口、只读上下文、可见设置、消息追加事件、Session 绑定与卸载生命周期。安装型宿主仍禁止网络连接，没有提供 `setExtensionPrompt()` 写通道，也尚未把 DSH 请求阶段转换成 ST 的生成事件；因此 Woven Imprint 的 sidecar 记录和记忆注入还不能工作。
+这项验收只证明自包含入口、只读上下文、可见设置、消息追加事件、Session 绑定与卸载生命周期。安装型宿主没有提供 `setExtensionPrompt()` 写通道，也尚未把 DSH 请求阶段转换成 ST 的生成事件；因此 Woven Imprint 可以按浏览器规则访问 sidecar，但记忆注入还不能进入 Agent RP 的模型请求。
 
 可运行实现至少需要证明：
 
