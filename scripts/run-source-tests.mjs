@@ -68,7 +68,8 @@ for (const name of selected) {
   if (!allTests.includes(name)) throw new Error(`Source test group ${groupName} references missing test ${name}`)
 }
 
-const concurrency = process.env['AGENT_RP_TEST_CONCURRENCY'] ?? '4'
+const defaultConcurrency = process.platform === 'win32' ? '2' : '4'
+const concurrency = process.env['AGENT_RP_TEST_CONCURRENCY'] ?? defaultConcurrency
 if (!/^[1-9][0-9]*$/u.test(concurrency)) {
   throw new Error('AGENT_RP_TEST_CONCURRENCY must be a positive integer')
 }
