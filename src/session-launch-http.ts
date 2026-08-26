@@ -77,14 +77,16 @@ interface SessionModelsGateway {
   }
 }
 
+/** Normalize a workspace path for conservative same-directory fallback matching. */
 export function normalizeWorkspacePath(value: string): string {
   const trimmed = trimTrailingPathSeparators(value)
   const windowsStyle = /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith('\\\\')
   const normalized = windowsStyle ? win32Path.normalize(trimmed) : normalizePath(trimmed)
-  const caseInsensitive = windowsStyle || process.platform === 'win32' || process.platform === 'darwin'
+  const caseInsensitive = windowsStyle || process.platform === 'win32'
   return caseInsensitive ? normalized.toLowerCase() : normalized
 }
 
+/** Compare workspace paths without guessing filesystem aliases or volume case rules. */
 export function sameWorkspacePath(left: string, right: string): boolean {
   if (left === '' || right === '') return false
   return normalizeWorkspacePath(left) === normalizeWorkspacePath(right)

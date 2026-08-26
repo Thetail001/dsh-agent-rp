@@ -26,8 +26,8 @@ test('normalizes unc share paths', () => {
   assert.equal(sameWorkspacePath('\\\\Server\\Share\\', '\\\\server\\share'), true)
 })
 
-test('keeps posix paths case-sensitive on case-sensitive hosts', {
-  skip: process.platform === 'win32' || process.platform === 'darwin',
+test('keeps posix paths case-sensitive when the host path namespace does', {
+  skip: process.platform === 'win32',
 }, () => {
   assert.equal(sameWorkspacePath('/Workspace', '/workspace'), false)
 })
