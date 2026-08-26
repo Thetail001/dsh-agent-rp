@@ -2,6 +2,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
+import { normalize as normalizePath, win32 as win32Path } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -74,6 +75,25 @@ interface SessionModelsGateway {
       | { readonly ok: false; readonly error: { readonly message: string } }
     }>
   }
+}
+
+export function normalizeWorkspacePath(value: string): string {
+  const trimmed = trimTrailingPathSeparators(value)
+  const windowsStyle = /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith('\\\\')
+  const normalized = windowsStyle ? win32Path.normalize(trimmed) : normalizePath(trimmed)
+  const caseInsensitive = windowsStyle || process.platform === 'win32' || process.platform === 'darwin'
+  return caseInsensitive ? normalized.toLowerCase() : normalized
+}
+
+export function sameWorkspacePath(left: string, right: string): boolean {
+  if (left === '' || right === '') return false
+  return normalizeWorkspacePath(left) === normalizeWorkspacePath(right)
+}
+
+function trimTrailingPathSeparators(value: string): string {
+  if (/^[A-Za-z]:[\\/]$/.test(value)) return value
+  if (/^[\\/]+$/u.test(value)) return value
+  return value.replace(/[\\/]+$/u, '')
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
@@ -190,13 +210,22 @@ export async function launchAgentRpSession(
       workspaceWarning = '当前 DSH 没有可用的工作区服务，新角色会话保留在“未分组”'
     } else {
       const listed = workspaces.list()
-      const workspace = listed.find(item => item.sessionIds.includes(sourceId))
-        ?? (source.session.header.cwd === undefined
-          ? undefined
-          : await workspaces.resolveByPath?.(source.session.header.cwd)
-            ?? listed.find(item => item.path === source.session.header.cwd))
+      const sourceCwd = source.session.header.cwd
+      const byMembership = listed.find(item => item.sessionIds.includes(sourceId))
+      let workspace = byMembership
+      if (workspace === undefined && sourceCwd !== undefined) {
+        workspace = await workspaces.resolveByPath?.(sourceCwd)
+        if (workspace === undefined) {
+          const byCwd = listed.filter(item => item.path !== undefined && sameWorkspacePath(item.path, sourceCwd))
+          if (byCwd.length === 1) {
+            workspace = byCwd[0]
+          } else if (byCwd.length > 1) {
+            workspaceWarning = '多个工作区与来源工作目录匹配，拒绝猜测，新角色会话保留在“未分组”'
+          }
+        }
+      }
       if (workspace === undefined) {
-        workspaceWarning = source.session.header.cwd === undefined
+        workspaceWarning ??= sourceCwd === undefined
           ? '来源会话没有工作目录，新角色会话保留在“未分组”'
           : '没有找到来源工作目录对应的工作区，新角色会话保留在“未分组”'
       } else {
