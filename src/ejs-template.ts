@@ -82,6 +82,10 @@ export interface EjsTemplateContext {
   readonly characterName: string
   readonly userName: string
   readonly messages: readonly string[]
+  /** Primary character-bound World Info name exposed as SillyTavern `charLoreBook`. */
+  readonly characterWorldInfoBookName?: string
+  /** Replayable Unix timestamp in milliseconds; omitted contexts use the Unix epoch. */
+  readonly replayTime?: number
   /** Replayable per-turn entropy; omitted contexts keep nondeterministic APIs disabled. */
   readonly entropy?: string
   readonly transcript?: readonly EjsTemplateMessage[]
@@ -186,6 +190,8 @@ function compileTemplate(template: string, context: EjsTemplateContext): string 
   const input = JSON.stringify({
     char: context.characterName,
     user: context.userName,
+    charLoreBook: context.characterWorldInfoBookName,
+    dateNow: context.replayTime ?? 0,
     messages: transcriptIsMessagePrefix ? context.messages.slice(transcript.length) : context.messages,
     transcript,
     transcriptIsMessagePrefix,
@@ -217,6 +223,7 @@ function compileTemplate(template: string, context: EjsTemplateContext): string 
     const user = __input.user;
     const charName = char;
     const userName = user;
+    const charLoreBook = __input.charLoreBook;
     const runType = 'generate';
     const __transcript = __input.transcript;
     const messages = __input.transcriptIsMessagePrefix
@@ -441,7 +448,22 @@ function compileTemplate(template: string, context: EjsTemplateContext): string 
     const getWorldInfo = async (...args) => globalThis.__agentRpGetWorldInfo(...args);
     const getwi = getWorldInfo;
     const print = (...values) => { for (const value of values) __append(value); };
-    globalThis.Date = undefined;
+    globalThis.Date = ((NativeDate, now) => {
+      const ReplayableDate = function Date(...args) {
+        if (new.target === undefined) return new NativeDate(now).toUTCString();
+        return Reflect.construct(NativeDate, args.length === 0 ? [now] : args, new.target);
+      };
+      ReplayableDate.prototype = NativeDate.prototype;
+      Object.defineProperty(ReplayableDate.prototype, 'constructor', {
+        configurable: true, writable: true, value: ReplayableDate,
+      });
+      Object.defineProperties(ReplayableDate, {
+        now: { configurable: true, writable: true, value: () => now },
+        parse: { configurable: true, writable: true, value: NativeDate.parse },
+        UTC: { configurable: true, writable: true, value: NativeDate.UTC },
+      });
+      return ReplayableDate;
+    })(globalThis.Date, __input.dateNow);
     if (typeof __input.randomEntropy === 'string') {
       let __randomState = 2166136261;
       for (let __index = 0; __index < __input.randomEntropy.length; __index += 1) {
