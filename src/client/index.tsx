@@ -11843,6 +11843,7 @@ function roleplayComposerDockComponent(
       item: HTMLElement,
       original: HTMLElement,
       compilation: CompiledCharacterDisplay,
+      currentMessageId: number | undefined,
       activeProjection: AgentRpProjection,
       activeCharacterDetail: CharacterLibraryDetail | undefined,
       activeCompatibilityMarkers: readonly string[],
@@ -11851,8 +11852,21 @@ function roleplayComposerDockComponent(
       const appearance = captureCardFrameAppearance(original)
       const greetingChoices = cardFrameGreetingChoices(activeProjection, activeCharacterDetail)
       const activeCharacterScripts = activeTavernScripts(activeProjection, 'character')
+      const visibleMessages = activeProjection.tavern?.messages.filter(message => !message.isHidden) ?? []
+      const currentMessageIndex = currentMessageId === undefined
+        ? -1
+        : visibleMessages.findIndex(message => message.messageId === currentMessageId)
+      const chat = currentMessageIndex < 0 ? undefined : {
+        currentMessageId: currentMessageId!,
+        messages: visibleMessages.slice(0, currentMessageIndex + 1).map(message => ({
+          messageId: message.messageId,
+          role: message.role,
+          text: message.text,
+        })),
+      }
       const signature = JSON.stringify([
         compilation,
+        chat,
         appearance,
         activeProjection.mvu?.statData,
         activeProjection.tavern?.scopes,
@@ -11891,6 +11905,7 @@ function roleplayComposerDockComponent(
         mount.root.render(<CharacterDisplay
           appearance={appearance}
           capabilityToken={mount.capabilityToken}
+          {...(chat === undefined ? {} : { chat })}
           compilation={compilation}
           statData={activeProjection.mvu?.statData}
           characterName={activeProjection.characterName}
@@ -12021,7 +12036,7 @@ function roleplayComposerDockComponent(
         const plan = displayPlanner.user({ seq, ...(alignedMessage === undefined ? {} : { alignedMessage }) })
         if (plan.kind === 'host') restoreHostDisplay(item, original)
         else if (plan.kind === 'render') mountRenderedDisplay(
-          item, original, plan.compilation, activeProjection, activeCharacterDetail, activeCompatibilityMarkers,
+          item, original, plan.compilation, plan.messageId, activeProjection, activeCharacterDetail, activeCompatibilityMarkers,
         )
       }
       for (const item of scroll.querySelectorAll<HTMLElement>('[data-chat-flow-kind="assistant-step"]')) {
@@ -12046,7 +12061,7 @@ function roleplayComposerDockComponent(
         if (original === null) continue
         if (plan.kind === 'host') restoreHostDisplay(item, original)
         else mountRenderedDisplay(
-          item, original, plan.compilation, activeProjection, activeCharacterDetail, activeCompatibilityMarkers,
+          item, original, plan.compilation, plan.messageId, activeProjection, activeCharacterDetail, activeCompatibilityMarkers,
         )
       }
       if (activeViewMode === 'immersive') {

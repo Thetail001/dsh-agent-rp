@@ -104,6 +104,7 @@ function runCardActionOptionsFixture(message: CardChatFixtureMessage): {
   const document = new CardActionOptionsFixtureDocument()
   const sandbox: Record<string, unknown> = {
     __dshCardChat: [message],
+    __dshCardCurrentMessageId: 0,
     document,
   }
   sandbox.window = sandbox
@@ -115,6 +116,84 @@ function runCardActionOptionsFixture(message: CardChatFixtureMessage): {
   return {
     document,
     getChatMessages: getChatMessages as () => CardChatFixtureMessage[],
+  }
+}
+
+function cardChatSnapshotRuntimeStatements(documentSource: string): string {
+  const required = [
+    /^var __dshCardGreetingChoices=[^\r\n]*$/mu,
+    /^var __dshCardChatSnapshot=[^\r\n]*$/mu,
+    /^var __dshCurrentCharacter=[^\r\n]*$/mu,
+    /^var __dshCardChat=[^\r\n]*$/mu,
+    /^var __dshCardCurrentMessageId=[^\r\n]*$/mu,
+    /^function __dshSetCardCapabilityState[^\r\n]*$/mu,
+    /^function __dshCloneCardMessage[^\r\n]*$/mu,
+    /^window\.getChatMessages=[^\r\n]*$/mu,
+    /^window\.getLastMessageId=[^\r\n]*$/mu,
+    /^window\.getCurrentMessageId=[^\r\n]*$/mu,
+  ].map((pattern) => {
+    const statement = documentSource.match(pattern)?.[0]
+    assert.ok(statement, `compiled card frame is missing ${pattern.source}`)
+    return statement
+  })
+  return required.join('\n')
+}
+
+function runCardActionOptionsSnapshotFixture(): {
+  readonly currentMessageId: () => number
+  readonly document: CardActionOptionsFixtureDocument
+  readonly getChatMessages: () => CardChatFixtureMessage[]
+  readonly lastMessageId: () => number
+} {
+  const opening = [
+    '开场剧情。',
+    '<JSONPatch>',
+    '[',
+    '  {"op":"replace","path":"/行动选项/0","value":"查看开场环境"},',
+    '  {"op":"replace","path":"/行动选项/1","value":"询问开场人物"},',
+    '  {"op":"replace","path":"/行动选项/2","value":"检查开场线索"},',
+    '  {"op":"replace","path":"/行动选项/3","value":"元指令:推进开场时间。"}',
+    ']',
+    '</JSONPatch>',
+  ].join('\n')
+  const current = [
+    '第二轮剧情。',
+    '<JSONPatch>',
+    '[',
+    '  {"op":"replace","path":"/行动选项/0","value":"查看第二轮环境"},',
+    '  {"op":"replace","path":"/行动选项/1","value":"询问第二轮人物"},',
+    '  {"op":"replace","path":"/行动选项/2","value":"检查第二轮线索"},',
+    '  {"op":"replace","path":"/行动选项/3","value":"元指令:推进第二轮时间。"}',
+    ']',
+    '</JSONPatch>',
+  ].join('\n')
+  const documentSource = compileCardFrameDocument(actionOptionsFixture, {
+    origin: 'http://127.0.0.1:3091',
+    greetingChoices: { selected: opening, alternatives: [opening] },
+    chat: {
+      currentMessageId: 2,
+      messages: [
+        { messageId: 0, role: 'assistant', text: opening },
+        { messageId: 1, role: 'user', text: '继续调查。' },
+        { messageId: 2, role: 'assistant', text: current },
+      ],
+    },
+  })
+  const fixtureScript = documentSource.match(
+    /<script data-action-options-fixture>([\s\S]*?)<\/script>/u,
+  )?.[1]
+  assert.ok(fixtureScript)
+  const document = new CardActionOptionsFixtureDocument()
+  const sandbox: Record<string, unknown> = { document }
+  sandbox.window = sandbox
+  const context = createContext(sandbox)
+  runInContext(cardChatSnapshotRuntimeStatements(documentSource), context)
+  runInContext(fixtureScript, context)
+  return {
+    currentMessageId: sandbox.getCurrentMessageId as () => number,
+    document,
+    getChatMessages: sandbox.getChatMessages as () => CardChatFixtureMessage[],
+    lastMessageId: sandbox.getLastMessageId as () => number,
   }
 }
 
@@ -380,7 +459,7 @@ test('exposes only card-owned greeting choices through the isolated chat facade'
   assert.match(source, /window\.sendMessage=__dshCardSendMessage/u)
   assert.match(source, /action!=='capability-result'/u)
   assert.match(source, /var __dshCardCapabilityToken="registered-frame"/u)
-  assert.match(source, /window\.getCurrentMessageId=window\.getLastMessageId/u)
+  assert.match(source, /window\.getCurrentMessageId=function\(\)\{return __dshCardCurrentMessageId\}/u)
   assert.match(source, /window\.getVariables=/u)
   assert.match(source, /window\.insertOrAssignVariables=/u)
   assert.match(source, /action:'variables-replace'/u)
@@ -433,6 +512,31 @@ test('returns isolated card chat messages synchronously', () => {
   assert.equal(unchanged[0]?.mes, original.mes)
   assert.deepEqual({ ...unchanged[0]?.extra }, original.extra)
   assert.deepEqual([...(unchanged[0]?.swipes ?? [])], original.swipes)
+})
+
+test('renders action options from the current assistant message in a visible chat snapshot', () => {
+  const runtime = runCardActionOptionsSnapshotFixture()
+
+  assert.equal(runtime.currentMessageId(), 2)
+  assert.equal(runtime.lastMessageId(), 2)
+  const messages = runtime.getChatMessages()
+  assert.deepEqual(Array.from(messages, message => ({
+    message_id: message.message_id,
+    role: message.role,
+  })), [
+    { message_id: 0, role: 'assistant' },
+    { message_id: 1, role: 'user' },
+    { message_id: 2, role: 'assistant' },
+  ])
+  assert.match(messages[0]!.message, /开场剧情/u)
+  assert.equal(messages[1]!.message, '继续调查。')
+  assert.match(messages[2]!.message, /第二轮剧情/u)
+  assert.deepEqual(runtime.document.options.children.map(child => child.textContent), [
+    '查看第二轮环境',
+    '询问第二轮人物',
+    '检查第二轮线索',
+    '元指令:推进第二轮时间。',
+  ])
 })
 
 test('renders four synthetic JSONPatch action options from the synchronous card chat facade', () => {

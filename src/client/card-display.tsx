@@ -18,6 +18,7 @@ import {
   cardFrameDiagnosticSummary,
   cardFrameCompatibilityUrl,
   compileCardFrames,
+  type CardFrameChatSnapshot,
   type CardFrameGreetingChoices,
 } from './card-frame.ts'
 import {
@@ -165,11 +166,12 @@ function CardFrameView({
 
 /** Render compiled Markdown and isolated light-frontend segments. */
 export function CharacterDisplay({
-  appearance, capabilityToken, compilation, statData, characterName, character, compatibilityMarkers, greetingChoices,
+  appearance, capabilityToken, chat, compilation, statData, characterName, character, compatibilityMarkers, greetingChoices,
   onFrameRegistration, onReady, preview = false, tavernHelperScripts, variableScopes,
 }: {
   readonly appearance?: CardFrameAppearance
   readonly capabilityToken?: string
+  readonly chat?: CardFrameChatSnapshot
   readonly compilation: CompiledCharacterDisplay
   readonly statData: NonNullable<AgentRpProjection['mvu']>['statData'] | undefined
   readonly characterName: string
@@ -186,6 +188,7 @@ export function CharacterDisplay({
     origin: window.location.origin,
     ...(appearance === undefined ? {} : { appearance }),
     ...(statData === undefined ? {} : { statData }),
+    ...(chat === undefined ? {} : { chat }),
     ...(character === undefined ? {} : { character }),
     ...(compatibilityMarkers === undefined ? {} : { compatibilityMarkers }),
     ...(greetingChoices === undefined ? {} : { greetingChoices }),
@@ -194,7 +197,7 @@ export function CharacterDisplay({
     }),
     ...(variableScopes === undefined ? {} : { variableScopes }),
     ...(capabilityToken === undefined ? {} : { capabilityToken }),
-  }), [appearance, capabilityToken, character, characterName, compatibilityMarkers, compilation, greetingChoices, statData, tavernHelperScripts, variableScopes])
+  }), [appearance, capabilityToken, character, characterName, chat, compatibilityMarkers, compilation, greetingChoices, statData, tavernHelperScripts, variableScopes])
   useLayoutEffect(() => { onReady?.() }, [onReady])
   return <div data-agent-rp-character-display data-agent-rp-display-diagnostics={cardFrameDiagnosticSummary(compiled.diagnostics)}
     style={{ display: 'grid', gap: '10px', minWidth: 0 }}>
