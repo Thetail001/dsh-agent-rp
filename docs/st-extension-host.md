@@ -61,7 +61,7 @@ Woven Imprint 的该提交没有在 `manifest.json` 声明它已经公开的 `wo
 
 真实贯通验收中，单次生成使 sidecar 记忆请求计数恰好增加一；同一回合在用户消息与 plan 之前持久化了新的 Tavern Helper 状态修订，`agent-rp/turn-plan` 也记录了该状态读取。使用 DSH JSONL 持久化插件正式展开批量事件，再以相同 EJS 能力精确重放该 plan，得到的 `in_chat` system 提示包含 sidecar 返回的唯一标记；将其应用于当时的消息前缀后，最终 provider messages 仍包含同一标记。这证明固定版本 Woven 的 sidecar 到 provider 请求链路已经贯通，但仍只是功能分支上的适配证据，不承诺其他 ST 扩展无需适配即可运行。
 
-验收不得用模型是否复述标记替代请求证据。模型可能受旧会话中相反回答、角色提示或采样影响，即使 provider messages 已经包含标记也会给出不同答案。故障定位先检查 sidecar 请求增量、Session 状态修订、可重放 turn plan 和最终 provider messages；只有这些确定性证据全部通过后，才允许在没有旧回答干扰的全新会话执行一次语义冒烟测试。
+验收不得用模型是否复述标记替代请求证据。模型可能受旧会话中相反回答、角色提示或采样影响，即使 provider messages 已经包含标记也会给出不同答案。故障定位先检查 sidecar 请求增量、Session 状态修订、可重放 turn plan 和最终 provider messages；只有这些确定性证据全部通过后，才允许在没有旧回答干扰的全新会话执行一次语义冒烟测试。固定 Woven 夹具已在只含角色开场的全新分支会话完成该测试：唯一请求使 `/memory` 计数恰好增加一，模型只回复“钥匙”，同一 Session 的精确重放仍证明标记进入最终 provider messages。
 
 可运行实现至少需要证明：
 
