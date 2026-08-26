@@ -2,7 +2,7 @@
 
 本文约束“已安装的 SillyTavern 第三方扩展”在 Agent RP 中的宿主生命周期。它不描述角色卡或预设携带的 Tavern Helper 脚本；后者继续由现有的逐脚本 iframe 运行时承载。
 
-当前功能分支已提供浏览器注册表、单例 document、版本化客户端注册服务、独立设置持久化和当前 Session 重新绑定。每个自包含 ESM bundle 在共享 document 中只导入一次，热注册和撤销会合并为一次完整重建；当前 Session 切换只发送 `dsh-agent-rp-session-change` 浏览器事件，不会重新导入扩展。这层基础装配尚未提供完整 ST 页面 API，因此不能宣称支持任意 ST 第三方扩展。社区插件也不能通过向每个 Tavern Helper iframe 拼接相同源码来模拟页面级扩展加载。
+当前功能分支已提供浏览器注册表、单例 document、版本化客户端注册服务、独立设置持久化和当前 Session 重新绑定。安装型宿主从 DSH Session 列表的 `agentRp` 投影生成页面快照，同一 Session 的投影更新也会同步到共享 document；当前只发布不会发起 Host 请求的只读 `SillyTavern.getContext()` 数据和本地事件源。每个自包含 ESM bundle 在共享 document 中只导入一次，热注册和撤销会合并为一次完整重建；当前 Session 切换发送 `dsh-agent-rp-session-change` 浏览器事件，不会重新导入扩展。这层基础装配尚未提供完整 ST 页面 API，因此不能宣称支持任意 ST 第三方扩展。社区插件也不能通过向每个 Tavern Helper iframe 拼接相同源码来模拟页面级扩展加载。
 
 ## 上游生命周期
 
@@ -19,7 +19,7 @@
 
 现有 `TavernScriptRuntime` 为每个 global、preset 或 character 脚本创建独立 iframe，并按角色、预设、脚本作用域和脚本标识保存变量、设置、许可与错误。这个隔离单位适合角色卡和预设内容，也允许同名脚本互不覆盖。
 
-安装型 ST 扩展属于 DSH 插件安装，不属于角色卡或预设脚本树。它需要独立的稳定扩展标识、manifest 顺序、启用状态、设置存储和运行错误；切换角色、预设或会话不能复制扩展设置，也不能改变扩展的安装身份。扩展生成的模型可见输入和持久会话改动仍必须通过现有 Host 能力写入 Session，不能只保存在浏览器 iframe 中。
+安装型 ST 扩展属于 DSH 插件安装，不属于角色卡或预设脚本树。它需要独立的稳定扩展标识、manifest 顺序、启用状态、设置存储和运行错误；切换角色、预设或会话不能复制扩展设置，也不能改变扩展的安装身份。页面快照不包含任何角色卡脚本的私有变量、状态面板或授权来源。扩展生成的模型可见输入和持久会话改动仍必须通过现有 Host 能力写入 Session，不能只保存在浏览器 iframe 中；对应能力完成前不应暴露会等待响应的写 API。
 
 每脚本 iframe 可以继续提供 Tavern Helper API 兼容垫片和该脚本自己的设置界面，但不得加载安装型扩展 bundle，也不得为同一个已安装扩展创建重复的 `#extensions_settings` 宿主。
 
@@ -39,7 +39,7 @@
 
 ## 实现验收
 
-独立 DSH Client 插件已经在真实 3080 页面完成基础宿主验收：三个扩展按顺序启动，其中一个扩展的预期失败未阻断另外两个；设置容器可见，IndexedDB 设置在页面重载后恢复；连续切换两个 Session 时共享 iframe 保持单例、扩展没有重新导入，并且收到两次准确的 Session 变更。该验收使用独立开发插件，不等同于公开 ST 扩展兼容性验证。
+独立 DSH Client 插件已经在真实 3080 页面完成基础宿主验收：三个扩展按顺序启动，其中一个扩展的预期失败未阻断另外两个；设置容器可见，IndexedDB 设置在页面重载后恢复；连续切换两个 Session 时共享 iframe 保持单例、扩展没有重新导入，且只收到两次准确的 Session 变更。最终 `getContext().chatId`、Host Session 与选中 Session 一致；同一 Session 的投影同步不会误发 Session 变更事件。该验收使用独立开发插件，不等同于公开 ST 扩展兼容性验证。
 
 可运行实现至少需要证明：
 

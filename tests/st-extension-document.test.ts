@@ -4,7 +4,10 @@ import {
   compileStExtensionDocument,
   parseStExtensionHostMessage,
 } from '../src/client/st-extension-document.ts'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import type { InstalledStExtensionEntry } from '../src/client/st-extension-registry.ts'
+import { tavernPageSnapshot } from '../src/client/tavern-snapshot.ts'
+import { agentRpProjectionDefinition } from '../src/projection.ts'
 
 function entry(
   id: string,
@@ -22,11 +25,13 @@ function entry(
 
 test('builds one shared settings document and transports extension source without HTML termination', () => {
   const dangerous = 'globalThis.loaded = "</script><script>globalThis.injected = true</script>\u2028"'
+  const projection = agentRpProjectionDefinition.wire.view(agentRpProjectionDefinition.init())
   const source = compileStExtensionDocument({
     entries: [entry('extension.dangerous', [], dangerous)],
     nonce: 'nonce_1234567890_safe',
     sessionId: 'session-a',
     settings: { community: { enabled: true } },
+    snapshot: tavernPageSnapshot(projection, SessionId('session-a')),
     token: 'token</script>',
   })
 
@@ -42,9 +47,17 @@ test('builds one shared settings document and transports extension source withou
   assert.match(source, /globalThis\.extension_settings=clone\(boot\.settings\)/u)
   assert.match(source, /globalThis\.saveSettingsDebounced=/u)
   assert.match(source, /globalThis\.__dshAgentRpSessionId=sessionId/u)
+  assert.match(source, /globalThis\.SillyTavern=context/u)
+  assert.match(source, /globalThis\.getContext=\(\)=>context/u)
+  assert.match(source, /CHAT_CHANGED:'chat_id_changed'/u)
+  assert.match(source, /applySnapshot\(message\.snapshot\)/u)
+  assert.match(source, /message\.action==='page-sync'/u)
   assert.match(source, /dsh-agent-rp-session-change/u)
   assert.match(source, /style\?\.remove\(\)/u)
   assert.match(source, /catch\{return '无法读取扩展错误'\}/u)
+  const program = source.match(/<script nonce="nonce_1234567890_safe">([\s\S]*)<\/script>/u)?.[1]
+  assert.notEqual(program, undefined)
+  assert.doesNotThrow(() => new Function(program!))
 })
 
 test('compiles dependency-aware isolated activation with terminal host reporting', () => {

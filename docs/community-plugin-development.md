@@ -70,7 +70,7 @@ export function apply(ctx: ClientContext): void {
 
 `source` 必须是自包含的浏览器 ESM，不能保留文件系统相对导入。注册表会限制数量和字节数，将同步注册合并为一次有序重建，并在一个 ClientContext 中只创建一个共享 document；角色卡或预设拥有多少 Tavern Helper 脚本都不会复制安装型扩展。
 
-这仍是宿主装配接口，不是“任意 ST 插件已经兼容”的承诺。当前 Session 绑定和独立设置持久化已经通过真实 Client 插件验收；完整 ST 页面 API、Host 消息桥和公开 ST 扩展实测仍未完成。社区插件不能假定 SillyTavern 全局对象已经齐全；验收缺口见 [SillyTavern 扩展宿主](st-extension-host.md)。
+这仍是宿主装配接口，不是“任意 ST 插件已经兼容”的承诺。当前 Session 绑定、独立设置持久化和只读 `SillyTavern.getContext()` 页面快照已经通过真实 Client 插件验收；完整 ST 页面 API、Host 写操作消息桥和公开 ST 扩展实测仍未完成。社区插件不能假定 SillyTavern 全局对象已经齐全；验收缺口见 [SillyTavern 扩展宿主](st-extension-host.md)。
 
 ## Host 扩展
 

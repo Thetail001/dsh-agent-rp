@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { installStExtensionHost } from '../src/client/st-extension-host.ts'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import {
+  installStExtensionHost,
+  type StExtensionSessionBinding,
+} from '../src/client/st-extension-host.ts'
 import { InstalledStExtensionRegistry } from '../src/client/st-extension-registry.ts'
+import { agentRpProjectionDefinition } from '../src/projection.ts'
 
 class FakeFrame {
   readonly messages: unknown[] = []
@@ -56,11 +61,14 @@ class FakeWindow {
 }
 
 class FakeSessionSource {
-  currentId: string | undefined = 'session-a'
+  currentBinding: StExtensionSessionBinding | undefined = {
+    sessionId: SessionId('session-a'),
+    projection: agentRpProjectionDefinition.wire.view(agentRpProjectionDefinition.init()),
+  }
   readonly listeners = new Set<() => void>()
 
-  current(): string | undefined {
-    return this.currentId
+  current(): StExtensionSessionBinding | undefined {
+    return this.currentBinding
   }
 
   subscribe(listener: () => void): () => void {
@@ -69,7 +77,17 @@ class FakeSessionSource {
   }
 
   select(sessionId: string | undefined): void {
-    this.currentId = sessionId
+    this.currentBinding = sessionId === undefined ? undefined : {
+      sessionId: SessionId(sessionId),
+      ...(this.currentBinding?.projection === undefined ? {} : { projection: this.currentBinding.projection }),
+    }
+    for (const listener of this.listeners) listener()
+  }
+
+  updateProjection(projection: NonNullable<StExtensionSessionBinding['projection']>): void {
+    const current = this.currentBinding
+    if (current === undefined) throw new Error('Cannot update a missing Session projection')
+    this.currentBinding = { sessionId: current.sessionId, projection }
     for (const listener of this.listeners) listener()
   }
 }
@@ -113,6 +131,7 @@ test('coalesces registrations into one frame, rebuilds once, and tears down comp
   assert.match(first.srcdoc, /extension\.b/u)
   assert.match(first.srcdoc, /fixture/u)
   assert.match(first.srcdoc, /session-a/u)
+  assert.match(first.srcdoc, /角色会话/u)
 
   window.dispatch(first.contentWindow, {
     source: 'dsh-agent-rp-st-extension-host',
@@ -131,11 +150,32 @@ test('coalesces registrations into one frame, rebuilds once, and tears down comp
   assert.deepEqual(writes, [{ fixture: { enabled: false } }])
   sessions.select('session-b')
   assert.equal(document.frames.length, 1)
-  assert.deepEqual(first.messages, [{
-    source: 'dsh-agent-rp-host', action: 'session-bind',
-    token: JSON.parse(first.srcdoc.match(/const boot=(\{.*?\});const entries/u)?.[1] ?? '{}').token,
-    sessionId: 'session-b',
-  }])
+  const sessionMessage = first.messages[0] as {
+    readonly source: string
+    readonly action: string
+    readonly token: string
+    readonly sessionId: string
+    readonly snapshot: { readonly characterName: string }
+  }
+  assert.equal(sessionMessage.source, 'dsh-agent-rp-host')
+  assert.equal(sessionMessage.action, 'session-bind')
+  assert.equal(sessionMessage.token,
+    JSON.parse(first.srcdoc.match(/const boot=(\{.*?\});const entries/u)?.[1] ?? '{}').token)
+  assert.equal(sessionMessage.sessionId, 'session-b')
+  assert.equal(sessionMessage.snapshot.characterName, '角色会话')
+  const changedProjection = {
+    ...sessions.currentBinding!.projection!,
+    characterName: '页面更新',
+  }
+  sessions.updateProjection(changedProjection)
+  const projectionMessage = first.messages[1] as {
+    readonly action: string
+    readonly sessionId: string
+    readonly snapshot: { readonly characterName: string }
+  }
+  assert.equal(projectionMessage.action, 'page-sync')
+  assert.equal(projectionMessage.sessionId, 'session-b')
+  assert.equal(projectionMessage.snapshot.characterName, '页面更新')
 
   registry.register({
     id: 'extension.c', displayName: 'C', loadingOrder: 2, source: 'export {}',

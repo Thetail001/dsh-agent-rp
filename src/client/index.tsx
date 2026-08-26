@@ -12368,7 +12368,16 @@ export function apply(ctx: ClientContext): void {
     document,
     installedStExtensions,
     {
-      current: () => ctx.sessions.list.getSnapshot().current,
+      current: () => {
+        const state = ctx.sessions.list.getSnapshot()
+        const sessionId = state.current
+        if (sessionId === undefined) return undefined
+        const projection = state.byId[sessionId]?.projectionValues?.agentRp
+        return {
+          sessionId,
+          ...(projection === undefined ? {} : { projection }),
+        }
+      },
       subscribe: listener => ctx.sessions.list.subscribe(listener),
     },
     {

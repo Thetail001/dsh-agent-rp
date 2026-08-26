@@ -2,7 +2,10 @@
 
 import { compileStExtensionDocument, parseStExtensionHostMessage } from './st-extension-document.ts'
 import type { InstalledStExtensionRegistry } from './st-extension-registry.ts'
+import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
+import type { AgentRpProjection } from '../projection-types.ts'
+import { tavernPageSnapshot } from './tavern-snapshot.ts'
 
 type ExtensionSettings = Readonly<Record<string, JsonValue>>
 
@@ -12,9 +15,15 @@ export interface StExtensionSettingsStore {
   readonly write: (settings: ExtensionSettings) => Promise<ExtensionSettings>
 }
 
+/** Current DSH Session and its reference-stable Agent RP projection. */
+export interface StExtensionSessionBinding {
+  readonly sessionId: SessionId
+  readonly projection?: AgentRpProjection
+}
+
 /** Current DSH Session selection observed without owning its lifecycle. */
 export interface StExtensionSessionSource {
-  readonly current: () => string | undefined
+  readonly current: () => StExtensionSessionBinding | undefined
   readonly subscribe: (listener: () => void) => () => void
 }
 
@@ -38,7 +47,7 @@ export function installStExtensionHost(
   let scheduled = false
   let frame: HTMLIFrameElement | undefined
   let token: string | undefined
-  let sessionId = sessionSource.current() ?? null
+  let sessionBinding = sessionSource.current()
   let settings: ExtensionSettings = {}
   let settingsWrites: Promise<void> = Promise.resolve()
   const settingsReady = settingsStore.read().then(value => {
@@ -73,7 +82,16 @@ export function installStExtensionHost(
       next.hidden = true
       next.referrerPolicy = 'no-referrer'
       next.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms')
-      next.srcdoc = compileStExtensionDocument({ entries: snapshot.entries, nonce, sessionId, settings, token })
+      next.srcdoc = compileStExtensionDocument({
+        entries: snapshot.entries,
+        nonce,
+        sessionId: sessionBinding?.sessionId ?? null,
+        settings,
+        ...(sessionBinding?.projection === undefined ? {} : {
+          snapshot: tavernPageSnapshot(sessionBinding.projection, sessionBinding.sessionId, settings),
+        }),
+        token,
+      })
       frame = next
       hostDocument.body.append(next)
     })
@@ -84,11 +102,16 @@ export function installStExtensionHost(
     queueMicrotask(rebuild)
   }
   const bindSession = (): void => {
-    const next = sessionSource.current() ?? null
-    if (next === sessionId) return
-    sessionId = next
+    const next = sessionSource.current()
+    if (next?.sessionId === sessionBinding?.sessionId && next?.projection === sessionBinding?.projection) return
+    const sessionChanged = next?.sessionId !== sessionBinding?.sessionId
+    sessionBinding = next
     frame?.contentWindow?.postMessage({
-      source: 'dsh-agent-rp-host', action: 'session-bind', token, sessionId,
+      source: 'dsh-agent-rp-host', action: sessionChanged ? 'session-bind' : 'page-sync', token,
+      sessionId: next?.sessionId ?? null,
+      snapshot: next?.projection === undefined
+        ? null
+        : tavernPageSnapshot(next.projection, next.sessionId, settings),
     }, '*')
   }
   const receive = (event: MessageEvent<unknown>): void => {
