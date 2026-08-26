@@ -85,6 +85,10 @@ test('World Info launch configures peer resources before creating a Session', ()
 
 test('every chat migration entry uses one pre-launch resource plan before Session creation', () => {
   assert.match(source, /function SillyTavernImportDialog/u)
+  assert.match(source, /data-agent-rp-chat-migration-character/u)
+  assert.match(source, /使用资源中心已有角色卡/u)
+  assert.match(source, /await readCharacter\(characterId\)/u)
+  assert.match(source, /只能选择一种角色卡来源/u)
   assert.match(source, /data-agent-rp-chat-migration-preflight=\{launchPhase\}/u)
   assert.match(source, /permissionOwnerId: prepared\.permissionOwnerId/u)
   assert.match(source, /characterId: preparedCharacter\.id/u)
@@ -93,6 +97,16 @@ test('every chat migration entry uses one pre-launch resource plan before Sessio
   assert.match(source, /launchRoleplaySession\(\{[\s\S]*?kind: 'chat'[\s\S]*?\}, resourcePermissions\)/u)
   assert.match(source, /createPortal\(<SillyTavernImportDialog[\s\S]*?initialChatFile=\{chatAttachment\.file\}/u)
   assert.doesNotMatch(source, /migrateSillyTavernDraft/u)
+})
+
+test('Session World Info manager adds retained resources without opening the file picker', () => {
+  assert.match(source, /function WorldInfoLibraryAttachDialog/u)
+  assert.match(source, /data-agent-rp-surface="world-info-library-attach"/u)
+  assert.match(source, /data-agent-rp-action="open-world-info-library-attach"/u)
+  assert.match(source, /data-agent-rp-action="attach-world-info-library"/u)
+  assert.match(source, /data-agent-rp-action="import-world-info-file"/u)
+  assert.match(source, /availableWorldInfoLibraryUploads\(uploads, books\)/u)
+  assert.match(source, /await attachWorldInfo\(sessionId, upload\.id\)/u)
 })
 
 test('every roleplay launcher stays open when staged Tavern permissions discover another origin', () => {

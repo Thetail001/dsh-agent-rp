@@ -105,6 +105,7 @@ import {
 import { currentTavernPreset, tavernScriptSnapshot } from './tavern-snapshot.ts'
 import { TavernScriptStatusList } from './tavern-script-status.tsx'
 import { worldInfoFailureReport } from './world-info-failure-report.ts'
+import { availableWorldInfoLibraryUploads } from './world-info-library-selection.ts'
 import type { PresetConfigurationRequest } from '../preset-configuration-types.ts'
 import type { WorldInfoConfigurationRequest, WorldInfoEditableEntry } from '../world-info-configuration-types.ts'
 import { exportSillyTavernPresetJson } from '../preset-export.ts'
@@ -597,13 +598,19 @@ type HeaderProps = PropsRuntime<'conversation.session.header.actions'> & {
   readonly managePresetLibrary: (sessionId: SessionId, request: PresetLibraryRequest) => Promise<void>
   readonly configureWorldInfo: (sessionId: SessionId, request: WorldInfoConfigurationRequest) => Promise<void>
   readonly importWorldInfo: (sessionId: SessionId, file: File) => Promise<void>
+  readonly attachWorldInfo: (sessionId: SessionId, importId: string) => Promise<void>
   readonly listWorldInfos: () => Promise<readonly WorldInfoLibraryUpload[]>
   readonly listCharacters: (collection?: CharacterLibraryCollection) => Promise<readonly CharacterLibrarySummary[]>
   readonly readCharacter: (id: string) => Promise<CharacterLibraryDetail>
   readonly setCharacterArchived: (id: string, archived: boolean) => Promise<CharacterLibraryDetail>
   readonly deleteCharacter: (id: string) => Promise<void>
   readonly importCharacterFile: (file: File) => Promise<CharacterLibraryImportResult>
-  readonly prepareChatMigration: (sessionId: SessionId, chatFile: File, cardFile?: File) => Promise<PreparedChatMigration>
+  readonly prepareChatMigration: (
+    sessionId: SessionId,
+    chatFile: File,
+    cardFile?: File,
+    characterId?: string,
+  ) => Promise<PreparedChatMigration>
   readonly prepareRpDistributionChatMigration: (
     sessionId: SessionId,
     target: string,
@@ -2217,15 +2224,16 @@ function useNarrowCharacterLibrary(): boolean {
 }
 
 function SillyTavernImportDialog({
-  runtimeDiagnostics, listPresets, initialChatFile, initialCardFile, onClose,
+  runtimeDiagnostics, listCharacters, listPresets, initialChatFile, initialCardFile, onClose,
   onPrepare, onPrepareRpDistribution, onLaunch, onCompleted,
 }: {
   readonly runtimeDiagnostics: AgentRpRuntimeDiagnosticRegistry
+  readonly listCharacters: HeaderProps['listCharacters']
   readonly listPresets: HeaderProps['listPresets']
   readonly initialChatFile?: File
   readonly initialCardFile?: File
   readonly onClose: () => void
-  readonly onPrepare: (chatFile: File, cardFile?: File) => Promise<PreparedChatMigration>
+  readonly onPrepare: (chatFile: File, cardFile?: File, characterId?: string) => Promise<PreparedChatMigration>
   readonly onPrepareRpDistribution: (target: string, sessionId: string) => Promise<PreparedChatMigration>
   readonly onLaunch: (
     prepared: PreparedChatMigration,
@@ -2238,6 +2246,9 @@ function SillyTavernImportDialog({
   const cardRef = useRef<HTMLInputElement | null>(null)
   const [chatFile, setChatFile] = useState<File | undefined>(initialChatFile)
   const [cardFile, setCardFile] = useState<File | undefined>(initialCardFile)
+  const [characters, setCharacters] = useState<readonly CharacterLibrarySummary[]>()
+  const [characterError, setCharacterError] = useState<string>()
+  const [characterId, setCharacterId] = useState('')
   const [sourceMode, setSourceMode] = useState<'jsonl' | 'rp-distribution'>('jsonl')
   const [rpTarget, setRpTarget] = useState(initialRpDistributionTarget)
   const [rpSessionId, setRpSessionId] = useState('')
@@ -2249,6 +2260,16 @@ function SillyTavernImportDialog({
   const [error, setError] = useState<string>()
   const selectedPresetId = presetId === '' ? undefined : presetId
   const selectedPreset = presets?.find(entry => entry.id === selectedPresetId)
+  useEffect(() => {
+    if (characters !== undefined || characterError !== undefined) return
+    let current = true
+    void listCharacters().then(value => {
+      if (current) setCharacters(value)
+    }, reason => {
+      if (current) setCharacterError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { current = false }
+  }, [characterError, characters, listCharacters])
   const preparedCharacter = sourceMode === 'jsonl' ? prepared?.character : undefined
   const expectsTavernPreflight = prepared !== undefined && (
     (preparedCharacter?.tavernHelper?.enabledScriptCount ?? 0) > 0
@@ -2376,7 +2397,7 @@ function SillyTavernImportDialog({
     setBusy('preparing')
     setError(undefined)
     const operation = sourceMode === 'jsonl'
-      ? onPrepare(chatFile!, cardFile)
+      ? onPrepare(chatFile!, cardFile, characterId === '' ? undefined : characterId)
       : onPrepareRpDistribution(rpTarget, rpSessionId)
     void operation.then(value => {
       setPrepared(value)
@@ -2417,7 +2438,7 @@ function SillyTavernImportDialog({
       <input ref={cardRef} type="file" accept=".png,.json,.charx,image/png,application/json" hidden onChange={event => {
         const file = event.currentTarget.files?.[0]
         event.currentTarget.value = ''
-        if (file !== undefined) { setCardFile(file); resetPreparation() }
+        if (file !== undefined) { setCardFile(file); setCharacterId(''); resetPreparation() }
       }} />
       <div style={{ display: 'grid', gap: '8px', gridTemplateColumns: '1fr 1fr', marginBottom: '14px' }}>
         <button type="button" disabled={working} aria-pressed={sourceMode === 'jsonl'} onClick={() => { setSourceMode('jsonl'); resetPreparation() }}
@@ -2430,9 +2451,34 @@ function SillyTavernImportDialog({
             <button type="button" disabled={working} onClick={() => { chatRef.current?.click() }} style={{ ...secondaryButtonStyle, textAlign: 'left' }}>
               {chatFile === undefined ? '选择聊天记录 JSONL' : `聊天记录 · ${chatFile.name}`}
             </button>
-            <button type="button" disabled={working} onClick={() => { cardRef.current?.click() }} style={{ ...secondaryButtonStyle, textAlign: 'left' }}>
-              {cardFile === undefined ? '选择角色卡（可选）' : `角色卡 · ${cardFile.name}`}
-            </button>
+            <div style={{ background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)', borderRadius: '10px', display: 'grid', gap: '8px', padding: '10px' }}>
+              <label htmlFor="agent-rp-chat-migration-character" style={{ fontSize: '11px', fontWeight: 620, opacity: .66 }}>角色卡（可选）</label>
+              <select id="agent-rp-chat-migration-character" data-agent-rp-chat-migration-character
+                disabled={working} value={cardFile === undefined ? characterId : '__file__'} onChange={event => {
+                  if (event.target.value === '__file__') return
+                  setCharacterId(event.target.value)
+                  setCardFile(undefined)
+                  resetPreparation()
+                }} style={{
+                  background: 'var(--dsw-alias-bg-base, #151518)', border: '1px solid var(--dsw-alias-border-l2, #3b3b41)',
+                  borderRadius: '8px', color: 'inherit', font: 'inherit', padding: '8px 9px', width: '100%',
+                }}>
+                <option value="">不绑定角色卡</option>
+                {cardFile !== undefined && <option value="__file__">文件 · {cardFile.name}</option>}
+                {characters?.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
+              </select>
+              <div style={{ alignItems: 'center', display: 'flex', gap: '9px' }}>
+                <span style={{ flex: 1, fontSize: '10px', lineHeight: 1.45, opacity: .48 }}>
+                  {characterError !== undefined ? characterError
+                    : characters === undefined ? '正在读取角色库…'
+                      : characterId !== '' ? '使用资源中心已有角色卡'
+                        : cardFile === undefined ? '也可以从文件导入角色卡' : `文件 · ${cardFile.name}`}
+                </span>
+                {characterError !== undefined && <button type="button" disabled={working} onClick={() => { setCharacterError(undefined) }} style={generationButtonStyle}>重试</button>}
+                <button type="button" data-agent-rp-action="select-chat-migration-character-file" disabled={working}
+                  onClick={() => { cardRef.current?.click() }} style={generationButtonStyle}>从文件选择</button>
+              </div>
+            </div>
           </div>
         : <div style={{ display: 'grid', gap: '10px' }}>
             <label style={{ display: 'grid', fontSize: '12px', gap: '6px' }}>
@@ -3063,9 +3109,10 @@ function SidebarRoleplayDestination({
     />, document.body)}
     {migrationOpen && launchSessionId !== undefined && createPortal(<SillyTavernImportDialog
       runtimeDiagnostics={runtimeDiagnostics}
+      listCharacters={listCharacters}
       listPresets={listPresets}
       onClose={() => { setMigrationOpen(false) }}
-      onPrepare={(chatFile, cardFile) => prepareChatMigration(launchSessionId, chatFile, cardFile)}
+      onPrepare={(chatFile, cardFile, characterId) => prepareChatMigration(launchSessionId, chatFile, cardFile, characterId)}
       onPrepareRpDistribution={(target, remoteSessionId) => prepareRpDistributionChatMigration(
         launchSessionId, target, remoteSessionId,
       )}
@@ -4109,7 +4156,7 @@ function RpDistributionBridgeSection({
 
 function RoleplayHeader({
   sessionId, useProjection, useSessions, loadAvatar, renameSession, configurePreset, importPresetFile, importPreset, managePresetLibrary,
-  configureWorldInfo, importWorldInfo,
+  configureWorldInfo, importWorldInfo, attachWorldInfo,
   listCharacters, readCharacter, setCharacterArchived, importCharacterFile, listWorldInfos,
   prepareChatMigration, prepareRpDistributionChatMigration, launchPreparedChatMigration,
   startCharacterSession, exportChat,
@@ -4345,9 +4392,10 @@ function RoleplayHeader({
     </div>
     {migrationOpen && <SillyTavernImportDialog
       runtimeDiagnostics={runtimeDiagnostics}
+      listCharacters={listCharacters}
       listPresets={listPresets}
       onClose={() => { setMigrationOpen(false) }}
-      onPrepare={(chatFile, cardFile) => prepareChatMigration(sessionId, chatFile, cardFile)}
+      onPrepare={(chatFile, cardFile, characterId) => prepareChatMigration(sessionId, chatFile, cardFile, characterId)}
       onPrepareRpDistribution={(target, remoteSessionId) => prepareRpDistributionChatMigration(
         sessionId, target, remoteSessionId,
       )}
@@ -4541,6 +4589,8 @@ function RoleplayHeader({
     {worldInfoOpen && <WorldInfoManagerDialog
       worldInfo={projection.worldInfo}
       onClose={() => { setWorldInfoOpen(false) }}
+      listWorldInfos={listWorldInfos}
+      onAttach={importId => attachWorldInfo(sessionId, importId)}
       onImport={file => importWorldInfo(sessionId, file)}
       onSave={request => configureWorldInfo(sessionId, request)}
     />}
@@ -4951,14 +5001,99 @@ function editableFromProjection(entry: WorldInfoEntryProjection): WorldInfoEdita
   }
 }
 
-function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
+function WorldInfoLibraryAttachDialog({ books, listWorldInfos, onAttach, onClose }: {
+  readonly books: AgentRpProjection['worldInfo']['books']
+  readonly listWorldInfos: HeaderProps['listWorldInfos']
+  readonly onAttach: (importId: string) => Promise<void>
+  readonly onClose: () => void
+}) {
+  const narrow = useNarrowCharacterLibrary()
+  const [uploads, setUploads] = useState<readonly WorldInfoLibraryUpload[]>()
+  const [loadingError, setLoadingError] = useState<string>()
+  const [attachingId, setAttachingId] = useState<string>()
+  const [attachError, setAttachError] = useState<string>()
+  useEffect(() => {
+    if (uploads !== undefined || loadingError !== undefined) return
+    let current = true
+    void listWorldInfos().then(value => {
+      if (current) setUploads(value)
+    }, reason => {
+      if (current) setLoadingError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { current = false }
+  }, [listWorldInfos, loadingError, uploads])
+  const available = uploads === undefined ? undefined : availableWorldInfoLibraryUploads(uploads, books)
+  const attach = (entry: WorldInfoLibraryUpload): void => {
+    setAttachingId(entry.id)
+    setAttachError(undefined)
+    void onAttach(entry.id).then(onClose, reason => {
+      setAttachingId(undefined)
+      setAttachError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }
+  return <div data-agent-rp-dialog data-agent-rp-surface="world-info-library-attach"
+    role="dialog" aria-modal="true" aria-label="从资源中心添加世界书" style={{
+    alignItems: 'center', background: 'rgba(0,0,0,.66)', display: 'flex', inset: 0,
+    justifyContent: 'center', padding: narrow ? 0 : '20px', position: 'fixed', zIndex: 1004,
+  }} onMouseDown={event => { if (event.target === event.currentTarget && attachingId === undefined) onClose() }}>
+    <section style={{
+      background: 'var(--dsw-alias-bg-base, #171719)', border: narrow ? 0 : '1px solid var(--dsw-alias-border-l2, #39393c)',
+      borderRadius: narrow ? 0 : '14px', boxShadow: '0 24px 90px rgba(0,0,0,.45)', boxSizing: 'border-box',
+      display: 'flex', flexDirection: 'column', height: narrow ? '100dvh' : undefined,
+      maxHeight: narrow ? '100dvh' : 'min(620px, calc(100vh - 40px))', maxWidth: '560px',
+      overflow: 'hidden', width: narrow ? '100vw' : 'min(560px, calc(100vw - 40px))',
+    }}>
+      <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #39393c)', display: 'flex', gap: '10px', padding: narrow ? 'max(12px, env(safe-area-inset-top)) 16px 12px' : '16px 18px' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h2 style={{ fontSize: '17px', margin: 0 }}>从资源中心添加</h2>
+          <span style={{ display: 'block', fontSize: '11px', marginTop: '4px', opacity: .5 }}>添加一份当前内容快照；不会修改资源中心原文件</span>
+        </div>
+        <button type="button" aria-label="关闭资源中心世界书选择" disabled={attachingId !== undefined}
+          onClick={onClose} style={{ background: 'transparent', border: 0, color: 'inherit', cursor: 'pointer', fontSize: '23px', padding: '3px 6px' }}>×</button>
+      </header>
+      <div style={{ display: 'grid', flex: 1, gap: '8px', minHeight: '220px', overflowY: 'auto', padding: '13px' }}>
+        {loadingError !== undefined
+          ? <div role="alert" style={{ alignItems: 'center', color: '#e88989', display: 'flex', fontSize: '12px', gap: '10px', lineHeight: 1.5, padding: '10px' }}>
+              <span style={{ flex: 1 }}>{loadingError}</span>
+              <button type="button" onClick={() => { setLoadingError(undefined) }} style={generationButtonStyle}>重试</button>
+            </div>
+          : available === undefined
+            ? <div style={{ fontSize: '12px', opacity: .52, padding: '12px' }}>正在读取世界书资源…</div>
+            : available.length === 0
+              ? <div style={{ alignItems: 'center', display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '220px', padding: '20px', textAlign: 'center' }}>
+                  <strong style={{ fontSize: '14px' }}>{uploads?.length === 0 ? '资源中心还没有世界书' : '资源中心里的世界书都已加入本会话'}</strong>
+                  <span style={{ fontSize: '11px', lineHeight: 1.55, marginTop: '7px', opacity: .5 }}>{uploads?.length === 0 ? '可以关闭这里，再从文件导入一本世界书' : '同一份资源不会重复出现在会话中'}</span>
+                </div>
+              : available.map(entry => <div key={entry.id} data-agent-rp-world-info-library-option={entry.id} style={{
+                  alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #202024)', border: '1px solid var(--dsw-alias-border-l2, #39393c)',
+                  borderRadius: '10px', display: 'flex', gap: '10px', padding: '10px 11px',
+                }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <strong style={{ display: 'block', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</strong>
+                    <span style={{ display: 'block', fontSize: '10px', marginTop: '4px', opacity: .48 }}>
+                      {entry.entryCount} 条目{entry.defaultForNewSessions ? ' · 新会话默认' : ''}{entry.degradations.length === 0 ? '' : ` · ${entry.degradations.length} 项兼容提醒`}
+                    </span>
+                  </span>
+                  <button type="button" data-agent-rp-action="attach-world-info-library" disabled={attachingId !== undefined}
+                    onClick={() => { attach(entry) }} style={generationButtonStyle}>{attachingId === entry.id ? '添加中…' : '添加'}</button>
+                </div>)}
+        {attachError !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.5, padding: '2px 4px' }}>{attachError}</div>}
+      </div>
+    </section>
+  </div>
+}
+
+function WorldInfoManagerDialog({ worldInfo, listWorldInfos, onAttach, onClose, onImport, onSave }: {
   readonly worldInfo: WorldInfoProjection
+  readonly listWorldInfos: HeaderProps['listWorldInfos']
+  readonly onAttach: (importId: string) => Promise<void>
   readonly onClose: () => void
   readonly onImport: (file: File) => Promise<void>
   readonly onSave: (request: WorldInfoConfigurationRequest) => Promise<void>
 }) {
   const narrow = useNarrowCharacterLibrary()
   const importInputRef = useRef<HTMLInputElement>(null)
+  const [libraryOpen, setLibraryOpen] = useState(false)
   const allEntries = worldInfo.books.flatMap(book => book.entries)
   const first = worldInfo.books.flatMap(book => book.entries.map(entry => `${book.id}\u0000${entry.index}`))[0]
   const [selectedKey, setSelectedKey] = useState<string>()
@@ -5010,7 +5145,7 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
       setError(importError instanceof Error ? importError.message : String(importError))
     })
   }
-  return <div data-agent-rp-dialog data-agent-rp-surface="world-info-manager"
+  return <><div data-agent-rp-dialog data-agent-rp-surface="world-info-manager"
     role="dialog" aria-modal="true" aria-label="世界书" style={{
     alignItems: 'center', background: 'rgba(0,0,0,.55)', display: 'flex', inset: 0,
     justifyContent: 'center', padding: narrow ? 0 : '20px', position: 'fixed', zIndex: 1002,
@@ -5034,8 +5169,13 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
           event.currentTarget.value = ''
           if (file !== undefined) importFile(file)
         }} />
-        <button type="button" disabled={importing} onClick={() => { importInputRef.current?.click() }} style={{ ...generationButtonStyle, marginLeft: 'auto' }}>
-          {importing ? '导入中…' : '导入世界书'}
+        <button type="button" data-agent-rp-action="open-world-info-library-attach" disabled={importing}
+          onClick={() => { setLibraryOpen(true) }} style={{ ...generationButtonStyle, marginLeft: 'auto' }}>
+          从资源中心添加
+        </button>
+        <button type="button" data-agent-rp-action="import-world-info-file" disabled={importing}
+          onClick={() => { importInputRef.current?.click() }} style={generationButtonStyle}>
+          {importing ? '导入中…' : '从文件导入'}
         </button>
         {failureReport !== undefined && <button type="button" data-agent-rp-world-info-copy-failures
           title="复制包含世界书名、条目标识和稳定失败类别的详情；发送前请检查内容"
@@ -5089,9 +5229,14 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
         <p style={{ fontSize: '13px', lineHeight: 1.65, margin: '8px 0 0', maxWidth: '430px', opacity: .58 }}>
           导入 SillyTavern World Info JSON 后会立即用于这段角色对话，不需要发送消息，也不会交给模型判断
         </p>
-        <button type="button" disabled={importing} onClick={() => { importInputRef.current?.click() }} style={{ ...primaryButtonStyle, marginTop: '18px' }}>
-          {importing ? '正在导入…' : '选择世界书 JSON'}
-        </button>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', marginTop: '18px' }}>
+          <button type="button" data-agent-rp-action="open-world-info-library-attach" disabled={importing}
+            onClick={() => { setLibraryOpen(true) }} style={primaryButtonStyle}>从资源中心添加</button>
+          <button type="button" data-agent-rp-action="import-world-info-file" disabled={importing}
+            onClick={() => { importInputRef.current?.click() }} style={secondaryButtonStyle}>
+            {importing ? '正在导入…' : '从文件导入'}
+          </button>
+        </div>
         {error !== undefined && <div role="alert" style={{ color: '#e88989', fontSize: '12px', lineHeight: 1.55, marginTop: '14px' }}>{error}</div>}
       </div>}
       {allEntries.length > 0 && <>
@@ -5221,6 +5366,13 @@ function WorldInfoManagerDialog({ worldInfo, onClose, onImport, onSave }: {
       </>}
     </section>
   </div>
+  {libraryOpen && <WorldInfoLibraryAttachDialog
+    books={worldInfo.books}
+    listWorldInfos={listWorldInfos}
+    onAttach={onAttach}
+    onClose={() => { setLibraryOpen(false) }}
+  />}
+  </>
 }
 
 function WorldInfoEntryEditor({ draft, saving, onCancel, onSave }: {
@@ -12253,6 +12405,7 @@ function importHintComponent(
   prepareChatMigration: HeaderProps['prepareChatMigration'],
   prepareRpDistributionChatMigration: HeaderProps['prepareRpDistributionChatMigration'],
   launchPreparedChatMigration: HeaderProps['launchPreparedChatMigration'],
+  listCharacters: HeaderProps['listCharacters'],
   listPresets: HeaderProps['listPresets'],
 ): (props: ImportHintProps) => JSX.Element | null {
   return function SillyTavernImportHint({ input, inputActions, sessionId }: ImportHintProps): JSX.Element | null {
@@ -12338,11 +12491,12 @@ function importHintComponent(
       </div>
       {migrationOpen && chatAttachment !== undefined && createPortal(<SillyTavernImportDialog
         runtimeDiagnostics={runtimeDiagnostics}
+        listCharacters={listCharacters}
         listPresets={listPresets}
         initialChatFile={chatAttachment.file}
         {...(cardAttachment === undefined ? {} : { initialCardFile: cardAttachment.file })}
         onClose={() => { setMigrationOpen(false) }}
-        onPrepare={(chatFile, cardFile) => prepareChatMigration(sessionId, chatFile, cardFile)}
+        onPrepare={(chatFile, cardFile, characterId) => prepareChatMigration(sessionId, chatFile, cardFile, characterId)}
         onPrepareRpDistribution={(target, remoteSessionId) => prepareRpDistributionChatMigration(
           sessionId, target, remoteSessionId,
         )}
@@ -12780,10 +12934,14 @@ export function apply(ctx: ClientContext): void {
     sourceSessionId: SessionId,
     chatFile: File,
     cardFile?: File,
+    characterId?: string,
   ): Promise<PreparedChatMigration> => {
     if (ctx.sessions.list.getSnapshot().byId[sourceSessionId] === undefined) throw new Error('来源会话当前不可用')
     if (!/\.jsonl$/iu.test(chatFile.name)) throw new Error('请选择 SillyTavern 导出的 JSONL 聊天记录')
-    const character = cardFile === undefined ? undefined : await importCharacterFile(cardFile)
+    if (cardFile !== undefined && characterId !== undefined) throw new Error('只能选择一种角色卡来源')
+    const character = characterId === undefined
+      ? cardFile === undefined ? undefined : (await importCharacterFile(cardFile)).entry
+      : await readCharacter(characterId)
     const response = await fetch(`${SILLYTAVERN_CHAT_PATH}?filename=${encodeURIComponent(chatFile.name)}`, {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': chatFile.type || 'application/x-ndjson' },
@@ -12800,10 +12958,10 @@ export function apply(ctx: ClientContext): void {
     return {
       importId: value.upload.id,
       permissionOwnerId: chatMigrationPermissionOwnerId({
-        ...(character === undefined ? {} : { characterId: character.entry.id }),
+        ...(character === undefined ? {} : { characterId: character.id }),
         ...(value.upload.characterName === undefined ? {} : { chatCharacterName: value.upload.characterName }),
       }),
-      ...(character === undefined ? {} : { character: character.entry }),
+      ...(character === undefined ? {} : { character }),
     }
   }
   const prepareRpDistributionChatMigration = async (
@@ -12981,11 +13139,14 @@ export function apply(ctx: ClientContext): void {
     if (!response.ok || value.upload === undefined) throw new Error(value.error ?? `世界书移除失败（${response.status}）`)
     return value.upload
   }
-  const importWorldInfo = async (sessionId: SessionId, file: File): Promise<void> => {
-    const upload = await importWorldInfoFile(file)
-    const request: WorldInfoLibraryLaunchRequest = { format: 0, importId: upload.id }
+  const attachWorldInfo = async (sessionId: SessionId, importId: string): Promise<void> => {
+    const request: WorldInfoLibraryLaunchRequest = { format: 0, importId }
     const result = await executeAgentRpCommand(sessionId, `/rp-world-info-import ${JSON.stringify(request)}`)
     if (!result.matched) throw new Error('当前 Host 未启用世界书导入')
+  }
+  const importWorldInfo = async (sessionId: SessionId, file: File): Promise<void> => {
+    const upload = await importWorldInfoFile(file)
+    await attachWorldInfo(sessionId, upload.id)
   }
   const runGeneration = async (
     sessionId: SessionId,
@@ -13143,7 +13304,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions', id: 'agent-rp-character-header', order: -100,
-  }, props => <RoleplayHeader {...props} runtimeDiagnostics={runtimeDiagnostics} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} listWorldInfos={listWorldInfos} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} deleteCharacter={deleteCharacter} importCharacterFile={importCharacterFile} prepareChatMigration={prepareChatMigration} prepareRpDistributionChatMigration={prepareRpDistributionChatMigration} launchPreparedChatMigration={launchPreparedChatMigration} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} manageState={manageState} manageTurnMode={manageTurnMode} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listRegexPacks={listRegexPacks} importRegexPackFile={importRegexPackFile} deleteRegexPack={deleteRegexPack} listAgentCapabilityPresets={listAgentCapabilityPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
+  }, props => <RoleplayHeader {...props} runtimeDiagnostics={runtimeDiagnostics} loadAvatar={loadAvatar} renameSession={renameSession} configurePreset={configurePreset} importPresetFile={importPresetFile} importPreset={importPreset} managePresetLibrary={managePresetLibrary} configureWorldInfo={configureWorldInfo} importWorldInfo={importWorldInfo} attachWorldInfo={attachWorldInfo} listWorldInfos={listWorldInfos} listCharacters={listCharacters} readCharacter={readCharacter} setCharacterArchived={setCharacterArchived} deleteCharacter={deleteCharacter} importCharacterFile={importCharacterFile} prepareChatMigration={prepareChatMigration} prepareRpDistributionChatMigration={prepareRpDistributionChatMigration} launchPreparedChatMigration={launchPreparedChatMigration} exportChat={exportChat} listMemory={listMemory} manageMemory={manageMemory} manageState={manageState} manageTurnMode={manageTurnMode} startCharacterSession={startCharacterFromCurrentSession} listPresets={listPresets} listRegexPacks={listRegexPacks} importRegexPackFile={importRegexPackFile} deleteRegexPack={deleteRegexPack} listAgentCapabilityPresets={listAgentCapabilityPresets} listPersonas={listPersonas} savePersona={savePersona} deletePersona={deletePersona} applyPersona={applyPersona} loadModelCapabilities={loadModelCapabilities} />))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'agent-rp',
@@ -13255,7 +13416,7 @@ export function apply(ctx: ClientContext): void {
     name: 'conversation.input.dock', id: 'agent-rp-sillytavern-import-hint', order: -10,
   }, importHintComponent(
     ctx, runtimeDiagnostics, prepareChatMigration, prepareRpDistributionChatMigration,
-    launchPreparedChatMigration, listPresets,
+    launchPreparedChatMigration, listCharacters, listPresets,
   )))
 }
 function useAgentRpSessionResourcePermissions(sessionId: SessionId): AgentRpSessionResourcePermissions {
