@@ -29,6 +29,8 @@ import { readSessionPersona } from '../src/session-persona.ts'
 import { WorldInfoLibrary } from '../src/world-info-library.ts'
 import { launchAgentRpSession } from '../src/session-launch-http.ts'
 
+const FIXTURE_WORKSPACE_PATH = process.platform === 'win32' ? 'C:\\fixture-workspace' : '/fixture-workspace'
+
 function libraries(context: test.TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-session-launch-'))
   context.after(() => { rmSync(root, { recursive: true, force: true }) })
@@ -56,6 +58,104 @@ function appendConversationTurn(session: Session, turn: number, user: string, as
     }),
   }, { surfaceOp: 'append' })
   session.append('turn/end', { turn, reason: { kind: 'completed' } })
+}
+
+async function launchExperienceWithWorkspaces(
+  context: test.TestContext,
+  workspaceEntries: readonly {
+    readonly id: string
+    readonly path?: string
+    readonly sessionIds?: readonly SessionId[]
+  }[],
+  sourceCwd = FIXTURE_WORKSPACE_PATH,
+) {
+  const { characters, chats, presets, personas, worldInfos } = libraries(context)
+  const worldInfo = worldInfos.importFile({
+    data: new Uint8Array(readFileSync('tests/fixtures/manual-world-info.json')),
+    filename: '海城.json',
+  })
+  const sourceId = SessionId('world-info-source')
+  const sourceSession = Session.create(sourceId, [], {
+    version: 0, id: sourceId, createdAt: 0, cwd: sourceCwd,
+  })
+  const sourceAgent = { id: sourceId, session: sourceSession, status: 'idle', inbox: { hasPending: false } }
+  let createdSession: Session | undefined
+  let attachedSessionId: SessionId | undefined
+  let renamedTitle: string | undefined
+  const agents = {
+    get: (id: SessionId) => id === sourceId ? sourceAgent : undefined,
+    create: async (options: {
+      readonly sessionId: SessionId
+      readonly seed: readonly import('@deepseek-ai/dsh-session').SessionEvent[]
+      readonly meta: { readonly cwd?: string; readonly agentPreset?: string }
+    }) => {
+      createdSession = Session.create(options.sessionId, options.seed, {
+        version: 0,
+        id: options.sessionId,
+        createdAt: 0,
+        ...options.meta,
+      })
+      return {
+        agent: { id: options.sessionId, session: createdSession },
+        dispose: async () => {},
+      }
+    },
+  }
+  const ctx = {
+    get: (name: string): unknown => {
+      if (name === 'agents') return agents
+      if (name === 'apiProxy') return {
+        sessions: {
+          models: async () => ({ result: { ok: true, value: { current: { provider: 'fixture', model: 'fixture' } } } }),
+          selectModel: async () => ({ result: { ok: true, value: {} } }),
+        },
+      }
+      if (name === 'agentPresets') return {
+        resolve: async () => ({ id: 'agent-rp', trust: 'user' }),
+        read: async () => `
+- id: agent-rp-runtime
+  name: cordis:group
+  isolate:
+    agentRp.actorRevisions: true
+  config:
+    - id: agent-rp-character
+      name: '@hewzhew/dsh-agent-rp'
+      config:
+        mode: character
+`,
+        mount: async () => {},
+        serviceFor: () => ({}),
+      }
+      if (name === 'sessionTitle') return {
+        get: () => undefined,
+        rename: (_session: Session, title: string) => { renamedTitle = title },
+      }
+      if (name === 'workspaceRegistry') return {
+        list: () => workspaceEntries.map(entry => ({
+          ...entry,
+          sessionIds: entry.sessionIds ?? [],
+          attachSession: async (sessionId: SessionId) => { attachedSessionId = sessionId },
+        })),
+      }
+      return undefined
+    },
+    logger: { warn: () => {} },
+  } as unknown as Context
+
+  const resources = new RoleplayResourceCatalog()
+  for (const provider of roleplayLibraryResourceProviders({ characters, personas, presets, worldInfos })) {
+    resources.register(provider)
+  }
+
+  const result = await launchAgentRpSession(ctx, characters, chats, presets, worldInfos, {
+    format: 0,
+    sourceSessionId: sourceId,
+    kind: 'experience',
+    mode: 'scene',
+    worlds: [{ kind: 'world', id: worldInfoLibraryRoleplayResourceId(worldInfo.id) }],
+  }, resources)
+
+  return { result, createdSession, attachedSessionId, renamedTitle }
 }
 
 test('prepares a library character before the Agent is constructed', (context) => {
@@ -220,98 +320,27 @@ test('starts a replayable roleplay Session from standalone World Info without fa
 })
 
 test('publishes a source-neutral World Info experience into the source Workspace', async context => {
-  const { characters, chats, presets, personas, worldInfos } = libraries(context)
-  const worldInfo = worldInfos.importFile({
-    data: new Uint8Array(readFileSync('tests/fixtures/manual-world-info.json')),
-    filename: '海城.json',
-  })
-  const sourceId = SessionId('world-info-source')
-  const sourceSession = Session.create(sourceId, [], {
-    version: 0, id: sourceId, createdAt: 0, cwd: 'C:\\fixture-workspace',
-  })
-  const sourceAgent = { id: sourceId, session: sourceSession, status: 'idle', inbox: { hasPending: false } }
-  let createdSession: Session | undefined
-  let attachedSessionId: SessionId | undefined
-  let renamedTitle: string | undefined
-  const agents = {
-    get: (id: SessionId) => id === sourceId ? sourceAgent : undefined,
-    create: async (options: {
-      readonly sessionId: SessionId
-      readonly seed: readonly import('@deepseek-ai/dsh-session').SessionEvent[]
-      readonly meta: { readonly cwd?: string; readonly agentPreset?: string }
-    }) => {
-      createdSession = Session.create(options.sessionId, options.seed, {
-        version: 0,
-        id: options.sessionId,
-        createdAt: 0,
-        ...options.meta,
-      })
-      return {
-        agent: { id: options.sessionId, session: createdSession },
-        dispose: async () => {},
-      }
-    },
-  }
-  const ctx = {
-    get: (name: string): unknown => {
-      if (name === 'agents') return agents
-      if (name === 'apiProxy') return {
-        sessions: {
-          models: async () => ({ result: { ok: true, value: { current: { provider: 'fixture', model: 'fixture' } } } }),
-          selectModel: async () => ({ result: { ok: true, value: {} } }),
-        },
-      }
-      if (name === 'agentPresets') return {
-        resolve: async () => ({ id: 'agent-rp', trust: 'user' }),
-        read: async () => `
-- id: agent-rp-runtime
-  name: cordis:group
-  isolate:
-    agentRp.actorRevisions: true
-  config:
-    - id: agent-rp-character
-      name: '@hewzhew/dsh-agent-rp'
-      config:
-        mode: character
-`,
-        mount: async () => {},
-        serviceFor: () => ({}),
-      }
-      if (name === 'sessionTitle') return {
-        get: () => undefined,
-        rename: (_session: Session, title: string) => { renamedTitle = title },
-      }
-      if (name === 'workspaceRegistry') return {
-        list: () => [{
-          id: 'workspace-fixture',
-          path: 'C:\\fixture-workspace',
-          sessionIds: [],
-          attachSession: async (sessionId: SessionId) => { attachedSessionId = sessionId },
-        }],
-      }
-      return undefined
-    },
-    logger: { warn: () => {} },
-  } as unknown as Context
-
-  const resources = new RoleplayResourceCatalog()
-  for (const provider of roleplayLibraryResourceProviders({ characters, personas, presets, worldInfos })) {
-    resources.register(provider)
-  }
-
-  const result = await launchAgentRpSession(ctx, characters, chats, presets, worldInfos, {
-    format: 0,
-    sourceSessionId: sourceId,
-    kind: 'experience',
-    mode: 'scene',
-    worlds: [{ kind: 'world', id: worldInfoLibraryRoleplayResourceId(worldInfo.id) }],
-  }, resources)
+  const { result, createdSession, attachedSessionId, renamedTitle } = await launchExperienceWithWorkspaces(context, [{
+    id: 'workspace-fixture',
+    path: `${FIXTURE_WORKSPACE_PATH}/`,
+  }])
 
   assert.equal(attachedSessionId, result.sessionId)
   assert.equal(renamedTitle, '海城')
   assert.equal(createdSession?.events.some(event => event.type === 'turn/start'), true)
   assert.deepEqual(createdSession?.deriveMessages(), [])
   assert.equal(readRoleplayExperienceSelection(createdSession?.events ?? [])?.mode, 'scene')
+})
+
+test('leaves the launched Session ungrouped when multiple Workspaces match the source cwd', async context => {
+  const { result, createdSession, attachedSessionId } = await launchExperienceWithWorkspaces(context, [
+    { id: 'workspace-fixture-a', path: `${FIXTURE_WORKSPACE_PATH}/` },
+    { id: 'workspace-fixture-b', path: FIXTURE_WORKSPACE_PATH },
+  ])
+
+  assert.equal(attachedSessionId, undefined)
+  assert.equal(result.workspaceWarning, '多个工作区与来源工作目录匹配，拒绝猜测，新角色会话保留在“未分组”')
+  assert.equal(createdSession?.events.some(event => event.type === 'turn/start'), true)
 })
 
 test('prepares imported JSONL with consecutive turns before the Agent is constructed', (context) => {
