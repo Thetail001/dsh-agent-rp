@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { StoryWorkspaceSnapshot } from '../src/story-workspace-protocol.ts'
-import { runStoryTurnPipeline } from '../src/story-turn-pipeline.ts'
+import { appendAgentRpSessionEvent } from '../src/session-event-compat.ts'
+import { createStoryCharacterId, StoryWorkspaceStore } from '../src/story-workspace.ts'
+import { materializeStoryTurn, runStoryTurnPipeline } from '../src/story-turn-pipeline.ts'
 import { installIgnorableSessionEventFixture } from './session-event-fixture.ts'
 
 installIgnorableSessionEventFixture()
@@ -34,6 +39,7 @@ function workspace(): StoryWorkspaceSnapshot {
     documents: {
       outline: '导演知道下一幕会停电。',
       foreshadowing: '怀表将在第三幕打开。',
+      proposals: '',
       history: '两人都看见雨停了。',
       characters: [
         { id: aliceId, persona: '阿梨谨慎。', knowledge: '阿梨知道徽章的主人。' },
@@ -133,4 +139,104 @@ test('runs logged story stages while keeping each character request privately sc
 
   assert.deepEqual(await runStoryTurnPipeline(input), result)
   assert.equal(calls, 6)
+})
+
+test('materializes continuity from the actually visible reply instead of the prepared draft', async (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-story-continuity-'))
+  context.after(() => { rmSync(root, { recursive: true, force: true }) })
+  const store = new StoryWorkspaceStore({ root })
+  const created = store.create({ format: 0, name: '实际正文沉淀' })
+  const characterId = createStoryCharacterId()
+  const workspace = store.save({
+    format: 0,
+    id: created.manifest.id,
+    revision: 0,
+    name: '实际正文沉淀',
+    characters: [{ id: characterId, name: '阿梨', enabled: true }],
+    sections: [],
+    sources: [],
+    documents: {
+      outline: '在车站重逢。', foreshadowing: '徽章尚未揭晓。', proposals: '', history: '',
+      characters: [{ id: characterId, persona: '谨慎。', knowledge: '' }], sections: [], sources: [],
+    },
+  })
+  const session = Session.create(SessionId('story-continuity'))
+  session.append('request/header', {
+    reason: 'initial',
+    header: { config: { provider: 'fixture', model: 'fixture', maxTokens: 8_192 } },
+  })
+  session.append('turn/start', { turn: 1 })
+  session.append('step/start', { turn: 1, step: 1 })
+  appendAgentRpSessionEvent(session, 'agent-rp/story-turn-brief', {
+    format: 0,
+    sessionId: String(session.id),
+    workspaceId: workspace.manifest.id,
+    workspaceRevision: workspace.manifest.revision,
+    turn: 1,
+    step: 1,
+    resultEventSeqs: [],
+    directorBrief: '内部导演方案。',
+    finalDraft: '流水线准备稿。',
+    modelContext: '准备上下文。',
+  })
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'fixture', model: 'fixture' },
+      content: [{ type: 'text', text: '实际展示时，阿梨只看见雨停了。' }],
+    }),
+  }, { surfaceOp: 'append' })
+  session.append('step/end', { turn: 1, step: 1 })
+  let requestBody = ''
+  const fake = {
+    sessions: { flush: async () => true },
+    llm: {
+      stream(options: { readonly messages: readonly unknown[] }) {
+        requestBody = JSON.stringify(options.messages)
+        const text = JSON.stringify({
+          history: '阿梨在车站看见雨停。',
+          observations: [{ characterId, text: '阿梨亲眼看见雨停。' }],
+          outlineProposals: [],
+          foreshadowingProposals: ['后续可以让徽章在雨后反光。'],
+        })
+        return (async function* () {
+          yield { type: 'block-start', index: 0, blockType: 'text' }
+          yield { type: 'text-delta', index: 0, text }
+          yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    },
+  } as unknown as Context
+  const agent = { id: session.id, options: { provider: 'fixture', model: 'fixture' }, session } as Agent
+
+  const result = await materializeStoryTurn({
+    ctx: fake,
+    agent,
+    store,
+    workspaceId: workspace.manifest.id,
+    turn: 1,
+    signal: new AbortController().signal,
+  })
+
+  assert.match(requestBody, /实际展示时，阿梨只看见雨停了/u)
+  assert.doesNotMatch(requestBody, /流水线准备稿/u)
+  assert.equal(result?.observations[0]?.characterId, characterId)
+  const saved = store.get(workspace.manifest.id)
+  assert.match(saved.documents.history, /阿梨在车站看见雨停/u)
+  assert.match(saved.documents.characters[0]!.knowledge, /阿梨亲眼看见雨停/u)
+  assert.match(saved.documents.proposals, /徽章在雨后反光/u)
+  assert.equal(session.events.filter(event => event.type === 'agent-rp/story-turn-materialized').length, 1)
+  assert.equal(session.events.find(event => event.type === 'agent-rp/story-stage-request')?.data.stage, 'continuity')
+
+  assert.deepEqual(await materializeStoryTurn({
+    ctx: fake,
+    agent,
+    store,
+    workspaceId: workspace.manifest.id,
+    turn: 1,
+    signal: new AbortController().signal,
+  }), result)
+  assert.equal(store.get(workspace.manifest.id).manifest.revision, saved.manifest.revision)
 })

@@ -68,10 +68,23 @@ export interface StorySourceDocument {
 export interface StoryWorkspaceDocuments {
   readonly outline: string
   readonly foreshadowing: string
+  readonly proposals: string
   readonly history: string
   readonly characters: readonly StoryCharacterDocuments[]
   readonly sections: readonly StorySectionDocument[]
   readonly sources: readonly StorySourceDocument[]
+}
+
+/** One completed visible turn materialized into editable story documents. */
+export interface StoryTurnMaterialization {
+  readonly key: string
+  readonly heading: string
+  readonly history: string
+  readonly observations: readonly {
+    readonly characterId: string
+    readonly text: string
+  }[]
+  readonly proposals: string
 }
 
 /** Coherent workspace value returned by local storage and HTTP reads. */

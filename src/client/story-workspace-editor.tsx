@@ -211,7 +211,7 @@ export function StoryWorkspaceEditor({ accent, sessionId, onClose }: StoryWorksp
     <header style={{ alignItems: 'center', borderBottom: '1px solid var(--dsw-alias-border-l2, #3c3d42)', display: 'flex', gap: '12px', padding: '13px 16px' }}>
       <div style={{ flex: 1 }}>
         <strong style={{ display: 'block', fontSize: '16px' }}>故事工程</strong>
-        <span style={{ fontSize: '11px', opacity: .52 }}>人物私有认知、剧情大纲、伏笔、历史、正文分区与原著资料</span>
+        <span style={{ fontSize: '11px', opacity: .52 }}>人物私有认知、剧情大纲、待审提案、历史、正文分区与原著资料</span>
       </div>
       <button type="button" disabled={saving} onClick={createNew} style={secondaryButton}>新建</button>
       <button type="button" aria-label="关闭故事工程" onClick={onClose} style={{ ...secondaryButton, fontSize: '18px', padding: '3px 10px' }}>×</button>
@@ -259,7 +259,10 @@ export function StoryWorkspaceEditor({ accent, sessionId, onClose }: StoryWorksp
           <MarkdownField label="伏笔（仅导演可见）" value={workspace.documents.foreshadowing} onChange={value => { update(current => ({
             ...current, documents: { ...current.documents, foreshadowing: value },
           })) }} />
-          <MarkdownField label="公开历史（所有人物可见）" value={workspace.documents.history} onChange={value => { update(current => ({
+          <MarkdownField label="待审剧情提案（不会自动改写大纲或伏笔）" value={workspace.documents.proposals} onChange={value => { update(current => ({
+            ...current, documents: { ...current.documents, proposals: value },
+          })) }} />
+          <MarkdownField label="全局剧情账本（仅研究与导演 Worker 可见）" value={workspace.documents.history} onChange={value => { update(current => ({
             ...current, documents: { ...current.documents, history: value },
           })) }} />
 
@@ -285,7 +288,7 @@ export function StoryWorkspaceEditor({ accent, sessionId, onClose }: StoryWorksp
                     })) }} style={{ ...fieldStyle, flex: 1 }} />
                     <label style={{ fontSize: '11px', whiteSpace: 'nowrap' }}><input type="checkbox" checked={character.enabled} onChange={event => { update(current => ({
                       ...current, manifest: { ...current.manifest, characters: current.manifest.characters.map(item => item.id === character.id ? { ...item, enabled: event.target.checked } : item) },
-                    })) }} /> 启用</label>
+                    })) }} /> 参与当前场景</label>
                     <button type="button" onClick={() => { update(current => ({
                       ...current,
                       manifest: { ...current.manifest, characters: current.manifest.characters.filter(item => item.id !== character.id) },

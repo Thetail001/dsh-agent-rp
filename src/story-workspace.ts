@@ -27,6 +27,7 @@ import type {
   StoryWorkspaceSnapshot,
   StoryWorkspaceSource,
   StoryWorkspaceSummary,
+  StoryTurnMaterialization,
 } from './story-workspace-protocol.ts'
 
 const WORKSPACE_ID_PATTERN = /^story-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
@@ -47,8 +48,6 @@ export interface StoryWorkspaceStoreOptions {
 
 /** Public facts from the current scene that every participating character may observe. */
 export interface StoryPublicSceneContext {
-  readonly history: string
-  readonly currentScene: string
   readonly playerInput: string
 }
 
@@ -59,8 +58,6 @@ export interface StoryCharacterContext {
   readonly characterName: string
   readonly persona: string
   readonly privateKnowledge: string
-  readonly publicHistory: string
-  readonly currentScene: string
   readonly playerInput: string
   readonly text: string
 }
@@ -168,12 +165,13 @@ function normalizeDocuments(
   const result = {
     outline: cleanDocument(value.outline, '剧情大纲'),
     foreshadowing: cleanDocument(value.foreshadowing, '剧情伏笔'),
+    proposals: cleanDocument(value.proposals, '待审剧情提案'),
     history: cleanDocument(value.history, '公开历史'),
     characters: normalizeCharacterDocuments(value.characters, characters),
     sections: normalizeSectionDocuments(value.sections, sections),
     sources: normalizeSourceDocuments(value.sources, sources),
   }
-  const bytes = [result.outline, result.foreshadowing, result.history]
+  const bytes = [result.outline, result.foreshadowing, result.proposals, result.history]
     .concat(result.characters.flatMap(document => [document.persona, document.knowledge]))
     .concat(result.sections.map(document => document.content))
     .concat(result.sources.map(document => document.content))
@@ -223,6 +221,15 @@ function readMarkdown(path: string): string {
   } catch (error: unknown) {
     throw new Error(`无法读取故事文档 ${JSON.stringify(path)}`, { cause: error })
   }
+}
+
+function readOptionalMarkdown(path: string): string {
+  return existsSync(path) ? readMarkdown(path) : ''
+}
+
+function appendMaterializedEntry(current: string, marker: string, heading: string, content: string): string {
+  if (current.includes(marker) || content.trim() === '') return current
+  return [current.trimEnd(), marker, `## ${heading}`, content.trim()].filter(Boolean).join('\n\n') + '\n'
 }
 
 /** Generate an opaque character id suitable for a manifest edit. */
@@ -283,6 +290,7 @@ export class StoryWorkspaceStore {
     const documents: StoryWorkspaceDocuments = {
       outline: '',
       foreshadowing: '',
+      proposals: '',
       history: '',
       characters: [],
       sections: [],
@@ -301,6 +309,7 @@ export class StoryWorkspaceStore {
       documents: {
         outline: readMarkdown(join(root, 'outline.md')),
         foreshadowing: readMarkdown(join(root, 'foreshadowing.md')),
+        proposals: readOptionalMarkdown(join(root, 'proposals.md')),
         history: readMarkdown(join(root, 'history.md')),
         characters: manifest.characters.map(character => ({
           id: character.id,
@@ -346,6 +355,53 @@ export class StoryWorkspaceStore {
     return this.get(request.id)
   }
 
+  /** Idempotently append one completed turn while preserving newer user edits. */
+  materializeTurn(id: string, materialization: StoryTurnMaterialization): StoryWorkspaceSnapshot {
+    if (!/^[A-Za-z0-9:_-]{1,240}$/u.test(materialization.key)) throw new Error('故事回合沉淀 key 无效')
+    const current = this.get(id)
+    const marker = `<!-- agent-rp:story-turn:${materialization.key} -->`
+    const observations = new Map(materialization.observations.map(observation => [observation.characterId, observation.text]))
+    const documents: StoryWorkspaceDocuments = {
+      ...current.documents,
+      history: appendMaterializedEntry(
+        current.documents.history,
+        marker,
+        materialization.heading,
+        cleanDocument(materialization.history, '回合公开历史'),
+      ),
+      proposals: appendMaterializedEntry(
+        current.documents.proposals,
+        marker,
+        materialization.heading,
+        cleanDocument(materialization.proposals, '回合待审提案'),
+      ),
+      characters: current.documents.characters.map(character => ({
+        ...character,
+        knowledge: appendMaterializedEntry(
+          character.knowledge,
+          marker,
+          materialization.heading,
+          cleanDocument(observations.get(character.id) ?? '', '人物观察记录'),
+        ),
+      })),
+    }
+    const unchanged = documents.history === current.documents.history
+      && documents.proposals === current.documents.proposals
+      && documents.characters.every((character, index) =>
+        character.knowledge === current.documents.characters[index]?.knowledge)
+    if (unchanged) return current
+    return this.save({
+      format: 0,
+      id: current.manifest.id,
+      revision: current.manifest.revision,
+      name: current.manifest.name,
+      characters: current.manifest.characters,
+      sections: current.manifest.sections,
+      sources: current.manifest.sources,
+      documents,
+    })
+  }
+
   /** Remove one workspace and every local document it owns. */
   remove(id: string): StoryWorkspaceSummary {
     const snapshot = this.get(id)
@@ -381,6 +437,7 @@ export class StoryWorkspaceStore {
     const root = this.workspacePath(manifest.id)
     atomicWrite(join(root, 'outline.md'), documents.outline)
     atomicWrite(join(root, 'foreshadowing.md'), documents.foreshadowing)
+    atomicWrite(join(root, 'proposals.md'), documents.proposals)
     atomicWrite(join(root, 'history.md'), documents.history)
     for (const character of documents.characters) {
       atomicWrite(join(root, 'characters', character.id, 'persona.md'), character.persona)
@@ -423,8 +480,6 @@ export function compileStoryCharacterContext(
   if (character === undefined || documents === undefined || !character.enabled) {
     throw new Error(`故事工作区中没有启用的人物 ${JSON.stringify(characterId)}`)
   }
-  const publicHistory = cleanDocument(scene.history, '公开场景历史')
-  const currentScene = cleanDocument(scene.currentScene, '当前场景')
   const playerInput = cleanDocument(scene.playerInput, '本轮玩家输入')
   const text = [
     `# 人物：${character.name}`,
@@ -432,10 +487,6 @@ export function compileStoryCharacterContext(
     documents.persona,
     '## 仅该人物可知的事实',
     documents.knowledge,
-    '## 公开历史',
-    publicHistory,
-    '## 当前公开场景',
-    currentScene,
     '## 本轮玩家输入',
     playerInput,
     '只能依据以上材料决定该人物此刻相信什么、注意到什么和采取什么行动。不得假设其他人物的私有知识，也不得读取未来大纲或伏笔。',
@@ -446,8 +497,6 @@ export function compileStoryCharacterContext(
     characterName: character.name,
     persona: documents.persona,
     privateKnowledge: documents.knowledge,
-    publicHistory,
-    currentScene,
     playerInput,
     text,
   }

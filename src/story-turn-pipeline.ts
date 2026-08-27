@@ -11,12 +11,12 @@ import {
 import type { SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
 import { roleplayActModelDispatch, roleplayActModelFailure, type RoleplayActModelDispatch, type RoleplayActModelFailureKind } from './roleplay-act-model-log.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
-import { compileStoryCharacterContext } from './story-workspace.ts'
+import { compileStoryCharacterContext, StoryWorkspaceStore } from './story-workspace.ts'
 import type { StoryWorkspaceSnapshot } from './story-workspace-protocol.ts'
 import { searchStoryWorkspaceSources } from './story-research.ts'
 
 /** Ordered model responsibilities before the visible character request. */
-export type StoryTurnStage = 'research' | 'character' | 'director' | 'section' | 'editor'
+export type StoryTurnStage = 'research' | 'character' | 'director' | 'section' | 'editor' | 'continuity'
 
 /** Exact auxiliary request dispatched by the story pipeline. */
 export interface StoryTurnStageRequestRecord {
@@ -54,6 +54,23 @@ export interface StoryTurnBriefRecord {
   readonly directorBrief: string
   readonly finalDraft: string
   readonly modelContext: string
+}
+
+/** Exact editable story-document update committed after the visible reply. */
+export interface StoryTurnMaterializedRecord {
+  readonly format: 0
+  readonly sessionId: string
+  readonly workspaceId: string
+  readonly workspaceRevision: number
+  readonly turn: number
+  readonly step: number
+  readonly continuityResultEventSeq: number
+  readonly history: string
+  readonly observations: readonly {
+    readonly characterId: string
+    readonly text: string
+  }[]
+  readonly proposals: string
 }
 
 /** Logged network-search request generated from an enabled Web source. */
@@ -95,6 +112,8 @@ declare module '@deepseek-ai/dsh-session' {
     'agent-rp/story-stage-result': StoryTurnStageResultRecord
     /** Ignorable final story brief consumed by the visible character request. */
     'agent-rp/story-turn-brief': StoryTurnBriefRecord
+    /** Ignorable story-document update committed after the visible reply. */
+    'agent-rp/story-turn-materialized': StoryTurnMaterializedRecord
     /** Ignorable exact web query made for one story turn. */
     'agent-rp/story-web-search-request': StoryWebSearchRequestRecord
     /** Ignorable portable web-search result consumed by story research. */
@@ -105,6 +124,16 @@ declare module '@deepseek-ai/dsh-session' {
 interface StageOutput {
   readonly text?: string
   readonly resultEventSeq: number
+}
+
+interface ContinuityUpdate {
+  readonly history: string
+  readonly observations: readonly {
+    readonly characterId: string
+    readonly text: string
+  }[]
+  readonly outlineProposals: readonly string[]
+  readonly foreshadowingProposals: readonly string[]
 }
 
 interface StoryWebSearchGateway {
@@ -140,6 +169,68 @@ function transcriptText(agent: Agent): string {
   const text = agent.session.deriveMessages().flatMap(message =>
     message.content.flatMap(block => block.type === 'text' ? [block.text] : [])).join('\n')
   return text.length <= 24_000 ? text : text.slice(-24_000)
+}
+
+function visibleReplyText(events: readonly SessionEvent[], turn: number): string {
+  const event = events.findLast(candidate => candidate.type === 'assistant/message'
+    && candidate.data.turn === turn && candidate.data.interrupted !== true
+    && candidate.data.message.content.some(block => block.type === 'text' && block.text.trim() !== ''))
+  if (event?.type !== 'assistant/message') return ''
+  return event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim()
+}
+
+function boundedString(value: unknown, subject: string, max = 64 * 1_024): string {
+  if (typeof value !== 'string') throw new Error(`${subject}不是文本`)
+  const text = value.trim()
+  if (text.length > max) throw new Error(`${subject}过长`)
+  return text
+}
+
+function stringList(value: unknown, subject: string): readonly string[] {
+  if (!Array.isArray(value)) throw new Error(`${subject}不是数组`)
+  return value.map((item, index) => boundedString(item, `${subject}[${String(index)}]`, 8 * 1_024)).filter(Boolean)
+}
+
+function parseContinuityUpdate(text: string, characterIds: ReadonlySet<string>): ContinuityUpdate {
+  const unfenced = text.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '')
+  const start = unfenced.indexOf('{')
+  const end = unfenced.lastIndexOf('}')
+  if (start < 0 || end < start) throw new Error('连续性记录没有 JSON 对象')
+  const value = JSON.parse(unfenced.slice(start, end + 1)) as unknown
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('连续性记录不是对象')
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).some(key => !['history', 'observations', 'outlineProposals', 'foreshadowingProposals'].includes(key))
+    || !Array.isArray(record.observations)) throw new Error('连续性记录字段无效')
+  const observations = record.observations.map((value, index) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new Error(`人物观察[${String(index)}]不是对象`)
+    }
+    const observation = value as Record<string, unknown>
+    if (Object.keys(observation).some(key => key !== 'characterId' && key !== 'text')
+      || typeof observation.characterId !== 'string' || !characterIds.has(observation.characterId)) {
+      throw new Error(`人物观察[${String(index)}]字段无效`)
+    }
+    return {
+      characterId: observation.characterId,
+      text: boundedString(observation.text, `人物观察[${String(index)}].text`, 16 * 1_024),
+    }
+  }).filter(observation => observation.text !== '')
+  if (new Set(observations.map(observation => observation.characterId)).size !== observations.length) {
+    throw new Error('人物观察包含重复人物')
+  }
+  return {
+    history: boundedString(record.history, '连续性公开历史'),
+    observations,
+    outlineProposals: stringList(record.outlineProposals, '大纲提案'),
+    foreshadowingProposals: stringList(record.foreshadowingProposals, '伏笔提案'),
+  }
+}
+
+function proposalText(update: ContinuityUpdate): string {
+  return [
+    update.outlineProposals.length === 0 ? '' : `### 大纲提案\n\n${update.outlineProposals.map(item => `- ${item}`).join('\n')}`,
+    update.foreshadowingProposals.length === 0 ? '' : `### 伏笔提案\n\n${update.foreshadowingProposals.map(item => `- ${item}`).join('\n')}`,
+  ].filter(Boolean).join('\n\n')
 }
 
 function webSearchGateway(ctx: Context): StoryWebSearchGateway | undefined {
@@ -381,8 +472,6 @@ export async function runStoryTurnPipeline(input: RunStoryTurnPipelineInput): Pr
   for (const character of input.workspace.manifest.characters.filter(candidate => candidate.enabled)) {
     input.signal.throwIfAborted()
     const context = compileStoryCharacterContext(input.workspace, character.id, {
-      history: input.workspace.documents.history,
-      currentScene: recentTranscript,
       playerInput,
     })
     const decision = await runStage(input, 'character', generateOptions(
@@ -459,6 +548,91 @@ export async function runStoryTurnPipeline(input: RunStoryTurnPipelineInput): Pr
     modelContext: context,
   }
   appendAgentRpSessionEvent(input.agent.session, 'agent-rp/story-turn-brief', record)
+  await input.ctx.sessions.flush(input.agent.session)
+  return record
+}
+
+/** Materialize the actually visible reply into global history and character-scoped observations. */
+export async function materializeStoryTurn(input: {
+  readonly ctx: Context
+  readonly agent: Agent
+  readonly store: StoryWorkspaceStore
+  readonly workspaceId: string
+  readonly turn: number
+  readonly signal: AbortSignal
+}): Promise<StoryTurnMaterializedRecord | undefined> {
+  const previous = input.agent.session.events.findLast((event): event is SessionEvent<'agent-rp/story-turn-materialized'> =>
+    event.type === 'agent-rp/story-turn-materialized' && event.data.turn === input.turn
+      && event.data.workspaceId === input.workspaceId)
+  if (previous !== undefined) return previous.data
+  const briefEvent = input.agent.session.events.findLast((event): event is SessionEvent<'agent-rp/story-turn-brief'> =>
+    event.type === 'agent-rp/story-turn-brief' && event.data.turn === input.turn
+      && event.data.workspaceId === input.workspaceId)
+  if (briefEvent === undefined) return undefined
+  const visibleReply = visibleReplyText(input.agent.session.events, input.turn)
+  if (visibleReply === '') return undefined
+  const workspace = input.store.get(input.workspaceId)
+  const participants = workspace.manifest.characters.filter(character => character.enabled)
+  const stageInput: RunStoryTurnPipelineInput = {
+    ctx: input.ctx,
+    agent: input.agent,
+    workspace,
+    turn: input.turn,
+    step: briefEvent.data.step,
+    messages: [],
+    signal: input.signal,
+  }
+  const resultEventSeqs: number[] = []
+  const continuity = await runStage(stageInput, 'continuity', generateOptions(
+    stageInput,
+    [
+      '你是剧情连续性记录 Worker。正文已经完成；不要续写、改写或评价正文。',
+      'history 只概括正文中已经发生、可供导演维持连续性的事件，不记录创作过程。',
+      'observations 只为列出的当前场景参与人物记录其在正文中明确亲历或可感知的事实；不得写入别人的内心、未公开秘密、离场事件或仅由导演知道的内容。没有可靠观察就省略该人物。',
+      'outlineProposals 与 foreshadowingProposals 只是供用户审查的建议；不要把建议当成已经发生的事实。',
+      '只返回 JSON：{"history":"...","observations":[{"characterId":"...","text":"..."}],"outlineProposals":[],"foreshadowingProposals":[]}。不要使用 Markdown 围栏。',
+    ].join('\n'),
+    [
+      '<participants>', participants.map(character => `${character.id}\t${character.name}`).join('\n'), '</participants>',
+      '<current_outline>', workspace.documents.outline, '</current_outline>',
+      '<current_foreshadowing>', workspace.documents.foreshadowing, '</current_foreshadowing>',
+      '<visible_reply>', visibleReply, '</visible_reply>',
+    ].join('\n'),
+    4_096,
+    0,
+  ), resultEventSeqs)
+  let update: ContinuityUpdate
+  try {
+    update = parseContinuityUpdate(continuity.text ?? '', new Set(participants.map(character => character.id)))
+  } catch {
+    update = {
+      history: visibleReply,
+      observations: [],
+      outlineProposals: [],
+      foreshadowingProposals: [],
+    }
+  }
+  const proposals = proposalText(update)
+  const materialized = input.store.materializeTurn(input.workspaceId, {
+    key: `turn-${String(input.turn)}-brief-${String(briefEvent.seq)}`,
+    heading: `回合 ${String(input.turn)}`,
+    history: update.history,
+    observations: update.observations,
+    proposals,
+  })
+  const record: StoryTurnMaterializedRecord = {
+    format: 0,
+    sessionId: String(input.agent.session.id),
+    workspaceId: input.workspaceId,
+    workspaceRevision: materialized.manifest.revision,
+    turn: input.turn,
+    step: briefEvent.data.step,
+    continuityResultEventSeq: continuity.resultEventSeq,
+    history: update.history,
+    observations: update.observations,
+    proposals,
+  }
+  appendAgentRpSessionEvent(input.agent.session, 'agent-rp/story-turn-materialized', record)
   await input.ctx.sessions.flush(input.agent.session)
   return record
 }

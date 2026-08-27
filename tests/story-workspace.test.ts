@@ -31,6 +31,7 @@ test('persists editable story documents and rejects stale whole-workspace writes
     documents: {
       outline: '先在车站重逢。',
       foreshadowing: '旧车票尚未揭晓。',
+      proposals: '',
       history: '两人曾在冬天分别。',
       characters: [{ id: characterId, persona: '怕冷，谨慎。', knowledge: '她知道车票背面的字。' }],
       sections: [{ id: sectionId, content: '夜班车尚未到站。' }],
@@ -74,6 +75,7 @@ test('compiles one character context without director or another character priva
     documents: {
       outline: '导演秘密：下一幕桥会断。',
       foreshadowing: '导演秘密：怀表是钥匙。',
+      proposals: '',
       history: '所有人都看见雨停了。',
       characters: [
         { id: aliceId, persona: '阿梨遇事先观察。', knowledge: '阿梨私密：她认得旧徽章。' },
@@ -85,16 +87,73 @@ test('compiles one character context without director or another character priva
   })
 
   const compiled = compileStoryCharacterContext(workspace, aliceId, {
-    history: workspace.documents.history,
-    currentScene: '两人站在亮灯的门廊。',
     playerInput: '玩家问阿梨是否见过这枚徽章。',
   })
 
   assert.match(compiled.text, /阿梨私密：她认得旧徽章/u)
-  assert.match(compiled.text, /所有人都看见雨停了/u)
+  assert.doesNotMatch(compiled.text, /所有人都看见雨停了/u)
   assert.doesNotMatch(compiled.text, /柏舟私密/u)
   assert.doesNotMatch(compiled.text, /桥会断/u)
   assert.doesNotMatch(compiled.text, /怀表是钥匙/u)
+})
+
+test('materializes one turn into global history and only explicitly observed character knowledge', (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-agent-rp-story-materialization-'))
+  context.after(() => { rmSync(root, { recursive: true, force: true }) })
+  const store = new StoryWorkspaceStore({ root })
+  const created = store.create({ format: 0, name: '回合沉淀' })
+  const aliceId = createStoryCharacterId()
+  const bobId = createStoryCharacterId()
+  const workspace = store.save({
+    format: 0,
+    id: created.manifest.id,
+    revision: 0,
+    name: '回合沉淀',
+    characters: [
+      { id: aliceId, name: '阿梨', enabled: true },
+      { id: bobId, name: '柏舟', enabled: true },
+    ],
+    sections: [],
+    sources: [],
+    documents: {
+      outline: '保持原大纲。',
+      foreshadowing: '保持原伏笔。',
+      proposals: '',
+      history: '',
+      characters: [
+        { id: aliceId, persona: '谨慎。', knowledge: '认得徽章。' },
+        { id: bobId, persona: '直接。', knowledge: '藏起车票。' },
+      ],
+      sections: [],
+      sources: [],
+    },
+  })
+
+  const materialized = store.materializeTurn(workspace.manifest.id, {
+    key: 'session-1:turn-1',
+    heading: '回合 1',
+    history: '阿梨在门廊举起徽章。',
+    observations: [{ characterId: aliceId, text: '阿梨看见门廊外已经停雨。' }],
+    proposals: '### 伏笔提案\n\n- 后续可以回收徽章来历。',
+  })
+
+  assert.equal(materialized.manifest.revision, workspace.manifest.revision + 1)
+  assert.match(materialized.documents.history, /阿梨在门廊举起徽章/u)
+  assert.match(materialized.documents.proposals, /后续可以回收徽章来历/u)
+  assert.equal(materialized.documents.outline, '保持原大纲。')
+  assert.equal(materialized.documents.foreshadowing, '保持原伏笔。')
+  assert.match(materialized.documents.characters.find(character => character.id === aliceId)!.knowledge, /门廊外已经停雨/u)
+  assert.doesNotMatch(materialized.documents.characters.find(character => character.id === bobId)!.knowledge, /门廊外已经停雨/u)
+
+  const replayed = store.materializeTurn(workspace.manifest.id, {
+    key: 'session-1:turn-1',
+    heading: '回合 1',
+    history: '不应重复追加。',
+    observations: [{ characterId: aliceId, text: '不应重复追加。' }],
+    proposals: '不应重复追加。',
+  })
+  assert.equal(replayed.manifest.revision, materialized.manifest.revision)
+  assert.doesNotMatch(replayed.documents.history, /不应重复追加/u)
 })
 
 test('opaque ids prevent workspace and child paths from escaping the configured root', (context) => {
@@ -125,7 +184,7 @@ test('retrieves the most relevant bounded original excerpts before model researc
       { id: secondId, name: '第二卷', kind: 'original', enabled: true },
     ],
     documents: {
-      outline: '', foreshadowing: '', history: '', characters: [], sections: [],
+      outline: '', foreshadowing: '', proposals: '', history: '', characters: [], sections: [],
       sources: [
         { id: firstId, content: '春日的集市很热闹。\n\n旧钟楼在午夜敲了十二下。' },
         { id: secondId, content: '雪原尽头的车站没有售票员。\n\n阿梨把旧车票藏进怀表。' },

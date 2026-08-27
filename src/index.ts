@@ -20,7 +20,7 @@ import { installWorkspaceSettingsHttp } from './workspace-settings-http.ts'
 import { installStoryWorkspaceHttp } from './story-workspace-http.ts'
 import { StoryWorkspaceStore } from './story-workspace.ts'
 import { executeStoryWorkspaceCommand, readSessionStoryWorkspaceId } from './session-story-workspace.ts'
-import { runStoryTurnPipeline } from './story-turn-pipeline.ts'
+import { materializeStoryTurn, runStoryTurnPipeline } from './story-turn-pipeline.ts'
 import {
   ROLEPLAY_RESOURCE_CATALOG_KEY,
   RoleplayResourceCatalog,
@@ -1421,6 +1421,14 @@ export function installAgentRp(
       await turnWorkers.run({ ctx, agent, turn, plan: latest, signal })
     } catch (error: unknown) {
       ctx.logger.warn(`agent-rp: post-narrative Worker pipeline skipped: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    try {
+      const workspaceId = readSessionStoryWorkspaceId(agent.session.events)
+      if (workspaceId !== undefined) {
+        await materializeStoryTurn({ ctx, agent, store: storyWorkspaces, workspaceId, turn, signal })
+      }
+    } catch (error: unknown) {
+      ctx.logger.warn(`agent-rp: story continuity materialization skipped: ${error instanceof Error ? error.message : String(error)}`)
     }
   })
   ctx.on('session/event', (session, event) => {
