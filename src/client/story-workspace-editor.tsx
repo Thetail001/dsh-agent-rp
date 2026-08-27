@@ -124,6 +124,15 @@ function MarkdownField({ label, value, rows = 6, onChange }: {
   </label>
 }
 
+function withSectionCharacter(
+  section: StoryWorkspaceSnapshot['manifest']['sections'][number],
+  characterId: string | undefined,
+): StoryWorkspaceSnapshot['manifest']['sections'][number] {
+  const { characterId: previousCharacterId, ...base } = section
+  void previousCharacterId
+  return characterId === undefined ? base : { ...base, characterId }
+}
+
 /** Full-screen editor kept deliberately close to the Markdown storage model. */
 export function StoryWorkspaceEditor({ accent, sessionId, onClose }: StoryWorkspaceEditorProps) {
   const [items, setItems] = useState<readonly StoryWorkspaceSummary[]>([])
@@ -325,7 +334,13 @@ export function StoryWorkspaceEditor({ accent, sessionId, onClose }: StoryWorksp
                     })) }} /> 参与当前场景</label>
                     <button type="button" onClick={() => { update(current => ({
                       ...current,
-                      manifest: { ...current.manifest, characters: current.manifest.characters.filter(item => item.id !== character.id) },
+                      manifest: {
+                        ...current.manifest,
+                        characters: current.manifest.characters.filter(item => item.id !== character.id),
+                        sections: current.manifest.sections.map(item => item.characterId === character.id
+                          ? withSectionCharacter(item, undefined)
+                          : item),
+                      },
                       documents: { ...current.documents, characters: current.documents.characters.filter(item => item.id !== character.id) },
                     })) }} style={secondaryButton}>移除</button>
                   </div>
@@ -360,12 +375,26 @@ export function StoryWorkspaceEditor({ accent, sessionId, onClose }: StoryWorksp
                 return <article key={section.id} style={{ background: 'var(--dsw-alias-bg-layer-2, #222327)', borderRadius: '11px', padding: '12px' }}>
                   <div style={{ display: 'grid', gap: '8px', gridTemplateColumns: narrow ? '1fr' : 'minmax(160px, 1fr) 140px auto auto' }}>
                     <input value={section.name} aria-label="分区名称" onChange={event => { update(current => ({ ...current, manifest: { ...current.manifest, sections: current.manifest.sections.map(item => item.id === section.id ? { ...item, name: event.target.value } : item) } })) }} style={fieldStyle} />
-                    <select aria-label="分区类型" value={section.kind} onChange={event => { update(current => ({ ...current, manifest: { ...current.manifest, sections: current.manifest.sections.map(item => item.id === section.id ? { ...item, kind: event.target.value as StorySectionKind } : item) } })) }} style={fieldStyle}>
+                    <select aria-label="分区类型" value={section.kind} onChange={event => { update(current => ({ ...current, manifest: { ...current.manifest, sections: current.manifest.sections.map(item => item.id === section.id ? {
+                      ...withSectionCharacter(item, event.target.value === 'character' ? item.characterId : undefined),
+                      kind: event.target.value as StorySectionKind,
+                    } : item) } })) }} style={fieldStyle}>
                       <option value="prose">正文</option><option value="character">人物</option><option value="history">历史</option>
                     </select>
                     <label style={{ alignSelf: 'center', fontSize: '11px' }}><input type="checkbox" checked={section.enabled} onChange={event => { update(current => ({ ...current, manifest: { ...current.manifest, sections: current.manifest.sections.map(item => item.id === section.id ? { ...item, enabled: event.target.checked } : item) } })) }} /> 启用</label>
                     <button type="button" onClick={() => { update(current => ({ ...current, manifest: { ...current.manifest, sections: current.manifest.sections.filter(item => item.id !== section.id) }, documents: { ...current.documents, sections: current.documents.sections.filter(item => item.id !== section.id) } })) }} style={secondaryButton}>移除</button>
                   </div>
+                  {section.kind === 'character' && <label style={{ display: 'grid', fontSize: '11px', gap: '5px', marginTop: '9px' }}>聚焦人物
+                    <select aria-label="聚焦人物" value={section.characterId ?? ''} onChange={event => { update(current => ({
+                      ...current,
+                      manifest: { ...current.manifest, sections: current.manifest.sections.map(item => item.id === section.id
+                        ? withSectionCharacter(item, event.target.value === '' ? undefined : event.target.value)
+                        : item) },
+                    })) }} style={fieldStyle}>
+                      <option value="">全部参与人物</option>
+                      {workspace.manifest.characters.map(character => <option key={character.id} value={character.id}>{character.name}</option>)}
+                    </select>
+                  </label>}
                   <div style={{ marginTop: '9px' }}><MarkdownField label="分区约束或既有正文" rows={4} value={document.content} onChange={value => { update(current => ({ ...current, documents: { ...current.documents, sections: current.documents.sections.map(item => item.id === section.id ? { ...item, content: value } : item) } })) }} /></div>
                 </article>
               })}

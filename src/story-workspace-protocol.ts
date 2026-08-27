@@ -34,6 +34,7 @@ export interface StoryWorkspaceSection {
   readonly name: string
   readonly kind: StorySectionKind
   readonly enabled: boolean
+  readonly characterId?: string
 }
 
 /** One local source available to research and director Workers. */

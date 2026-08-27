@@ -136,6 +136,13 @@ interface ContinuityUpdate {
   readonly foreshadowingProposals: readonly string[]
 }
 
+interface StorySectionDraft {
+  readonly id: string
+  readonly name: string
+  readonly kind: 'prose' | 'character' | 'history'
+  readonly text: string
+}
+
 interface StoryWebSearchGateway {
   search(request: { readonly query: string; readonly maxResults: number }, signal?: AbortSignal): Promise<{
     readonly content?: string
@@ -231,6 +238,26 @@ function proposalText(update: ContinuityUpdate): string {
     update.outlineProposals.length === 0 ? '' : `### 大纲提案\n\n${update.outlineProposals.map(item => `- ${item}`).join('\n')}`,
     update.foreshadowingProposals.length === 0 ? '' : `### 伏笔提案\n\n${update.foreshadowingProposals.map(item => `- ${item}`).join('\n')}`,
   ].filter(Boolean).join('\n\n')
+}
+
+function sectionPurpose(input: RunStoryTurnPipelineInput, section: StoryWorkspaceSnapshot['manifest']['sections'][number]): string {
+  if (section.kind === 'prose') {
+    return '写叙事正文、环境、行动与对白。只呈现导演方案允许公开的内容，不解释创作过程。'
+  }
+  if (section.kind === 'history') {
+    return '写面向读者直接展示的时间线、前情或档案。只写本轮允许公开的既有事实，不把导演计划、未揭示伏笔或人物私密知识当作历史。'
+  }
+  const target = section.characterId === undefined
+    ? undefined
+    : input.workspace.manifest.characters.find(character => character.id === section.characterId)
+  return target === undefined
+    ? '聚焦所有参与人物的外显行动、对白与正文允许呈现的内心。不得让人物表现出其私有认知之外的知识。'
+    : `聚焦人物“${target.name}”的外显行动、对白与正文允许呈现的内心。不得让该人物表现出其私有认知之外的知识。`
+}
+
+function renderSectionDrafts(drafts: readonly StorySectionDraft[]): string {
+  if (drafts.length === 1 && drafts[0]!.kind === 'prose') return drafts[0]!.text
+  return drafts.map(draft => `## ${draft.name}\n\n${draft.text}`).join('\n\n')
 }
 
 function webSearchGateway(ctx: Context): StoryWebSearchGateway | undefined {
@@ -523,7 +550,12 @@ export async function runStoryTurnPipeline(input: RunStoryTurnPipelineInput): Pr
       '<research>', researchText, '</research>',
       '<character_decisions>', characterDecisions.join('\n\n'), '</character_decisions>',
       '<sections>', input.workspace.manifest.sections.filter(section => section.enabled)
-        .map(section => `${section.id}\t${section.kind}\t${section.name}`).join('\n'), '</sections>',
+        .map(section => {
+          const target = section.characterId === undefined
+            ? ''
+            : input.workspace.manifest.characters.find(character => character.id === section.characterId)?.name ?? ''
+          return `${section.id}\t${section.kind}\t${section.name}\t${target}`
+        }).join('\n'), '</sections>',
       '<player_input>', playerInput, '</player_input>',
     ].join('\n'),
     4_096,
@@ -532,9 +564,9 @@ export async function runStoryTurnPipeline(input: RunStoryTurnPipelineInput): Pr
   const directorBrief = director.text ?? fallback
 
   const enabledSections = input.workspace.manifest.sections.filter(section => section.enabled)
-  let sectionDrafts: readonly string[]
+  let sectionDrafts: readonly StorySectionDraft[]
   if (enabledSections.length === 0) {
-    sectionDrafts = [directorBrief]
+    sectionDrafts = [{ id: 'director-fallback', name: '正文', kind: 'prose', text: directorBrief }]
   } else {
     sectionDrafts = (await mapStoryPeers(
       enabledSections,
@@ -544,24 +576,29 @@ export async function runStoryTurnPipeline(input: RunStoryTurnPipelineInput): Pr
         const existing = input.workspace.documents.sections.find(document => document.id === section.id)?.content ?? ''
         const draft = await runStage(input, 'section', generateOptions(
           input,
-          `你是“${section.name}”分区的正文 Worker。根据导演方案写出该分区可直接交付的内容。保持既有文风和连续性，不解释创作过程，不泄露导演资料或人物无权知道的事实。`,
+          `你是“${section.name}”分区的 ${section.kind} Worker。${sectionPurpose(input, section)}保持既有文风和连续性，只返回这个分区可直接展示的内容。`,
           [
-            `<section kind="${section.kind}">`, existing, '</section>',
+            `<section_reference kind="${section.kind}">`, existing, '</section_reference>',
             '<director_brief>', directorBrief, '</director_brief>',
             '<player_input>', playerInput, '</player_input>',
           ].join('\n'),
           6_144,
           0.7,
         ), resultEventSeqs, section.id)
-        return draft.text
+        return draft.text === undefined ? undefined : {
+          id: section.id,
+          name: section.name,
+          kind: section.kind,
+          text: draft.text,
+        }
       },
-    )).filter((value): value is string => value !== undefined)
+    )).filter((value): value is StorySectionDraft => value !== undefined)
   }
-  const uneditedDraft = sectionDrafts.join('\n\n').trim() || directorBrief
+  const uneditedDraft = renderSectionDrafts(sectionDrafts).trim() || directorBrief
   const edited = await runStage(input, 'editor', generateOptions(
     input,
-    '你是最终正文编辑 Worker。删除复读、八股句式、空泛总结、机械排比和正文外解释；保留全部事实、行动、对白归属、因果、叙事视角与必要格式。不要增加事件，不要改变人物认知。只返回可直接展示的完整正文。',
-    `<draft>\n${uneditedDraft}\n</draft>`,
+    '你是最终正文编辑 Worker。删除复读、八股句式、空泛总结、机械排比和正文外解释；保留全部事实、行动、对白归属、因果、叙事视角与必要格式。不要增加事件，不要改变人物认知。输入含多个二级标题时必须保留标题、顺序与分区职责，不得合并分区。只返回可直接展示的完整正文。',
+    `<ordered_sections>\n${uneditedDraft}\n</ordered_sections>`,
     8_192,
     0.2,
   ), resultEventSeqs)

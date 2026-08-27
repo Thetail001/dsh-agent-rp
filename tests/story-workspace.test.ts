@@ -28,7 +28,7 @@ test('persists editable story documents and rejects stale whole-workspace writes
     name: '长夜',
     pipeline: { maxParallel: 3, workerModel: { provider: 'fast', model: 'story' } },
     characters: [{ id: characterId, name: '小满', enabled: true }],
-    sections: [{ id: sectionId, name: '正文', kind: 'prose', enabled: true }],
+    sections: [{ id: sectionId, name: '小满视角', kind: 'character', enabled: true, characterId }],
     sources: [{ id: sourceId, name: '原著摘录', kind: 'original', enabled: true }],
     documents: {
       outline: '先在车站重逢。',
@@ -46,6 +46,7 @@ test('persists editable story documents and rejects stale whole-workspace writes
     maxParallel: 3,
     workerModel: { provider: 'fast', model: 'story' },
   })
+  assert.equal(saved.manifest.sections[0]?.characterId, characterId)
   assert.deepEqual(new StoryWorkspaceStore({ root }).get(saved.manifest.id), saved)
   assert.equal(readFileSync(join(root, saved.manifest.id, 'outline.md'), 'utf8'), '先在车站重逢。')
   assert.throws(() => store.save({

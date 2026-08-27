@@ -95,11 +95,25 @@ function normalizeCharacters(value: readonly StoryWorkspaceCharacter[]): readonl
   return result
 }
 
-function normalizeSections(value: readonly StoryWorkspaceSection[]): readonly StoryWorkspaceSection[] {
+function normalizeSections(
+  value: readonly StoryWorkspaceSection[],
+  characters: readonly StoryWorkspaceCharacter[],
+): readonly StoryWorkspaceSection[] {
+  const characterIds = new Set(characters.map(character => character.id))
   const result = value.map(section => {
     assertId(section.id, SECTION_ID_PATTERN, '分区')
     if (!SECTION_KINDS.has(section.kind) || typeof section.enabled !== 'boolean') throw new Error('分区字段无效')
-    return { id: section.id, name: cleanName(section.name, '分区'), kind: section.kind, enabled: section.enabled }
+    if (section.characterId !== undefined) {
+      assertId(section.characterId, CHARACTER_ID_PATTERN, '分区人物')
+      if (section.kind !== 'character' || !characterIds.has(section.characterId)) throw new Error('人物分区目标无效')
+    }
+    return {
+      id: section.id,
+      name: cleanName(section.name, '分区'),
+      kind: section.kind,
+      enabled: section.enabled,
+      ...(section.characterId === undefined ? {} : { characterId: section.characterId }),
+    }
   })
   assertUnique(result.map(section => section.id), '分区')
   return result
@@ -220,6 +234,7 @@ function parseManifest(value: unknown): StoredStoryWorkspaceManifest {
     throw new Error('故事工作区清单字段无效')
   }
   assertId(record.id, WORKSPACE_ID_PATTERN, '故事工作区')
+  const characters = normalizeCharacters(record.characters as StoryWorkspaceCharacter[])
   return {
     format: 0,
     id: record.id,
@@ -228,8 +243,8 @@ function parseManifest(value: unknown): StoredStoryWorkspaceManifest {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     pipeline: normalizePipeline(record.pipeline),
-    characters: normalizeCharacters(record.characters as StoryWorkspaceCharacter[]),
-    sections: normalizeSections(record.sections as StoryWorkspaceSection[]),
+    characters,
+    sections: normalizeSections(record.sections as StoryWorkspaceSection[], characters),
     sources: normalizeSources(record.sources as StoryWorkspaceSource[]),
   }
 }
@@ -367,7 +382,7 @@ export class StoryWorkspaceStore {
       throw new Error(`故事工作区已更新；当前 revision 为 ${String(current.revision)}`)
     }
     const characters = normalizeCharacters(request.characters)
-    const sections = normalizeSections(request.sections)
+    const sections = normalizeSections(request.sections, characters)
     const sources = normalizeSources(request.sources)
     const pipeline = normalizePipeline(request.pipeline)
     const documents = normalizeDocuments(request.documents, characters, sections, sources)
