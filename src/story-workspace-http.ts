@@ -43,9 +43,10 @@ function parseCreateRequest(value: unknown): StoryWorkspaceCreateRequest {
 
 function parseSaveRequest(value: unknown, id: string): StoryWorkspaceSaveRequest {
   const record = requestRecord(value)
-  const keys = new Set(['format', 'id', 'revision', 'name', 'characters', 'sections', 'sources', 'documents'])
+  const keys = new Set(['format', 'id', 'revision', 'name', 'pipeline', 'characters', 'sections', 'sources', 'documents'])
   if (record.format !== 0 || record.id !== id || typeof record.revision !== 'number'
-    || typeof record.name !== 'string' || !Array.isArray(record.characters)
+    || typeof record.name !== 'string' || typeof record.pipeline !== 'object' || record.pipeline === null
+    || Array.isArray(record.pipeline) || !Array.isArray(record.characters)
     || !Array.isArray(record.sections) || !Array.isArray(record.sources)
     || typeof record.documents !== 'object' || record.documents === null || Array.isArray(record.documents)
     || Object.keys(record).some(key => !keys.has(key))) {

@@ -312,13 +312,37 @@ async function searchWeb(
 
 function baseGenerateOptions(input: RunStoryTurnPipelineInput): Pick<GenerateOptions, 'provider' | 'model' | 'maxTokens'> {
   const config = input.agent.session.requestHeader()?.config
-  const provider = config?.provider ?? input.agent.options.provider
-  const model = config?.model ?? input.agent.options.model
+  const workerModel = input.workspace.manifest.pipeline.workerModel
+  const provider = workerModel?.provider ?? config?.provider ?? input.agent.options.provider
+  const model = workerModel?.model ?? config?.model ?? input.agent.options.model
   if (provider === undefined || provider.trim() === '' || model === undefined || model.trim() === '') {
     throw new Error('故事流水线没有可用的模型路由')
   }
   const maxTokens = config?.maxTokens ?? input.agent.options.maxTokens
   return { provider, model, ...(maxTokens === undefined ? {} : { maxTokens }) }
+}
+
+async function mapStoryPeers<T, R>(
+  items: readonly T[],
+  maxParallel: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<readonly R[]> {
+  if (items.length === 0) return []
+  let nextIndex = 0
+  const results = new Map<number, R>()
+  const run = async (): Promise<void> => {
+    for (;;) {
+      const index = nextIndex
+      nextIndex += 1
+      if (index >= items.length) return
+      results.set(index, await worker(items[index]!, index))
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(maxParallel, items.length) }, run))
+  return items.map((_item, index) => {
+    if (!results.has(index)) throw new Error(`故事同阶段任务 ${String(index)} 没有结果`)
+    return results.get(index) as R
+  })
 }
 
 function generateOptions(
@@ -468,21 +492,25 @@ export async function runStoryTurnPipeline(input: RunStoryTurnPipelineInput): Pr
   ), resultEventSeqs)
   const researchText = research.text ?? [sourceExcerpts, webResearch].filter(Boolean).join('\n\n')
 
-  const characterDecisions: string[] = []
-  for (const character of input.workspace.manifest.characters.filter(candidate => candidate.enabled)) {
-    input.signal.throwIfAborted()
-    const context = compileStoryCharacterContext(input.workspace, character.id, {
-      playerInput,
-    })
-    const decision = await runStage(input, 'character', generateOptions(
-      input,
-      '你是一个只拥有指定人物认知的角色 Worker。独立判断人物此刻能观察到什么、相信什么、想做什么以及可能说什么。不能使用未出现在输入中的知识。不要写完整正文，只返回给导演的行动提案。',
-      context.text,
-      2_048,
-      0.5,
-    ), resultEventSeqs, character.id)
-    if (decision.text !== undefined) characterDecisions.push(`## ${character.name}\n${decision.text}`)
-  }
+  const enabledCharacters = input.workspace.manifest.characters.filter(candidate => candidate.enabled)
+  const characterDecisions = (await mapStoryPeers(
+    enabledCharacters,
+    input.workspace.manifest.pipeline.maxParallel,
+    async character => {
+      input.signal.throwIfAborted()
+      const context = compileStoryCharacterContext(input.workspace, character.id, {
+        playerInput,
+      })
+      const decision = await runStage(input, 'character', generateOptions(
+        input,
+        '你是一个只拥有指定人物认知的角色 Worker。独立判断人物此刻能观察到什么、相信什么、想做什么以及可能说什么。不能使用未出现在输入中的知识。不要写完整正文，只返回给导演的行动提案。',
+        context.text,
+        2_048,
+        0.5,
+      ), resultEventSeqs, character.id)
+      return decision.text === undefined ? undefined : `## ${character.name}\n${decision.text}`
+    },
+  )).filter((value): value is string => value !== undefined)
 
   const fallback = directorFallback(input, playerInput, researchText, characterDecisions)
   const director = await runStage(input, 'director', generateOptions(
@@ -504,26 +532,30 @@ export async function runStoryTurnPipeline(input: RunStoryTurnPipelineInput): Pr
   const directorBrief = director.text ?? fallback
 
   const enabledSections = input.workspace.manifest.sections.filter(section => section.enabled)
-  const sectionDrafts: string[] = []
+  let sectionDrafts: readonly string[]
   if (enabledSections.length === 0) {
-    sectionDrafts.push(directorBrief)
+    sectionDrafts = [directorBrief]
   } else {
-    for (const section of enabledSections) {
-      input.signal.throwIfAborted()
-      const existing = input.workspace.documents.sections.find(document => document.id === section.id)?.content ?? ''
-      const draft = await runStage(input, 'section', generateOptions(
-        input,
-        `你是“${section.name}”分区的正文 Worker。根据导演方案写出该分区可直接交付的内容。保持既有文风和连续性，不解释创作过程，不泄露导演资料或人物无权知道的事实。`,
-        [
-          `<section kind="${section.kind}">`, existing, '</section>',
-          '<director_brief>', directorBrief, '</director_brief>',
-          '<player_input>', playerInput, '</player_input>',
-        ].join('\n'),
-        6_144,
-        0.7,
-      ), resultEventSeqs, section.id)
-      if (draft.text !== undefined) sectionDrafts.push(draft.text)
-    }
+    sectionDrafts = (await mapStoryPeers(
+      enabledSections,
+      input.workspace.manifest.pipeline.maxParallel,
+      async section => {
+        input.signal.throwIfAborted()
+        const existing = input.workspace.documents.sections.find(document => document.id === section.id)?.content ?? ''
+        const draft = await runStage(input, 'section', generateOptions(
+          input,
+          `你是“${section.name}”分区的正文 Worker。根据导演方案写出该分区可直接交付的内容。保持既有文风和连续性，不解释创作过程，不泄露导演资料或人物无权知道的事实。`,
+          [
+            `<section kind="${section.kind}">`, existing, '</section>',
+            '<director_brief>', directorBrief, '</director_brief>',
+            '<player_input>', playerInput, '</player_input>',
+          ].join('\n'),
+          6_144,
+          0.7,
+        ), resultEventSeqs, section.id)
+        return draft.text
+      },
+    )).filter((value): value is string => value !== undefined)
   }
   const uneditedDraft = sectionDrafts.join('\n\n').trim() || directorBrief
   const edited = await runStage(input, 'editor', generateOptions(

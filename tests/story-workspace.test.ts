@@ -20,11 +20,13 @@ test('persists editable story documents and rejects stale whole-workspace writes
   const characterId = createStoryCharacterId()
   const sectionId = createStorySectionId()
   const sourceId = createStorySourceId()
+  assert.deepEqual(created.manifest.pipeline, { maxParallel: 4 })
   const saved = store.save({
     format: 0,
     id: created.manifest.id,
     revision: created.manifest.revision,
     name: '长夜',
+    pipeline: { maxParallel: 3, workerModel: { provider: 'fast', model: 'story' } },
     characters: [{ id: characterId, name: '小满', enabled: true }],
     sections: [{ id: sectionId, name: '正文', kind: 'prose', enabled: true }],
     sources: [{ id: sourceId, name: '原著摘录', kind: 'original', enabled: true }],
@@ -40,6 +42,10 @@ test('persists editable story documents and rejects stale whole-workspace writes
   })
 
   assert.equal(saved.manifest.revision, 1)
+  assert.deepEqual(saved.manifest.pipeline, {
+    maxParallel: 3,
+    workerModel: { provider: 'fast', model: 'story' },
+  })
   assert.deepEqual(new StoryWorkspaceStore({ root }).get(saved.manifest.id), saved)
   assert.equal(readFileSync(join(root, saved.manifest.id, 'outline.md'), 'utf8'), '先在车站重逢。')
   assert.throws(() => store.save({
@@ -47,6 +53,7 @@ test('persists editable story documents and rejects stale whole-workspace writes
     id: created.manifest.id,
     revision: 0,
     name: '过期编辑',
+    pipeline: saved.manifest.pipeline,
     characters: saved.manifest.characters,
     sections: saved.manifest.sections,
     sources: saved.manifest.sources,
@@ -66,6 +73,7 @@ test('compiles one character context without director or another character priva
     id: created.manifest.id,
     revision: 0,
     name: '认知隔离',
+    pipeline: { maxParallel: 2 },
     characters: [
       { id: aliceId, name: '阿梨', enabled: true },
       { id: bobId, name: '柏舟', enabled: true },
@@ -109,6 +117,7 @@ test('materializes one turn into global history and only explicitly observed cha
     id: created.manifest.id,
     revision: 0,
     name: '回合沉淀',
+    pipeline: { maxParallel: 2 },
     characters: [
       { id: aliceId, name: '阿梨', enabled: true },
       { id: bobId, name: '柏舟', enabled: true },
@@ -177,6 +186,7 @@ test('retrieves the most relevant bounded original excerpts before model researc
     id: created.manifest.id,
     revision: 0,
     name: '原著检索',
+    pipeline: { maxParallel: 2 },
     characters: [],
     sections: [],
     sources: [

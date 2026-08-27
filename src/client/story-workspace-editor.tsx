@@ -96,6 +96,7 @@ async function saveWorkspace(workspace: StoryWorkspaceSnapshot): Promise<StoryWo
       id: manifest.id,
       revision: manifest.revision,
       name: manifest.name,
+      pipeline: manifest.pipeline,
       characters: manifest.characters,
       sections: manifest.sections,
       sources: manifest.sources,
@@ -252,6 +253,39 @@ export function StoryWorkspaceEditor({ accent, sessionId, onClose }: StoryWorksp
             <button type="button" disabled={sessionId === undefined || saving} onClick={() => { selectForSession(workspace.manifest.id) }} style={secondaryButton}>用于当前会话</button>
             <button type="button" disabled={sessionId === undefined || saving} onClick={() => { selectForSession(null) }} style={secondaryButton}>当前会话停用</button>
             {sessionId === undefined && <span style={{ alignSelf: 'center', fontSize: '11px', opacity: .5 }}>打开一个 Agent RP 角色会话后可启用流水线</span>}
+          </section>
+          <section style={{ background: 'var(--dsw-alias-bg-layer-2, #222327)', borderRadius: '11px', display: 'grid', gap: '10px', padding: '12px' }}>
+            <h2 style={{ fontSize: '14px', margin: 0 }}>辅助 Worker 性能</h2>
+            <div style={{ display: 'grid', gap: '9px', gridTemplateColumns: narrow ? '1fr' : '140px 1fr 1fr' }}>
+              <label style={{ display: 'grid', fontSize: '11px', gap: '5px' }}>同阶段最大并发
+                <input aria-label="同阶段最大并发" type="number" min={1} max={8} value={workspace.manifest.pipeline.maxParallel}
+                  onChange={event => { update(current => ({
+                    ...current,
+                    manifest: { ...current.manifest, pipeline: { ...current.manifest.pipeline, maxParallel: Number(event.target.value) } },
+                  })) }} style={fieldStyle} />
+              </label>
+              <label style={{ display: 'grid', fontSize: '11px', gap: '5px' }}>Worker provider（留空跟随会话）
+                <input aria-label="Worker provider" value={workspace.manifest.pipeline.workerModel?.provider ?? ''}
+                  onChange={event => { update(current => ({
+                    ...current,
+                    manifest: { ...current.manifest, pipeline: { ...current.manifest.pipeline, workerModel: {
+                      provider: event.target.value,
+                      model: current.manifest.pipeline.workerModel?.model ?? '',
+                    } } },
+                  })) }} style={fieldStyle} />
+              </label>
+              <label style={{ display: 'grid', fontSize: '11px', gap: '5px' }}>Worker model（留空跟随会话）
+                <input aria-label="Worker model" value={workspace.manifest.pipeline.workerModel?.model ?? ''}
+                  onChange={event => { update(current => ({
+                    ...current,
+                    manifest: { ...current.manifest, pipeline: { ...current.manifest.pipeline, workerModel: {
+                      provider: current.manifest.pipeline.workerModel?.provider ?? '',
+                      model: event.target.value,
+                    } } },
+                  })) }} style={fieldStyle} />
+              </label>
+            </div>
+            <span style={{ fontSize: '11px', opacity: .55 }}>研究、人物、导演、分区、编辑与连续性仍按顺序运行；只有多个人物或多个分区会在各自阶段并发。</span>
           </section>
           <MarkdownField label="剧情大纲（仅导演可见）" value={workspace.documents.outline} onChange={value => { update(current => ({
             ...current, documents: { ...current.documents, outline: value },

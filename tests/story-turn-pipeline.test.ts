@@ -29,6 +29,7 @@ function workspace(): StoryWorkspaceSnapshot {
       revision: 3,
       createdAt: 1,
       updatedAt: 2,
+      pipeline: { maxParallel: 2, workerModel: { provider: 'worker-fixture', model: 'worker-model' } },
       characters: [
         { id: aliceId, name: '阿梨', enabled: true },
         { id: bobId, name: '柏舟', enabled: true },
@@ -61,6 +62,9 @@ test('runs logged story stages while keeping each character request privately sc
   let researchBody = ''
   let webQuery = ''
   let calls = 0
+  let active = 0
+  let maxActive = 0
+  const routes: string[] = []
   const fake = {
     get(name: string) {
       if (name !== 'web') return undefined
@@ -76,8 +80,16 @@ test('runs logged story stages while keeping each character request privately sc
     },
     sessions: { flush: async () => true },
     llm: {
-      stream(options: { readonly system?: string; readonly messages: readonly unknown[] }) {
+      stream(options: {
+        readonly provider: string
+        readonly model: string
+        readonly system?: string
+        readonly messages: readonly unknown[]
+      }) {
         calls += 1
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        routes.push(`${options.provider}/${options.model}`)
         const system = options.system ?? ''
         const body = JSON.stringify(options.messages)
         let text: string
@@ -92,10 +104,15 @@ test('runs logged story stages while keeping each character request privately sc
         else if (system.includes('分区的正文 Worker')) text = '尚显重复的粗稿。尚显重复的粗稿。'
         else text = '雨停后，阿梨看向徽章，柏舟移开视线。'
         return (async function* () {
-          yield { type: 'block-start', index: 0, blockType: 'text' }
-          yield { type: 'text-delta', index: 0, text }
-          yield { type: 'block-end', index: 0, block: { type: 'text', text } }
-          yield { type: 'finish', reason: { kind: 'stop' } }
+          try {
+            await new Promise(resolve => { setTimeout(resolve, 5) })
+            yield { type: 'block-start', index: 0, blockType: 'text' }
+            yield { type: 'text-delta', index: 0, text }
+            yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+            yield { type: 'finish', reason: { kind: 'stop' } }
+          } finally {
+            active -= 1
+          }
         })()
       },
     },
@@ -119,6 +136,8 @@ test('runs logged story stages while keeping each character request privately sc
   const result = await runStoryTurnPipeline(input)
 
   assert.equal(calls, 6)
+  assert.equal(maxActive, 2)
+  assert.equal(routes.every(route => route === 'worker-fixture/worker-model'), true)
   assert.equal(characterBodies.length, 2)
   assert.match(webQuery, /官方设定与原著章节/u)
   assert.match(webQuery, /玩家举起徽章/u)
@@ -152,6 +171,7 @@ test('materializes continuity from the actually visible reply instead of the pre
     id: created.manifest.id,
     revision: 0,
     name: '实际正文沉淀',
+    pipeline: { maxParallel: 2 },
     characters: [{ id: characterId, name: '阿梨', enabled: true }],
     sections: [],
     sources: [],

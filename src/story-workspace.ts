@@ -18,6 +18,7 @@ import type {
   StorySectionKind,
   StorySourceDocument,
   StorySourceKind,
+  StoryPipelineSettings,
   StoryWorkspaceCharacter,
   StoryWorkspaceCreateRequest,
   StoryWorkspaceDocuments,
@@ -38,6 +39,7 @@ const MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
 const MAX_WORKSPACE_BYTES = 16 * 1024 * 1024
 const SECTION_KINDS = new Set<StorySectionKind>(['prose', 'character', 'history'])
 const SOURCE_KINDS = new Set<StorySourceKind>(['original', 'reference', 'research', 'web'])
+const DEFAULT_STORY_PIPELINE: StoryPipelineSettings = { maxParallel: 4 }
 
 interface StoredStoryWorkspaceManifest extends StoryWorkspaceManifest {}
 
@@ -111,6 +113,33 @@ function normalizeSources(value: readonly StoryWorkspaceSource[]): readonly Stor
   })
   assertUnique(result.map(source => source.id), '资料')
   return result
+}
+
+function normalizePipeline(value: unknown): StoryPipelineSettings {
+  if (value === undefined) return DEFAULT_STORY_PIPELINE
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('故事流水线设置不是对象')
+  const record = value as Record<string, unknown>
+  if (!Number.isSafeInteger(record.maxParallel) || (record.maxParallel as number) < 1
+    || (record.maxParallel as number) > 8
+    || Object.keys(record).some(key => key !== 'maxParallel' && key !== 'workerModel')) {
+    throw new Error('故事流水线并发数应为 1 至 8')
+  }
+  if (record.workerModel === undefined) return { maxParallel: record.maxParallel as number }
+  if (typeof record.workerModel !== 'object' || record.workerModel === null || Array.isArray(record.workerModel)) {
+    throw new Error('故事 Worker 模型路由不是对象')
+  }
+  const route = record.workerModel as Record<string, unknown>
+  if (typeof route.provider !== 'string' || typeof route.model !== 'string'
+    || Object.keys(route).some(key => key !== 'provider' && key !== 'model')) {
+    throw new Error('故事 Worker 模型路由字段无效')
+  }
+  const provider = route.provider.trim()
+  const model = route.model.trim()
+  if (provider === '' && model === '') return { maxParallel: record.maxParallel as number }
+  if (provider === '' || model === '' || provider.length > 200 || model.length > 200) {
+    throw new Error('故事 Worker provider 与 model 必须同时填写且不超过 200 个字符')
+  }
+  return { maxParallel: record.maxParallel as number, workerModel: { provider, model } }
 }
 
 function normalizeCharacterDocuments(
@@ -198,6 +227,7 @@ function parseManifest(value: unknown): StoredStoryWorkspaceManifest {
     revision: record.revision,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    pipeline: normalizePipeline(record.pipeline),
     characters: normalizeCharacters(record.characters as StoryWorkspaceCharacter[]),
     sections: normalizeSections(record.sections as StoryWorkspaceSection[]),
     sources: normalizeSources(record.sources as StoryWorkspaceSource[]),
@@ -283,6 +313,7 @@ export class StoryWorkspaceStore {
       revision: 0,
       createdAt: now,
       updatedAt: now,
+      pipeline: DEFAULT_STORY_PIPELINE,
       characters: [],
       sections: [],
       sources: [],
@@ -338,6 +369,7 @@ export class StoryWorkspaceStore {
     const characters = normalizeCharacters(request.characters)
     const sections = normalizeSections(request.sections)
     const sources = normalizeSources(request.sources)
+    const pipeline = normalizePipeline(request.pipeline)
     const documents = normalizeDocuments(request.documents, characters, sections, sources)
     const manifest: StoryWorkspaceManifest = {
       format: 0,
@@ -346,6 +378,7 @@ export class StoryWorkspaceStore {
       revision: current.revision + 1,
       createdAt: current.createdAt,
       updatedAt: Math.max(Date.now(), current.updatedAt + 1),
+      pipeline,
       characters,
       sections,
       sources,
@@ -395,6 +428,7 @@ export class StoryWorkspaceStore {
       id: current.manifest.id,
       revision: current.manifest.revision,
       name: current.manifest.name,
+      pipeline: current.manifest.pipeline,
       characters: current.manifest.characters,
       sections: current.manifest.sections,
       sources: current.manifest.sources,

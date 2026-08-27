@@ -9,6 +9,18 @@ export type StorySectionKind = 'prose' | 'character' | 'history'
 /** Provenance assigned to one local research source. */
 export type StorySourceKind = 'original' | 'reference' | 'research' | 'web'
 
+/** Optional model route used only by story-engine auxiliary Workers. */
+export interface StoryWorkerModelRoute {
+  readonly provider: string
+  readonly model: string
+}
+
+/** Execution settings that preserve stage order while parallelizing peers. */
+export interface StoryPipelineSettings {
+  readonly maxParallel: number
+  readonly workerModel?: StoryWorkerModelRoute
+}
+
 /** One character whose private context is compiled independently. */
 export interface StoryWorkspaceCharacter {
   readonly id: string
@@ -40,6 +52,7 @@ export interface StoryWorkspaceManifest {
   readonly revision: number
   readonly createdAt: number
   readonly updatedAt: number
+  readonly pipeline: StoryPipelineSettings
   readonly characters: readonly StoryWorkspaceCharacter[]
   readonly sections: readonly StoryWorkspaceSection[]
   readonly sources: readonly StoryWorkspaceSource[]
@@ -114,6 +127,7 @@ export interface StoryWorkspaceSaveRequest {
   readonly id: string
   readonly revision: number
   readonly name: string
+  readonly pipeline: StoryPipelineSettings
   readonly characters: readonly StoryWorkspaceCharacter[]
   readonly sections: readonly StoryWorkspaceSection[]
   readonly sources: readonly StoryWorkspaceSource[]
