@@ -36,6 +36,7 @@ import {
   InstalledStExtensionWorkbenchSection,
   installStExtensionSurface,
 } from './st-extension-surface.tsx'
+import { StoryWorkspaceEditor } from './story-workspace-editor.tsx'
 
 interface SidebarDestinationOwnerProps {
   readonly wide: boolean
@@ -2844,6 +2845,7 @@ function SidebarRoleplayDestination({
   const [launchComposerOpen, setLaunchComposerOpen] = useState(false)
   const [migrationOpen, setMigrationOpen] = useState(false)
   const [resourceCenterOpen, setResourceCenterOpen] = useState(false)
+  const [storyWorkspaceOpen, setStoryWorkspaceOpen] = useState(false)
   const [resourceCenterSection, setResourceCenterSection] = useState<'characters' | 'world-info' | 'regex-packs'>('characters')
   const [worldInfoLaunch, setWorldInfoLaunch] = useState<WorldInfoLibraryUpload>()
   const [launchSessionId, setLaunchSessionId] = useState<SessionId | undefined>(undefined)
@@ -2906,6 +2908,10 @@ function SidebarRoleplayDestination({
     setResourceCenterSection('characters')
     setLaunchSessionId(blankSessionReady ? currentSessionId : undefined)
     setResourceCenterOpen(true)
+  }
+  const openStoryWorkspace = (): void => {
+    closeWorkbench()
+    setStoryWorkspaceOpen(true)
   }
   const openCurrentSessionTools = (): void => {
     if (currentSessionId === undefined || !isAgentRpCapabilityPresetId(currentSession?.agentPreset)) return
@@ -3049,6 +3055,20 @@ function SidebarRoleplayDestination({
             </span>
             <span aria-hidden="true" style={{ fontSize: '16px', opacity: .38 }}>›</span>
           </button>
+          <button type="button" data-agent-rp-action="open-story-workspaces" onClick={openStoryWorkspace} style={{
+            alignItems: 'center', background: 'var(--dsw-alias-bg-layer-1, #292a2e)',
+            border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '12px', color: 'inherit',
+            cursor: 'pointer', display: 'flex', font: 'inherit', gap: '11px', marginTop: '9px', padding: '12px', textAlign: 'left', width: '100%',
+          }}>
+            <span aria-hidden="true" style={{ color, fontSize: '20px', lineHeight: 1 }}>✎</span>
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <strong style={{ display: 'block', fontSize: '13px' }}>故事工程</strong>
+              <span style={{ display: 'block', fontSize: '11px', lineHeight: 1.5, marginTop: '3px', opacity: .52 }}>
+                多人物认知、大纲、伏笔、分区正文与原著资料
+              </span>
+            </span>
+            <span aria-hidden="true" style={{ fontSize: '16px', opacity: .38 }}>›</span>
+          </button>
           <div data-agent-rp-workbench-extensions style={{ display: 'contents' }}>
             {renderSlot(AGENT_RP_WORKBENCH_SECTION_SLOT, { closeWorkbench })}
           </div>
@@ -3125,6 +3145,13 @@ function SidebarRoleplayDestination({
         },
       })}
       onClose={() => { setWorldInfoLaunch(undefined); setResourceCenterOpen(false) }}
+    />, document.body)}
+    {storyWorkspaceOpen && createPortal(<StoryWorkspaceEditor
+      accent={color}
+      {...(currentSessionId === undefined || !isAgentRpCapabilityPresetId(currentSession?.agentPreset)
+        ? {}
+        : { sessionId: String(currentSessionId) })}
+      onClose={() => { setStoryWorkspaceOpen(false) }}
     />, document.body)}
     {worldInfoLaunch !== undefined && launchSessionId !== undefined && createPortal(<WorldInfoLaunchDialog
       runtimeDiagnostics={runtimeDiagnostics}
@@ -13383,6 +13410,9 @@ export function apply(ctx: ClientContext): void {
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-persona',
+  }, () => null))
+  ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+    name: 'conversation.chat.commandview', key: 'rp-story-workspace',
   }, () => null))
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-memory',
