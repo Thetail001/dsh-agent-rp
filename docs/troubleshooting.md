@@ -8,6 +8,12 @@
 
 不要只凭 DSH 的版本号判断 Host 能力。DSH Desktop、官方 runner 和 Agent Host 可能显示相同版本号，却包含不同的插件接口；各入口的支持范围见 README 的安装章节。
 
+### 从 `@dsh-external` 包名升级后无法启动
+
+早期版本使用 `@dsh-external/dsh-agent-rp`，当前版本使用 `@hewzhew/dsh-agent-rp`。请重新运行当前平台的安装器；安装器会先装好新包，再从同一 `web` profile 移除历史包名，并把未被本地修改的托管预设所有权更新为新包名。
+
+若升级后曾出现 `duplicate loader entry id: dsh-agent-rp-host` 或 `has an invalid ownership manifest`，不要删除角色卡、会话或整个 DSH 数据目录。这两条错误分别表示 profile 同时保留了新旧包名，或托管预设仍记录旧所有者；当前安装器会迁移这两项。托管预设内容曾被本地修改时，安装器仍会拒绝覆盖，并要求先把修改复制到另一个 preset id。
+
 ## Tavern Helper 脚本失败
 
 在发生问题的角色会话底部打开「脚本 x/y」。失败项会显示「加载失败」或「运行失败」；点击失败列表顶部的「复制失败详情」，检查后把完整结果附到 Issue。报告包含脚本名、全局/预设/角色作用域、失败阶段和有限长度的本地错误，不含脚本源码。
