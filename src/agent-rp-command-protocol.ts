@@ -10,6 +10,7 @@ export const AGENT_RP_COMMAND_NAMES = Object.freeze([
   'rp-character-library',
   'rp-chat-import',
   'rp-persona',
+  'rp-story-workspace',
   'rp-memory',
   'rp-state',
   'rp-turn-mode',
