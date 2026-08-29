@@ -17,6 +17,10 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import { WorkspaceSettingsStore } from './workspace-settings-store.ts'
 import { installWorkspaceSettingsHttp } from './workspace-settings-http.ts'
+import { installStoryWorkspaceHttp } from './story-workspace-http.ts'
+import { StoryWorkspaceStore } from './story-workspace.ts'
+import { executeStoryWorkspaceCommand, readSessionStoryWorkspaceId } from './session-story-workspace.ts'
+import { materializeStoryTurn, runStoryTurnPipeline } from './story-turn-pipeline.ts'
 import {
   ROLEPLAY_RESOURCE_CATALOG_KEY,
   RoleplayResourceCatalog,
@@ -743,6 +747,7 @@ export function installAgentRp(
     readonly messages: UserMessage[]
     stExtensionGeneration?: StExtensionGenerationCoordinator
   }>()
+  const storyBriefByAgent = new WeakMap<Agent, { readonly turn: number; readonly text: string }>()
   const turnCoordinator = new RoleplayTurnCoordinator<Agent>()
   let settlementRuntimeActive = true
   ctx.effect(() => () => {
@@ -803,6 +808,7 @@ export function installAgentRp(
   const chatLibrary = new SillyTavernChatLibrary()
   const generatedImageLibrary = new GeneratedImageLibrary()
   const workspaceSettings = new WorkspaceSettingsStore()
+  const storyWorkspaces = new StoryWorkspaceStore()
   let turnWorkers: RoleplayTurnWorkerRegistry
   try {
     turnWorkers = ctx.get(ROLEPLAY_TURN_WORKERS_KEY) ?? new RoleplayTurnWorkerRegistry()
@@ -929,6 +935,13 @@ export function installAgentRp(
     input: { hint: '<private Persona payload>' },
     recordInput: false,
     handler: executePersonaCommand,
+  })
+  commands.register({
+    name: 'rp-story-workspace',
+    description: 'select the editable story workspace used by later Roleplay turns',
+    input: { hint: '<private story-workspace payload>' },
+    recordInput: false,
+    handler: invocation => executeStoryWorkspaceCommand(storyWorkspaces, invocation),
   })
   commands.register({
     name: 'rp-memory',
@@ -1264,6 +1277,7 @@ export function installAgentRp(
     highRiskToolRestrictions.get(agent)?.()
     highRiskToolRestrictions.delete(agent)
     pendingMessagesByAgent.delete(agent)
+    storyBriefByAgent.delete(agent)
     turnCoordinator.release(agent)
     for (const dispose of worldbookCharacterDisposers.get(agent) ?? []) dispose()
     worldbookCharacterDisposers.delete(agent)
@@ -1300,11 +1314,33 @@ export function installAgentRp(
     // actor step must not spend narrative attention on variable arithmetic.
     setStateActionAvailable(agent, false)
   })
-  ctx.on('agent/pre-step', async ({ agent }, next) => {
+  ctx.on('agent/pre-step', async ({ agent, turn, step, signal }, next) => {
     const decision = await next()
     if (agentsByScope.get(agent) !== agent) return decision
     if (decision.kind === 'reject') {
       setStateActionAvailable(agent, false)
+      storyBriefByAgent.delete(agent)
+      return decision
+    }
+    if (step === 1) {
+      storyBriefByAgent.delete(agent)
+      try {
+        const workspaceId = readSessionStoryWorkspaceId(agent.session.events)
+        if (workspaceId !== undefined) {
+          const brief = await runStoryTurnPipeline({
+            ctx,
+            agent,
+            workspace: storyWorkspaces.get(workspaceId),
+            turn,
+            step,
+            messages: decision.messages,
+            signal,
+          })
+          storyBriefByAgent.set(agent, { turn, text: brief.modelContext })
+        }
+      } catch (error: unknown) {
+        ctx.logger.warn(`agent-rp: story pipeline skipped: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
     return decision
   })
@@ -1328,6 +1364,15 @@ export function installAgentRp(
       return agent === undefined || turnCoordinator.currentActLane(agent) !== 'narrative'
         ? ''
         : turnCoordinator.current(agent)?.tools.guidance.contextText ?? ''
+    },
+  })
+  ctx.systemPrompt.context({
+    name: 'agent-rp:story-engine',
+    order: 72,
+    text: ({ scope }) => {
+      if (scope === undefined) return ''
+      const agent = agentsByScope.get(scope)
+      return agent === undefined ? '' : storyBriefByAgent.get(agent)?.text ?? ''
     },
   })
   ctx.on('agent/request', async ({ agent, turn, step }, next) => {
@@ -1377,6 +1422,14 @@ export function installAgentRp(
     } catch (error: unknown) {
       ctx.logger.warn(`agent-rp: post-narrative Worker pipeline skipped: ${error instanceof Error ? error.message : String(error)}`)
     }
+    try {
+      const workspaceId = readSessionStoryWorkspaceId(agent.session.events)
+      if (workspaceId !== undefined) {
+        await materializeStoryTurn({ ctx, agent, store: storyWorkspaces, workspaceId, turn, signal })
+      }
+    } catch (error: unknown) {
+      ctx.logger.warn(`agent-rp: story continuity materialization skipped: ${error instanceof Error ? error.message : String(error)}`)
+    }
   })
   ctx.on('session/event', (session, event) => {
     if (event.type === 'agent-rp/turn-mode') {
@@ -1399,6 +1452,7 @@ export function installAgentRp(
     const agent = agentsBySession.get(String(session.id))
     if (agent === undefined || agentsByScope.get(agent) !== agent) return
     pendingMessagesByAgent.delete(agent)
+    storyBriefByAgent.delete(agent)
     setStateActionAvailable(agent, false)
     turnCoordinator.completeTurn(agent, event.data.turn)
     if (!supportsAgentRpSessionEvents(session)) return
@@ -1686,6 +1740,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
     const regexPackLibrary = new RegexPackLibrary()
     const chatLibrary = new SillyTavernChatLibrary()
     const workspaceSettings = new WorkspaceSettingsStore()
+    const storyWorkspaces = new StoryWorkspaceStore()
     const generatedImageLibrary = new GeneratedImageLibrary()
     for (const provider of roleplayLibraryResourceProviders({
       characters: characterLibrary,
@@ -1743,6 +1798,7 @@ export async function apply(ctx: Context, config: AgentRpConfig): Promise<void> 
         )
         installWorldInfoLibraryHttp(webCtx, worldInfoLibrary, server)
         installWorkspaceSettingsHttp(webCtx, workspaceSettings, server)
+        installStoryWorkspaceHttp(webCtx, storyWorkspaces, server)
         installAgentRpCapabilityPresetHttp(webCtx, ctx, server)
         installRoleplayResourceCatalogHttp(webCtx, resourceCatalog, server)
         installNativeIdentityHttp(webCtx, new NativeIdentityStore(webCtx.credentials), server)
