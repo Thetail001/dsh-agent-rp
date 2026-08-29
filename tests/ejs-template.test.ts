@@ -161,6 +161,51 @@ test('reads plain Session World Info by current or explicit book identity', () =
   assert.deepEqual(result, { ok: true, text: '第一段|第二段|' })
 })
 
+test('exposes only the primary character World Info name through charLoreBook', () => {
+  const books = [
+    { id: 'character-book', name: '角色内置书', entries: [{ sourceId: '1', name: '角色资料', content: '角色命中' }] },
+    { id: 'global-book', name: '全局书', entries: [{ sourceId: '2', name: '角色资料', content: '全局命中' }] },
+  ]
+  const context = {
+    characterName: '角色', userName: '用户', messages: [],
+    characterWorldInfoBookName: '角色内置书',
+    worldInfoBooks: books,
+  }
+
+  assert.deepEqual(engine.render([
+    '<%= charLoreBook %>|',
+    '<%= await getwi(charLoreBook, "角色资料") %>',
+  ].join(''), context, { worldInfoBookId: 'global-book' }), {
+    ok: true,
+    text: '角色内置书|角色命中',
+  })
+  assert.deepEqual(engine.render('<%= typeof charLoreBook %>', {
+    characterName: '角色', userName: '用户', messages: [], worldInfoBooks: books,
+  }), { ok: true, text: 'undefined' })
+})
+
+test('provides a replayable Date without consulting the Host clock', () => {
+  const replayTime = Date.UTC(2026, 0, 2, 3, 4, 5, 6)
+  const template = [
+    '<% const explicit = new Date(Date.UTC(2024, 1, 29, 12)); %>',
+    '<%= [Date.now(), new Date().getTime(), Date(),',
+    'explicit.getUTCFullYear(), explicit.getUTCMonth(), explicit.getUTCDate(), explicit.getUTCHours(),',
+    'new Date("2025-06-07T08:09:10.011Z").toISOString(), new Date().constructor === Date,',
+    'typeof Object.getPrototypeOf(Date).now].join("|") %>',
+  ].join('')
+  const context = { characterName: '角色', userName: '用户', messages: [], replayTime }
+  const first = engine.render(template, context)
+
+  assert.deepEqual(first, {
+    ok: true,
+    text: `${replayTime}|${replayTime}|Fri, 02 Jan 2026 03:04:05 GMT|2024|1|29|12|2025-06-07T08:09:10.011Z|true|undefined`,
+  })
+  assert.deepEqual(engine.render(template, context), first)
+  assert.deepEqual(engine.render('<%= [Date.now(), new Date().toISOString(), Date()].join("|") %>', {
+    characterName: '角色', userName: '用户', messages: [],
+  }), { ok: true, text: '0|1970-01-01T00:00:00.000Z|Thu, 01 Jan 1970 00:00:00 GMT' })
+})
+
 test('does not leak an unrendered nested World Info template', () => {
   const result = engine.render('<%= await getWorldInfo("嵌套") %>', {
     characterName: '角色', userName: '用户', messages: [],
