@@ -106,10 +106,23 @@ export type EjsTemplateFailureKind =
   | 'resource-unsupported'
   | 'resource-limit'
 
+/** JSON-safe error returned by the isolated EJS runtime for explicit local Debug reports. */
+export interface EjsTemplateErrorDetail {
+  readonly name?: string
+  readonly message: string
+  readonly stack?: string
+  /** At least one runtime-provided field exceeded the local diagnostic limit. */
+  readonly truncated?: true
+}
+
 /** Result of one isolated template evaluation. */
 export type EjsTemplateResult =
   | { readonly ok: true; readonly text: string }
-  | { readonly ok: false; readonly kind: EjsTemplateFailureKind }
+  | {
+    readonly ok: false
+    readonly kind: EjsTemplateFailureKind
+    readonly error?: EjsTemplateErrorDetail
+  }
 
 interface TemplateSegment {
   readonly kind: 'text' | 'code' | 'escaped' | 'raw'
@@ -485,6 +498,51 @@ function failureKind(value: unknown): EjsTemplateFailureKind {
   return 'runtime-error'
 }
 
+const MAX_TEMPLATE_ERROR_NAME_LENGTH = 240
+const MAX_TEMPLATE_ERROR_MESSAGE_LENGTH = 2_000
+const MAX_TEMPLATE_ERROR_STACK_LENGTH = 4_000
+
+function boundedTemplateErrorField(value: string, limit: number): { readonly text: string; readonly truncated: boolean } {
+  return value.length <= limit
+    ? { text: value, truncated: false }
+    : { text: `${value.slice(0, limit)}…`, truncated: true }
+}
+
+function templateErrorDetail(value: unknown): EjsTemplateErrorDetail | undefined {
+  if (typeof value === 'object' && value !== null) {
+    const record = value as { readonly name?: unknown; readonly message?: unknown; readonly stack?: unknown }
+    const name = typeof record.name === 'string' && record.name.trim() !== ''
+      ? boundedTemplateErrorField(record.name, MAX_TEMPLATE_ERROR_NAME_LENGTH) : undefined
+    const message = typeof record.message === 'string' && record.message !== ''
+      ? boundedTemplateErrorField(record.message, MAX_TEMPLATE_ERROR_MESSAGE_LENGTH) : undefined
+    const stack = typeof record.stack === 'string' && record.stack !== ''
+      ? boundedTemplateErrorField(record.stack, MAX_TEMPLATE_ERROR_STACK_LENGTH) : undefined
+    if (message !== undefined) return {
+      ...(name === undefined ? {} : { name: name.text }),
+      message: message.text,
+      ...(stack === undefined ? {} : { stack: stack.text }),
+      ...(name?.truncated === true || message.truncated || stack?.truncated === true ? { truncated: true as const } : {}),
+    }
+  }
+  if (typeof value === 'string' && value !== '') {
+    const message = boundedTemplateErrorField(value, MAX_TEMPLATE_ERROR_MESSAGE_LENGTH)
+    return { message: message.text, ...(message.truncated ? { truncated: true as const } : {}) }
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return { message: String(value) }
+  }
+  return undefined
+}
+
+function templateFailure(value: unknown): Extract<EjsTemplateResult, { readonly ok: false }> {
+  const error = templateErrorDetail(value)
+  return {
+    ok: false,
+    kind: failureKind(value),
+    ...(error === undefined ? {} : { error }),
+  }
+}
+
 interface ParsedRegexPattern {
   readonly source: string
   readonly flags: string
@@ -655,7 +713,7 @@ export class EjsTemplateEngine implements LorebookRegexEngine {
       if (errorHandle !== undefined) {
         const error = vm.dump(errorHandle)
         errorHandle.dispose()
-        return { ok: false, kind: failureKind(error) }
+        return templateFailure(error)
       }
       const promiseHandle = result.value
       if (promiseHandle === undefined) return { ok: false, kind: 'runtime-error' }
@@ -666,7 +724,7 @@ export class EjsTemplateEngine implements LorebookRegexEngine {
         jobError.dispose()
         jobs.dispose()
         promiseHandle.dispose()
-        return { ok: false, kind: failureKind(error) }
+        return templateFailure(error)
       }
       jobs.dispose()
       const settled = vm.getPromiseState(promiseHandle)
@@ -675,7 +733,7 @@ export class EjsTemplateEngine implements LorebookRegexEngine {
       if (settled.type === 'rejected') {
         const error = vm.dump(settled.error)
         settled.error.dispose()
-        return { ok: false, kind: failureKind(error) }
+        return templateFailure(error)
       }
       const value = vm.dump(settled.value)
       settled.value.dispose()
@@ -683,7 +741,7 @@ export class EjsTemplateEngine implements LorebookRegexEngine {
         ? { ok: true, text: value }
         : { ok: false, kind: 'runtime-error' }
     } catch (error) {
-      return { ok: false, kind: failureKind(error) }
+      return templateFailure(error)
     } finally {
       vm.dispose()
       runtime.dispose()

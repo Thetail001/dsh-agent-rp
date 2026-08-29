@@ -448,6 +448,7 @@ function worldInfoProjection(
           matchedSecondaryKeys: decision.matchedSecondaryKeys,
           approximateTokens: decision.approximateTokens,
           ...(decision.template === undefined ? {} : { template: decision.template }),
+          ...(decision.templateError === undefined ? {} : { templateError: decision.templateError }),
           modified: override?.entry !== undefined,
           deleted,
         }
