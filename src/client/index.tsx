@@ -142,6 +142,7 @@ import {
   CharacterDisplay,
 } from './card-display.tsx'
 import { captureCardFrameAppearance } from './card-frame-appearance.ts'
+import { retainedCardFrameMessageIds } from './card-frame-retention.ts'
 import {
   characterLibraryChangedEvent,
   characterLibraryJson,
@@ -4032,6 +4033,25 @@ function WorkspaceSettingsSection({
         </div>
       </div>
     </details>
+    <section style={{
+      border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '12px', marginBottom: '22px',
+      padding: '14px',
+    }}>
+      <h3 style={{ fontSize: '13px', margin: '0 0 7px' }}>轻前端资源</h3>
+      <label style={{ display: 'grid', fontSize: '12px', gap: '7px', lineHeight: 1.55 }}>
+        <span>保持交互的最近消息数</span>
+        <select value={settings.lightFrontend.renderDepth} disabled={!writable} onChange={event => {
+          write({ ...settings, lightFrontend: { renderDepth: Number(event.target.value) } })
+        }} style={{ ...settingsFieldStyle, maxWidth: '220px' }}>
+          {[...new Set([4, 8, 12, 24, 48, settings.lightFrontend.renderDepth])]
+            .sort((left, right) => left - right)
+            .map(value => <option key={value} value={value}>最近 {value} 条消息</option>)}
+        </select>
+        <span style={{ opacity: .56 }}>
+          较早消息仍保留正文，但停止运行其中的交互界面。保留的每个界面仍能同步读取从开场到所属消息的完整历史。
+        </span>
+      </label>
+    </section>
     <section style={{
       border: '1px solid var(--dsw-alias-border-l2, #3d3d43)', borderRadius: '12px', marginBottom: '22px',
       padding: '14px',
@@ -11314,11 +11334,13 @@ function roleplayComposerDockComponent(
   const projected = useProjection('agentRp')
   const projection = roleplaySummary(summary, projected)
   const chat = useSession(state => state.chat)
-  const debugEnabled = useSyncExternalStore(
+  const agentRpSettings = useSyncExternalStore(
     workspaceSettings.subscribe,
     workspaceSettings.getSnapshot,
     workspaceSettings.getSnapshot,
-  ).value.debug.enabled
+  ).value
+  const debugEnabled = agentRpSettings.debug.enabled
+  const cardFrameRenderDepth = agentRpSettings.lightFrontend.renderDepth
   const viewMode = useRoleplayViewMode(sessionId)
   const [drawOpen, setDrawOpen] = useState(false)
   const [displayOverrides, setDisplayOverrides] = useState<ReadonlyMap<number, string>>(() => new Map())
@@ -11396,13 +11418,13 @@ function roleplayComposerDockComponent(
   const startupElapsed = startupActive ? liveStartupElapsed
     : currentStartupTiming.characterMs ?? currentStartupTiming.projectionMs ?? liveStartupElapsed
   const displayStateRef = useRef({
-    chat, characterDetail, compatibilityMarkers, displayOverrides,
+    cardFrameRenderDepth, chat, characterDetail, compatibilityMarkers, displayOverrides,
     characterStatus: storedCharacterRuntime?.status,
     displayRegexScripts: storedCharacterRuntime?.displayRegexScripts, projection, viewMode,
   })
   const scanDisplayRef = useRef<() => void>(() => undefined)
   displayStateRef.current = {
-    chat, characterDetail, compatibilityMarkers, displayOverrides,
+    cardFrameRenderDepth, chat, characterDetail, compatibilityMarkers, displayOverrides,
     characterStatus: storedCharacterRuntime?.status,
     displayRegexScripts: storedCharacterRuntime?.displayRegexScripts, projection, viewMode,
   }
@@ -12070,6 +12092,7 @@ function roleplayComposerDockComponent(
     window.addEventListener('message', bridge)
     const scan = (): void => {
       const {
+        cardFrameRenderDepth: activeCardFrameRenderDepth,
         chat: activeChat,
         characterDetail: activeCharacterDetail,
         characterStatus: activeCharacterStatus,
@@ -12091,6 +12114,7 @@ function roleplayComposerDockComponent(
         ...(frontend === undefined ? {} : { frontend }),
       })
       const visibleTavernMessages = activeProjection.tavern?.messages.filter(message => !message.isHidden) ?? []
+      const retainedCardFrames = retainedCardFrameMessageIds(visibleTavernMessages, activeCardFrameRenderDepth)
       const visibleFlowItems = [...scroll.querySelectorAll<HTMLElement>(
         '[data-chat-flow-kind="user"], [data-chat-flow-kind="assistant-step"]',
       )]
@@ -12155,8 +12179,9 @@ function roleplayComposerDockComponent(
         if (original === null) continue
         const alignedMessage = alignedTavernMessageByItem.get(item)
         const plan = displayPlanner.user({ seq, ...(alignedMessage === undefined ? {} : { alignedMessage }) })
-        if (plan.kind === 'host') restoreHostDisplay(item, original)
-        else if (plan.kind === 'render') mountRenderedDisplay(
+        if (plan.kind !== 'render'
+          || (plan.messageId !== undefined && !retainedCardFrames.has(plan.messageId))) restoreHostDisplay(item, original)
+        else mountRenderedDisplay(
           item, original, plan.compilation, plan.messageId, activeProjection, activeCharacterDetail, activeCompatibilityMarkers,
         )
       }
@@ -12176,11 +12201,13 @@ function roleplayComposerDockComponent(
           ...(alignedMessage === undefined ? {} : { alignedMessage }),
         })
         if (plan.kind === 'hidden') {
+          if (original !== null) restoreHostDisplay(item, original)
           hideTranscriptDetail(item)
           continue
         }
         if (original === null) continue
-        if (plan.kind === 'host') restoreHostDisplay(item, original)
+        if (plan.kind !== 'render'
+          || (plan.messageId !== undefined && !retainedCardFrames.has(plan.messageId))) restoreHostDisplay(item, original)
         else mountRenderedDisplay(
           item, original, plan.compilation, plan.messageId, activeProjection, activeCharacterDetail, activeCompatibilityMarkers,
         )
@@ -12236,7 +12263,7 @@ function roleplayComposerDockComponent(
     }
   }, [runtimeDiagnostics, sessionId, viewMode, projection !== undefined])
   useEffect(() => { scanDisplayRef.current() }, [
-    chat, characterDetail, compatibilityMarkers, displayOverrides, projection,
+    cardFrameRenderDepth, chat, characterDetail, compatibilityMarkers, displayOverrides, projection,
     storedCharacterRuntime?.displayRegexScripts, storedCharacterRuntime?.status,
   ])
   const hasTavernVariableSurface = projection !== undefined
