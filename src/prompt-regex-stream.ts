@@ -141,8 +141,10 @@ function appendReplacement(
     }), { surfaceOp, sourceEventSeqs })
     return
   }
+  const replacedAssistant = node.current.type === 'assistant/message' ? node.current.data : undefined
   session.append('assistant/message', {
-    ...position,
+    turn: replacedAssistant?.turn ?? position.turn,
+    step: replacedAssistant?.step ?? position.step,
     message: createMessage({
       role: 'assistant',
       content,
