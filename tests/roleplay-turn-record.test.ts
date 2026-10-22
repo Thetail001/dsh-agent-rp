@@ -183,17 +183,8 @@ test('projects a pre-dispatch plan while its turn is still open', () => {
 test('updates only present when a later reply version is selected', () => {
   const fixture = completeTwoStepTurn()
   const before = readLatestRoleplayTurnRecord(fixture.session)!
+  // 0.2.1：后续版本是正常 append 的表面节点，不再用 replace 遮蔽上一版。
   const alternative = appendModelMessage(fixture.session, 2, 1, [{ type: 'text', text: '雨幕映亮了街灯。' }])
-  const surface = fixture.session.append('assistant/message', { stream: [],
-    turn: 2,
-    step: 1,
-    message: createAssistantMessage({
-      source: { provider: 'fixture', model: 'fixture' },
-      content: [{ type: 'text', text: '雨幕映亮了街灯。' }],
-    }),
-  }, {
-    surfaceOp: { op: 'replace', startSeq: fixture.reply.seq, endSeq: alternative.seq },
-  })
   const trigger = fixture.session.append('command/done', {
     commandId: CommandId('turn-record-version'),
     kind: 'success',
@@ -205,7 +196,7 @@ test('updates only present when a later reply version is selected', () => {
     groupId: '00000000-0000-4000-8000-000000000215',
     anchorSeq: fixture.reply.seq,
     selectedVersionSeq: alternative.seq,
-    surfaceSeq: surface.seq,
+    surfaceSeq: alternative.seq,
   })
   assert.notEqual(updated, undefined)
   appendRoleplayTurnPresentation(fixture.session, updated!)
@@ -215,7 +206,7 @@ test('updates only present when a later reply version is selected', () => {
   assert.deepEqual(after.act, before.act)
   assert.deepEqual(after.settle, before.settle)
   assert.equal(after.present?.selectedReply?.sourceSeq, alternative.seq)
-  assert.equal(after.present?.selectedReply?.surfaceSeq, surface.seq)
+  assert.equal(after.present?.selectedReply?.surfaceSeq, alternative.seq)
   assert.equal(after.present?.version?.selectedVersionSeq, alternative.seq)
 })
 

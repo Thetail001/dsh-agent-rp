@@ -6,6 +6,7 @@ import type {
   RoleplayTurnPlanReference,
 } from './roleplay-turn-settlement.ts'
 import { appendAgentRpSessionEvent, type AgentRpSessionEvent } from './session-event-compat.ts'
+import { hiddenReplyVersionSeqs } from './generation-state-record.ts'
 import {
   normalizeRoleplayTurnPresentation as importedNormalizePresentation,
 } from './roleplay-turn-presentation-state.ts'
@@ -67,8 +68,13 @@ function settlementEventAt(
 }
 
 function latestVisibleAssistantSeq(session: Session): number | undefined {
-  for (const seq of [...session.surface.nodes].reverse()) {
-    const event = eventAt(session.snapshotEvents(), seq)
+  const events = session.snapshotEvents()
+  // 未被选中的 swipe 版本仍然铺在表面上，尾节点不一定是玩家看到的那一条。
+  const hidden = hiddenReplyVersionSeqs(events)
+  for (const node of [...session.surface.nodes].reverse()) {
+    const seq = Number(node)
+    if (hidden.has(seq)) continue
+    const event = eventAt(events, seq)
     if (event?.type !== 'assistant/message') continue
     const text = event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
     if (text.trim() !== '') return seq
@@ -238,14 +244,17 @@ export function readLatestRoleplayPresentationForReply(
   events: readonly SessionEvent[],
   replySeq: number,
 ): RoleplayTurnPresentation | undefined {
+  // 与 generation.ts 的分支查找同规则：sourceSeq 是分支身份，surfaceSeq 在新架构里
+  // 对同组所有版本相同，只能当兜底。
+  let fallback: RoleplayTurnPresentation | undefined
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
     if (event?.type !== 'plugin:agent-rp/turn-presentation') continue
     const presentation = normalizePresentation(event.data)
-    if (presentation.selectedReply?.sourceSeq === replySeq
-      || presentation.selectedReply?.surfaceSeq === replySeq) return presentation
+    if (presentation.selectedReply?.sourceSeq === replySeq) return presentation
+    if (fallback === undefined && presentation.selectedReply?.surfaceSeq === replySeq) fallback = presentation
   }
-  return undefined
+  return fallback
 }
 
 /** Apply one reply-version selection without knowing which adapters supplied its state. */

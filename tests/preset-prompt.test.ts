@@ -591,9 +591,10 @@ test('keeps a continuous chain of completed tool transactions at the request tai
     ['system', '深度零'],
     ['system', '历史后模块'],
     ['assistant', '正文'],
-    ['user', 'tool-result'],
+    // 0.2.x 把工具结果建模成独立的 tool 角色消息，正文就是结果文本本身。
+    ['tool', 'Error: 图片服务没有配置'],
     ['assistant', '继续正文'],
-    ['user', 'tool-result'],
+    ['tool', 'Error: 本回合已经尝试过图片生成'],
   ])
   assert.deepEqual(prepared.slice(-4), [firstAssistant, firstResult, secondAssistant, secondResult])
 })

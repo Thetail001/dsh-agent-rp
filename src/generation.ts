@@ -400,14 +400,17 @@ function latestPresentationForReply(
   events: readonly SessionEvent[],
   replySeq: number,
 ): RoleplayTurnPresentation | undefined {
+  // 0.2.x 里同一个 group 的所有版本共享同一个 surfaceSeq（最后 append 的那版），
+  // 只用 surfaceSeq 匹配会把任意分支都命中到最后一条 presentation 上，
+  // 于是切换 swipe 会取到别的分支的状态。sourceSeq 是真正的分支身份，优先匹配。
+  let fallback: RoleplayTurnPresentation | undefined
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
     if (event?.type !== 'plugin:agent-rp/turn-presentation') continue
-    if (event.data.selectedReply?.sourceSeq === replySeq || event.data.selectedReply?.surfaceSeq === replySeq) {
-      return event.data
-    }
+    if (event.data.selectedReply?.sourceSeq === replySeq) return event.data
+    if (fallback === undefined && event.data.selectedReply?.surfaceSeq === replySeq) fallback = event.data
   }
-  return undefined
+  return fallback
 }
 
 function restoreTavernState(agent: Agent, state: TavernHelperState | undefined): number | undefined {

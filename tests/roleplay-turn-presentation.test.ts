@@ -5,6 +5,8 @@ import { CommandId } from '@deepseek-ai/dsh-commands'
 import { ToolCallId, createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import { decodeGenerationState, encodeGenerationState, executeGenerationCommand } from '../src/generation.ts'
+import { hiddenReplyVersionSeqs } from '../src/generation-state-record.ts'
+import { modelVisibleDialogue } from '../src/prompt.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
 import { ROLEPLAY_TURN_PHASES, type RoleplayRuntimeSnapshot } from '../src/roleplay-runtime.ts'
 import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
@@ -407,17 +409,9 @@ test('reply-version selection produces the current unified presentation', () => 
   appendRoleplayTurnPresentation(session, compileInitialSessionRoleplayTurnPresentation({
     session, settlementEvent, plans: [{ step: 1, plan: turnPlan }],
   }))
+  // 0.2.1：重新生成的版本也是正常 append，表面不再被替换。
+  // 「选中哪一版」只由账本决定，未选中版本靠 hiddenReplyVersionSeqs 在显示与提示词层过滤。
   const alternative = appendReply(session, 2, '第二版')
-  const surface = session.append('assistant/message', { stream: [],
-    turn: 2,
-    step: 1,
-    message: createAssistantMessage({
-      source: { provider: 'fixture', model: 'fixture' },
-      content: [{ type: 'text', text: '第二版' }],
-    }),
-  }, {
-    surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: alternative.seq },
-  })
   const groupId = '00000000-0000-4000-8000-000000000183'
   const resultEvent = session.append('command/done', {
     commandId: CommandId('presentation-version'),
@@ -431,20 +425,25 @@ test('reply-version selection produces the current unified presentation', () => 
       assistantSeqs: [original.seq, alternative.seq],
       versions: [{ seq: original.seq, text: '第一版' }, { seq: alternative.seq, text: '第二版' }],
       selectedVersionSeq: alternative.seq,
-      surfaceSeq: surface.seq,
+      surfaceSeq: alternative.seq,
     }),
   })
   const presentation = compileSessionRoleplayTurnPresentationUpdate(session, resultEvent)
   assert.notEqual(presentation, undefined)
   assert.deepEqual(presentation?.selectedReply, {
     sourceSeq: alternative.seq,
-    surfaceSeq: surface.seq,
-    messageId: String(surface.data.message.id),
+    surfaceSeq: alternative.seq,
+    messageId: String(alternative.data.message.id),
   })
   assert.deepEqual(presentation?.version, {
     groupId, anchorSeq: original.seq, selectedVersionSeq: alternative.seq,
   })
   assert.equal(presentation?.current, true)
+  // 表面不再被替换：账本隐藏未选中版本，原始日志仍留两份正文。
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())], [original.seq])
+  assert.deepEqual(modelVisibleDialogue(session), ['第二版'])
+  assert.deepEqual(session.deriveMessages().map(message =>
+    message.content[0]?.type === 'text' ? message.content[0].text : ''), ['第一版', '第二版'])
 })
 
 test('reply versions restore branch-local state and artifacts together after replay', async () => {
@@ -463,16 +462,8 @@ test('reply versions restore branch-local state and artifacts together after rep
     session, settlementEvent, plans: [{ step: 1, plan: turnPlan }],
   }))
   const alternativeArtifact = appendAutoStagedArtifact(session, 2, 'branch-alternative')
+  // 0.2.1：新版本同样是 append。分支恢复只改账本，不再靠替换表面把旧版本遮住。
   const alternative = appendReply(session, 2, '第二版')
-  const surface = session.append('assistant/message', { stream: [],
-    turn: 2,
-    step: 1,
-    message: createAssistantMessage({
-      source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: '第二版' }],
-    }),
-  }, {
-    surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: alternative.seq },
-  })
   const alternativeState = applyTavernHelperMutation(originalBase, {
     format: 0, scope: 'chat', variables: { marker: 'alternative' },
   })
@@ -495,7 +486,7 @@ test('reply versions restore branch-local state and artifacts together after rep
         },
       ],
       selectedVersionSeq: alternative.seq,
-      surfaceSeq: surface.seq,
+      surfaceSeq: alternative.seq,
     }),
   })
   const versionPresentation = compileSessionRoleplayTurnPresentationUpdate(session, generationEvent)
@@ -504,6 +495,7 @@ test('reply versions restore branch-local state and artifacts together after rep
   assert.deepEqual(versionPresentation.present.artifacts?.map(artifact => artifact.artifactId), [
     String(alternativeArtifact.attachment.attachmentId),
   ])
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())], [original.seq])
 
   const cause = { format: 0, sessionId: String(session.id), replySeq: original.seq } as const
   const originalLate = applyTavernHelperMutation(originalBase, {
@@ -534,6 +526,8 @@ test('reply versions restore branch-local state and artifacts together after rep
   assert.deepEqual(originalPresentation.present.artifacts?.map(artifact => artifact.artifactId), [
     String(originalArtifact.attachment.attachmentId),
   ])
+  // 表面仍在最新 append 的版本上；被隐藏的换成另一版，等价于旧架构里「表面被替换」。
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())], [alternative.seq])
 
   const alternativeResult = await executeGenerationCommand({
     agent: { session } as never,
@@ -550,6 +544,7 @@ test('reply versions restore branch-local state and artifacts together after rep
   assert.deepEqual(alternativePresentation.present.artifacts?.map(artifact => artifact.artifactId), [
     String(alternativeArtifact.attachment.attachmentId),
   ])
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())], [original.seq])
 
   const reopened = Session.create(session.id, session.snapshotEvents())
   assert.equal(readTavernHelperState(reopened.snapshotEvents())?.scopes.chat.marker, 'alternative')

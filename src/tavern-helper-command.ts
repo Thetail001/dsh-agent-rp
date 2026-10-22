@@ -37,22 +37,29 @@ import {
   type TavernMessageAnnotationRecord,
 } from './tavern-message-annotation.ts'
 import { tavernScriptIdentity } from './tavern-script-identity.ts'
+import { hiddenReplyVersionSeqs } from './generation-state-record.ts'
 
 function latestCausalPresentation(agent: Agent, replySeq: number): RoleplayTurnPresentation | undefined {
-  for (let index = agent.session.snapshotEvents().length - 1; index >= 0; index -= 1) {
-    const event = agent.session.snapshotEvents()[index]
+  // 0.2.x 的同组版本共享一个 surfaceSeq（最后 append 的那版），只有 sourceSeq 能分辨分支。
+  let fallback: RoleplayTurnPresentation | undefined
+  const events = agent.session.snapshotEvents()
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
     if (event?.type !== 'plugin:agent-rp/turn-presentation') continue
-    if (event.data.selectedReply?.sourceSeq === replySeq || event.data.selectedReply?.surfaceSeq === replySeq) {
-      return event.data
-    }
+    if (event.data.selectedReply?.sourceSeq === replySeq) return event.data
+    if (fallback === undefined && event.data.selectedReply?.surfaceSeq === replySeq) fallback = event.data
   }
-  return undefined
+  return fallback
 }
 
 function latestVisibleAssistantSeq(agent: Agent): number | undefined {
-  for (const seq of [...agent.session.surface.nodes].reverse()) {
-    const event = agent.session.snapshotEvents().find(candidate => candidate.seq === seq)
-    if (event?.type === 'assistant/message') return event.seq
+  const events = agent.session.snapshotEvents()
+  // 表面尾部可能是未被选中的 swipe 版本，只有账本才知道玩家真正看到哪一条。
+  const hidden = hiddenReplyVersionSeqs(events)
+  for (const node of [...agent.session.surface.nodes].reverse()) {
+    const seq = Number(node)
+    if (hidden.has(seq)) continue
+    if (events[seq]?.type === 'assistant/message') return seq
   }
   return undefined
 }

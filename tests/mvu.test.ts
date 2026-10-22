@@ -11,9 +11,12 @@ import {
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import {Session, SessionId} from '@deepseek-ai/dsh-session'
+import { encodeGenerationState } from '../src/generation.ts'
+import { hiddenReplyVersionSeqs } from '../src/generation-state-record.ts'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { applyMvuReply, appendMvuState, readCurrentMvuState, readCurrentSessionMvuState, readInitialMvuState } from '../src/mvu.ts'
 import { installMvuStreamCompletion } from '../src/mvu-stream.ts'
+import { ledgerVisibleMessages, modelVisibleDialogue } from '../src/prompt.ts'
 import { ROLEPLAY_TURN_PHASES } from '../src/roleplay-runtime.ts'
 import { readRoleplayTurnRecords } from '../src/roleplay-turn-record.ts'
 import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
@@ -118,16 +121,40 @@ test('excludes shadowed reply updates while retaining durable script state', () 
     statData: { 角色: { 等级: 5 } }, updateCount: 2,
   })
 
-  session.append('assistant/message', { stream: [],
+  const selected = session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
-      content: [], source: { provider: 'fixture', model: 'fixture' },
+      content: [{ type: 'text', text: '当前选中的回复' }], source: { provider: 'fixture', model: 'fixture' },
     }),
-  }, {
-    surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: original.seq },
+  }, { surfaceOp: 'append' })
+  // 0.2.1：换版本是 append 新版本 + 账本记录选中版本，表面不再 replace。
+  // 被否决的版本仍在日志与表面上，因此 MVU 折读必须靠账本把它剔除，
+  // 而不是靠表面里已经没有它。
+  session.append('command/done', {
+    commandId: CommandId('mvu-surface-state-selected'), kind: 'success', text: encodeGenerationState({
+      format: 0,
+      groupId: '00000000-0000-4000-8000-0000000000a1',
+      operation: 'regenerate',
+      originSeq: original.seq,
+      anchorSeq: original.seq,
+      assistantSeqs: [original.seq, selected.seq],
+      versions: [
+        { seq: original.seq, text: '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/角色/等级","value":1}]</JSONPatch></UpdateVariable>' },
+        { seq: selected.seq, text: '当前选中的回复' },
+      ],
+      selectedVersionSeq: selected.seq,
+      surfaceSeq: selected.seq,
+    } as const),
   })
 
+  // 被否决的版本留在日志里，但账本把它从模型可见历史中剔除。
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())], [original.seq])
+  assert.deepEqual(modelVisibleDialogue(session), ['当前选中的回复'])
+  assert.deepEqual(ledgerVisibleMessages(session).map(message => [message.role,
+    message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')]), [
+    ['assistant', '当前选中的回复'],
+  ])
   assert.deepEqual(readCurrentSessionMvuState(card, session), {
     statData: { 角色: { 等级: 4 } }, updateCount: 1,
   })
@@ -148,17 +175,39 @@ test('replays an exact MVU version checkpoint before applying the new visible re
     }),
   }, { surfaceOp: 'append' })
   appendMvuState(session, { statData: { 角色: { 等级: 3 } }, updateCount: 2 })
-  session.append('assistant/message', { stream: [],
+  const replaced = session.append('assistant/message', { stream: [],
     turn: 2,
     step: 1,
     message: createAssistantMessage({
       content: [{ type: 'text', text: '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/角色/等级","value":2}]</JSONPatch></UpdateVariable>' }],
       source: { provider: 'fixture', model: 'fixture' },
     }),
-  }, {
-    surfaceOp: { op: 'replace', startSeq: rejected.seq, endSeq: rejected.seq },
+  }, { surfaceOp: 'append' })
+  // 0.2.1：新版本以 append 进入表面，账本记录它取代被否决的版本，
+  // 并携带该版本重放后的精确 MVU 检查点（baseMvu 重放 + 新回复自身的更新）。
+  session.append('command/done', {
+    commandId: CommandId('mvu-version-checkpoint-replaced'), kind: 'success', text: encodeGenerationState({
+      format: 0,
+      groupId: '00000000-0000-4000-8000-0000000000a2',
+      operation: 'regenerate',
+      originSeq: rejected.seq,
+      anchorSeq: rejected.seq,
+      assistantSeqs: [rejected.seq, replaced.seq],
+      versions: [
+        { seq: rejected.seq, text: '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/角色/等级","value":9}]</JSONPatch></UpdateVariable>' },
+        { seq: replaced.seq, text: '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/角色/等级","value":2}]</JSONPatch></UpdateVariable>' },
+      ],
+      selectedVersionSeq: replaced.seq,
+      surfaceSeq: replaced.seq,
+      baseMvu: { statData: { 角色: { 等级: 3 } }, updateCount: 2 },
+      mvu: { statData: { 角色: { 等级: 5 } }, updateCount: 3 },
+    } as const),
   })
 
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())], [rejected.seq])
+  assert.deepEqual(modelVisibleDialogue(session), [
+    '<UpdateVariable><JSONPatch>[{"op":"delta","path":"/角色/等级","value":2}]</JSONPatch></UpdateVariable>',
+  ])
   assert.deepEqual(readCurrentSessionMvuState(card, session), {
     statData: { 角色: { 等级: 5 } }, updateCount: 3,
   })

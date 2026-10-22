@@ -116,9 +116,42 @@ interface CandidateDecision {
   readonly templateError?: LorebookEntryActivation['templateError']
 }
 
-function includesKey(text: string, key: string, caseSensitive: boolean, matchWholeWords: boolean): boolean {
+/** One depth slice of the scan history with its lower-cased twin reused across keys. */
+interface ScanWindow {
+  readonly messages: readonly string[]
+  readonly depth: number
+  readonly text: string
+  readonly lowered: string
+}
+
+/** Single-slot scan-window cache: adjacent entries usually share the same depth slice. */
+interface ScanWindowCache {
+  window?: ScanWindow
+}
+
+function scanWindowFor(
+  cache: ScanWindowCache,
+  messages: readonly string[],
+  depth: number,
+): ScanWindow {
+  if (cache.window !== undefined && cache.window.messages === messages && cache.window.depth === depth) {
+    return cache.window
+  }
+  const text = depth === 0 ? '' : messages.slice(-Math.max(0, Math.trunc(depth))).join('\n')
+  const window = { messages, depth, text, lowered: text.toLocaleLowerCase() }
+  cache.window = window
+  return window
+}
+
+function includesKey(
+  text: string,
+  key: string,
+  caseSensitive: boolean,
+  matchWholeWords: boolean,
+  loweredText?: string,
+): boolean {
   if (key.length === 0) return false
-  const haystack = caseSensitive ? text : text.toLocaleLowerCase()
+  const haystack = caseSensitive ? text : (loweredText ?? text.toLocaleLowerCase())
   const needle = caseSensitive ? key : key.toLocaleLowerCase()
   if (!matchWholeWords) return haystack.includes(needle)
   if (/\s/u.test(needle)) return haystack.includes(needle)
@@ -147,19 +180,20 @@ function hasExecutableTemplate(content: string): boolean {
 
 function keywordMatches(
   keys: readonly string[],
-  text: string,
+  window: ScanWindow,
   entry: ImportedLorebookEntry,
 ): string[] {
-  return keys.filter(key => includesKey(text, key, entry.caseSensitive, entry.matchWholeWords))
+  return keys.filter(key => includesKey(
+    window.text, key, entry.caseSensitive, entry.matchWholeWords, window.lowered))
 }
 
 function literalRegexMatches(
   keys: readonly string[],
-  text: string,
+  window: ScanWindow,
   entry: ImportedLorebookEntry,
 ): string[] | undefined {
   if (keys.some(key => !isLiteralRegexPattern(key))) return undefined
-  return keys.filter(key => includesKey(text, key, entry.caseSensitive, false))
+  return keys.filter(key => includesKey(window.text, key, entry.caseSensitive, false, window.lowered))
 }
 
 type RegexMatchDecision =
@@ -169,17 +203,16 @@ type RegexMatchDecision =
 
 function regexMatches(
   keys: readonly string[],
-  text: string,
+  window: ScanWindow,
   entry: ImportedLorebookEntry,
   matcher: LorebookRegexMatcher | undefined,
 ): RegexMatchDecision {
-  if (matcher === undefined) {
-    const matchedKeys = literalRegexMatches(keys, text, entry)
-    return matchedKeys === undefined
-      ? { ok: false, reason: 'regex-runtime-unavailable' }
-      : { ok: true, matchedKeys }
-  }
-  const result = matcher.match(keys, text, entry.caseSensitive)
+  // #48: a key set without regex operators is a plain substring lookup; keeping it
+  // out of the QuickJS matcher removes one script call per literal entry per request.
+  const literal = literalRegexMatches(keys, window, entry)
+  if (literal !== undefined) return { ok: true, matchedKeys: literal }
+  if (matcher === undefined) return { ok: false, reason: 'regex-runtime-unavailable' }
+  const result = matcher.match(keys, window.text, entry.caseSensitive)
   if (result.ok) return { ok: true, matchedKeys: result.matchedKeys }
   return { ok: false, reason: result.kind === 'invalid' ? 'regex-invalid'
     : result.kind === 'execution-limit' ? 'regex-execution-limit' : 'regex-resource-limit' }
@@ -191,6 +224,7 @@ function candidate(
   bookDepth: number | undefined,
   options: LorebookActivationOptions,
   regexMatcher?: LorebookRegexMatcher,
+  scans: ScanWindowCache = {},
 ): CandidateDecision {
   const decision = (
     candidate: boolean,
@@ -210,9 +244,9 @@ function candidate(
     activation = decision(true, 'active-constant')
   } else {
     const depth = entry.scanDepth ?? bookDepth ?? messages.length
-    const text = depth === 0 ? '' : messages.slice(-Math.max(0, Math.trunc(depth))).join('\n')
+    const window = scanWindowFor(scans, messages, depth)
     if (entry.useRegex) {
-      const primary = regexMatches(entry.keys, text, entry, regexMatcher)
+      const primary = regexMatches(entry.keys, window, entry, regexMatcher)
       if (!primary.ok) {
         activation = decision(false, primary.reason)
       } else if (primary.matchedKeys.length === 0) {
@@ -220,7 +254,7 @@ function candidate(
         activation = decision(false, 'primary-unmatched', matchedKeys)
       } else {
         const matchedKeys = primary.matchedKeys
-        const secondary = regexMatches(entry.secondaryKeys, text, entry, regexMatcher)
+        const secondary = regexMatches(entry.secondaryKeys, window, entry, regexMatcher)
         if (!secondary.ok) {
           activation = decision(false, secondary.reason, matchedKeys)
         } else if (!entry.selective || entry.secondaryKeys.length === 0) {
@@ -242,11 +276,11 @@ function candidate(
         }
       }
     } else {
-      const matchedKeys = keywordMatches(entry.keys, text, entry)
+      const matchedKeys = keywordMatches(entry.keys, window, entry)
       if (matchedKeys.length === 0) {
         activation = decision(false, 'primary-unmatched', matchedKeys)
       } else {
-        const matchedSecondaryKeys = keywordMatches(entry.secondaryKeys, text, entry)
+        const matchedSecondaryKeys = keywordMatches(entry.secondaryKeys, window, entry)
         if (!entry.selective || entry.secondaryKeys.length === 0) {
           activation = decision(true, 'active-keyword', matchedKeys, matchedSecondaryKeys)
         } else {
@@ -373,10 +407,11 @@ function inspectLorebookWithMatcher(
   options: LorebookActivationOptions,
   matcher: LorebookRegexMatcher | undefined,
 ): InspectedLorebook {
+  const scans: ScanWindowCache = {}
   const decisions = book.entries.map((entry, index) => ({
     index,
     entry,
-    decision: candidate(entry, messages, book.scanDepth, options, matcher),
+    decision: candidate(entry, messages, book.scanDepth, options, matcher, scans),
   }))
   const candidates = decisions.filter(value => value.decision.candidate)
   const included = new Set(budgeted(book, candidates.map(({ index, entry, decision }) => ({

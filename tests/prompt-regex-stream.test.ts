@@ -20,6 +20,7 @@ import {
   applyPromptRegexSurface,
   installAgentPromptRegexStream,
   installPromptRegexStream,
+  promptRegexViewProjection,
 } from '../src/prompt-regex-stream.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
 import type {
@@ -125,8 +126,12 @@ function textHistory(session: Session): string[] {
     message.content.flatMap(block => block.type === 'text' ? [block.text] : []))
 }
 
+// 0.2.1: 正则改写是 messageProjection（plugin:agent-rp/prompt-regex-view），
+// 派生消息要生效必须让 Session 带上这个解释器；日志本身保留 append 原文。
+const projections = [promptRegexViewProjection] as const
+
 function openConversation(): Session {
-  const session = Session.create(SessionId('prompt-regex'))
+  const session = Session.create(SessionId('prompt-regex'), undefined, undefined, undefined, projections)
   session.append('turn/start', { turn: 1 })
   session.append('step/start', { turn: 1, step: 1 })
   session.append('user/message', createUserMessage({
@@ -158,7 +163,7 @@ function openCardConversation(active: ImportedCharacterCard): Session {
     name: 'live.json',
     mediaType: 'application/json',
   }, 0, '')
-  const session = Session.create(SessionId('prompt-regex-live-card'), seed)
+  const session = Session.create(SessionId('prompt-regex-live-card'), seed, undefined, undefined, projections)
   session.append('turn/start', { turn: 1 })
   session.append('step/start', { turn: 1, step: 1 })
   session.append('user/message', createUserMessage({
@@ -172,7 +177,7 @@ function openFailedToolContinuation(): {
   readonly assistantId: string
   readonly callId: string
 } {
-  const session = Session.create(SessionId('prompt-regex-failed-tool'))
+  const session = Session.create(SessionId('prompt-regex-failed-tool'), undefined, undefined, undefined, projections)
   const callId = ToolCallId('failed-image-call')
   session.append('turn/start', { turn: 1 })
   session.append('step/start', { turn: 1, step: 1 })
@@ -244,7 +249,8 @@ test('logs prompt-only replacements while the visible projection keeps append-or
   assert.deepEqual(textHistory(session), ['masked one', 'prior answer', 'masked two'])
   assert.equal(session.snapshotEvents().some(event => String(event.type) === 'plugin:agent-rp/prompt-regex-trace'), false)
 
-  const reopened = Session.create(SessionId('prompt-regex-reopened'), session.snapshotEvents())
+  const reopened = Session.create(SessionId('prompt-regex-reopened'), session.snapshotEvents(),
+    undefined, undefined, projections)
   assert.deepEqual(textHistory(reopened), ['masked one', 'prior answer', 'masked two'])
 
   let state = agentRpProjectionDefinition.init()
@@ -302,7 +308,16 @@ test('preserves a failed tool pair when prompt regex changes its assistant text'
   const messages = session.deriveMessages()
   const pair = toolPair(messages, callId)
   assert.equal(pair.resultIndex, pair.assistantIndex + 1)
-  assert.notEqual(String(messages[pair.assistantIndex]?.id), assistantId)
+  // 0.2.1：改写走 messageProjection，派生消息保留原消息身份，
+  // 不再像 surface replace 那样产生一条新消息 id。
+  assert.equal(String(messages[pair.assistantIndex]?.id), assistantId)
+  // 日志本体保留 append 原文，改写只存在于派生视图，工具对仍然紧邻。
+  const durableAssistant = session.snapshotEvents().find(event => event.type === 'assistant/message'
+    && String(event.data.message.id) === assistantId)
+  assert.equal(durableAssistant?.type, 'assistant/message')
+  if (durableAssistant?.type !== 'assistant/message') throw new Error('missing durable assistant')
+  assert.deepEqual(durableAssistant.data.message.content.map(block => block.type === 'text'
+    ? block.text : block.type), ['tool answer', 'tool-call'])
   assert.deepEqual(messages[pair.assistantIndex]?.content.map(block => block.type === 'text'
     ? [block.type, block.text] : block.type === 'tool-call'
       ? [block.type, String(block.id)] : [block.type]), [

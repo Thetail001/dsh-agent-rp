@@ -4,6 +4,7 @@ import {type Session, type SessionEvent} from '@deepseek-ai/dsh-session'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { ImportedCharacterCard, ImportedLorebook } from './import/types.ts'
 import { appendAgentRpSessionEvent, type AgentRpAppendResult } from './session-event-compat.ts'
+import { hiddenReplyVersionSeqs } from './generation-state-record.ts'
 import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
 import { decodeActiveTavernHelperState } from './tavern-helper.ts'
 import { decodeGenerationMvuCheckpoint } from './generation-command-result.ts'
@@ -217,9 +218,13 @@ export function readCurrentSessionMvuStateFromLorebooks(
   lorebooks: readonly ImportedLorebook[],
   session: Session,
 ): ReturnType<typeof readCurrentMvuStateFromLorebooks> {
+  const events = session.snapshotEvents()
+  // 0.2.x 的 swipe 版本全部 append 在表面上，被否决的版本只能靠账本剔除；
+  // 否则它会把自己的 MVU patch 折进当前状态。
   const surface = new Set(session.surface.nodes)
-  return readCurrentMvuStateFromLorebooks(lorebooks, session.snapshotEvents().filter(event =>
-    event.type !== 'assistant/message' || surface.has(event.seq)))
+  const hidden = hiddenReplyVersionSeqs(events)
+  return readCurrentMvuStateFromLorebooks(lorebooks, events.filter(event =>
+    event.type !== 'assistant/message' || (surface.has(event.seq) && !hidden.has(event.seq))))
 }
 
 /** Report a visible MVU patch failure at the exact completed-turn boundary. */
@@ -235,8 +240,10 @@ export function mvuTurnSettlementContribution(input: {
     return { moduleId: MVU_ROLEPLAY_MODULE_ID, outcome: 'failed', error }
   }
   const visible = new Set(input.session.surface.nodes)
+  const hidden = hiddenReplyVersionSeqs(input.session.snapshotEvents())
   const failedThisTurn = input.session.snapshotEvents().some(event => event.seq >= input.firstSeq
     && event.type === 'assistant/message' && event.data.turn === input.turn && visible.has(event.seq)
+    && !hidden.has(event.seq)
     && /<UpdateVariable(?:variable)?>/iu.test(event.data.message.content
       .flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')))
   return failedThisTurn

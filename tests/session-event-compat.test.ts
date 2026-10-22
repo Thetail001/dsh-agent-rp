@@ -13,6 +13,8 @@ import { decodeGenerationState, encodeGenerationState, executeGenerationCommand 
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import { readCurrentSessionMvuState } from '../src/mvu.ts'
+import { hiddenReplyVersionSeqs } from '../src/generation-state-record.ts'
+import { modelVisibleDialogue } from '../src/prompt.ts'
 import { prepareRoleplayTurn } from '../src/roleplay-turn-plan.ts'
 import { bindRoleplayExternalContext } from '../src/roleplay-turn-context.ts'
 import {
@@ -112,11 +114,40 @@ function publishedMvuSession(id: string) {
 
 test('refuses an unsafe fallback without changing a published-host Session', () => {
   const session = Session.create(SessionId('published-host-without-plugin-events'))
+  // 0.2.1 的官方 Session 恒带 replay-safe 插件记录 seam，不再有「缺少能力」的 Host 分支；
+  // 旧降级实现（surface replace）反而被平台禁止。
+  assert.equal(supportsAgentRpSessionEvents(session), true)
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: '保留这一条。' }], source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  const reply = appendAssistant(session, 1, '被覆盖的回复')
+  const beforeEvents = structuredClone(session.snapshotEvents())
+  const beforeSurface = [...session.surface.nodes]
 
-  assert.equal(supportsAgentRpSessionEvents(session), false)
-  assert.throws(() => appendAgentRpSessionEvent(session, 'plugin:agent-rp/state', state), /已拒绝写入/u)
-  assert.equal(session.seq, 0)
-  assert.deepEqual(session.snapshotEvents(), [])
+  // 不安全的回退：assistant/message 禁带 sourceEventSeqs，而 replace 必须引用全部被遮蔽节点。
+  // 平台在提交前拒绝，日志与表面都不留半截修改。
+  assert.throws(() => session.append('assistant/message', { stream: [],
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      content: [{ type: 'text', text: '替换回复' }], source: { provider: 'fixture', model: 'fixture' },
+    }),
+  }, {
+    surfaceOp: { op: 'replace', startSeq: reply.seq, endSeq: reply.seq },
+  }), /surface replace: sourceEventSeqs must include every shadowed surface node/u)
+  assert.deepEqual(session.snapshotEvents(), beforeEvents)
+  assert.deepEqual(session.surface.nodes, beforeSurface)
+
+  // 安全路径：插件记录以可忽略事件 append 进日志，不进表面，重放后逐字节一致。
+  const written = appendAgentRpSessionEvent(session, 'plugin:agent-rp/state', state)
+  const committed = session.snapshotEvents()[Number(written.seq)]
+  assert.equal(committed?.ignorable, true)
+  assert.equal(committed?.type, 'plugin:agent-rp/state')
+  assert.deepEqual(committed?.data, state)
+  assert.deepEqual(session.surface.nodes, beforeSurface)
+  assert.equal(session.deriveMessages().length, 2)
+  const reopened = Session.create(SessionId('published-host-without-plugin-events-replay'), session.snapshotEvents())
+  assert.deepEqual(reopened.snapshotEvents()[Number(written.seq)], committed)
 })
 
 test('keeps the repair vocabulary identical to the writable private vocabulary', () => {
@@ -135,11 +166,15 @@ test('persists a player state revision through command/done on the published Hos
   })
 
   const result = executeRoleplayStateCommand({ commandId, agent, rawInput })
-  assert.equal(result.sourceEventSeq, undefined)
-  assert.match(result.text ?? '', /^agent-rp-state-v0:/u)
+  // 0.2.1：命令结果只报写入事件 seq，状态本体以 plugin:agent-rp/state 落进日志。
+  assert.equal(result.text, undefined)
+  assert.equal(result.sourceEventSeq, 1)
   session.append('command/done', { commandId, ...result })
 
-  assert.equal(session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/state'), false)
+  assert.equal(session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/state'), true)
+  const committed = session.snapshotEvents()[Number(result.sourceEventSeq)]
+  assert.equal(committed?.ignorable, true)
+  assert.equal(committed?.type, 'plugin:agent-rp/state')
   assert.deepEqual(readRoleplayStates(session.snapshotEvents()), [{
     format: 0,
     id: 'state:scene',
@@ -159,11 +194,8 @@ test('continues and switches MVU reply checkpoints through command/done on the p
   session.append('user/message', createUserMessage({
     content: [{ type: 'text', text: '提升等级。' }], source: { kind: 'user' },
   }), { surfaceOp: 'append' })
-  const original = appendAssistant(
-    session,
-    1,
-    '第一段<UpdateVariable><JSONPatch>[{"op":"delta","path":"/角色/等级","value":1}]</JSONPatch></UpdateVariable>',
-  )
+  const originalText = '第一段<UpdateVariable><JSONPatch>[{"op":"delta","path":"/角色/等级","value":1}]</JSONPatch></UpdateVariable>'
+  const original = appendAssistant(session, 1, originalText)
   const agent = {
     session,
     status: 'idle',
@@ -188,10 +220,20 @@ test('continues and switches MVU reply checkpoints through command/done on the p
     signal: new AbortController().signal,
   })
   session.append('command/done', { commandId: continueId, ...continued })
-  assert.deepEqual(decodeGenerationState(continued.text)?.mvu, {
+  const continuedState = decodeGenerationState(continued.text)
+  assert.deepEqual(continuedState?.mvu, {
     statData: { 角色: { 等级: 4 } }, updateCount: 2,
   })
-  assert.equal(session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/mvu-state'), false)
+  // 0.2.1：选中版本的 MVU 快照以 plugin 记录落盘，提示词与状态折叠都读它。
+  assert.deepEqual(session.snapshotEvents()
+    .filter(event => event.type === 'plugin:agent-rp/mvu-state')
+    .map(event => event.data), [{ statData: { 角色: { 等级: 4 } }, updateCount: 2 }])
+  // 非选中版本按账本从模型可见历史中剔除：续写前的那一版和中间产物都不进入请求。
+  const continuedHidden = continuedState === undefined ? [] : continuedState.assistantSeqs
+    .filter(seq => seq !== continuedState.selectedVersionSeq)
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())].sort((left, right) => left - right),
+    [...continuedHidden].sort((left, right) => left - right))
+  assert.deepEqual(modelVisibleDialogue(session).filter(text => text.includes('UpdateVariable')).length, 1)
   assert.deepEqual(readCurrentSessionMvuState(card, session), {
     statData: { 角色: { 等级: 4 } }, updateCount: 2,
   })
@@ -204,6 +246,15 @@ test('continues and switches MVU reply checkpoints through command/done on the p
     signal: new AbortController().signal,
   })
   session.append('command/done', { commandId: selectId, ...selected })
+  const selectedState = decodeGenerationState(selected.text)
+  assert.equal(selectedState?.selectedVersionSeq, original.seq)
+  assert.deepEqual(session.snapshotEvents()
+    .filter(event => event.type === 'plugin:agent-rp/mvu-state')
+    .map(event => event.data).at(-1), { statData: { 角色: { 等级: 2 } }, updateCount: 1 })
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())].sort((left, right) => left - right),
+    (selectedState?.assistantSeqs ?? []).filter(seq => seq !== selectedState?.selectedVersionSeq)
+      .sort((left, right) => left - right))
+  assert.deepEqual(modelVisibleDialogue(session), ['提升等级。', originalText])
   assert.deepEqual(readCurrentSessionMvuState(card, session), {
     statData: { 角色: { 等级: 2 } }, updateCount: 1,
   })
@@ -227,13 +278,7 @@ test('switches Tavern reply branches through command/done on the published Host'
   const alternativeAttachment = appendPublishedTavernAttachment(
     session, CommandId('published-tavern-alternative'), alternative.seq, alternativeState, false,
   )
-  const surface = session.append('assistant/message', { stream: [],
-    turn: alternative.data.turn,
-    step: alternative.data.step,
-    message: alternative.data.message,
-  }, {
-    surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: alternative.seq },
-  })
+  // 0.2.1 禁 surface replace：两个版本都正常 append，选中关系只由账本表达。
   const groupId = '00000000-0000-4000-8000-000000000201'
   const seedId = CommandId('published-tavern-generation-seed')
   session.append('command/run', { commandId: seedId, name: 'rp-generation', source: { kind: 'user' } })
@@ -252,11 +297,14 @@ test('switches Tavern reply branches through command/done on the published Host'
         { seq: alternative.seq, text: '第二条路线', tavernStateSeq: alternativeAttachment.seq },
       ],
       selectedVersionSeq: alternative.seq,
-      surfaceSeq: surface.seq,
+      surfaceSeq: alternative.seq,
       tavern: alternativeState,
     }),
   })
   assert.deepEqual(readTavernHelperState(session.snapshotEvents())?.scopes.chat, { marker: 'alternative' })
+  // 两个版本都在表面上，账本隐藏未选中的分支；模型可见历史只剩选中版本。
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())], [original.seq])
+  assert.deepEqual(modelVisibleDialogue(session), ['选择一条路线。', '第二条路线'])
 
   const agent = { session } as Agent
   const originalSelectId = CommandId('published-tavern-select-original')
@@ -269,8 +317,12 @@ test('switches Tavern reply branches through command/done on the published Host'
     signal: new AbortController().signal,
   })
   session.append('command/done', { commandId: originalSelectId, ...selectedOriginal })
-  assert.equal(session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/tavern-state'), false)
+  assert.deepEqual(session.snapshotEvents()
+    .filter(event => event.type === 'plugin:agent-rp/tavern-state')
+    .map(event => event.data.scopes.chat), [{ marker: 'original' }])
   assert.deepEqual(readTavernHelperState(session.snapshotEvents())?.scopes.chat, { marker: 'original' })
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())], [alternative.seq])
+  assert.deepEqual(modelVisibleDialogue(session), ['选择一条路线。', '第一条路线'])
   assert.deepEqual(readTavernHelperState(Session.create(session.id, session.snapshotEvents()).snapshotEvents())?.scopes.chat,
     { marker: 'original' })
 
@@ -285,6 +337,8 @@ test('switches Tavern reply branches through command/done on the published Host'
   })
   session.append('command/done', { commandId: alternativeSelectId, ...selectedAlternative })
   assert.deepEqual(readTavernHelperState(session.snapshotEvents())?.scopes.chat, { marker: 'alternative' })
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())], [original.seq])
+  assert.deepEqual(modelVisibleDialogue(session), ['选择一条路线。', '第二条路线'])
   assert.deepEqual(readTavernHelperState(Session.create(session.id, session.snapshotEvents()).snapshotEvents())?.scopes.chat,
     { marker: 'alternative' })
 })
@@ -303,27 +357,71 @@ test('rejects unsafe Tavern regeneration before changing a published-host Sessio
   session.append('user/message', createUserMessage({
     content: [{ type: 'text', text: '重新回答。' }], source: { kind: 'user' },
   }), { surfaceOp: 'append' })
-  const original = appendAssistant(session, 1, '保留到安全切换开始。')
+  const originalText = '保留到安全切换开始。'
+  const original = appendAssistant(session, 1, originalText)
   const beforeEvents = structuredClone(session.snapshotEvents())
   const beforeSurface = [...session.surface.nodes]
-  let followedUp = false
+
+  // 0.2.1 平台禁 surface replace：状态化回复的旧「安全回退」实现在提交前就被拒绝，
+  // 日志与表面都不留半截修改；重新生成因此改走 append + 账本。
+  assert.throws(() => session.append('assistant/message', { stream: [],
+    turn: 1,
+    step: 1,
+    message: createAssistantMessage({
+      content: [{ type: 'text', text: '' }], source: { provider: 'fixture', model: 'fixture' },
+    }),
+  }, {
+    surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: original.seq },
+  }), /surface replace: sourceEventSeqs must include every shadowed surface node/u)
+  assert.deepEqual(session.snapshotEvents(), beforeEvents)
+  assert.deepEqual(session.surface.nodes, beforeSurface)
+
+  let followedUp = 0
+  let requestDialogue: readonly string[] = []
+  let requestCharacterScope: unknown
   const agent = {
     session,
     status: 'idle',
     inbox: { nextTurn: [], nextStep: [] },
-    followup() { followedUp = true },
+    followup(message: ReturnType<typeof createUserMessage>) {
+      followedUp += 1
+      session.append('user/message', message, { surfaceOp: 'append' })
+      // 生成请求发出时：被否决的楼层不在模型可见历史里，脚本状态回到生成前基线。
+      requestDialogue = modelVisibleDialogue(session)
+      requestCharacterScope = readTavernHelperState(session.snapshotEvents())?.scopes.character
+      appendAssistant(session, 2, '安全切换后的新回复')
+    },
     whenIdle: async () => {},
     cancel: () => {},
   } as unknown as Agent
 
-  await assert.rejects(executeGenerationCommand({
+  const regenerateId = CommandId('published-tavern-regenerate')
+  session.append('command/run', { commandId: regenerateId, name: 'rp-generation', source: { kind: 'user' } })
+  const regenerated = await executeGenerationCommand({
     agent,
     rawInput: JSON.stringify({ operation: 'regenerate', replySeq: original.seq }),
     signal: new AbortController().signal,
-  }), /DSH Host 缺少安全插件事件能力/u)
-  assert.equal(followedUp, false)
-  assert.deepEqual(session.snapshotEvents(), beforeEvents)
-  assert.deepEqual(session.surface.nodes, beforeSurface)
+  })
+  session.append('command/done', { commandId: regenerateId, ...regenerated })
+
+  assert.equal(followedUp, 1)
+  assert.deepEqual(requestDialogue, ['重新回答。'])
+  assert.deepEqual(requestCharacterScope, { marker: 'baseline' })
+  const regeneratedState = decodeGenerationState(regenerated.text)
+  assert.equal(regeneratedState?.operation, 'regenerate')
+  assert.equal(regeneratedState?.selectedVersionSeq, regenerated.sourceEventSeq)
+  assert.deepEqual(regeneratedState?.versions.map(version => version.text), [originalText, '安全切换后的新回复'])
+  // 日志只 append：被否决的回复仍在原始日志里，但被账本隐藏、不进入模型请求。
+  assert.equal(session.deriveMessages().some(message => message.content.some(block =>
+    block.type === 'text' && block.text === originalText)), true)
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())], [original.seq])
+  assert.deepEqual(modelVisibleDialogue(session), ['重新回答。', '安全切换后的新回复'])
+  // 表面节点只增不减：被否决的楼层没有被替换或移除。
+  assert.equal(beforeSurface.every(seq => session.surface.nodes.includes(seq)), true)
+
+  const reopened = Session.create(session.id, session.snapshotEvents())
+  assert.deepEqual(modelVisibleDialogue(reopened), modelVisibleDialogue(session))
+  assert.deepEqual(readTavernHelperState(reopened.snapshotEvents())?.scopes.character, { marker: 'baseline' })
 })
 
 test('writes and exactly replays a prepared turn with a local newer DSH Host', async (t) => {

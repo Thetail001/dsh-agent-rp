@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { CommandId } from '@deepseek-ai/dsh-commands'
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { encodeGenerationState } from '../src/generation.ts'
+import { hiddenReplyVersionSeqs } from '../src/generation-state-record.ts'
+import { modelVisibleDialogue } from '../src/prompt.ts'
 import { ROLEPLAY_TURN_PHASES, type RoleplayRuntimeSnapshot } from '../src/roleplay-runtime.ts'
 import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
 import { prepareRoleplayToolPolicy } from '../src/roleplay-tool-guidance.ts'
@@ -57,11 +61,7 @@ function plan(session: Session, snapshot = runtime()): RoleplayTurnPlan {
   }
 }
 
-function appendReply(session: Session, text: string, surfaceOp: 'append' | {
-  readonly op: 'replace'
-  readonly startSeq: SessionSeq
-  readonly endSeq: SessionSeq
-} = 'append') {
+function appendReply(session: Session, text: string) {
   return session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
@@ -70,7 +70,7 @@ function appendReply(session: Session, text: string, surfaceOp: 'append' | {
       content: [{ type: 'text', text }],
     }),
   }, {
-    surfaceOp,
+    surfaceOp: 'append',
   })
 }
 
@@ -96,8 +96,28 @@ test('does not attribute a hidden old MVU failure to the selected reply', () => 
   session.append('turn/start', { turn: 1 })
   const turnPlan = plan(session, runtime([modules[0]!]))
   const invalid = appendReply(session, '<UpdateVariable>broken</UpdateVariable>')
-  appendReply(session, '当前选中的正常回复', { op: 'replace', startSeq: invalid.seq, endSeq: invalid.seq })
+  const selected = appendReply(session, '当前选中的正常回复')
+  // 0.2.1：被否决的版本仍以 append 留在日志与表面上，选中关系由账本记录；
+  // 结算只能把本轮失败归因到账本里选中的那一版。
+  session.append('command/done', {
+    commandId: CommandId('settlement-hidden-mvu-select'), kind: 'success', text: encodeGenerationState({
+      format: 0,
+      groupId: '00000000-0000-4000-8000-0000000000b1',
+      operation: 'regenerate',
+      originSeq: invalid.seq,
+      anchorSeq: invalid.seq,
+      assistantSeqs: [invalid.seq, selected.seq],
+      versions: [
+        { seq: invalid.seq, text: '<UpdateVariable>broken</UpdateVariable>' },
+        { seq: selected.seq, text: '当前选中的正常回复' },
+      ],
+      selectedVersionSeq: selected.seq,
+      surfaceSeq: selected.seq,
+    } as const),
+  })
 
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())], [invalid.seq])
+  assert.deepEqual(modelVisibleDialogue(session), ['当前选中的正常回复'])
   assert.deepEqual(collectSessionRoleplaySettlementContributions({
     session,
     turn: 1,

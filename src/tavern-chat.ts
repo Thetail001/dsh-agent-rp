@@ -203,15 +203,9 @@ function setMessages(
     if (text !== target.text) planned.push({ target, role, text })
   }
   for (const update of planned) {
-    if (update.target.role === 'user') {
-      // user/message replace 在 0.2.1 仍然合法（sourceEventSeqs 引用被覆盖节点）。
-      appendEntry(agent, { kind: 'synthetic', role: 'user', text: update.text }, {
-        surfaceOp: { op: 'replace', startSeq: update.target.event.seq, endSeq: update.target.event.seq },
-        sourceEventSeqs: [update.target.event.seq],
-      })
-      continue
-    }
-    // 0.2.1: assistant 楼层不能 replace，内容编辑走 messageProjection 记录。
+    // 0.2.1: 两种角色的正文编辑都走 messageProjection 记录。
+    // user 楼层虽然还能做 surface replace，但 replace 会换掉事件 seq，
+    // 而脚本批注、投影查表、lorebook 基线都按原 seq 绑定 —— 一改就失联。
     appendMessageEdit(agent.session, update.target.event.seq, [{ type: 'text', text: update.text }])
   }
   return { hiddenPrefix, ...(messageVariables === undefined ? {} : { messageVariables }) }

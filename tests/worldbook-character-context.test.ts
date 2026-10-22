@@ -133,6 +133,8 @@ test('leaves Worldbook messages unchanged when the Host has no channel capabilit
   const scope = createScope(root, agent)
   Object.assign(agent, { ctx: scope.ctx })
   const unregister = root.agents.register(agent)
+  // 0.2.x 的 agent/created 在挂起 effect 里异步派发，插件靠它认定本 Agent 归自己管。
+  await new Promise(resolve => setTimeout(resolve, 0))
   const ordinary = createUserMessage({
     content: [{ type: 'text', text: 'ordinary' }],
     source: { kind: 'user' },
@@ -177,6 +179,8 @@ test('adapts a later-loaded Worldbook injector without moving either side of the
   const scope = createScope(root, agent)
   Object.assign(agent, { ctx: scope.ctx })
   const unregister = root.agents.register(agent)
+  // 0.2.x 的 agent/created 在挂起 effect 里异步派发，插件靠它认定本 Agent 归自己管。
+  await new Promise(resolve => setTimeout(resolve, 0))
   const ordinary = createUserMessage({
     content: [{ type: 'text', text: 'ordinary' }],
     source: { kind: 'user' },

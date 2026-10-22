@@ -50,6 +50,8 @@ test('lets an independent client plugin join and leave the Agent RP workbench li
 
   assert.deepEqual(slots.spec(AGENT_RP_WORKBENCH_SECTION_SLOT), { kind: 'list', scope: 'root' })
   assert.deepEqual(slots.snapshot('test.agent-rp-workbench')[0]?.children[0], {
+    // 0.2.x 的槽位清单节点带 type 判别字段。
+    type: 'slot',
     name: AGENT_RP_WORKBENCH_SECTION_SLOT,
     kind: 'list',
     scope: 'root',

@@ -383,6 +383,8 @@ test('replaces the full roleplay prompt with a narrow artifact handoff after vis
   const agentScope = createScope(agentParentCtx, agent, { parent: presetKey })
   Object.assign(agent, { ctx: agentScope.ctx })
   const disposeAgent = root.agents.register(agent)
+  // 0.2.x 的 agent/created 在挂起 effect 里异步派发，插件靠它接管本 Agent 的提示词。
+  await new Promise(resolve => setTimeout(resolve, 0))
   context.after(async () => {
     disposeAgent()
     await agentScope.dispose()

@@ -24,7 +24,7 @@ import { encodeWorldInfoConfiguration, readWorldInfoConfiguration } from '../src
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import { appendMvuState, readCurrentSessionMvuState } from '../src/mvu.ts'
-import { ledgerVisibleMessages, modelVisibleDialogue } from '../src/prompt.ts'
+import { modelVisibleDialogue } from '../src/prompt.ts'
 import { installIgnorableSessionEventFixture } from './session-event-fixture.ts'
 
 installIgnorableSessionEventFixture()

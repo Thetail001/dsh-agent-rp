@@ -45,24 +45,25 @@ import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import { inspectLorebook } from '../src/import/lorebook.ts'
 
-interface CapturedIgnorableEvent {
-  readonly type: string
-  readonly seq: number
-  readonly data: Readonly<Record<string, unknown>>
-  readonly ignorable: true
+/**
+ * 0.2.1：辅助调用的审计记录直接 append 进 Session Log（可忽略的 plugin 记录），
+ * 不再经过 0.1 的 `appendIgnorable` 拦截层，所以断言读真实事件而不是替身。
+ */
+interface AuxiliaryAuditRecord {
+  readonly type: 'plugin:agent-rp/tavern-generation-request' | 'plugin:agent-rp/tavern-generation-result'
+  readonly ignorable: true | undefined
+  /** 请求记录带 dispatch，结算记录带 result；两类互斥，测试按索引断言。 */
+  readonly data: { readonly dispatch?: unknown; readonly result?: unknown }
 }
 
-function captureIgnorableEvents(session: Session): CapturedIgnorableEvent[] {
-  const events: CapturedIgnorableEvent[] = []
-  Object.defineProperty(session, 'appendIgnorable', {
-    configurable: true,
-    value(type: string, data: Readonly<Record<string, unknown>>) {
-      const event = Object.freeze({ type, seq: session.seq + events.length, time: 1, data, ignorable: true as const })
-      events.push(event)
-      return event
-    },
+function auxiliaryAuditEvents(session: Session): AuxiliaryAuditRecord[] {
+  return session.snapshotEvents().flatMap((event): AuxiliaryAuditRecord[] => {
+    if (event.type === 'plugin:agent-rp/tavern-generation-request'
+      || event.type === 'plugin:agent-rp/tavern-generation-result') {
+      return [{ type: event.type, ignorable: event.ignorable, data: event.data }]
+    }
+    return []
   })
-  return events
 }
 
 function auxiliaryEvent(type: string, seq: number, data: unknown): SessionEvent {
@@ -169,7 +170,7 @@ test('resolves OpenAI-compatible custom generation endpoints without retaining q
 
 test('forwards one approved custom generation without retaining chat history at depth zero', async () => {
   const session = Session.create(SessionId('custom-generation'))
-  const auditEvents = captureIgnorableEvents(session)
+  const audit = (): readonly AuxiliaryAuditRecord[] => auxiliaryAuditEvents(session)
   session.append('user/message', createUserMessage({
     source: { kind: 'user' }, content: [{ type: 'text', text: '不应发送的历史' }],
   }), { surfaceOp: 'append' })
@@ -243,10 +244,12 @@ test('forwards one approved custom generation without retaining chat history at 
     })
     const result = await runTavernGeneration(ctx, request)
     assert.equal(result.text, '辅助结果')
-    assert.equal(auditEvents.length, 2)
-    assert.equal(auditEvents[0]?.type, 'plugin:agent-rp/tavern-generation-request')
-    assert.equal(auditEvents[1]?.type, 'plugin:agent-rp/tavern-generation-result')
-    const auditText = JSON.stringify(auditEvents)
+    assert.equal(audit().length, 2)
+    assert.equal(audit()[0]?.type, 'plugin:agent-rp/tavern-generation-request')
+    assert.equal(audit()[1]?.type, 'plugin:agent-rp/tavern-generation-result')
+    // 审计记录必须是可忽略的 plugin 记录：Host 重放时能安全跳过。
+    assert.deepEqual(audit().map(event => event.ignorable), [true, true])
+    const auditText = JSON.stringify(audit())
     assert.doesNotMatch(auditText, /test-key|hook-key/u)
     assert.match(auditText, /"origin":"https:\/\/example\.com"/u)
     assert.match(auditText, /"pathname":"\/v1\/chat\/completions"/u)
@@ -277,7 +280,7 @@ test('forwards one approved custom generation without retaining chat history at 
 
 test('logs the exact Host model request before auxiliary dispatch', async () => {
   const session = Session.create(SessionId('host-generation'))
-  const auditEvents = captureIgnorableEvents(session)
+  const audit = (): readonly AuxiliaryAuditRecord[] => auxiliaryAuditEvents(session)
   const agent = {
     session,
     options: { provider: 'fixture-provider', model: 'fixture-model', maxTokens: 456 },
@@ -318,8 +321,8 @@ test('logs the exact Host model request before auxiliary dispatch', async () => 
   assert.equal(dispatched?.sessionId, 'host-generation')
   assert.equal(dispatched?.maxTokens, 123)
   assert.equal(dispatched?.temperature, 0.25)
-  assert.equal(auditEvents.length, 2)
-  assert.deepEqual(auditEvents[0]?.data.dispatch, {
+  assert.equal(audit().length, 2)
+  assert.deepEqual(audit()[0]?.data.dispatch, {
     kind: 'host-model',
     provider: 'fixture-provider',
     model: 'fixture-model',
@@ -328,7 +331,7 @@ test('logs the exact Host model request before auxiliary dispatch', async () => 
     temperature: 0.25,
     maxTokens: 123,
   })
-  assert.deepEqual(auditEvents[1]?.data.result, { kind: 'success', text: 'Host 辅助结果' })
+  assert.deepEqual(audit()[1]?.data.result, { kind: 'success', text: 'Host 辅助结果' })
 })
 
 test('rejects unsafe custom generation headers before contacting the model', async () => {
@@ -361,7 +364,7 @@ test('rejects unsafe custom generation headers before contacting the model', asy
 
 test('rejects auxiliary model text beyond the capability character limit', async () => {
   const session = Session.create(SessionId('oversized-generation-text'))
-  const auditEvents = captureIgnorableEvents(session)
+  const audit = (): readonly AuxiliaryAuditRecord[] => auxiliaryAuditEvents(session)
   const agent = {
     session,
     options: { model: 'fallback-model' },
@@ -384,7 +387,7 @@ test('rejects auxiliary model text beyond the capability character limit', async
       mode: 'raw',
       config: { user_input: '生成', custom_api: { apiurl: 'https://example.com/v1', model: 'custom-model' } },
     }), /模型返回文本过长/u)
-    assert.deepEqual(auditEvents[1]?.data.result, { kind: 'failure', failure: 'invalid-response' })
+    assert.deepEqual(audit()[1]?.data.result, { kind: 'failure', failure: 'invalid-response' })
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -417,7 +420,7 @@ test('rejects a complete prompt preview beyond its capability result limit', asy
 
 test('cancels an active custom generation when its browser request closes', async () => {
   const session = Session.create(SessionId('cancel-custom-generation'))
-  const auditEvents = captureIgnorableEvents(session)
+  const audit = (): readonly AuxiliaryAuditRecord[] => auxiliaryAuditEvents(session)
   const agent = {
     session,
     options: { model: 'fallback-model' },
@@ -455,8 +458,8 @@ test('cancels an active custom generation when its browser request closes', asyn
     await contacted
     controller.abort()
     await assert.rejects(running, /已取消或超时/u)
-    assert.equal(auditEvents.length, 2)
-    assert.deepEqual(auditEvents[1]?.data.result, { kind: 'failure', failure: 'aborted' })
+    assert.equal(audit().length, 2)
+    assert.deepEqual(audit()[1]?.data.result, { kind: 'failure', failure: 'aborted' })
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -645,14 +648,19 @@ test('persists a causal script mutation through command/done on the published Ho
   })
 
   const result = executeTavernHelperMutation({ agent: { session } as Agent, rawInput })
-  assert.equal(result.sourceEventSeq, undefined)
-  assert.match(result.text ?? '', /^agent-rp-tavern-helper-attachment-v0:/u)
+  // 0.2.1：因果状态分支以 plugin 附件事件落盘，命令结果只报写入事件 seq。
+  assert.equal(result.text, undefined)
+  assert.notEqual(result.sourceEventSeq, undefined)
   session.append('command/done', { commandId, ...result })
 
-  assert.equal(session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/tavern-state-attachment'), false)
-  assert.deepEqual(readTavernHelperStateSnapshot(session.snapshotEvents())?.state.scopes.chat, { mood: 'calm' })
+  const attachment = session.snapshotEvents()[Number(result.sourceEventSeq)]
+  assert.equal(attachment?.type, 'plugin:agent-rp/tavern-state-attachment')
+  assert.equal(attachment?.ignorable, true)
+  const snapshot = readTavernHelperStateSnapshot(session.snapshotEvents())
+  assert.equal(snapshot?.eventSeq, Number(result.sourceEventSeq))
+  assert.deepEqual(snapshot?.state.scopes.chat, { mood: 'calm' })
   const reopened = Session.create(SessionId('published-tavern-command-replay'), session.snapshotEvents())
-  assert.deepEqual(readTavernHelperStateSnapshot(reopened.snapshotEvents()), readTavernHelperStateSnapshot(session.snapshotEvents()))
+  assert.deepEqual(readTavernHelperStateSnapshot(reopened.snapshotEvents()), snapshot)
 })
 
 test('keeps script-owned message annotations across reloads and reply-version selection', () => {
@@ -710,7 +718,18 @@ test('keeps script-owned message annotations across reloads and reply-version se
       messages: [{ message_id: 1, value: annotation }],
     }),
   })
-  assert.match(persisted.text ?? '', /^agent-rp-tavern-message-annotations-v0:/u)
+  // 0.2.1：批注以 plugin:agent-rp/tavern-message-annotation 记录落盘，不再走命令结果文本。
+  assert.equal(persisted.text, undefined)
+  assert.notEqual(persisted.sourceEventSeq, undefined)
+  const annotationEvent = session.snapshotEvents()[Number(persisted.sourceEventSeq)]
+  assert.equal(annotationEvent?.type, 'plugin:agent-rp/tavern-message-annotation')
+  assert.equal(annotationEvent?.ignorable, true)
+  assert.deepEqual(annotationEvent?.data, {
+    format: 0,
+    messageSeq: original.seq,
+    owner: { scriptScope: 'character', scriptId: 'database' },
+    value: annotation,
+  })
   session.append('command/done', { commandId: annotationCommand, ...persisted })
   assert.deepEqual(Object.values(readTavernMessageAnnotations(session.snapshotEvents())).map(record => record.value), [annotation])
 
@@ -722,15 +741,14 @@ test('keeps script-owned message annotations across reloads and reply-version se
   const owner = tavernScriptIdentity('character', 'database')
   assert.deepEqual(project(session).tavern?.messages.at(-1)?.annotations?.[owner], annotation)
 
+  // 0.2.1 禁 surface replace：新分支只是普通 append，选中关系由账本表达。
   const alternative = session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
       content: [{ type: 'text', text: '新回复' }], source: { provider: 'fixture', model: 'fixture' },
     }),
-  }, {
-    surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: original.seq },
-  })
+  }, { surfaceOp: 'append' })
   const groupId = '12345678-1234-4234-8234-123456789abc'
   const versions = [
     { seq: original.seq, text: '原回复' },
@@ -757,9 +775,8 @@ test('keeps script-owned message annotations across reloads and reply-version se
   })
   assert.equal(project(session).tavern?.messages.at(-1)?.annotations, undefined)
 
-  const selectedOriginal = session.append('assistant/message', original.data, {
-    surfaceOp: { op: 'replace', startSeq: alternative.seq, endSeq: alternative.seq },
-  })
+  // select 不再搬运表面：两个版本都留在表面上，账本把选中版本切回原回复，
+  // 末楼显示的是账本选中的那一版，因此批注跟着选中版本回到最后一条消息。
   const selectCommand = CommandId('restore-original-annotation-branch')
   session.append('command/run', {
     commandId: selectCommand, name: 'rp-generation', source: { kind: 'user' },
@@ -776,7 +793,7 @@ test('keeps script-owned message annotations across reloads and reply-version se
       assistantSeqs: [original.seq, alternative.seq],
       versions,
       selectedVersionSeq: original.seq,
-      surfaceSeq: selectedOriginal.seq,
+      surfaceSeq: alternative.seq,
     }),
   })
   const reopened = Session.create(SessionId('tavern-message-annotation-reopened'), session.snapshotEvents())

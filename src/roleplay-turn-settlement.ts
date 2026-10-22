@@ -581,8 +581,9 @@ export function compileRoleplayActReceipt(
     const start = starts.get(event.data.step)
     const end = ends.get(event.data.step)
     if ((start !== undefined && event.seq <= start.seq) || (end !== undefined && event.seq >= end.seq)) {
-      if (event.type === 'assistant/message' && event.surfaceOp !== 'append'
-        && end !== undefined && event.seq > end.seq) {
+      // 0.2.x 起审核、重新生成与续写都只能在 step 关闭之后以 append 补一个回复版本
+      // （平台不允许替换已落盘的正文），它们是该 step 的版本补充而不是进行中的动作事件。
+      if (event.type === 'assistant/message' && end !== undefined && event.seq > end.seq) {
         continue
       }
       throw new Error(`Roleplay act event ${String(event.seq)} falls outside step ${String(event.data.step)}`)

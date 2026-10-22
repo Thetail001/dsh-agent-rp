@@ -24,6 +24,8 @@ import ToolRegistry, { defineTool } from '@deepseek-ai/dsh-tools'
 import { resolveConfig } from '../src/config.ts'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
+import { appendReviewedReplyVersion } from '../src/generation.ts'
+import { hiddenReplyVersionSeqs } from '../src/generation-state-record.ts'
 import { installAgentRp } from '../src/index.ts'
 import { appendMvuState, readCurrentSessionMvuState } from '../src/mvu.ts'
 import {
@@ -280,6 +282,8 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
   const nativeScope = createScope(agentParentCtx, nativeAgent, { parent: presetKey })
   Object.assign(nativeAgent, { ctx: nativeScope.ctx })
   const disposeNative = root.agents.register(nativeAgent)
+  // 0.2.x 的 agent/created 在挂起 effect 里异步派发；工具门禁挂在它上面。
+  await new Promise(resolve => setTimeout(resolve, 0))
 
   const before = await root.systemPrompt.assemble({ scope: nativeAgent })
   assert.equal(before.tools.some(tool => tool.name === ROLEPLAY_STATE_ACTION_TOOL), false)
@@ -545,16 +549,12 @@ test('settles MVU after the visible reply through a replayable local-provider st
     }),
   }, { surfaceOp: 'append' })
   session.append('step/end', { turn: 1, step: 2 })
-  const reviewedNarrative = session.append('assistant/message', { stream: [],
-    turn: 1,
-    step: 2,
-    message: createAssistantMessage({
-      source: { provider: 'fixture', model: 'fixture-review' },
-      content: [{ type: 'text', text: '白露合上修行笔记，确认自己已经稳稳跨过两级门槛。' }],
-    }),
-  }, {
-    surfaceOp: { op: 'replace', startSeq: narrative.seq, endSeq: narrative.seq },
-  })
+  // 0.2.x 不能替换已 append 的正文：审核版作为新版本追加，账本把原版标为非选中。
+  const reviewedNarrative = appendReviewedReplyVersion(
+    { id: session.id, session } as Agent,
+    1,
+    '白露合上修行笔记，确认自己已经稳稳跨过两级门槛。',
+  )
   const requestTexts: string[] = []
   const requestSystems: string[] = []
   const requestReasoning: (string | undefined)[] = []
@@ -633,7 +633,10 @@ test('settles MVU after the visible reply through a replayable local-provider st
     { provider: 'fixture', model: 'fixture' },
     { provider: 'fast-fixture', model: 'verification-fixture' },
   ])
+  // 开场白 + 原版 + 审核版都留在日志里（append-only），模型只看见审核版。
   assert.equal(session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 3)
+  assert.equal(hiddenReplyVersionSeqs(session.snapshotEvents()).has(narrative.seq), true)
+  assert.equal(reviewedNarrative.originalSeq, narrative.seq)
   const requestEvent = session.snapshotEvents().find(event => event.type === 'plugin:agent-rp/staged-state-request'
     && event.data.stage === 'proposal')
   assert.equal(requestEvent?.type, 'plugin:agent-rp/staged-state-request')
@@ -751,7 +754,7 @@ test('settles MVU after the visible reply through a replayable local-provider st
       resultEventSeqs: [staged!.resultEventSeq],
     },
   })
-  assert.equal(readRoleplayTurnSettlements(session.snapshotEvents())[0]?.reply?.eventSeq, reviewedNarrative.seq)
+  assert.equal(readRoleplayTurnSettlements(session.snapshotEvents())[0]?.reply?.eventSeq, reviewedNarrative.reviewedSeq)
   assert.equal(collectRoleplayStagedStateSettlement({
     events: session.snapshotEvents(),
     sessionId: String(session.id),
