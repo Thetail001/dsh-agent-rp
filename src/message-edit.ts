@@ -68,9 +68,15 @@ export const messageEditProjection: SessionMessageProjection<'plugin:agent-rp/me
   },
 }
 
-/** Register the message-edit projection for all future session create/restore/fork. */
+/**
+ * Register the message-edit projection for all future session create/restore/fork.
+ *
+ * A real Host always provides the Session store; a minimal host (or a preview
+ * harness) may not, and without Sessions there is nothing to project anyway, so
+ * a missing service skips registration instead of failing plugin load.
+ */
 export function registerMessageEditProjection(ctx: Context): void {
-  ctx.sessions.registerMessageProjection(messageEditProjection)
+  ctx.get('sessions')?.registerMessageProjection(messageEditProjection)
 }
 
 /**

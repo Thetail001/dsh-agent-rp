@@ -123,7 +123,7 @@ export function renderImportedWorldInfos(
   scanText: readonly string[] = [],
   templateOptions: LorebookActivationOptions = {},
 ) {
-  const messages = [...visibleDialogue(session, pendingMessages), ...scanText]
+  const messages = [...modelVisibleDialogue(session, pendingMessages), ...scanText]
   return worldInfos.reduce((result, worldInfo) => {
     const active = activateLorebook(worldInfo.lorebook, messages, templateOptions)
     result.beforeCharacter.push(...active.beforeCharacter)
@@ -147,7 +147,7 @@ export function renderSessionLorebooks(input: {
   return createNativeWorldEngine(withResolvedLorebookMacros(templateOptions, input.statData)).evaluate({
     format: 0,
     books: input.books,
-    messages: [...visibleDialogue(input.session, input.pendingMessages ?? []), ...scanText],
+    messages: [...modelVisibleDialogue(input.session, input.pendingMessages ?? []), ...scanText],
     ...(input.tokenBudget === undefined ? {} : { tokenBudget: input.tokenBudget }),
   })
 }
@@ -276,7 +276,7 @@ function dialogueTranscript(messages: readonly DerivedSessionMessage[]): EjsTemp
  * 与 Session.deriveMessages() 相同的遍历方式（surface.nodes + deriveEventMessage，
  * 跳过 null），仅额外跳过账本隐藏的 seq。
  */
-function ledgerVisibleMessages(session: Session): DerivedSessionMessage[] {
+export function ledgerVisibleMessages(session: Session): DerivedSessionMessage[] {
   const events = session.snapshotEvents()
   const hidden = hiddenReplyVersionSeqs(events)
   if (hidden.size === 0) return session.deriveMessages()
@@ -312,7 +312,12 @@ function preRegexDialogue(session: Session): DerivedSessionMessage[] {
   })
 }
 
-function visibleDialogue(session: Session, pendingMessages: readonly UserMessage[]): string[] {
+/**
+ * Model-visible dialogue text after ledger filtering: the seam that decides what the
+ * next request may contain. Regenerate suppression and reply-version selection both
+ * land here, so callers can assert on exactly what the model would read.
+ */
+export function modelVisibleDialogue(session: Session, pendingMessages: readonly UserMessage[] = []): string[] {
   // System-prompt and World Info assembly run before the provider middleware
   // installs prompt-only regex views. Always scan the preserved source here so
   // a later tool step cannot switch the activation baseline mid-turn.
@@ -329,7 +334,7 @@ function visibleDialogue(session: Session, pendingMessages: readonly UserMessage
 
 /** Return model-visible dialogue text for preset marker assembly. */
 export function roleplayVisibleDialogue(session: Session, pendingMessages: readonly UserMessage[] = []): string[] {
-  return visibleDialogue(session, pendingMessages)
+  return modelVisibleDialogue(session, pendingMessages)
 }
 
 /** Return role-preserving model-visible dialogue for isolated prompt templates. */
@@ -363,7 +368,7 @@ export function renderImportedLorebook(
   const resolvedOptions = withResolvedLorebookMacros(templateOptions, statData)
   const active = card.lorebook === undefined
     ? { beforeCharacter: [], afterCharacter: [] }
-    : activateLorebook(card.lorebook, [...visibleDialogue(session, pendingMessages), ...scanText], resolvedOptions)
+    : activateLorebook(card.lorebook, [...modelVisibleDialogue(session, pendingMessages), ...scanText], resolvedOptions)
   return active
 }
 

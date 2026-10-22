@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import {Session, SessionId, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
+import {Session, SessionId, SessionLogOffset, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
 import { CharacterLibrary } from '../src/character-library.ts'
 import { readActiveSessionCharacter } from '../src/import/session-character.ts'
@@ -89,6 +89,8 @@ async function launchExperienceWithWorkspaces(
       readonly seed: readonly import('@deepseek-ai/dsh-session').SessionEvent[]
       readonly meta: { readonly cwd?: string; readonly agentPreset?: string }
     }) => {
+      // 0.2.x requires a seeded header to declare how much of its constructor seed is
+      // inherited; a launch seed is inherited in full and the constructor closes it.
       createdSession = Session.create(options.sessionId, options.seed, {
         version: SESSION_FORMAT_VERSION,
         id: options.sessionId,
@@ -96,7 +98,7 @@ async function launchExperienceWithWorkspaces(
         isSeeded: options.seed.length > 0,
         ...(options.meta.cwd === undefined ? {} : { cwd: options.meta.cwd }),
         ...(options.meta.agentPreset === undefined ? {} : { agentPreset: options.meta.agentPreset }),
-      })
+      }, SessionLogOffset(options.seed.length))
       return {
         agent: { id: options.sessionId, session: createdSession },
         dispose: async () => {},

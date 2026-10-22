@@ -192,9 +192,15 @@ export const promptRegexViewProjection: SessionMessageProjection<'plugin:agent-r
   },
 }
 
-/** Register the prompt-regex view projection for all future session create/restore/fork. */
+/**
+ * Register the prompt-regex view projection for all future session create/restore/fork.
+ *
+ * A real Host always provides the Session store; a minimal host (or a preview
+ * harness) may not, and without Sessions there is nothing to project anyway, so
+ * a missing service skips registration instead of failing plugin load.
+ */
 export function registerPromptRegexViewProjection(ctx: Context): void {
-  ctx.sessions.registerMessageProjection(promptRegexViewProjection)
+  ctx.get('sessions')?.registerMessageProjection(promptRegexViewProjection)
 }
 
 function outcomeRank(value: PromptRegexOutcome): number {

@@ -131,6 +131,10 @@ function parseGenerationState(data: GenerationStateRecord, eventSeq: number): Ac
       && (!Number.isSafeInteger(version.tavernStateSeq) || version.tavernStateSeq < 0))
     || data.versions.some(version => !validArtifactReplySeqs(version.artifactReplySeqs))
     || data.versions.some(version => !validMvu(version.mvu))
+    || (data.suppressedReplySeqs !== undefined
+      && (data.suppressedReplySeqs.length === 0
+        || data.suppressedReplySeqs.some(seq => !Number.isSafeInteger(seq) || seq < 0)
+        || new Set(data.suppressedReplySeqs).size !== data.suppressedReplySeqs.length))
     || !validMvu(data.baseMvu) || !validMvu(data.mvu) || !validTavern(data.tavern)
     || versionSeqs[0] !== data.originSeq
     || !versionSeqs.includes(data.selectedVersionSeq)
@@ -368,6 +372,17 @@ function appendState(
   }
 }
 
+/** Persist one reply-version snapshot immediately, outside the command result path. */
+function appendSuppressedState(
+  agent: Agent,
+  record: Omit<GenerationStateRecord, 'format' | 'mvu' | 'tavern'>,
+  mvu: GenerationStateRecord['mvu'],
+  tavern: GenerationStateRecord['tavern'],
+): void {
+  if (!supportsAgentRpSessionEvents(agent.session)) return
+  appendAgentRpSessionEvent(agent.session, 'plugin:agent-rp/generation-state', appendState(record, mvu, tavern))
+}
+
 function appendMvuSelection(agent: Agent, mvu: GenerationStateRecord['mvu']): void {
   if (mvu !== undefined && supportsAgentRpSessionEvents(agent.session)) appendMvuState(agent.session, mvu)
 }
@@ -504,6 +519,8 @@ export async function executeGenerationCommand(invocation: {
   let generatedSeq: number | undefined
   let baseTavernStateSeq = existing?.baseTavernStateSeq
   const baseMvu = existing?.baseMvu ?? mvuBeforeReply(invocation.agent, originSeq)
+  /** Snapshot written before replacement dispatch so a failed regenerate can be undone. */
+  let suppressionActive = false
   try {
     if (request.operation === 'regenerate') {
       const candidateBaseTavern = baseTavernStateSeq === undefined
@@ -519,6 +536,18 @@ export async function executeGenerationCommand(invocation: {
       baseTavern ??= currentTavern === undefined ? undefined : initialTavernState(invocation.agent)
       baseTavernStateSeq = restoreTavernState(invocation.agent, baseTavern) ?? baseTavernStateSeq
       appendMvuSelection(invocation.agent, baseMvu)
+      // 0.2.1 没有「先删再写」的 surface replace，被否决的回复仍然在日志里。
+      // 生成请求发出前先写一条抑制快照，让提示词组装把它当作隐藏版本剔除；
+      // 生成成功由新快照自然覆盖，失败则在下面恢复原快照。
+      appendSuppressedState(invocation.agent, {
+        groupId, operation: 'regenerate', originSeq,
+        anchorSeq: existing?.anchorSeq ?? request.replySeq,
+        assistantSeqs, versions, selectedVersionSeq: current.selectedSeq, surfaceSeq: current.surfaceSeq,
+        suppressedReplySeqs: [...new Set([...assistantSeqs, current.selectedSeq])],
+        ...(baseTavernStateSeq === undefined ? {} : { baseTavernStateSeq }),
+        ...(baseMvu === undefined ? {} : { baseMvu }),
+      }, currentMvu, currentTavern?.state)
+      suppressionActive = true
     }
     generatedSeq = await generate(invocation.agent, request.operation, invocation.signal)
     const generated = assistantEvent(invocation.agent.session.snapshotEvents(), generatedSeq)
@@ -574,6 +603,16 @@ export async function executeGenerationCommand(invocation: {
     // 0.2.1: 不再做 surface replace，失败恢复只需还原状态快照，不需要回滚表面。
     restoreTavernState(invocation.agent, currentTavern?.state)
     appendMvuSelection(invocation.agent, currentMvu)
+    if (suppressionActive) {
+      // 生成失败：撤掉抑制，被否决的回复回到可见集合，避免静默丢楼层。
+      appendSuppressedState(invocation.agent, {
+        groupId, operation: 'regenerate', originSeq,
+        anchorSeq: existing?.anchorSeq ?? request.replySeq,
+        assistantSeqs, versions, selectedVersionSeq: current.selectedSeq, surfaceSeq: current.surfaceSeq,
+        ...(baseTavernStateSeq === undefined ? {} : { baseTavernStateSeq }),
+        ...(baseMvu === undefined ? {} : { baseMvu }),
+      }, currentMvu, currentTavern?.state)
+    }
     throw error
   }
 }

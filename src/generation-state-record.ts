@@ -39,6 +39,12 @@ export interface GenerationStateRecord {
   }
   readonly selectedVersionSeq: number
   readonly surfaceSeq: number
+  /**
+   * Replies this snapshot hides although they are still selected — used while a
+   * replacement is being generated, so the rejected reply cannot leak into the
+   * request that replaces it. Cleared by the next snapshot.
+   */
+  readonly suppressedReplySeqs?: readonly number[]
   readonly tavern?: TavernHelperState
   readonly mvu?: {
     readonly statData: JsonValue
@@ -92,6 +98,9 @@ export function hiddenReplyVersionSeqs(events: readonly SessionEvent[]): Readonl
     if (!Array.isArray(group.assistantSeqs) || !Number.isSafeInteger(group.selectedVersionSeq)) continue
     for (const seq of group.assistantSeqs) {
       if (Number.isSafeInteger(seq) && seq !== group.selectedVersionSeq) hidden.add(seq)
+    }
+    for (const seq of group.suppressedReplySeqs ?? []) {
+      if (Number.isSafeInteger(seq)) hidden.add(seq)
     }
   }
   return hidden

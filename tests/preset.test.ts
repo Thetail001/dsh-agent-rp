@@ -188,6 +188,9 @@ test('claims character-card images for every Agent joined to the preset, includi
   const disposeJoined = root.agents.register(joinedAgent)
   const disposeLaterJoined = root.agents.register(laterJoinedAgent)
   const disposeSibling = root.agents.register(siblingAgent)
+  // 0.2.x announces agent/created from a suspended effect, so membership lands one
+  // microtask after register() returns; the plugin's claim gate reads that membership.
+  await new Promise(resolve => setTimeout(resolve, 0))
   const content = [
     { type: 'text' as const, text: '导入这张角色卡' },
     { type: 'image' as const, mediaType: 'image/png', name: 'card.png' },

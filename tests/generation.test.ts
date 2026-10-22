@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import {Session, SessionId, SessionSeq} from '@deepseek-ai/dsh-session'
+import { hiddenReplyVersionSeqs } from '../src/generation-state-record.ts'
 import {
   decodeGenerationState,
   encodeGenerationState,
@@ -23,6 +24,7 @@ import { encodeWorldInfoConfiguration, readWorldInfoConfiguration } from '../src
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import { appendMvuState, readCurrentSessionMvuState } from '../src/mvu.ts'
+import { ledgerVisibleMessages, modelVisibleDialogue } from '../src/prompt.ts'
 import { installIgnorableSessionEventFixture } from './session-event-fixture.ts'
 
 installIgnorableSessionEventFixture()
@@ -84,12 +86,11 @@ test('parses only the three private reply-version operations', () => {
   assert.throws(() => parseGenerationRequest('{"operation":"regenerate","replySeq":4,"extra":true}'), /未知字段/)
 })
 
-test('folds latest selectable reply group snapshots across replacement events', () => {
+test('folds the latest selectable reply group snapshot across appended versions', () => {
   const session = Session.create(SessionId('generation-fold'))
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text: '你好' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
   const original = appendAssistant(session, 1, '第一版')
   const generated = appendAssistant(session, 2, '第二版')
-  const replacement = appendAssistant(session, 2, '第二版', { op: 'replace', startSeq: SessionSeq(0), endSeq: generated.seq })
   const groupId = '00000000-0000-4000-8000-000000000001'
   const firstState = {
     format: 0,
@@ -100,10 +101,9 @@ test('folds latest selectable reply group snapshots across replacement events', 
     assistantSeqs: [original.seq, generated.seq],
     versions: [{ seq: original.seq, text: '第一版' }, { seq: generated.seq, text: '第二版' }],
     selectedVersionSeq: generated.seq,
-    surfaceSeq: replacement.seq,
+    surfaceSeq: generated.seq,
   } as const
   session.append('command/done', { commandId: CommandId('generation-1'), kind: 'success', text: encodeGenerationState(firstState) })
-  const restored = appendAssistant(session, 1, '第一版', { op: 'replace', startSeq: replacement.seq, endSeq: replacement.seq })
   const selectedState = {
     format: 0,
     groupId,
@@ -113,14 +113,17 @@ test('folds latest selectable reply group snapshots across replacement events', 
     assistantSeqs: [original.seq, generated.seq],
     versions: [{ seq: original.seq, text: '第一版' }, { seq: generated.seq, text: '第二版' }],
     selectedVersionSeq: original.seq,
-    surfaceSeq: restored.seq,
+    surfaceSeq: generated.seq,
   } as const
   session.append('command/done', { commandId: CommandId('generation-2'), kind: 'success', text: encodeGenerationState(selectedState) })
 
   const [group] = readGenerationGroups(session.snapshotEvents())
   assert.equal(group?.selectedVersionSeq, original.seq)
-  assert.equal(group?.surfaceSeq, restored.seq)
-  assert.deepEqual(session.deriveMessages().map(message => message.content[0]?.type === 'text' ? message.content[0].text : ''), ['第一版'])
+  // 0.2.x：选择版本不再搬运表面，surfaceSeq 始终指向锚点之后最后 append 的版本。
+  assert.equal(group?.surfaceSeq, generated.seq)
+  // 表面保留两个 append 版本（平台禁止替换），提示词组装靠账本把非选中版本剔除。
+  assert.deepEqual(session.deriveMessages().map(message => message.content[0]?.type === 'text' ? message.content[0].text : ''), ['你好', '第一版', '第二版'])
+  assert.deepEqual([...hiddenReplyVersionSeqs(session.snapshotEvents())].sort((left, right) => left - right), [generated.seq])
 })
 
 test('rejects reply versions that reference a non-state event', () => {
@@ -161,8 +164,7 @@ test('regenerates without exposing the rejected reply to the replacement request
     inbox: { nextTurn: [], nextStep: [] },
     followup(message: ReturnType<typeof createUserMessage>) {
       session.append('user/message', message, { surfaceOp: 'append' })
-      requestTranscript = session.deriveMessages().map(item => item.content.flatMap(block =>
-        block.type === 'text' ? [block.text] : []).join('\n'))
+      requestTranscript = modelVisibleDialogue(session)
       appendAssistant(session, 2, '房间里只有安静的灯光。')
     },
     whenIdle: async () => {},
@@ -176,12 +178,17 @@ test('regenerates without exposing the rejected reply to the replacement request
   })
   const state = decodeGenerationState(result.text)
 
+  // 0.2.x 无法从日志里删除被否决的回复，抑制发生在账本与提示词视图之间：
+  // 生成请求发出的那一刻，模型看不到将要被替换的那一条。
   assert.equal(requestTranscript.some(text => text.includes('有问题的回复') || text.includes('<状态栏>')), false)
-  assert.deepEqual(session.deriveMessages().map(message => message.content.flatMap(block =>
-    block.type === 'text' ? [block.text] : []).join('\n')), [
+  assert.deepEqual(requestTranscript, ['请描述没有状态栏的房间。'])
+  assert.deepEqual(modelVisibleDialogue(session), [
     '请描述没有状态栏的房间。',
     '房间里只有安静的灯光。',
   ])
+  // 日志本身仍然留档被否决的回复，重放与审计不丢内容。
+  assert.equal(session.deriveMessages().some(message => message.content.some(block =>
+    block.type === 'text' && block.text.includes('有问题的回复'))), true)
   assert.deepEqual(state?.versions.map(version => version.text), [
     '有问题的回复\n<状态栏>仍然显示</状态栏>',
     '房间里只有安静的灯光。',
@@ -208,15 +215,20 @@ test('keeps adapter replay state only while reply content remains exact', async 
     content: [{ type: 'text', text: '重新写。' }], source: { kind: 'user' },
   }), { surfaceOp: 'append' })
   const rejected = appendReplayAssistant(regenerateSession, 1, '旧回复', 'old')
-  let placeholderReplay: unknown = replay('not-observed')
+  let requestDialogue: readonly string[] = []
+  let placeholderCount = 0
   const regenerateAgent = {
     session: regenerateSession,
     status: 'idle',
     inbox: { nextTurn: [], nextStep: [] },
     followup(message: ReturnType<typeof createUserMessage>) {
       regenerateSession.append('user/message', message, { surfaceOp: 'append' })
-      const placeholder = regenerateSession.deriveMessages().findLast(item => item.role === 'assistant')
-      placeholderReplay = placeholder?.source.kind === 'model' ? placeholder.source.replayState : undefined
+      // 0.2.x 不再写空占位 replace：请求时刻表面尾部仍是被否决的旧回复，
+      // 只是它已被账本抑制，不在模型可见历史里。
+      requestDialogue = modelVisibleDialogue(regenerateSession)
+      placeholderCount = regenerateSession.snapshotEvents()
+        .filter(event => event.type === 'assistant/message')
+        .filter(event => event.data.message.content.every(block => block.type === 'text' && block.text.trim() === '')).length
       appendReplayAssistant(regenerateSession, 2, '新回复', 'new')
     },
     whenIdle: async () => {},
@@ -227,7 +239,8 @@ test('keeps adapter replay state only while reply content remains exact', async 
     rawInput: JSON.stringify({ operation: 'regenerate', replySeq: rejected.seq }),
     signal: new AbortController().signal,
   })
-  assert.equal(placeholderReplay, undefined)
+  assert.equal(placeholderCount, 0)
+  assert.deepEqual(requestDialogue, ['重新写。'])
   const regenerated = regenerateSession.deriveMessages().findLast(item => item.role === 'assistant')
   assert.deepEqual(regenerated?.source.kind === 'model' ? regenerated.source.replayState : undefined, replay('new'))
 
@@ -379,8 +392,8 @@ test('restores the selected reply when isolated regeneration produces no replace
     signal: new AbortController().signal,
   }), /模型没有生成可用的角色回复/u)
 
-  assert.deepEqual(session.deriveMessages().map(message => message.content.flatMap(block =>
-    block.type === 'text' ? [block.text] : []).join('\n')), ['继续。', '保留这一版。'])
+  // 0.2.x 无法从日志里撤回已 append 的指令消息；恢复的是模型可见历史与脚本状态。
+  assert.deepEqual(modelVisibleDialogue(session), ['继续。', '保留这一版。'])
   assert.deepEqual(readTavernHelperState(session.snapshotEvents())?.scopes.message, { stat_data: { marker: 'retained-reply' } })
 })
 
@@ -411,12 +424,17 @@ test('continues from the selected MVU checkpoint without applying its old patch 
   })
 
   const continued = decodeGenerationState(result.text)
-  const continuationReplySeq = continued?.assistantSeqs.at(-1)
+  // 续写阶段 followup 落下的那段真实回复（第二段）是产物来源之一；
+  // 选中版本本身是之后 append 的拼接版，不作为自己的 artifact。
+  const continuationReplySeq = session.snapshotEvents()
+    .findLast(event => event.type === 'assistant/message'
+      && event.data.message.content.some(block => block.type === 'text' && block.text.startsWith('第二段')))?.seq
   if (continuationReplySeq === undefined) throw new Error('missing continuation reply fixture')
   assert.deepEqual(continued?.mvu, {
     statData: { 角色: { 等级: 4 } }, updateCount: 2,
   })
   assert.deepEqual(continued?.versions.at(-1)?.artifactReplySeqs, [original.seq, continuationReplySeq])
+  assert.equal(continued?.assistantSeqs.at(-1), continued?.selectedVersionSeq)
   assert.deepEqual(readCurrentSessionMvuState(card, session), {
     statData: { 角色: { 等级: 4 } }, updateCount: 2,
   })
