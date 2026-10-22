@@ -15,9 +15,9 @@ test('sidebar workbench declares entry motion and reduced-motion fallback', () =
   assert.match(source, /createPortal\(<RoleplayLaunchComposer/u)
   assert.match(source, /overflow-x: auto;/u)
   assert.match(source, /data-agent-rp-destination-icon/u)
-  assert.match(source, /ctx\.slots\.inject\('sidebar\.destinations'/u)
+  // 0.2.x 的侧栏是固定槽位清单，没有 destinations 列表；工作台入口只能挂 footer action。
+  assert.doesNotMatch(source, /ctx\.slots\.inject\('sidebar\.destinations'/u)
   assert.match(source, /ctx\.slots\.inject\('sidebar\.footer\.action'/u)
-  assert.match(source, /ctx\.slots\.spec\('sidebar\.destinations'\)/u)
   assert.match(source, /data-agent-rp-sidebar-slot="footer-action"/u)
   assert.match(source, /onClickCapture=\{trackSidebarMotion\}/u)
   assert.match(source, /requestAnimationFrame\(sample\)/u)

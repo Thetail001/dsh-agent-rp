@@ -42,15 +42,16 @@ import {
 } from './st-extension-surface.tsx'
 import { StoryWorkspaceEditor } from './story-workspace-editor.tsx'
 
-interface SidebarDestinationOwnerProps {
+/**
+ * Geometry the sidebar shell supplies to the workbench entry.
+ *
+ * 0.2.x has no `sidebar.destinations` slot any more (the sidebar is a fixed
+ * inventory: brand, panellist, workspaces, settings, footer action), so the
+ * workbench lives in `sidebar.footer.action` and measures its own column width.
+ */
+interface SidebarFooterGeometry {
   readonly wide: boolean
   readonly width: number
-}
-
-declare module '@deepseek-ai/dsh-client-ui-slots' {
-  interface SlotMap {
-    'sidebar.destinations': { kind: 'list'; scope: 'root'; owner: SidebarDestinationOwnerProps }
-  }
 }
 import { DEFAULT_AGENT_RP_CHARACTER_NAME, type AgentRpProjection } from '../projection-types.ts'
 import { resolveLegacySidebarWidth } from './sidebar-slot-compat.ts'
@@ -2775,12 +2776,10 @@ type SidebarRoleplayWorkbenchProps = Pick<HeaderProps,
   readonly workspaceList: WorkspaceListSource
 }
 
-type SidebarRoleplayDestinationProps = PropsRuntime<'sidebar.destinations'>
-  & PropsRenderSlots<typeof AGENT_RP_WORKBENCH_SECTION_SLOT>
-  & SidebarRoleplayWorkbenchProps
 type SidebarRoleplayFooterActionProps = PropsRuntime<'sidebar.footer.action'>
   & PropsRenderSlots<typeof AGENT_RP_WORKBENCH_SECTION_SLOT>
   & SidebarRoleplayWorkbenchProps
+type SidebarRoleplayDestinationProps = SidebarRoleplayFooterActionProps & Pick<SidebarFooterGeometry, 'width'>
 
 function RoleplayDestinationIcon({ size }: { readonly size: number }) {
   return <svg aria-hidden="true" viewBox="0 0 20 20" width={size} height={size} fill="none">
@@ -12740,8 +12739,14 @@ function SessionLaunchNoticeToast({ source }: { readonly source: SessionLaunchNo
   </div>
 }
 
-/** Client services required by the Roleplay shell. */
-export const inject = ['connection', 'conversationEvents', 'slots', 'sessions', 'workspaces']
+/**
+ * Client services required by the Roleplay shell.
+ *
+ * 0.2.x dropped the `conversationEvents` fan-out service: transcript reads now go
+ * through the Conversation view targets and the slot standard hooks (`useChat`,
+ * `useConversation`), while navigation moved into `uiWorkspace`.
+ */
+export const inject = ['connection', 'slots', 'sessions', 'uiConversation', 'uiWorkspace', 'workspaces']
 
 /** Register the Agent RP header, composer presentation, and import affordance. */
 export function apply(ctx: Context): void {
@@ -13523,17 +13528,11 @@ export function apply(ctx: Context): void {
     listWorldInfos, importWorldInfoFile, setWorldInfoDefault, deleteWorldInfo,
     startWorldInfoSession: startWorldInfoFromBlankSession,
   }
-  ctx.slots.inject('sidebar.destinations', () => ctx.slots.register({
-    name: 'sidebar.destinations', id: 'agent-rp-workbench', order: 20,
+  // 0.2.x 的侧栏是固定槽位清单，没有 destination 列表；工作台入口挂在 footer action 上。
+  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+    name: 'sidebar.footer.action', id: 'agent-rp-workbench', order: 20,
     children: { [AGENT_RP_WORKBENCH_SECTION_SLOT]: { kind: 'list', scope: 'root' } },
-  }, props => <SidebarRoleplayDestination {...props} {...sidebarRoleplayWorkbenchProps} />))
-  ctx.slots.inject('sidebar.footer.action', () => {
-    if (ctx.slots.spec('sidebar.destinations') !== undefined) return () => {}
-    return ctx.slots.register({
-      name: 'sidebar.footer.action', id: 'agent-rp-workbench', order: 20,
-      children: { [AGENT_RP_WORKBENCH_SECTION_SLOT]: { kind: 'list', scope: 'root' } },
-    }, props => <SidebarRoleplayFooterAction {...props} {...sidebarRoleplayWorkbenchProps} />)
-  })
+  }, props => <SidebarRoleplayFooterAction {...props} {...sidebarRoleplayWorkbenchProps} />))
   ctx.slots.inject(AGENT_RP_WORKBENCH_SECTION_SLOT, () => ctx.slots.register({
     name: AGENT_RP_WORKBENCH_SECTION_SLOT, id: 'agent-rp-installed-st-extension-settings', order: 40,
   }, props => <InstalledStExtensionWorkbenchSection {...props} surface={installedStExtensionSurface} />))
