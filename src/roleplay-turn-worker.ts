@@ -36,9 +36,14 @@ export interface RoleplayTurnWorkerResultRecord extends RoleplayTurnWorkerOutcom
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Ignorable content-free result from one deterministic post-narrative Worker. */
+    'plugin:agent-rp/turn-worker-result': RoleplayTurnWorkerResultRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Ignorable content-free result from one deterministic post-narrative Worker. */
-    'agent-rp/turn-worker-result': RoleplayTurnWorkerResultRecord
+    'plugin:agent-rp/turn-worker-result': RoleplayTurnWorkerResultRecord
   }
 }
 
@@ -62,7 +67,7 @@ export interface RoleplayTurnWorker {
 const phaseOrder: Readonly<Record<RoleplayTurnWorkerPhase, number>> = { review: 0, settle: 1 }
 
 function terminalExists(input: RoleplayTurnWorkerInput, workerId: string): boolean {
-  return input.agent.session.events.some(event => event.type === 'agent-rp/turn-worker-result'
+  return input.agent.session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/turn-worker-result'
     && event.data.turn === input.turn && event.data.step === input.plan.step
     && event.data.workerId === workerId)
 }
@@ -106,7 +111,7 @@ export class RoleplayTurnWorkerRegistry {
         phase: worker.phase,
         ...outcome,
       }
-      appendAgentRpSessionEvent(input.agent.session, 'agent-rp/turn-worker-result', record)
+      appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/turn-worker-result', record)
       results.push(record)
     }
     return results

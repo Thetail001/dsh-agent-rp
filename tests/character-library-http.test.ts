@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
-import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import {SessionId, type SessionEvent} from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from '../src/character-library.ts'
 import { installCharacterLibraryHttp } from '../src/character-library-http.ts'
 import { CHARACTER_LIBRARY_PATH } from '../src/character-library-protocol.ts'
@@ -99,7 +99,7 @@ test('permanently deletes only an archived Character Card unused by stable Sessi
   library.replaceText(imported.id, '门还没锁', '门没有锁')
   library.archive(imported.id)
   events = [{
-    type: 'agent-rp/character-card-seed', seq: 0, time: 1_800_000_000_000, ignorable: true,
+    type: 'plugin:agent-rp/character-card-seed', seq: 0, time: 1_800_000_000_000, ignorable: true,
     data: {
       format: 0,
       source: { characterLibraryId: imported.id },

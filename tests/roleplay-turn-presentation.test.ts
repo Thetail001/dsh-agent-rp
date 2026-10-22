@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AttachmentId, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { CommandId } from '@deepseek-ai/dsh-commands'
-import { CallId, createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId, type JsonValue } from '@deepseek-ai/dsh-session'
+import { ToolCallId, createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import { decodeGenerationState, encodeGenerationState, executeGenerationCommand } from '../src/generation.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
 import { ROLEPLAY_TURN_PHASES, type RoleplayRuntimeSnapshot } from '../src/roleplay-runtime.ts'
@@ -38,6 +38,7 @@ import {
 } from '../src/tavern-helper.ts'
 import { validateTavernMutationCause } from '../src/tavern-helper-command.ts'
 import { installIgnorableSessionEventFixture } from './session-event-fixture.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 installIgnorableSessionEventFixture()
 
@@ -89,14 +90,14 @@ function plan(session: Session, state: RoleplayRuntimeSnapshot['state'] = []): R
 }
 
 function appendReply(session: Session, turn: number, text: string) {
-  return session.append('assistant/message', {
+  return session.append('assistant/message', { stream: [],
     turn,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [{ type: 'text', text }],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  }, { surfaceOp: 'append' })
 }
 
 function appendAutoStagedArtifact(session: Session, turn: number, id: string) {
@@ -107,15 +108,15 @@ function appendAutoStagedArtifact(session: Session, turn: number, id: string) {
     width: 1,
     height: 1,
   }
-  const callId = CallId(`image-${id}`)
-  session.append('assistant/message', {
+  const callId = ToolCallId(`image-${id}`)
+  session.append('assistant/message', { stream: [],
     turn,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [{ type: 'tool-call', id: callId, name: 'generate_image', arguments: '{}' }],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  }, { surfaceOp: 'append' })
   const call = session.append('tool/call', {
     turn, step: 1, callId, name: 'generate_image', arguments: '{}',
   })
@@ -147,7 +148,7 @@ function settle(session: Session, turnPlan: RoleplayTurnPlan, turn: number, defe
     turn,
     result: 'completed',
     plans: [{ step: 1, plan: turnPlan }],
-    events: session.events,
+    events: session.snapshotEvents(),
     after: runtime(turnPlan.stateReads),
     ...(deferred ? {
       contributions: [{ moduleId: 'adapter:tavern-helper', outcome: 'deferred' as const }],
@@ -185,11 +186,11 @@ test('presents the settled reply with pending browser state and survives replay'
     { moduleId: 'roleplay:reply-versions', outcome: 'applied', changes: 1 },
     { moduleId: 'adapter:tavern-helper', outcome: 'pending', changes: 0 },
   ])
-  const reopened = Session.create(session.id, session.events)
-  assert.deepEqual(readRoleplayTurnPresentations(reopened.events), [presentation])
-  assert.deepEqual(readCurrentRoleplayTurnPresentation(reopened.events), presentation)
+  const reopened = Session.create(session.id, session.snapshotEvents())
+  assert.deepEqual(readRoleplayTurnPresentations(reopened.snapshotEvents()), [presentation])
+  assert.deepEqual(readCurrentRoleplayTurnPresentation(reopened.snapshotEvents()), presentation)
   let projected = agentRpProjectionDefinition.init()
-  for (const event of reopened.events) projected = agentRpProjectionDefinition.apply(projected, event)
+  for (const event of reopened.snapshotEvents()) projected = agentRpProjectionDefinition.apply(projected, event)
   assert.deepEqual(agentRpProjectionDefinition.wire.view(projected).presentation, presentation)
 })
 
@@ -204,48 +205,48 @@ test('binds only explicitly staged durable artifacts to the settled reply', () =
     width: 1,
     height: 1,
   }
-  const reply = session.append('assistant/message', {
+  const reply = session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [
         { type: 'text', text: '雨还没有停。' },
-        { type: 'tool-call', id: CallId('image-source'), name: 'generate_image', arguments: '{}' },
+        { type: 'tool-call', id: ToolCallId('image-source'), name: 'generate_image', arguments: '{}' },
       ],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  }, { surfaceOp: 'append' })
   const sourceCall = session.append('tool/call', {
-    turn: 1, step: 1, callId: CallId('image-source'), name: 'generate_image', arguments: '{}',
+    turn: 1, step: 1, callId: ToolCallId('image-source'), name: 'generate_image', arguments: '{}',
   })
   const sourceResult = session.append('tool/result', {
     turn: 1,
     step: 1,
     message: createToolResultMessage({
-      callId: CallId('image-source'), content: [{ type: 'text', text: '[image artifact]' }], isError: false,
+      callId: ToolCallId('image-source'), content: [{ type: 'text', text: '[image artifact]' }], isError: false,
     }),
     meta: {
       format: 'dsh.tool-artifacts', version: 0, artifacts: [{ type: 'image', attachment }],
     } as unknown as JsonValue,
   }, { surfaceOp: 'append', sourceEventSeqs: [sourceCall.seq] })
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [{
-        type: 'tool-call', id: CallId('image-stage'), name: 'stage_roleplay_artifact', arguments: '{}',
+        type: 'tool-call', id: ToolCallId('image-stage'), name: 'stage_roleplay_artifact', arguments: '{}',
       }],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  }, { surfaceOp: 'append' })
   const stageCall = session.append('tool/call', {
-    turn: 1, step: 1, callId: CallId('image-stage'), name: 'stage_roleplay_artifact', arguments: '{}',
+    turn: 1, step: 1, callId: ToolCallId('image-stage'), name: 'stage_roleplay_artifact', arguments: '{}',
   })
   session.append('tool/result', {
     turn: 1,
     step: 1,
     message: createToolResultMessage({
-      callId: CallId('image-stage'), content: [{ type: 'text', text: 'staged' }], isError: false,
+      callId: ToolCallId('image-stage'), content: [{ type: 'text', text: 'staged' }], isError: false,
     }),
     meta: {
       format: 'agent-rp.staged-artifact',
@@ -286,24 +287,24 @@ test('binds Thetail-compatible automatic publication artifacts to the settled re
     width: 1,
     height: 1,
   }
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [{
-        type: 'tool-call', id: CallId('image-publish'), name: 'publish_roleplay_image', arguments: '{}',
+        type: 'tool-call', id: ToolCallId('image-publish'), name: 'publish_roleplay_image', arguments: '{}',
       }],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  }, { surfaceOp: 'append' })
   const publishCall = session.append('tool/call', {
-    turn: 1, step: 1, callId: CallId('image-publish'), name: 'publish_roleplay_image', arguments: '{}',
+    turn: 1, step: 1, callId: ToolCallId('image-publish'), name: 'publish_roleplay_image', arguments: '{}',
   })
   const publishResult = session.append('tool/result', {
     turn: 1,
     step: 1,
     message: createToolResultMessage({
-      callId: CallId('image-publish'), content: [{ type: 'text', text: 'published' }], isError: false,
+      callId: ToolCallId('image-publish'), content: [{ type: 'text', text: 'published' }], isError: false,
     }),
     meta: {
       format: 'dsh.tool-artifacts',
@@ -340,7 +341,7 @@ test('records a blocked turn without inventing a selected reply', () => {
   const turnPlan = plan(session)
   const settlement = compileRoleplayTurnSettlement({
     sessionId: String(session.id), turn: 1, result: 'blocked',
-    plans: [{ step: 1, plan: turnPlan }], events: session.events, after: runtime(),
+    plans: [{ step: 1, plan: turnPlan }], events: session.snapshotEvents(), after: runtime(),
     contributions: [{ moduleId: 'adapter:tavern-helper', outcome: 'deferred' }],
   })
   const settlementEvent = appendRoleplayTurnSettlement(session, settlement)
@@ -375,9 +376,9 @@ test('attaches a late Tavern mutation to its causal reply after a later reply ex
   validateTavernMutationCause({ session } as never, mutation.cause)
   const mutated = applyTavernHelperMutation(initialTavern, mutation)
   const result = appendTavernHelperStateAttachment(session, mutated, cause, false)
-  const resultEvent = session.events[result.eventSeq]
-  assert.equal(resultEvent?.type, 'agent-rp/tavern-state-attachment')
-  if (resultEvent?.type !== 'agent-rp/tavern-state-attachment') throw new Error('missing attachment fixture')
+  const resultEvent = session.snapshotEvents()[result.eventSeq]
+  assert.equal(resultEvent?.type, 'plugin:agent-rp/tavern-state-attachment')
+  if (resultEvent?.type !== 'plugin:agent-rp/tavern-state-attachment') throw new Error('missing attachment fixture')
   const attached = compileSessionRoleplayTurnPresentationUpdate(session, resultEvent)
 
   assert.notEqual(attached, undefined)
@@ -389,9 +390,9 @@ test('attaches a late Tavern mutation to its causal reply after a later reply ex
     { id: 'state:mvu', status: 'attached', eventSeq: resultEvent.seq },
   ])
   assert.deepEqual(mutated.lastMutation?.cause, cause)
-  assert.equal(readTavernHelperState(session.events)?.revision, 0)
+  assert.equal(readTavernHelperState(session.snapshotEvents())?.revision, 0)
   let projected = agentRpProjectionDefinition.init()
-  for (const event of session.events) projected = agentRpProjectionDefinition.apply(projected, event)
+  for (const event of session.snapshotEvents()) projected = agentRpProjectionDefinition.apply(projected, event)
   assert.equal(agentRpProjectionDefinition.wire.view(projected).tavern?.revision, 0)
   assert.throws(() => validateTavernMutationCause({ session } as never, {
     ...cause, sessionId: 'another-session',
@@ -407,7 +408,7 @@ test('reply-version selection produces the current unified presentation', () => 
     session, settlementEvent, plans: [{ step: 1, plan: turnPlan }],
   }))
   const alternative = appendReply(session, 2, '第二版')
-  const surface = session.append('assistant/message', {
+  const surface = session.append('assistant/message', { stream: [],
     turn: 2,
     step: 1,
     message: createAssistantMessage({
@@ -415,8 +416,7 @@ test('reply-version selection produces the current unified presentation', () => 
       content: [{ type: 'text', text: '第二版' }],
     }),
   }, {
-    surfaceOp: { op: 'replace', start: original.seq, end: alternative.seq },
-    sourceEventSeqs: [original.seq, alternative.seq],
+    surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: alternative.seq },
   })
   const groupId = '00000000-0000-4000-8000-000000000183'
   const resultEvent = session.append('command/done', {
@@ -464,15 +464,14 @@ test('reply versions restore branch-local state and artifacts together after rep
   }))
   const alternativeArtifact = appendAutoStagedArtifact(session, 2, 'branch-alternative')
   const alternative = appendReply(session, 2, '第二版')
-  const surface = session.append('assistant/message', {
+  const surface = session.append('assistant/message', { stream: [],
     turn: 2,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: '第二版' }],
     }),
   }, {
-    surfaceOp: { op: 'replace', start: original.seq, end: alternative.seq },
-    sourceEventSeqs: session.surface.nodes.slice(session.surface.nodes.indexOf(original.seq)),
+    surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: alternative.seq },
   })
   const alternativeState = applyTavernHelperMutation(originalBase, {
     format: 0, scope: 'chat', variables: { marker: 'alternative' },
@@ -511,8 +510,8 @@ test('reply versions restore branch-local state and artifacts together after rep
     format: 0, scope: 'chat', variables: { marker: 'original-late' }, cause,
   })
   const attachment = appendTavernHelperStateAttachment(session, originalLate, cause, false)
-  const attachmentEvent = session.events[attachment.eventSeq]
-  if (attachmentEvent?.type !== 'agent-rp/tavern-state-attachment') throw new Error('missing attachment fixture')
+  const attachmentEvent = session.snapshotEvents()[attachment.eventSeq]
+  if (attachmentEvent?.type !== 'plugin:agent-rp/tavern-state-attachment') throw new Error('missing attachment fixture')
   const attachmentPresentation = compileSessionRoleplayTurnPresentationUpdate(session, attachmentEvent)
   if (attachmentPresentation === undefined) throw new Error('missing attachment presentation fixture')
   appendRoleplayTurnPresentation(session, attachmentPresentation)
@@ -531,7 +530,7 @@ test('reply versions restore branch-local state and artifacts together after rep
   const selected = decodeGenerationState(originalResult.text)
   assert.equal(selected?.selectedVersionSeq, original.seq)
   assert.equal(selected?.versions[0]?.tavernStateSeq, attachment.eventSeq)
-  assert.equal(readTavernHelperState(session.events)?.scopes.chat.marker, 'original-late')
+  assert.equal(readTavernHelperState(session.snapshotEvents())?.scopes.chat.marker, 'original-late')
   assert.deepEqual(originalPresentation.present.artifacts?.map(artifact => artifact.artifactId), [
     String(originalArtifact.attachment.attachmentId),
   ])
@@ -547,14 +546,14 @@ test('reply versions restore branch-local state and artifacts together after rep
   const alternativePresentation = compileSessionRoleplayTurnPresentationUpdate(session, alternativeResultEvent)
   if (alternativePresentation === undefined) throw new Error('missing alternative branch presentation fixture')
   appendRoleplayTurnPresentation(session, alternativePresentation)
-  assert.equal(readTavernHelperState(session.events)?.scopes.chat.marker, 'alternative')
+  assert.equal(readTavernHelperState(session.snapshotEvents())?.scopes.chat.marker, 'alternative')
   assert.deepEqual(alternativePresentation.present.artifacts?.map(artifact => artifact.artifactId), [
     String(alternativeArtifact.attachment.attachmentId),
   ])
 
-  const reopened = Session.create(session.id, session.events)
-  assert.equal(readTavernHelperState(reopened.events)?.scopes.chat.marker, 'alternative')
-  assert.deepEqual(readCurrentRoleplayTurnPresentation(reopened.events)?.present.artifacts
+  const reopened = Session.create(session.id, session.snapshotEvents())
+  assert.equal(readTavernHelperState(reopened.snapshotEvents())?.scopes.chat.marker, 'alternative')
+  assert.deepEqual(readCurrentRoleplayTurnPresentation(reopened.snapshotEvents())?.present.artifacts
     ?.map(artifact => artifact.artifactId), [String(alternativeArtifact.attachment.attachmentId)])
 })
 
@@ -583,7 +582,7 @@ test('presents arbitrary runtime modules without a source-specific core branch',
   const reply = appendReply(session, 1, '午夜钟声响起。')
   const settlement = compileRoleplayTurnSettlement({
     sessionId: String(session.id), turn: 1, result: 'completed',
-    plans: [{ step: 1, plan: genericPlan }], events: session.events, after: genericRuntime,
+    plans: [{ step: 1, plan: genericPlan }], events: session.snapshotEvents(), after: genericRuntime,
   })
   const settlementEvent = appendRoleplayTurnSettlement(session, settlement)
   const initial = compileInitialRoleplayTurnPresentation({

@@ -1,7 +1,7 @@
 /** Source-neutral Host extension seam for one Roleplay turn runtime. */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 import {
   ROLEPLAY_TURN_PHASES,
   type RoleplayModuleBinding,

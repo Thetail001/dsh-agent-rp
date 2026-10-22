@@ -1,6 +1,6 @@
 /** Model-free Character Card import into a native roleplay Session. */
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import {Session, SessionId, type SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
 import {
   prepareCharacterImportResult,
   type CharacterCardAttachmentRef,
@@ -26,9 +26,14 @@ export interface CharacterCardSeedRecord {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable model-free Character Card import that activates the preserved card. */
+    'plugin:agent-rp/character-card-seed': CharacterCardSeedRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable model-free Character Card import that activates the preserved card. */
-    'agent-rp/character-card-seed': CharacterCardSeedRecord
+    'plugin:agent-rp/character-card-seed': CharacterCardSeedRecord
   }
 }
 
@@ -72,8 +77,8 @@ export function createCharacterCardSessionSeed(
   const time = Date.now()
   const fromLibrary = libraryId !== undefined && String(attachment.attachmentId) === `library:${libraryId}`
   const events: SessionEvent[] = [{
-    type: 'agent-rp/character-card-seed',
-    seq: 0,
+    type: 'plugin:agent-rp/character-card-seed',
+    seq: SessionSeq(0),
     time,
     data: {
       format: 0,
@@ -86,8 +91,8 @@ export function createCharacterCardSessionSeed(
   }]
   if (persona !== undefined) {
     events.push({
-      type: 'agent-rp/persona-seed',
-      seq: events.length,
+      type: 'plugin:agent-rp/persona-seed',
+      seq: SessionSeq(events.length),
       time,
       data: { format: 0, persona },
       ignorable: true,
@@ -109,11 +114,12 @@ export function createCharacterCardSessionSeed(
           content: [{ type: 'text', text: renderedGreeting }],
           source: { provider: 'agent-rp-import', model: 'character-card' },
         }),
+        stream: [],
       },
       surfaceOp: 'append',
     })
     push({ type: 'step/end', time: time + 1, data: { turn: 1, step: 1 } })
     push({ type: 'turn/end', time: time + 1, data: { turn: 1, reason: { kind: 'completed' } } })
   }
-  return Object.freeze(Session.create(SessionId('agent-rp-character-card-import-validation'), events).events.slice(0, events.length))
+  return Object.freeze(Session.create(SessionId('agent-rp-character-card-import-validation'), events).snapshotEvents().slice(0, events.length))
 }

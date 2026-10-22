@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import { parseCharacterCardJsonBytes } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
 import { readActiveSessionCharacter } from '../src/import/session-character.ts'
@@ -23,12 +23,12 @@ test('seeds a native roleplay Session directly from one Character Card JSON', ()
   const seed = createCharacterCardSessionSeed(card, attachment, 0, greeting)
   const session = Session.create(SessionId('direct-card-import'), seed)
 
-  assert.equal(readActiveSessionCharacter(session.events)?.result.name, '白露')
+  assert.equal(readActiveSessionCharacter(session.snapshotEvents())?.result.name, '白露')
   assert.deepEqual(session.deriveMessages().map(message => ({
     role: message.role,
     text: message.content[0]?.type === 'text' ? message.content[0].text : undefined,
   })), [{ role: 'assistant', text: '门还没锁，你进来吧。' }])
-  assert.equal(seed[0]?.type, 'agent-rp/character-card-seed')
+  assert.equal(seed[0]?.type, 'plugin:agent-rp/character-card-seed')
 })
 
 test('keeps an empty greeting as an active blank character Session', () => {
@@ -50,7 +50,7 @@ test('snapshots one reusable Persona independently from the Character Card', () 
   const seed = createCharacterCardSessionSeed(card, attachment, 0, greeting, { transport: 'json' }, persona.name, persona)
 
   assert.deepEqual(readSessionPersona(seed), persona)
-  assert.equal(seed[1]?.type, 'agent-rp/persona-seed')
+  assert.equal(seed[1]?.type, 'plugin:agent-rp/persona-seed')
   assert.equal(seed[4]?.type, 'assistant/message')
 })
 
@@ -69,7 +69,7 @@ test('keeps an older import readable after a formerly degraded capability become
   const card = parseCharacterCardJsonBytes(readFileSync('tests/fixtures/manual-character-card.json'))
   const seed = createCharacterCardSessionSeed(card, attachment, 0, '')
   const first = seed[0]
-  if (first?.type !== 'agent-rp/character-card-seed') assert.fail('missing character seed')
+  if (first?.type !== 'plugin:agent-rp/character-card-seed') assert.fail('missing character seed')
   const legacySeed = [{
     ...first,
     data: {

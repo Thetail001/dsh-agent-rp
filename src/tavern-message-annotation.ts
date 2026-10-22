@@ -1,9 +1,10 @@
 /** Replayable per-message compatibility fields owned by isolated Tavern Helper scripts. */
 
-import { snapshotJsonValue, type JsonValue, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
+import {type Session, type SessionEvent} from '@deepseek-ai/dsh-session'
 import { decodeGenerationCommandResult } from './generation-command-result.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import { tavernScriptIdentity, type TavernScriptScope } from './tavern-script-identity.ts'
+import { snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 export type TavernMessageAnnotationValue = Readonly<Record<string, JsonValue>>
 
@@ -25,9 +26,14 @@ export interface TavernMessageAnnotationRecord {
 export type TavernMessageAnnotationState = Readonly<Record<string, TavernMessageAnnotationRecord>>
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** @mode event Script-owned SillyTavern message root fields bound to one transcript event. */
+    'plugin:agent-rp/tavern-message-annotation': TavernMessageAnnotationRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** @mode event Script-owned SillyTavern message root fields bound to one transcript event. */
-    'agent-rp/tavern-message-annotation': TavernMessageAnnotationRecord
+    'plugin:agent-rp/tavern-message-annotation': TavernMessageAnnotationRecord
   }
 }
 
@@ -118,7 +124,7 @@ export function indexTavernMessageAnnotations(
 }
 
 function annotationRecordsFromEvent(event: SessionEvent): readonly TavernMessageAnnotationRecord[] {
-  if (event.type === 'agent-rp/tavern-message-annotation') {
+  if (event.type === 'plugin:agent-rp/tavern-message-annotation') {
     return [parseTavernMessageAnnotationRecord(event.data)]
   }
   if (event.type !== 'command/done' || event.data.kind !== 'success') return []
@@ -181,7 +187,7 @@ export function appendTavernMessageAnnotationRecords(
 ): readonly number[] {
   return records.map(record => appendAgentRpSessionEvent(
     session,
-    'agent-rp/tavern-message-annotation',
+    'plugin:agent-rp/tavern-message-annotation',
     record,
   ).seq)
 }
@@ -214,7 +220,7 @@ export function logicalTavernMessageSeq(events: readonly SessionEvent[], surface
     try {
       generation = event.type === 'command/done' && event.data.kind === 'success'
         ? decodeGenerationCommandResult(event.data.text)
-        : event.type === ('agent-rp/generation-state' as SessionEvent['type'])
+        : event.type === ('plugin:agent-rp/generation-state' as SessionEvent['type'])
           ? (event as SessionEvent & { readonly data: Record<string, unknown> }).data
           : undefined
     } catch {

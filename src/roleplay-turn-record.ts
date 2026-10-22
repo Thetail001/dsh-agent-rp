@@ -1,6 +1,6 @@
 /** Pure Session-log projection that joins every phase of one Roleplay turn. */
 
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type {Session, SessionEvent} from '@deepseek-ai/dsh-session'
 import {
   ROLEPLAY_TURN_PHASES,
 } from './roleplay-runtime.ts'
@@ -22,6 +22,7 @@ import {
   type RoleplayTurnSettlement,
 } from './roleplay-turn-settlement.ts'
 import { readToolArtifactPresentationMeta } from './roleplay-artifact.ts'
+import type { AgentRpSessionEvent } from './session-event-compat.ts'
 
 /** Durable pre-dispatch reference associated with its exact Session event when available. */
 export interface RoleplayTurnPlanEvidence {
@@ -94,9 +95,9 @@ export interface RoleplayTurnRecord {
   readonly present?: RoleplayTurnPresentRecord
 }
 
-type TurnPlanEvent = SessionEvent<'agent-rp/turn-plan'>
-type TurnSettlementEvent = SessionEvent<'agent-rp/turn-settlement'>
-type TurnPresentationEvent = SessionEvent<'agent-rp/turn-presentation'>
+type TurnPlanEvent = AgentRpSessionEvent<'plugin:agent-rp/turn-plan'>
+type TurnSettlementEvent = AgentRpSessionEvent<'plugin:agent-rp/turn-settlement'>
+type TurnPresentationEvent = AgentRpSessionEvent<'plugin:agent-rp/turn-presentation'>
 
 function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
@@ -285,26 +286,26 @@ function selectedTurn(turns: ReadonlySet<number> | undefined, turn: number): boo
 }
 
 function readSelectedRoleplayTurnRecords(
-  session: Pick<Session, 'id' | 'events'>,
+  session: Pick<Session, 'id' | 'snapshotEvents'>,
   selectedTurns?: ReadonlySet<number>,
 ): readonly RoleplayTurnRecord[] {
   const sessionId = String(session.id)
-  const eventsBySeq = eventMap(session.events)
+  const eventsBySeq = eventMap(session.snapshotEvents())
   const starts = new Map<number, SessionEvent<'turn/start'>[]>()
   const ends = new Map<number, SessionEvent<'turn/end'>[]>()
   const plans = new Map<number, TurnPlanEvent[]>()
   const settlements = new Map<number, TurnSettlementEvent[]>()
   const presentations: TurnPresentationEvent[] = []
-  for (const event of session.events) {
+  for (const event of session.snapshotEvents()) {
     if (event.type === 'turn/start' && selectedTurn(selectedTurns, event.data.turn)) {
       appendGrouped(starts, event.data.turn, event)
     } else if (event.type === 'turn/end' && selectedTurn(selectedTurns, event.data.turn)) {
       appendGrouped(ends, event.data.turn, event)
-    } else if (event.type === 'agent-rp/turn-plan' && selectedTurn(selectedTurns, event.data.turn)) {
+    } else if (event.type === 'plugin:agent-rp/turn-plan' && selectedTurn(selectedTurns, event.data.turn)) {
       appendGrouped(plans, event.data.turn, event)
-    } else if (event.type === 'agent-rp/turn-settlement' && selectedTurn(selectedTurns, event.data.turn)) {
+    } else if (event.type === 'plugin:agent-rp/turn-settlement' && selectedTurn(selectedTurns, event.data.turn)) {
       appendGrouped(settlements, event.data.turn, event)
-    } else if (event.type === 'agent-rp/turn-presentation' && selectedTurn(selectedTurns, event.data.turn)) {
+    } else if (event.type === 'plugin:agent-rp/turn-presentation' && selectedTurn(selectedTurns, event.data.turn)) {
       presentations.push(event)
     }
   }
@@ -315,7 +316,7 @@ function readSelectedRoleplayTurnRecords(
   const presentationBySettlement = new Map<number, TurnPresentationEvent[]>()
   for (const event of presentations) {
     const settlement = eventsBySeq.get(event.data.settlementSeq)
-    if (settlement?.type !== 'agent-rp/turn-settlement') {
+    if (settlement?.type !== 'plugin:agent-rp/turn-settlement') {
       throw new Error('Roleplay presentation references a missing settlement event')
     }
     if (settlement.data.turn !== event.data.turn) {
@@ -359,8 +360,8 @@ function readSelectedRoleplayTurnRecords(
       eventsBySeq,
     })
     const actEvents = start === undefined || end === undefined
-      ? session.events
-      : session.events.slice(start.seq, end.seq + 1)
+      ? session.snapshotEvents()
+      : session.snapshotEvents().slice(start.seq, end.seq + 1)
     const act = settlement === undefined ? undefined : compileRoleplayActReceipt(
       actEvents,
       turn,
@@ -441,14 +442,14 @@ function readSelectedRoleplayTurnRecords(
 
 /** Derive every Roleplay turn from the canonical Session log and validate their causal joins. */
 export function readRoleplayTurnRecords(
-  session: Pick<Session, 'id' | 'events'>,
+  session: Pick<Session, 'id' | 'snapshotEvents'>,
 ): readonly RoleplayTurnRecord[] {
   return readSelectedRoleplayTurnRecords(session)
 }
 
 /** Derive one requested Roleplay turn without validating unrelated historical turns. */
 export function readRoleplayTurnRecord(
-  session: Pick<Session, 'id' | 'events'>,
+  session: Pick<Session, 'id' | 'snapshotEvents'>,
   turn: number,
 ): RoleplayTurnRecord | undefined {
   if (!Number.isSafeInteger(turn) || turn < 1) throw new Error('Roleplay turn must be a positive integer')
@@ -457,7 +458,7 @@ export function readRoleplayTurnRecord(
 
 /** Latest turn carrying any durable Roleplay phase evidence. */
 export function readLatestRoleplayTurnRecord(
-  session: Pick<Session, 'id' | 'events'>,
+  session: Pick<Session, 'id' | 'snapshotEvents'>,
 ): RoleplayTurnRecord | undefined {
   return readRoleplayTurnRecords(session).at(-1)
 }

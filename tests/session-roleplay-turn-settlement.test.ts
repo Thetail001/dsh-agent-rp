@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import { ROLEPLAY_TURN_PHASES, type RoleplayRuntimeSnapshot } from '../src/roleplay-runtime.ts'
 import type { RoleplayTurnPlan } from '../src/roleplay-turn-plan.ts'
 import { prepareRoleplayToolPolicy } from '../src/roleplay-tool-guidance.ts'
@@ -59,10 +59,10 @@ function plan(session: Session, snapshot = runtime()): RoleplayTurnPlan {
 
 function appendReply(session: Session, text: string, surfaceOp: 'append' | {
   readonly op: 'replace'
-  readonly start: number
-  readonly end: number
+  readonly startSeq: SessionSeq
+  readonly endSeq: SessionSeq
 } = 'append') {
-  return session.append('assistant/message', {
+  return session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
@@ -71,7 +71,6 @@ function appendReply(session: Session, text: string, surfaceOp: 'append' | {
     }),
   }, {
     surfaceOp,
-    sourceEventSeqs: surfaceOp === 'append' ? [] : [surfaceOp.start],
   })
 }
 
@@ -97,7 +96,7 @@ test('does not attribute a hidden old MVU failure to the selected reply', () => 
   session.append('turn/start', { turn: 1 })
   const turnPlan = plan(session, runtime([modules[0]!]))
   const invalid = appendReply(session, '<UpdateVariable>broken</UpdateVariable>')
-  appendReply(session, '当前选中的正常回复', { op: 'replace', start: invalid.seq, end: invalid.seq })
+  appendReply(session, '当前选中的正常回复', { op: 'replace', startSeq: invalid.seq, endSeq: invalid.seq })
 
   assert.deepEqual(collectSessionRoleplaySettlementContributions({
     session,

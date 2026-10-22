@@ -1,12 +1,13 @@
 /** Minimal persistent MVU state for imported Character Cards. */
 
-import { snapshotJsonValue, type JsonValue, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
+import {type Session, type SessionEvent} from '@deepseek-ai/dsh-session'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { ImportedCharacterCard, ImportedLorebook } from './import/types.ts'
-import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import { appendAgentRpSessionEvent, type AgentRpAppendResult } from './session-event-compat.ts'
 import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
 import { decodeActiveTavernHelperState } from './tavern-helper.ts'
 import { decodeGenerationMvuCheckpoint } from './generation-command-result.ts'
+import { snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-util-values'
 import {
   substituteSillyTavernIdentityMacros,
   type SillyTavernIdentityMacroValues,
@@ -38,9 +39,14 @@ export interface MvuStateSnapshot {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** @mode event Complete MVU state selected for the active reply version. */
+    'plugin:agent-rp/mvu-state': MvuStateSnapshot
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** @mode event Complete MVU state selected for the active reply version. */
-    'agent-rp/mvu-state': MvuStateSnapshot
+    'plugin:agent-rp/mvu-state': MvuStateSnapshot
   }
 }
 
@@ -113,7 +119,7 @@ export function readCurrentMvuStateFromLorebooks(
   let lastError: string | undefined
   let source: MvuStateSnapshot['source']
   for (const event of events) {
-    if (event.type === 'agent-rp/mvu-state') {
+    if (event.type === 'plugin:agent-rp/mvu-state') {
       statData = event.data.statData
       updateCount = event.data.updateCount
       lastError = event.data.lastError
@@ -133,11 +139,11 @@ export function readCurrentMvuStateFromLorebooks(
         continue
       }
     }
-    if (event.type === 'agent-rp/tavern-state' || event.type === 'agent-rp/tavern-state-attachment'
+    if (event.type === 'plugin:agent-rp/tavern-state' || event.type === 'plugin:agent-rp/tavern-state-attachment'
       || (event.type === 'command/done' && event.data.kind === 'success')) {
-      const scriptState = event.type === 'agent-rp/tavern-state'
+      const scriptState = event.type === 'plugin:agent-rp/tavern-state'
         ? event.data
-        : event.type === 'agent-rp/tavern-state-attachment'
+        : event.type === 'plugin:agent-rp/tavern-state-attachment'
           ? event.data.active ? event.data.state : undefined
           : decodeActiveTavernHelperState(event.data.text)
       const scope = scriptState?.lastMutation?.scope
@@ -191,8 +197,8 @@ export function readCurrentMvuState(
 export function appendMvuState(
   session: Session,
   state: MvuStateSnapshot,
-): SessionEvent<'agent-rp/mvu-state'> {
-  return appendAgentRpSessionEvent(session, 'agent-rp/mvu-state', state)
+): AgentRpAppendResult<'plugin:agent-rp/mvu-state'> {
+  return appendAgentRpSessionEvent(session, 'plugin:agent-rp/mvu-state', state)
 }
 
 /** Fold MVU updates from the current model-visible Session surface plus durable script mutations. */
@@ -212,7 +218,7 @@ export function readCurrentSessionMvuStateFromLorebooks(
   session: Session,
 ): ReturnType<typeof readCurrentMvuStateFromLorebooks> {
   const surface = new Set(session.surface.nodes)
-  return readCurrentMvuStateFromLorebooks(lorebooks, session.events.filter(event =>
+  return readCurrentMvuStateFromLorebooks(lorebooks, session.snapshotEvents().filter(event =>
     event.type !== 'assistant/message' || surface.has(event.seq)))
 }
 
@@ -229,7 +235,7 @@ export function mvuTurnSettlementContribution(input: {
     return { moduleId: MVU_ROLEPLAY_MODULE_ID, outcome: 'failed', error }
   }
   const visible = new Set(input.session.surface.nodes)
-  const failedThisTurn = input.session.events.some(event => event.seq >= input.firstSeq
+  const failedThisTurn = input.session.snapshotEvents().some(event => event.seq >= input.firstSeq
     && event.type === 'assistant/message' && event.data.turn === input.turn && visible.has(event.seq)
     && /<UpdateVariable(?:variable)?>/iu.test(event.data.message.content
       .flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')))

@@ -6,7 +6,7 @@ import {
   compileStExtensionGenerationRuntime,
   parseStExtensionHostMessage,
 } from '../src/client/st-extension-document.ts'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import {SessionId} from '@deepseek-ai/dsh-session'
 import type { InstalledStExtensionEntry } from '../src/client/st-extension-registry.ts'
 import { tavernPageSnapshot } from '../src/client/tavern-snapshot.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'

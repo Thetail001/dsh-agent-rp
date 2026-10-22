@@ -1,6 +1,6 @@
 /** Stable character identity and dynamic memory context rendering. */
 
-import type { Session, SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
+import type {Session, SessionEvent, UserMessage} from '@deepseek-ai/dsh-session'
 import type { ResolvedConfig } from './config.ts'
 import { activateLorebook, type LorebookActivationOptions } from './import/lorebook.ts'
 import type { ImportedCharacterCard, ImportedLorebook } from './import/types.ts'
@@ -9,6 +9,8 @@ import { readAgentRpMemoryHistory, type AgentRpMemoryRecord } from './memory.ts'
 import { substituteMvuMacros } from './mvu.ts'
 import type { EjsTemplateMessage } from './ejs-template.ts'
 import { PROMPT_REGEX_SOURCE_MARKER, readPromptRegexSourceMarker } from './frontend-regex.ts'
+import { hiddenReplyVersionSeqs } from './generation-state-record.ts'
+import { messageEditContents } from './message-edit.ts'
 import { substituteSillyTavernIdentityMacros } from './sillytavern-identity-macro.ts'
 import { createNativeWorldEngine } from './world-engine.ts'
 import { hasTurnVariantRoleplaySyntax, ReplayableRoleplayMacros } from './roleplay-macro.ts'
@@ -20,7 +22,7 @@ const MEMORY_BEHAVIOR = '已记录的持久背景不是本轮必须提及的话�
 const IMPORT_BEHAVIOR = '用户附带 SillyTavern 角色卡 PNG、JSON 或 CHARX 并要求导入、接管或切换角色时，调用 import_character_card；附带独立 World Info / 世界书 JSON 并要求导入时，调用 import_world_info；附带 Chat Completion 预设 JSON 并要求导入时，调用 import_sillytavern_preset。一条消息附有多个同类文件时才指定从零开始的 attachmentIndex。导入成功后直接采用新角色、世界设定或预设，不解释内部格式。'
 const MVU_OUTPUT_BEHAVIOR = '每次回复都必须在正文末尾完整输出一个 <UpdateVariable><Analysis>…</Analysis><JSONPatch>[…]</JSONPatch></UpdateVariable>；没有变量变化时 JSONPatch 也输出空数组。'
 
-function finalizeRoleplayPrompt(value: string, statData?: import('@deepseek-ai/dsh-session').JsonValue): string {
+function finalizeRoleplayPrompt(value: string, statData?: import('@deepseek-ai/dsh-util-values').JsonValue): string {
   let result = substituteMvuMacros(value, statData)
   for (;;) {
     const next = result.replace(/\{\{[^{}]*\}\}/gu, '')
@@ -37,7 +39,7 @@ function renderCardTemplate(value: string, options: LorebookActivationOptions): 
 
 function withResolvedLorebookMacros(
   options: LorebookActivationOptions,
-  statData: import('@deepseek-ai/dsh-session').JsonValue | undefined,
+  statData: import('@deepseek-ai/dsh-util-values').JsonValue | undefined,
 ): LorebookActivationOptions {
   return {
     ...options,
@@ -136,7 +138,7 @@ export function renderSessionLorebooks(input: {
   readonly session: Session
   readonly pendingMessages?: readonly UserMessage[]
   readonly scanText?: readonly string[]
-  readonly statData?: import('@deepseek-ai/dsh-session').JsonValue
+  readonly statData?: import('@deepseek-ai/dsh-util-values').JsonValue
   readonly templateOptions?: LorebookActivationOptions
   readonly tokenBudget?: number
 }) {
@@ -207,7 +209,7 @@ export function renderImportedCharacterPrompt(
   loreBefore: readonly string[],
   loreAfter: readonly string[],
   userName?: string,
-  statData?: import('@deepseek-ai/dsh-session').JsonValue,
+  statData?: import('@deepseek-ai/dsh-util-values').JsonValue,
   userPersona?: string,
   templateOptions: LorebookActivationOptions = {},
   macros?: ReplayableRoleplayMacros,
@@ -268,19 +270,45 @@ function dialogueTranscript(messages: readonly DerivedSessionMessage[]): EjsTemp
   })
 }
 
+/**
+ * 0.2.1: swipe 版本全部以 append 形式留在表面上，账本决定选中版本。
+ * 模型可见历史必须剔除非选中版本，否则被 swipe 掉的旧回复会进入提示词。
+ * 与 Session.deriveMessages() 相同的遍历方式（surface.nodes + deriveEventMessage，
+ * 跳过 null），仅额外跳过账本隐藏的 seq。
+ */
+function ledgerVisibleMessages(session: Session): DerivedSessionMessage[] {
+  const events = session.snapshotEvents()
+  const hidden = hiddenReplyVersionSeqs(events)
+  if (hidden.size === 0) return session.deriveMessages()
+  const messages: DerivedSessionMessage[] = []
+  for (const node of session.surface.nodes) {
+    const seq = Number(node)
+    if (hidden.has(seq)) continue
+    const event = events[seq]
+    if (event === undefined) continue
+    const message = session.deriveEventMessage(event)
+    if (message !== null) messages.push(message)
+  }
+  return messages
+}
+
 function preRegexDialogue(session: Session): DerivedSessionMessage[] {
-  return session.deriveMessages().map(message => {
+  const edits = messageEditContents(session.snapshotEvents())
+  return ledgerVisibleMessages(session).map(message => {
     const marker = readPromptRegexSourceMarker(
       (message.source as unknown as Record<string, unknown>)[PROMPT_REGEX_SOURCE_MARKER],
     )
     if (marker === undefined) return message
-    const event = session.events[marker.originalSeq]
+    const event = session.snapshotEvents()[marker.originalSeq]
     const original = event?.type === 'user/message'
       ? event.data
       : event?.type === 'assistant/message'
         ? event.data.message
         : undefined
-    return original?.role === message.role ? original : message
+    if (original?.role !== message.role) return message
+    // 0.2.1: 楼层内容编辑在投影层。lorebook 扫描用编辑后、正则前的文本。
+    const edited = edits.get(marker.originalSeq)
+    return edited === undefined ? original : { ...original, content: edited }
   })
 }
 
@@ -328,7 +356,7 @@ export function renderImportedLorebook(
   card: ImportedCharacterCard,
   session: Session,
   pendingMessages: readonly UserMessage[] = [],
-  statData?: import('@deepseek-ai/dsh-session').JsonValue,
+  statData?: import('@deepseek-ai/dsh-util-values').JsonValue,
   scanText: readonly string[] = [],
   templateOptions: LorebookActivationOptions = {},
 ) {

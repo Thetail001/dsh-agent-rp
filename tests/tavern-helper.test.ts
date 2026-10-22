@@ -3,7 +3,7 @@ import test from 'node:test'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import {Session, SessionId, type SessionEvent} from '@deepseek-ai/dsh-session'
 import { CommandId } from '@deepseek-ai/dsh-commands'
 import { AGENT_RP_CAPABILITIES } from '../src/extension-capability.ts'
 import {
@@ -89,7 +89,7 @@ function runtimeMessage(
 
 test('projects model reasoning without exposing it as visible transcript text', () => {
   const session = Session.create(SessionId('reasoning-projection'))
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
@@ -101,7 +101,7 @@ test('projects model reasoning without exposing it as visible transcript text', 
     }),
   }, { surfaceOp: 'append' })
   let state = agentRpProjectionDefinition.init()
-  for (const event of session.events) state = agentRpProjectionDefinition.apply(state, event)
+  for (const event of session.snapshotEvents()) state = agentRpProjectionDefinition.apply(state, event)
 
   assert.deepEqual(state.surface, [{
     seq: 0,
@@ -244,8 +244,8 @@ test('forwards one approved custom generation without retaining chat history at 
     const result = await runTavernGeneration(ctx, request)
     assert.equal(result.text, '辅助结果')
     assert.equal(auditEvents.length, 2)
-    assert.equal(auditEvents[0]?.type, 'agent-rp/tavern-generation-request')
-    assert.equal(auditEvents[1]?.type, 'agent-rp/tavern-generation-result')
+    assert.equal(auditEvents[0]?.type, 'plugin:agent-rp/tavern-generation-request')
+    assert.equal(auditEvents[1]?.type, 'plugin:agent-rp/tavern-generation-result')
     const auditText = JSON.stringify(auditEvents)
     assert.doesNotMatch(auditText, /test-key|hook-key/u)
     assert.match(auditText, /"origin":"https:\/\/example\.com"/u)
@@ -464,20 +464,20 @@ test('cancels an active custom generation when its browser request closes', asyn
 
 test('summarizes successful, failed, and pending auxiliary generations without content', () => {
   const events = [
-    auxiliaryEvent('agent-rp/tavern-generation-request', 0, {
+    auxiliaryEvent('plugin:agent-rp/tavern-generation-request', 0, {
       ...auxiliaryRequestData('success'),
       dispatch: {
         kind: 'host-model', provider: 'fixture', model: 'fixture', messages: [], system: 'private prompt',
       },
     }),
-    auxiliaryEvent('agent-rp/tavern-generation-result', 1, {
+    auxiliaryEvent('plugin:agent-rp/tavern-generation-result', 1, {
       format: 0, requestId: 'success', requestSeq: 0, result: { kind: 'success', text: 'private result' },
     }),
-    auxiliaryEvent('agent-rp/tavern-generation-request', 2, auxiliaryRequestData('failure')),
-    auxiliaryEvent('agent-rp/tavern-generation-result', 3, {
+    auxiliaryEvent('plugin:agent-rp/tavern-generation-request', 2, auxiliaryRequestData('failure')),
+    auxiliaryEvent('plugin:agent-rp/tavern-generation-result', 3, {
       format: 0, requestId: 'failure', requestSeq: 2, result: { kind: 'failure', failure: 'provider' },
     }),
-    auxiliaryEvent('agent-rp/tavern-generation-request', 4, auxiliaryRequestData('pending')),
+    auxiliaryEvent('plugin:agent-rp/tavern-generation-request', 4, auxiliaryRequestData('pending')),
   ]
   const summary = summarizeTavernAuxiliaryGenerations(events)
   assert.deepEqual(summary, { requests: 3, succeeded: 1, failed: 1, pending: 1, malformed: 0 })
@@ -489,19 +489,19 @@ test('summarizes successful, failed, and pending auxiliary generations without c
 
 test('counts broken auxiliary generation links without settling valid requests', () => {
   const events = [
-    auxiliaryEvent('agent-rp/tavern-generation-request', 0, auxiliaryRequestData('settled')),
-    auxiliaryEvent('agent-rp/tavern-generation-result', 1, {
+    auxiliaryEvent('plugin:agent-rp/tavern-generation-request', 0, auxiliaryRequestData('settled')),
+    auxiliaryEvent('plugin:agent-rp/tavern-generation-result', 1, {
       format: 0, requestId: 'settled', requestSeq: 0, result: { kind: 'success', text: 'ok' },
     }),
-    auxiliaryEvent('agent-rp/tavern-generation-result', 2, {
+    auxiliaryEvent('plugin:agent-rp/tavern-generation-result', 2, {
       format: 0, requestId: 'settled', requestSeq: 0, result: { kind: 'failure', failure: 'provider' },
     }),
-    auxiliaryEvent('agent-rp/tavern-generation-result', 3, {
+    auxiliaryEvent('plugin:agent-rp/tavern-generation-result', 3, {
       format: 0, requestId: 'missing', requestSeq: 99, result: { kind: 'failure', failure: 'unknown' },
     }),
-    auxiliaryEvent('agent-rp/tavern-generation-request', 4, auxiliaryRequestData('settled')),
-    auxiliaryEvent('agent-rp/tavern-generation-request', 5, auxiliaryRequestData('pending')),
-    auxiliaryEvent('agent-rp/tavern-generation-result', 6, {
+    auxiliaryEvent('plugin:agent-rp/tavern-generation-request', 4, auxiliaryRequestData('settled')),
+    auxiliaryEvent('plugin:agent-rp/tavern-generation-request', 5, auxiliaryRequestData('pending')),
+    auxiliaryEvent('plugin:agent-rp/tavern-generation-result', 6, {
       format: 0, requestId: 'pending', requestSeq: 4, result: { kind: 'success', text: 'wrong link' },
     }),
   ]
@@ -609,11 +609,11 @@ test('keeps inactive causal command attachments replayable without selecting the
     commandId, name: 'rp-tavern-state', args: '{}', source: { kind: 'user' },
   })
   session.append('command/done', { commandId, kind: 'success', text: inactiveText })
-  assert.equal(readTavernHelperStateSnapshot(session.events), undefined)
-  assert.deepEqual(readTavernHelperStateSnapshotAt(session.events, 1), { eventSeq: 1, state })
+  assert.equal(readTavernHelperStateSnapshot(session.snapshotEvents()), undefined)
+  assert.deepEqual(readTavernHelperStateSnapshotAt(session.snapshotEvents(), 1), { eventSeq: 1, state })
 
   let projected = agentRpProjectionDefinition.init()
-  for (const event of session.events) projected = agentRpProjectionDefinition.apply(projected, event)
+  for (const event of session.snapshotEvents()) projected = agentRpProjectionDefinition.apply(projected, event)
   assert.equal(projected.tavern, undefined)
 })
 
@@ -649,10 +649,10 @@ test('persists a causal script mutation through command/done on the published Ho
   assert.match(result.text ?? '', /^agent-rp-tavern-helper-attachment-v0:/u)
   session.append('command/done', { commandId, ...result })
 
-  assert.equal(session.events.some(event => event.type === 'agent-rp/tavern-state-attachment'), false)
-  assert.deepEqual(readTavernHelperStateSnapshot(session.events)?.state.scopes.chat, { mood: 'calm' })
-  const reopened = Session.create(SessionId('published-tavern-command-replay'), session.events)
-  assert.deepEqual(readTavernHelperStateSnapshot(reopened.events), readTavernHelperStateSnapshot(session.events))
+  assert.equal(session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/tavern-state-attachment'), false)
+  assert.deepEqual(readTavernHelperStateSnapshot(session.snapshotEvents())?.state.scopes.chat, { mood: 'calm' })
+  const reopened = Session.create(SessionId('published-tavern-command-replay'), session.snapshotEvents())
+  assert.deepEqual(readTavernHelperStateSnapshot(reopened.snapshotEvents()), readTavernHelperStateSnapshot(session.snapshotEvents()))
 })
 
 test('keeps script-owned message annotations across reloads and reply-version selection', () => {
@@ -678,7 +678,7 @@ test('keeps script-owned message annotations across reloads and reply-version se
   session.append('user/message', createUserMessage({
     content: [{ type: 'text', text: '开始' }], source: { kind: 'user' },
   }), { surfaceOp: 'append' })
-  const original = session.append('assistant/message', {
+  const original = session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
@@ -712,25 +712,24 @@ test('keeps script-owned message annotations across reloads and reply-version se
   })
   assert.match(persisted.text ?? '', /^agent-rp-tavern-message-annotations-v0:/u)
   session.append('command/done', { commandId: annotationCommand, ...persisted })
-  assert.deepEqual(Object.values(readTavernMessageAnnotations(session.events)).map(record => record.value), [annotation])
+  assert.deepEqual(Object.values(readTavernMessageAnnotations(session.snapshotEvents())).map(record => record.value), [annotation])
 
   const project = (source: Session) => {
     let state = agentRpProjectionDefinition.init()
-    for (const event of source.events) state = agentRpProjectionDefinition.apply(state, event)
+    for (const event of source.snapshotEvents()) state = agentRpProjectionDefinition.apply(state, event)
     return agentRpProjectionDefinition.wire.view(state)
   }
   const owner = tavernScriptIdentity('character', 'database')
   assert.deepEqual(project(session).tavern?.messages.at(-1)?.annotations?.[owner], annotation)
 
-  const alternative = session.append('assistant/message', {
+  const alternative = session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
       content: [{ type: 'text', text: '新回复' }], source: { provider: 'fixture', model: 'fixture' },
     }),
   }, {
-    surfaceOp: { op: 'replace', start: original.seq, end: original.seq },
-    sourceEventSeqs: [original.seq],
+    surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: original.seq },
   })
   const groupId = '12345678-1234-4234-8234-123456789abc'
   const versions = [
@@ -759,8 +758,7 @@ test('keeps script-owned message annotations across reloads and reply-version se
   assert.equal(project(session).tavern?.messages.at(-1)?.annotations, undefined)
 
   const selectedOriginal = session.append('assistant/message', original.data, {
-    surfaceOp: { op: 'replace', start: alternative.seq, end: alternative.seq },
-    sourceEventSeqs: [alternative.seq, original.seq],
+    surfaceOp: { op: 'replace', startSeq: alternative.seq, endSeq: alternative.seq },
   })
   const selectCommand = CommandId('restore-original-annotation-branch')
   session.append('command/run', {
@@ -781,7 +779,7 @@ test('keeps script-owned message annotations across reloads and reply-version se
       surfaceSeq: selectedOriginal.seq,
     }),
   })
-  const reopened = Session.create(SessionId('tavern-message-annotation-reopened'), session.events)
+  const reopened = Session.create(SessionId('tavern-message-annotation-reopened'), session.snapshotEvents())
   assert.deepEqual(project(reopened).tavern?.messages.at(-1)?.annotations?.[owner], annotation)
 })
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import { executeTavernChatMutation } from '../src/tavern-chat.ts'
 
 function createTranscript(...messages: readonly { readonly role: 'assistant' | 'user'; readonly text: string }[]): {
@@ -18,7 +18,7 @@ function createTranscript(...messages: readonly { readonly role: 'assistant' | '
       }), { surfaceOp: 'append' })
       continue
     }
-    session.append('assistant/message', {
+    session.append('assistant/message', { stream: [],
       turn: 1,
       step: 1,
       message: createAssistantMessage({

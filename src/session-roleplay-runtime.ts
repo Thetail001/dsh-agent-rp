@@ -1,6 +1,6 @@
 /** Session-log adapter from current SillyTavern assets into the native Roleplay runtime. */
 
-import type { Session } from '@deepseek-ai/dsh-session'
+import type {Session} from '@deepseek-ai/dsh-session'
 import type { ResolvedConfig } from './config.ts'
 import { cardFromImportMeta, readActiveSessionCharacter } from './import/session-character.ts'
 import { readSillyTavernChatIdentity, type SillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
@@ -111,7 +111,7 @@ export function resolveSessionRoleplayRuntime(input: {
   readonly templateEngineAvailable?: boolean
   readonly extensions?: RoleplayRuntimeExtensionRegistry
 }): ResolvedSessionRoleplayRuntime {
-  const events = input.session.events
+  const events = input.session.snapshotEvents()
   const activeCharacter = readActiveSessionCharacter(events)
   const importedCard = activeCharacter === undefined ? undefined : cardFromImportMeta(activeCharacter.meta)
   const importedChat = readSillyTavernChatIdentity(events)

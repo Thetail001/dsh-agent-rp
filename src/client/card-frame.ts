@@ -1,6 +1,5 @@
 /** Browser-side compilation of character display segments into isolated iframe documents. */
 
-import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import {
@@ -27,6 +26,7 @@ import {
 import type { CardVariableScope } from './card-capability.ts'
 import type { CardFrameAppearance } from './card-frame-appearance.ts'
 import { embeddedNativeIdentityRelayRuntime } from './embedded-identity.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** One browser-ready display piece consumed directly by the React view. */
 export type CompiledCardFrameSegment =

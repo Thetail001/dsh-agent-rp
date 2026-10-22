@@ -17,3 +17,8 @@ node_modules/
 .runtime-*
 .runtime-web-*.log
 *.tgz
+
+# Local host-runner harness state (upgrades, backups, retained patches)
+host-runner/package-lock.json
+host-runner/*.bak-*
+host-runner/patches/

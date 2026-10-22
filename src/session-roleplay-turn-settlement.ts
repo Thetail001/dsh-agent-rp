@@ -1,6 +1,6 @@
 /** Session-adapter contributions to the source-neutral Roleplay settlement. */
 
-import type { Session } from '@deepseek-ai/dsh-session'
+import type {Session} from '@deepseek-ai/dsh-session'
 import {
   MVU_ROLEPLAY_MODULE_ID,
   mvuTurnSettlementContribution,

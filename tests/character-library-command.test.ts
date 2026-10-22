@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { CommandId } from '@deepseek-ai/dsh-commands'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from '../src/character-library.ts'
 import { executeCharacterLibraryCommand } from '../src/character-library-command.ts'
 
@@ -30,5 +30,5 @@ test('rejects the obsolete live-Agent character launch command', (context) => {
     agent,
     rawInput: JSON.stringify({ format: 0, characterId: entry.id, greetingIndex: 1 }),
   }), /旧角色启动入口已停用/u)
-  assert.equal(agent.session.events.some(event => event.type === 'turn/start'), false)
+  assert.equal(agent.session.snapshotEvents().some(event => event.type === 'turn/start'), false)
 })

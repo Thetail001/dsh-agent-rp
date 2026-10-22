@@ -1,7 +1,8 @@
 /** Durable, source-neutral result compiled when one Roleplay turn closes. */
 
 import { createHash } from 'node:crypto'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionSeq } from '@deepseek-ai/dsh-session'
+import type {Session, SessionEvent} from '@deepseek-ai/dsh-session'
 import { readAgentRpMemoryHistory } from './memory.ts'
 import { MVU_ROLEPLAY_MODULE_ID, MVU_ROLEPLAY_STATE_ID } from './mvu.ts'
 import {
@@ -13,7 +14,7 @@ import {
   type RoleplayTurnSettlementContribution,
 } from './roleplay-runtime.ts'
 import type { RoleplayTurnInputKey, RoleplayTurnPlan } from './roleplay-turn-plan.ts'
-import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import { appendAgentRpSessionEvent, type AgentRpSessionEvent } from './session-event-compat.ts'
 import {
   readRoleplayStateActionIntent,
   renderLegacyRoleplayStateActionGuidance,
@@ -308,9 +309,14 @@ export interface RoleplayTurnSettlement {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Informational Roleplay settlement; losing it does not change Session reconstruction. */
+    'plugin:agent-rp/turn-settlement': RoleplayTurnSettlement
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Informational Roleplay settlement; losing it does not change Session reconstruction. */
-    'agent-rp/turn-settlement': RoleplayTurnSettlement
+    'plugin:agent-rp/turn-settlement': RoleplayTurnSettlement
   }
 }
 
@@ -369,7 +375,7 @@ function latestTurnReply(
       if (event.surfaceOp === 'append') surface.add(event.seq)
       else if (event.surfaceOp !== undefined) {
         for (const seq of [...surface]) {
-          if (seq >= event.surfaceOp.start && seq <= event.surfaceOp.end) surface.delete(seq)
+          if (seq >= event.surfaceOp.startSeq && seq <= event.surfaceOp.endSeq) surface.delete(seq)
         }
         surface.add(event.seq)
       }
@@ -377,8 +383,7 @@ function latestTurnReply(
   }
   const actionReplies = events.flatMap(event => {
     if (event.type !== 'tool/result' || event.data.turn !== turn
-      || event.data.message.content[0]?.type !== 'tool-result'
-      || event.data.message.content[0].isError === true || event.data.error !== undefined) return []
+      || event.data.message.isError === true || event.data.error !== undefined) return []
     const intent = readRoleplayStateActionIntent(event.data.meta)
     if (intent === undefined || intent.turn !== turn) return []
     const assistant = events[intent.assistantEventSeq]
@@ -421,12 +426,12 @@ function exactTurnEvents(
     return events.filter((event) => {
       if (event.type === 'step/start' || event.type === 'step/end'
         || event.type === 'assistant/message' || event.type === 'tool/call'
-        || event.type === 'tool/result' || event.type === 'agent-rp/act-model-request') {
+        || event.type === 'tool/result' || event.type === 'plugin:agent-rp/act-model-request') {
         return event.data.turn === turn
       }
-      if (event.type === 'agent-rp/act-model-result') {
-        const request = eventsBySeq.get(event.data.requestSeq)
-        return request?.type === 'agent-rp/act-model-request' && request.data.turn === turn
+      if (event.type === 'plugin:agent-rp/act-model-result') {
+        const request = eventsBySeq.get(SessionSeq(event.data.requestSeq))
+        return request?.type === 'plugin:agent-rp/act-model-request' && request.data.turn === turn
       }
       return false
     })
@@ -486,23 +491,23 @@ export function compileRoleplayActReceipt(
     }
   }
 
-  const actModelRequests = new Map<string, SessionEvent<'agent-rp/act-model-request'>>()
+  const actModelRequests = new Map<string, AgentRpSessionEvent<'plugin:agent-rp/act-model-request'>>()
   const actModelResults = new Set<string>()
   for (const event of [...bounded].sort((left, right) => left.seq - right.seq)) {
-    if (event.type === 'agent-rp/act-model-request') {
+    if (event.type === 'plugin:agent-rp/act-model-request') {
       const data = event.data
       const step = byStep.get(data.step)
       const reference = plans.find(plan => plan.step === data.step)
       const start = starts.get(data.step)
       const end = ends.get(data.step)
-      const planEvent = eventsBySeq.get(data.planSeq)
+      const planEvent = eventsBySeq.get(SessionSeq(data.planSeq))
       const expected = reference?.receipt?.act?.responseRepairs.some(program =>
         program.engine === data.purpose.engine && program.moduleId === data.purpose.moduleId
           && program.stateId === data.purpose.stateId) === true
       if (data.format !== 0 || data.sessionId !== reference?.input.sessionId || data.turn !== turn
         || data.purpose.kind !== 'response-repair' || data.requestId === ''
         || step === undefined || reference === undefined || !expected
-        || planEvent?.type !== 'agent-rp/turn-plan' || planEvent.seq >= event.seq
+        || planEvent?.type !== 'plugin:agent-rp/turn-plan' || planEvent.seq >= event.seq
         || planEvent.data.turn !== turn || planEvent.data.reference.step !== data.step
         || JSON.stringify(planEvent.data.reference) !== JSON.stringify(reference)
         || typeof data.dispatch.provider !== 'string' || data.dispatch.provider === ''
@@ -517,7 +522,7 @@ export function compileRoleplayActReceipt(
       actModelRequests.set(data.requestId, event)
       continue
     }
-    if (event.type !== 'agent-rp/act-model-result') continue
+    if (event.type !== 'plugin:agent-rp/act-model-result') continue
     const data = event.data
     const request = actModelRequests.get(data.requestId)
     if (data.format !== 0 || request === undefined || request.seq !== data.requestSeq
@@ -618,10 +623,9 @@ export function compileRoleplayActReceipt(
       step.toolCalls.push({ eventSeq: event.seq, callId, name: event.data.name })
       continue
     }
-    const block = event.data.message.content[0]
     const callId = String(event.data.message.source.callId)
     const callKey = roleplayActCallKey(event.data.step, callId)
-    if (block.type !== 'tool-result' || String(block.toolCallId) !== callId) {
+    if (String(event.data.message.toolCallId) !== callId) {
       throw new Error(`Roleplay tool result ${String(event.seq)} has inconsistent call identity`)
     }
     const call = calls.get(callKey)
@@ -637,7 +641,7 @@ export function compileRoleplayActReceipt(
     step.toolResults.push({
       eventSeq: event.seq,
       callId,
-      outcome: block.isError === true || event.data.error !== undefined ? 'failed' : 'succeeded',
+      outcome: event.data.message.isError === true || event.data.error !== undefined ? 'failed' : 'succeeded',
     })
   }
   for (const [callKey, call] of calls) {
@@ -915,14 +919,17 @@ export function compileRoleplayTurnSettlementFromReferences(
 export function appendRoleplayTurnSettlement(
   session: Session,
   settlement: RoleplayTurnSettlement,
-): SessionEvent<'agent-rp/turn-settlement'> {
-  const existing = session.events.find(event => event.type === 'agent-rp/turn-settlement'
+): AgentRpSessionEvent<'plugin:agent-rp/turn-settlement'> {
+  const existing = session.snapshotEvents().find(event => event.type === 'plugin:agent-rp/turn-settlement'
     && event.data.turn === settlement.turn)
-  if (existing?.type === 'agent-rp/turn-settlement') return existing
-  return appendAgentRpSessionEvent(session, 'agent-rp/turn-settlement', settlement)
+  if (existing?.type === 'plugin:agent-rp/turn-settlement') return existing
+  const written = appendAgentRpSessionEvent(session, 'plugin:agent-rp/turn-settlement', settlement)
+  const committed = session.snapshotEvents()[Number(written.seq)]
+  if (committed?.type !== 'plugin:agent-rp/turn-settlement') throw new Error('Roleplay turn settlement was not committed')
+  return committed
 }
 
 /** Fold previously written settlement records in chronological order. */
 export function readRoleplayTurnSettlements(events: readonly SessionEvent[]): readonly RoleplayTurnSettlement[] {
-  return events.flatMap(event => event.type === 'agent-rp/turn-settlement' ? [event.data] : [])
+  return events.flatMap(event => event.type === 'plugin:agent-rp/turn-settlement' ? [event.data] : [])
 }

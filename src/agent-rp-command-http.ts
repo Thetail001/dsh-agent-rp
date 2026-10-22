@@ -2,7 +2,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import {SessionId} from '@deepseek-ai/dsh-session'
 import {
   AGENT_RP_COMMAND_PATH,
   parseAgentRpCommandRequest,

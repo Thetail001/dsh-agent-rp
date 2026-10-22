@@ -1,6 +1,7 @@
 /** Durable source-neutral resource choices for one Roleplay experience. */
 
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionSeq } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 import {
   type RoleplayResourceKind,
   type RoleplayResourceSelection,
@@ -18,9 +19,14 @@ export interface RoleplayExperienceSelectionSnapshot {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable selection provenance; all model-visible payloads live in provider snapshot events. */
+    'plugin:agent-rp/experience-selection': RoleplayExperienceSelectionSnapshot
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable selection provenance; all model-visible payloads live in provider snapshot events. */
-    'agent-rp/experience-selection': RoleplayExperienceSelectionSnapshot
+    'plugin:agent-rp/experience-selection': RoleplayExperienceSelectionSnapshot
   }
 }
 
@@ -92,8 +98,8 @@ export function appendRoleplayExperienceSelection(
 ): readonly SessionEvent[] {
   const data = parseRoleplayExperienceSelection({ format: 0, ...value })
   return Object.freeze([...structuredClone(events), {
-    type: 'agent-rp/experience-selection' as const,
-    seq: events.length,
+    type: 'plugin:agent-rp/experience-selection' as const,
+    seq: SessionSeq(events.length),
     time: Date.now(),
     data,
     ignorable: true,
@@ -106,7 +112,7 @@ export function readRoleplayExperienceSelection(
 ): RoleplayExperienceSelectionSnapshot | undefined {
   let active: RoleplayExperienceSelectionSnapshot | undefined
   for (const event of events) {
-    if (event.type !== 'agent-rp/experience-selection') continue
+    if (event.type !== 'plugin:agent-rp/experience-selection') continue
     active = parseRoleplayExperienceSelection(event.data)
   }
   return active

@@ -1,5 +1,6 @@
-import { JsonValue, SessionEvent } from "@deepseek-ai/dsh-session";
+import { SessionEvent } from "@deepseek-ai/dsh-session";
 import { Context } from "@deepseek-ai/cordis";
+import { JsonValue } from "@deepseek-ai/dsh-util-values";
 import { ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import { Agent } from "@deepseek-ai/dsh-agent";
 
@@ -384,9 +385,14 @@ interface SillyTavernChatImportRecord {
   }[];
 }
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable SillyTavern provenance; the original file remains authoritative. */
+    'plugin:agent-rp/sillytavern-chat-import': SillyTavernChatImportRecord;
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable SillyTavern provenance; the original file remains authoritative. */
-    'agent-rp/sillytavern-chat-import': SillyTavernChatImportRecord;
+    'plugin:agent-rp/sillytavern-chat-import': SillyTavernChatImportRecord;
   }
 }
 /**
@@ -418,9 +424,14 @@ interface WorldInfoLibrarySeedRecord {
   readonly meta: WorldInfoImportMeta;
 }
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable World Info activation available before the Agent is constructed. */
+    'plugin:agent-rp/world-info-library-seed': WorldInfoLibrarySeedRecord;
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable World Info activation available before the Agent is constructed. */
-    'agent-rp/world-info-library-seed': WorldInfoLibrarySeedRecord;
+    'plugin:agent-rp/world-info-library-seed': WorldInfoLibrarySeedRecord;
   }
 }
 /** Parse replayable World Info metadata from a tool or private command result. */
@@ -446,9 +457,14 @@ interface PresetSeedRecord {
   readonly libraryId?: string;
 }
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable preset activation whose source attachment remains inspectable. */
+    'plugin:agent-rp/sillytavern-preset-seed': PresetSeedRecord;
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable preset activation whose source attachment remains inspectable. */
-    'agent-rp/sillytavern-preset-seed': PresetSeedRecord;
+    'plugin:agent-rp/sillytavern-preset-seed': PresetSeedRecord;
   }
 }
 /** Find the last successful preset import in one Session. */
@@ -473,9 +489,14 @@ interface MvuStateSnapshot {
   };
 }
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** @mode event Complete MVU state selected for the active reply version. */
+    'plugin:agent-rp/mvu-state': MvuStateSnapshot;
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** @mode event Complete MVU state selected for the active reply version. */
-    'agent-rp/mvu-state': MvuStateSnapshot;
+    'plugin:agent-rp/mvu-state': MvuStateSnapshot;
   }
 }
 /** Read and merge initial `stat_data` from the effective Session worlds. */
@@ -496,9 +517,14 @@ interface TavernMessageAnnotationRecord {
   readonly value: TavernMessageAnnotationValue;
 }
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** @mode event Script-owned SillyTavern message root fields bound to one transcript event. */
+    'plugin:agent-rp/tavern-message-annotation': TavernMessageAnnotationRecord;
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** @mode event Script-owned SillyTavern message root fields bound to one transcript event. */
-    'agent-rp/tavern-message-annotation': TavernMessageAnnotationRecord;
+    'plugin:agent-rp/tavern-message-annotation': TavernMessageAnnotationRecord;
   }
 }
 /** Validate one record recovered from an event or fallback command result. */
@@ -629,11 +655,18 @@ interface TavernHelperState {
   };
 }
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** @mode event Complete Tavern Helper state selected for the active reply version. */
+    'plugin:agent-rp/tavern-state': TavernHelperState;
+    /** Branch-local Tavern Helper state produced for one causal reply, active only when explicitly marked. */
+    'plugin:agent-rp/tavern-state-attachment': TavernHelperStateAttachment;
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** @mode event Complete Tavern Helper state selected for the active reply version. */
-    'agent-rp/tavern-state': TavernHelperState;
+    'plugin:agent-rp/tavern-state': TavernHelperState;
     /** Branch-local Tavern Helper state produced for one causal reply, active only when explicitly marked. */
-    'agent-rp/tavern-state-attachment': TavernHelperStateAttachment;
+    'plugin:agent-rp/tavern-state-attachment': TavernHelperStateAttachment;
   }
 }
 /** One durable Tavern Helper snapshot and the event that owns it. */
@@ -691,9 +724,14 @@ interface RoleplayStateRecord {
   readonly value: JsonValue;
 }
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Required native Roleplay state; skipping it would change later model-visible input. */
+    'plugin:agent-rp/state': RoleplayStateRecord;
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Required native Roleplay state; skipping it would change later model-visible input. */
-    'agent-rp/state': RoleplayStateRecord;
+    'plugin:agent-rp/state': RoleplayStateRecord;
   }
 }
 /** Parse one private player request without accepting implicit authority fields. */
@@ -708,9 +746,14 @@ interface RoleplayTurnModeRecord {
   readonly sourceEventSeq?: number;
 }
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Required capability selection that changes later model-visible tools and prompts. */
+    'plugin:agent-rp/turn-mode': RoleplayTurnModeRecord;
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Required capability selection that changes later model-visible tools and prompts. */
-    'agent-rp/turn-mode': RoleplayTurnModeRecord;
+    'plugin:agent-rp/turn-mode': RoleplayTurnModeRecord;
   }
 }
 /** Parse one private player request without accepting implicit authority fields. */
@@ -731,9 +774,14 @@ interface NativePromptPolicySnapshot {
   readonly modules: readonly NativePromptPolicyModule[];
 }
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable snapshot of one Agent RP-owned prompt policy composition. */
+    'plugin:agent-rp/native-prompt-policy-seed': NativePromptPolicySnapshot;
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable snapshot of one Agent RP-owned prompt policy composition. */
-    'agent-rp/native-prompt-policy-seed': NativePromptPolicySnapshot;
+    'plugin:agent-rp/native-prompt-policy-seed': NativePromptPolicySnapshot;
   }
 }
 /** Validate a detached native policy without consulting mutable provider state. */
@@ -745,9 +793,14 @@ interface SessionRegexPackSnapshot {
   readonly scripts: readonly ImportedRegexScript[];
 }
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Ordered global-scope regex rules selected explicitly for this Session. */
+    'plugin:agent-rp/regex-pack-seed': SessionRegexPackSnapshot;
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Ordered global-scope regex rules selected explicitly for this Session. */
-    'agent-rp/regex-pack-seed': SessionRegexPackSnapshot;
+    'plugin:agent-rp/regex-pack-seed': SessionRegexPackSnapshot;
   }
 }
 /** Validate one Session-owned pack without consulting the mutable library. */
@@ -899,9 +952,14 @@ interface RoleplayTurnSettlement {
   };
 }
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Informational Roleplay settlement; losing it does not change Session reconstruction. */
+    'plugin:agent-rp/turn-settlement': RoleplayTurnSettlement;
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Informational Roleplay settlement; losing it does not change Session reconstruction. */
-    'agent-rp/turn-settlement': RoleplayTurnSettlement;
+    'plugin:agent-rp/turn-settlement': RoleplayTurnSettlement;
   }
 }
 /** A plan bound to the concrete model step that consumed it. */
@@ -1183,9 +1241,14 @@ interface RoleplayTurnWorkerResultRecord extends RoleplayTurnWorkerOutcome {
   readonly phase: RoleplayTurnWorkerPhase;
 }
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Ignorable content-free result from one deterministic post-narrative Worker. */
+    'plugin:agent-rp/turn-worker-result': RoleplayTurnWorkerResultRecord;
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Ignorable content-free result from one deterministic post-narrative Worker. */
-    'agent-rp/turn-worker-result': RoleplayTurnWorkerResultRecord;
+    'plugin:agent-rp/turn-worker-result': RoleplayTurnWorkerResultRecord;
   }
 }
 /** Runtime inputs shared by every Worker in one closed Agent step. */

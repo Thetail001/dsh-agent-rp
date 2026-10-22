@@ -5,12 +5,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import {
   BlockAssembler,
-  createMessage,
+  createAssistantMessage,
+  createSystemMessage,
   createUserMessage,
   type GenerateOptions,
   type Message,
 } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import {SessionId} from '@deepseek-ai/dsh-session'
 import { renderContextSnapshot, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { parse as parseYaml } from 'yaml'
 import {
@@ -470,11 +471,20 @@ function parseRequest(value: unknown): { readonly sessionId: SessionId; readonly
 }
 
 function scriptMessage(item: TavernPrompt): Message {
-  return createMessage({
-    role: item.role,
-    source: { kind: 'plugin', plugin: 'dsh-agent-rp-tavern-helper' },
-    content: [{ type: 'text', text: item.content }],
-  })
+  // 0.2.1: assistant/system 的 source 类型按角色收紧，plugin 来源只保留在 user 上。
+  if (item.role === 'user') {
+    return createUserMessage({
+      source: { kind: 'plugin', plugin: 'dsh-agent-rp-tavern-helper' },
+      content: [{ type: 'text', text: item.content }],
+    })
+  }
+  if (item.role === 'assistant') {
+    return createAssistantMessage({
+      source: { provider: 'dsh-agent-rp', model: 'tavern-script' },
+      content: [{ type: 'text', text: item.content }],
+    })
+  }
+  return createSystemMessage(item.content)
 }
 
 function userInput(text: string): Message {
@@ -555,7 +565,7 @@ async function generationInput(
   )
   const messages = injectSillyTavernInChatPrompts(
     input.messages,
-    tavernInjectedInChatPrompts(readTavernHelperState(agent.session.events)),
+    tavernInjectedInChatPrompts(readTavernHelperState(agent.session.snapshotEvents())),
   )
   if (messages.length === 0) throw new Error('酒馆脚本没有提供可生成的提示词')
   return { ...input, messages }
@@ -574,7 +584,7 @@ async function generate(ctx: Context, agent: Agent, mode: 'preset' | 'raw', conf
     const provider = agent.options.provider
     const model = agent.options.model
     if (provider === undefined || model === undefined) throw new Error('当前角色会话还没有可用模型')
-    const presetGeneration = readActiveSessionPreset(agent.session.events)?.preset.generation
+    const presetGeneration = readActiveSessionPreset(agent.session.snapshotEvents())?.preset.generation
     const temperature = config.temperature ?? presetGeneration?.temperature
     const maxTokens = config.maxTokens ?? presetGeneration?.maxTokens ?? agent.options.maxTokens
     dispatch = {

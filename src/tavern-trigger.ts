@@ -2,7 +2,7 @@
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 
 function visibleRole(event: SessionEvent | undefined): 'assistant' | 'user' | undefined {
   if (event?.type === 'user/message'
@@ -13,7 +13,7 @@ function visibleRole(event: SessionEvent | undefined): 'assistant' | 'user' | un
 
 function latestVisibleRole(agent: Agent): 'assistant' | 'user' | undefined {
   for (let index = agent.session.surface.nodes.length - 1; index >= 0; index -= 1) {
-    const role = visibleRole(agent.session.events[agent.session.surface.nodes[index]!])
+    const role = visibleRole(agent.session.snapshotEvents()[agent.session.surface.nodes[index]!])
     if (role !== undefined) return role
   }
   return undefined
@@ -27,7 +27,7 @@ export async function executeTavernTrigger(invocation: {
 }): Promise<{ readonly kind: 'success'; readonly text: string }> {
   if (invocation.rawInput.trim() !== '') throw new Error('/trigger 不接受额外参数')
   const agent = invocation.agent
-  if (agent.status !== 'idle' || agent.inbox.hasPending) throw new Error('请等待当前回复完成后再操作')
+  if (agent.status !== 'idle' || (agent.inbox.nextTurn.length > 0 || agent.inbox.nextStep.length > 0)) throw new Error('请等待当前回复完成后再操作')
   if (latestVisibleRole(agent) !== 'user') throw new Error('/trigger 前需要先添加一条用户消息')
 
   const onAbort = (): void => { agent.cancel({ kind: 'user' }) }
@@ -46,7 +46,7 @@ export async function executeTavernTrigger(invocation: {
       }))
       await agent.whenIdle()
       invocation.signal.throwIfAborted()
-      const generated = agent.session.events.slice(before)
+      const generated = agent.session.snapshotEvents().slice(before)
         .findLast((event): event is Extract<SessionEvent, { type: 'assistant/message' }> =>
           event.type === 'assistant/message' && event.surfaceOp === 'append')
       const text = generated?.data.message.content

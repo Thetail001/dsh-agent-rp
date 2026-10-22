@@ -1,6 +1,6 @@
 /** Content-order checks used to decide whether a Roleplay tool owes another model step. */
 
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 
 /** Whether one exact tool call follows non-empty visible text in its assistant message. */
 export function roleplayToolCallFollowsVisibleReply(

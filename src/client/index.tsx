@@ -2,18 +2,22 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-import type { JsonValue } from '@deepseek-ai/dsh-session/types'
-import type {
-  ClientContext, SessionId, SessionSummary, WorkspaceView,
-} from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { CommandRowProps, IConversation, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { IConversation } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { CommandRowProps, TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry/types'
 import {
-  IconChevronLeftOutline14, IconChevronRightOutline14, IconEditOutline16, IconEllipsisOutline16,
-  IconLoadingOutline16, IconPlayOutline16, IconRefreshOutline16, IconSparkle16, IconWarningOutline16,
+  IconChevronLeftOutlineRegular, IconChevronRightOutlineRegular, IconEditOutlineRegular, IconEllipsisOutlineRegular,
+  IconLoadingOutlineRegular, IconPlayOutlineRegular, IconRefreshOutlineRegular, IconSparkleRegular, IconWarningOutlineRegular,
   Menu, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
@@ -45,13 +49,12 @@ interface SidebarDestinationOwnerProps {
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
-    'shell.overlay': { kind: 'list'; scope: 'root'; owner: Record<string, never> }
     'sidebar.destinations': { kind: 'list'; scope: 'root'; owner: SidebarDestinationOwnerProps }
-    'conversation.chat.turnActions': { kind: 'list'; scope: 'session'; owner: TurnTailOwnerProps }
   }
 }
 import { DEFAULT_AGENT_RP_CHARACTER_NAME, type AgentRpProjection } from '../projection-types.ts'
 import { resolveLegacySidebarWidth } from './sidebar-slot-compat.ts'
+import { mainSessionId } from './session-list-compat.ts'
 import { resolveRoleplayAvatarSource } from './avatar-source.ts'
 import { chatMigrationPermissionOwnerId } from './chat-migration.ts'
 import type { ImportedRegexScript, ImportedTavernHelperScript } from '../import/types.ts'
@@ -382,6 +385,7 @@ import {
   type RpDistributionTransferResponse,
 } from '../rp-distribution-bridge-protocol.ts'
 import { installRoleplayArtifactTail } from './roleplay-artifact-tail.tsx'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 interface WorkspaceListSource {
   readonly getSnapshot: () => { readonly items: readonly WorkspaceView[] }
@@ -649,6 +653,7 @@ type GenerationTailProps = TurnTailOwnerProps & {
   readonly runImageGeneration: RunImageGeneration
   readonly useProjection: PropsRuntime<'conversation.composer.dock'>['useProjection']
   readonly useSession: PropsRuntime<'conversation.composer.dock'>['useSession']
+  readonly useChat: PropsRuntime<'conversation.composer.dock'>['useChat']
 }
 
 const color = 'var(--dsw-alias-state-business-primary, #6f78e8)'
@@ -1139,20 +1144,20 @@ function RewriteTurnDialog({ initialText, busy, error, onClose, onRewrite }: {
 
 function GenerationTail({
   runGeneration, rewriteTurn, runImageGeneration, seq: replySeq,
-  sessionId, turn, useProjection, useSession,
+  sessionId, turn, useChat, useProjection, useSession,
 }: GenerationTailProps) {
   const projection = useProjection('agentRp') as AgentRpProjection | undefined
   const running = useSession(snapshot => snapshot.running)
-  const replyText = useSession(snapshot => {
-    const node = snapshot.chat.legacy.nodes.find(candidate => candidate.kind === 'assistant' && candidate.seq === replySeq)
+  const replyText = useChat(snapshot => {
+    const node = snapshot.legacy.nodes.find(candidate => candidate.kind === 'assistant' && candidate.seq === replySeq)
     return node?.kind === 'assistant' ? node.blocks
       .filter((block): block is Extract<typeof block, { readonly kind: 'text' }> => block.kind === 'text')
       .map(block => block.text)
       .join('\n') : ''
   })
-  const editableUserText = useSession(snapshot => {
+  const editableUserText = useChat(snapshot => {
     if (turn.start === undefined || turn.end === undefined) return undefined
-    const node = snapshot.chat.legacy.nodes.find(candidate => candidate.kind === 'user'
+    const node = snapshot.legacy.nodes.find(candidate => candidate.kind === 'user'
       && candidate.seq > turn.start!.seq && candidate.seq < turn.end!.seq)
     if (node?.kind !== 'user' || node.content.length === 0 || node.content.some(block => block.type !== 'text')) return undefined
     return node.content.map(block => block.type === 'text' ? block.text : '').join('\n')
@@ -1201,7 +1206,7 @@ function GenerationTail({
           onClick={previousUnavailable ? undefined : () => {
             invoke({ operation: 'select', replySeq, versionIndex: selectedIndex - 1 }, 'select-previous')
           }}>
-          {busy === 'select-previous' ? <IconLoadingOutline16 className="agent-rp-generation-loading" /> : <IconChevronLeftOutline14 />}
+          {busy === 'select-previous' ? <IconLoadingOutlineRegular className="agent-rp-generation-loading" /> : <IconChevronLeftOutlineRegular />}
         </button>
       </Tooltip>
       <span data-agent-rp-version-label aria-live="polite">{selectedIndex + 1}/{group.versions.length}</span>
@@ -1211,7 +1216,7 @@ function GenerationTail({
           onClick={nextUnavailable ? undefined : () => {
             invoke({ operation: 'select', replySeq, versionIndex: selectedIndex + 1 }, 'select-next')
           }}>
-          {busy === 'select-next' ? <IconLoadingOutline16 className="agent-rp-generation-loading" /> : <IconChevronRightOutline14 />}
+          {busy === 'select-next' ? <IconLoadingOutlineRegular className="agent-rp-generation-loading" /> : <IconChevronRightOutlineRegular />}
         </button>
       </Tooltip>
     </span>}
@@ -1219,21 +1224,21 @@ function GenerationTail({
       <button type="button" data-agent-rp-generation-action aria-label={busy === 'regenerate' ? '正在重新生成' : '重新生成'}
         aria-disabled={regenerateDisabled || undefined} data-unavailable={regenerateDisabled || undefined}
         onClick={regenerateDisabled ? undefined : () => { invoke({ operation: 'regenerate', replySeq }) }}>
-        {busy === 'regenerate' ? <IconLoadingOutline16 className="agent-rp-generation-loading" /> : <IconRefreshOutline16 />}
+        {busy === 'regenerate' ? <IconLoadingOutlineRegular className="agent-rp-generation-loading" /> : <IconRefreshOutlineRegular />}
       </button>
     </Tooltip>}
     {currentReply && <Tooltip label={disabled ? unavailableReason ?? '继续生成' : '继续生成'} side="bottom">
       <button type="button" data-agent-rp-generation-action aria-label={busy === 'continue' ? '正在继续生成' : '继续生成'}
         aria-disabled={disabled || undefined} data-unavailable={disabled || undefined}
         onClick={disabled ? undefined : () => { invoke({ operation: 'continue', replySeq }) }}>
-        {busy === 'continue' ? <IconLoadingOutline16 className="agent-rp-generation-loading" /> : <IconPlayOutline16 />}
+        {busy === 'continue' ? <IconLoadingOutlineRegular className="agent-rp-generation-loading" /> : <IconPlayOutlineRegular />}
       </button>
     </Tooltip>}
     {currentReply && <Tooltip label={sceneNote === '' ? '当前回复没有可绘制的场景' : disabled ? unavailableReason ?? '生成插图' : '生成插图'} side="bottom">
       <button type="button" data-agent-rp-generation-action aria-label="生成插图"
         aria-disabled={(disabled || sceneNote === '') || undefined} data-unavailable={(disabled || sceneNote === '') || undefined}
         onClick={disabled || sceneNote === '' ? undefined : () => { setDrawOpen(true) }}>
-        <IconSparkle16 />
+        <IconSparkleRegular />
       </button>
     </Tooltip>}
     <Menu
@@ -1246,7 +1251,7 @@ function GenerationTail({
       items={[{
         id: 'rewrite',
         label: '修改输入',
-        icon: <IconEditOutline16 />,
+        icon: <IconEditOutlineRegular />,
         disabled: disabled || editableUserText === undefined,
       }]}
       onSelect={(id) => {
@@ -1259,12 +1264,12 @@ function GenerationTail({
         <button type="button" data-agent-rp-generation-action aria-label={busy === 'rewrite' ? '正在修改输入' : '更多操作'}
           aria-haspopup="menu" aria-expanded={moreOpen} aria-disabled={disabled || undefined} data-unavailable={disabled || undefined}
           onClick={disabled ? undefined : () => { setMoreOpen(open => !open) }}>
-          {busy === 'rewrite' ? <IconLoadingOutline16 className="agent-rp-generation-loading" /> : <IconEllipsisOutline16 />}
+          {busy === 'rewrite' ? <IconLoadingOutlineRegular className="agent-rp-generation-loading" /> : <IconEllipsisOutlineRegular />}
         </button>
       </Tooltip>}
     />
     {error !== undefined && <Tooltip label={error} side="bottom">
-      <span data-agent-rp-generation-error role="alert" aria-label={`操作失败：${error}`} tabIndex={0}><IconWarningOutline16 /></span>
+      <span data-agent-rp-generation-error role="alert" aria-label={`操作失败：${error}`} tabIndex={0}><IconWarningOutlineRegular /></span>
     </Tooltip>}
     {currentReply && drawOpen && <ImageGenerationDialog projection={projection} initialMode="scene" initialNote={sceneNote}
       onClose={() => { setDrawOpen(false) }} onGenerate={request => { runImageGeneration(sessionId, request) }} />}
@@ -1331,7 +1336,7 @@ function roleplaySummary(
   summary: SessionSummary | undefined,
   projection: AgentRpProjection | undefined,
 ): AgentRpProjection | undefined {
-  if (!isAgentRpCapabilityPresetId(summary?.agentPreset)) return undefined
+  if (!isAgentRpCapabilityPresetId(summary?.projectionValues?.agentPreset ?? undefined)) return undefined
   if (projection !== undefined) {
     // Client HMR can briefly pair a newer UI with the previous Host projection.
     // Keep that rolling upgrade usable until the Host process is restarted.
@@ -1350,7 +1355,7 @@ function roleplaySummary(
   }
   return {
     turnMode: 'conversation',
-    characterName: summary.displayTitle,
+    characterName: summary?.displayTitle ?? '',
     description: '',
     personality: '',
     scenario: '',
@@ -2860,7 +2865,7 @@ function SidebarRoleplayDestination({
   const [launchSessionId, setLaunchSessionId] = useState<SessionId | undefined>(undefined)
   const [accessSaving, setAccessSaving] = useState(false)
   const [accessError, setAccessError] = useState<string>()
-  const currentSessionId = useSessions(state => state.current)
+  const currentSessionId = useSessions(state => mainSessionId(state))
   const currentSession = useSessions(state => currentSessionId === undefined ? undefined : state.byId[currentSessionId])
   const settingsSnapshot = useSyncExternalStore(
     workspaceSettings.subscribe,
@@ -2923,7 +2928,7 @@ function SidebarRoleplayDestination({
     setStoryWorkspaceOpen(true)
   }
   const openCurrentSessionTools = (): void => {
-    if (currentSessionId === undefined || !isAgentRpCapabilityPresetId(currentSession?.agentPreset)) return
+    if (currentSessionId === undefined || !isAgentRpCapabilityPresetId(currentSession?.projectionValues?.agentPreset)) return
     closeWorkbench()
     window.dispatchEvent(new CustomEvent(openRoleplaySessionToolsEvent, { detail: String(currentSessionId) }))
   }
@@ -3009,7 +3014,7 @@ function SidebarRoleplayDestination({
           {accessError !== undefined && <p role="alert" style={{
             color: 'var(--dsw-alias-state-danger, #d64d5f)', fontSize: '11px', margin: '7px 2px 0',
           }}>{accessError}</p>}
-          {isAgentRpCapabilityPresetId(currentSession?.agentPreset) && <button type="button"
+          {isAgentRpCapabilityPresetId(currentSession?.projectionValues?.agentPreset) && <button type="button"
             data-agent-rp-action="open-session-tools" onClick={openCurrentSessionTools} style={{
               alignItems: 'center', background: `color-mix(in srgb, ${color} 10%, transparent)`,
               border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`, borderRadius: '12px',
@@ -3157,7 +3162,7 @@ function SidebarRoleplayDestination({
     />, document.body)}
     {storyWorkspaceOpen && createPortal(<StoryWorkspaceEditor
       accent={color}
-      {...(currentSessionId === undefined || !isAgentRpCapabilityPresetId(currentSession?.agentPreset)
+      {...(currentSessionId === undefined || !isAgentRpCapabilityPresetId(currentSession?.projectionValues?.agentPreset)
         ? {}
         : { sessionId: String(currentSessionId) })}
       onClose={() => { setStoryWorkspaceOpen(false) }}
@@ -4554,7 +4559,7 @@ function RoleplayHeader({
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px', marginTop: '20px' }}>
           {projection.userName !== undefined && <span style={chipStyle}>你是 {projection.userName}</span>}
           <span style={chipStyle}>回合 · {projection.turnMode === 'agent' ? 'Agent 分阶段' : '兼容对话'}</span>
-          {summary?.agentPreset !== undefined && <span style={chipStyle}>Agent 能力 · {summary.agentPreset}</span>}
+          {summary?.projectionValues?.agentPreset !== undefined && <span style={chipStyle}>Agent 能力 · {summary?.projectionValues?.agentPreset}</span>}
           {projection.importedMessageCount > 0 && <span style={chipStyle}>{projection.importedMessageCount} 条历史消息</span>}
           {projection.worldInfoCount > 0 && <span style={chipStyle}>{projection.worldInfoCount} 条世界书设定</span>}
           {characterRegexScripts.length > 0 && <span style={chipStyle}>角色卡正则 · {characterRegexScripts.length} 条</span>}
@@ -4611,7 +4616,7 @@ function RoleplayHeader({
         <DetailSection title="当前场景" text={projection.scenario} />
         <DetailSection title="Agent 回合诊断" text={[
           `回合策略：${projection.turnMode === 'agent' ? '正文完成后独立结算状态' : '兼容正文内的旧式状态更新'}`,
-          `Agent 能力预设：${summary?.agentPreset ?? '未记录'}`,
+          `Agent 能力预设：${summary?.projectionValues?.agentPreset ?? '未记录'}`,
           projection.lastRequest === undefined
             ? '最近一次模型请求：尚无记录'
             : `最近一次模型工具：${projection.lastRequest.toolNames.length === 0 ? '无' : projection.lastRequest.toolNames.join('、')}`,
@@ -7182,7 +7187,7 @@ function CharacterLibraryDialog({
           <div style={{ alignItems: 'center', display: 'flex', gap: '10px' }}>
             <button type="button" className="agent-rp-character-library-back" aria-label="返回对话"
               title="返回对话" onClick={onClose}>
-              <IconChevronLeftOutline14 size={18} />
+              <IconChevronLeftOutlineRegular size={18} />
             </button>
             <div style={{ flex: '1 1 auto', minWidth: 0 }}>
               <h2 style={{ fontSize: '18px', margin: 0 }}>{collection === 'active' ? '选择角色' : '收纳箱'}</h2>
@@ -11328,12 +11333,12 @@ function roleplayComposerDockComponent(
   runPresetConfiguration: RunPresetConfiguration,
 ): (props: ComposerDockProps) => JSX.Element | null {
   return function RoleplayComposerDock({
-    inputActions, sessionId, useProjection, useSessions, useSession,
+    inputActions, sessionId, useChat, useProjection, useSessions, useSession,
   }: ComposerDockProps) {
   const summary = useSessions(state => state.byId[sessionId])
   const projected = useProjection('agentRp')
   const projection = roleplaySummary(summary, projected)
-  const chat = useSession(state => state.chat)
+  const chat = useChat(state => state)
   const agentRpSettings = useSyncExternalStore(
     workspaceSettings.subscribe,
     workspaceSettings.getSnapshot,
@@ -11370,7 +11375,7 @@ function roleplayComposerDockComponent(
   const characterDetail = useMemo(() => storedCharacterDetail === undefined ? undefined
     : withAgentRpSessionCardPermissions(storedCharacterDetail, sessionResourcePermissions),
   [sessionResourcePermissions, storedCharacterDetail])
-  const roleplayExpected = isAgentRpCapabilityPresetId(summary?.agentPreset)
+  const roleplayExpected = isAgentRpCapabilityPresetId(summary?.projectionValues?.agentPreset)
   const turnHealthRevision = [
     projection?.lastRequest?.eventSeq,
     projection?.presentation?.settlementSeq,
@@ -12619,11 +12624,11 @@ function importHintComponent(
       : jsonKind === 'world-info' ? '请导入这本世界书'
         : jsonKind === 'preset' ? '请导入这份预设' : undefined
     useEffect(() => {
-      if (isAgentRpCapabilityPresetId(summary?.agentPreset) && input.draft.trim() === '' && inferredDraft !== undefined) {
+      if (isAgentRpCapabilityPresetId(summary?.projectionValues?.agentPreset) && input.draft.trim() === '' && inferredDraft !== undefined) {
         inputActions.setDraft(inferredDraft)
       }
-    }, [inferredDraft, input.draft, inputActions, summary?.agentPreset])
-    if (!isAgentRpCapabilityPresetId(summary?.agentPreset)) return null
+    }, [inferredDraft, input.draft, inputActions, summary?.projectionValues?.agentPreset])
+    if (!isAgentRpCapabilityPresetId(summary?.projectionValues?.agentPreset)) return null
     if (selected === undefined) return null
     const blank = input.draft.trim() === ''
     const chat = selected.kind === 'chat'
@@ -12693,10 +12698,10 @@ function importHintComponent(
   }
 }
 
-function avatarLoader(ctx: ClientContext) {
+function avatarLoader(ctx: Context) {
   return async (attachmentId: string): Promise<string | undefined> => {
     const state = ctx.sessions.list.getSnapshot()
-    const sessionId = state.current
+    const sessionId = mainSessionId(state)
     if (sessionId === undefined) return undefined
     const scope = ctx.sessions.scope(sessionId)
     const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
@@ -12739,14 +12744,14 @@ function SessionLaunchNoticeToast({ source }: { readonly source: SessionLaunchNo
 export const inject = ['connection', 'conversationEvents', 'slots', 'sessions', 'workspaces']
 
 /** Register the Agent RP header, composer presentation, and import affordance. */
-export function apply(ctx: ClientContext): void {
+export function apply(ctx: Context): void {
   const installedStExtensions = new InstalledStExtensionRegistry()
   const installedStExtensionSurface = new InstalledStExtensionSurface()
   const installedStSettingsOwner = installedStExtensionSettingsIdentity()
   const installedStExtensionSessionSource = {
     current: () => {
       const state = ctx.sessions.list.getSnapshot()
-      const sessionId = state.current
+      const sessionId = mainSessionId(state)
       if (sessionId === undefined) return undefined
       const projection = state.byId[sessionId]?.projectionValues?.agentRp
       return {
@@ -12802,7 +12807,7 @@ export function apply(ctx: ClientContext): void {
     }
   }
   const loadWorkerModelCatalog = async (): Promise<AvailableModelCatalog> => {
-    const sessionId = ctx.sessions.list.getSnapshot().current
+    const sessionId = mainSessionId(ctx.sessions.list.getSnapshot())
     if (sessionId === undefined) throw new Error('请先选择一个会话，以读取已配置的模型')
     const connection = ctx.get('connection') as ClientModelGateway | undefined
     if (connection === undefined) throw new Error('当前客户端无法读取模型列表')
@@ -12949,7 +12954,7 @@ export function apply(ctx: ClientContext): void {
     if (ctx.sessions.list.getSnapshot().byId[sessionId] === undefined) {
       throw new Error('角色会话已创建，但客户端尚未收到它；请刷新页面后重试')
     }
-    ctx.sessions.open(sessionId)
+    ctx.uiWorkspace.openSession(sessionId)
     if (value.workspaceWarning !== undefined) sessionLaunchNotices.publish(value.workspaceWarning)
     return sessionId
   }
@@ -13577,22 +13582,15 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
     name: 'conversation.chat.commandview', key: 'rp-world-info-import',
   }, () => null))
-  ctx.slots.inject('conversation.chat.turnActions', () => ctx.slots.register({
-    name: 'conversation.chat.turnActions',
-    id: 'agent-rp-generation',
-    order: 100,
-  }, props => <GenerationTail {...props} runGeneration={runGeneration} rewriteTurn={rewriteTurn}
-    runImageGeneration={runImageGeneration} />))
   ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
     name: 'conversation.chat.turnTail',
-    priority: 100,
-    select: owner => {
-      if (ctx.slots.spec('conversation.chat.turnActions') !== undefined) return null
-      const closing = owner.turn.data.get('turn-tail')?.closing
-      return closing === null || closing === undefined ? null : { replySeq: closing.finalNode.seq }
-    },
-  }, props => <GenerationTail {...props} runGeneration={runGeneration} rewriteTurn={rewriteTurn}
-    runImageGeneration={runImageGeneration} />))
+    id: 'agent-rp-generation',
+    order: 100,
+  }, props => {
+    if (props.turn.data.get('turn-tail')?.closing == null) return null
+    return <GenerationTail {...props} runGeneration={runGeneration} rewriteTurn={rewriteTurn}
+      runImageGeneration={runImageGeneration} />
+  }))
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock', id: 'agent-rp-status', order: -100,
   }, roleplayComposerDockComponent(

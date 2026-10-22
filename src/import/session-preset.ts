@@ -1,10 +1,12 @@
 /** Durable SillyTavern preset replay from native tool events. */
 
-import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionSeq } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 import type { FileAttachmentRef } from './session-character.ts'
 import type { ImportedSillyTavernPreset } from './sillytavern-preset.ts'
 import { configurePreset, parsePresetConfigurationRequest } from '../preset-configuration-core.ts'
 import { parsePresetLibraryResult } from '../preset-library-protocol.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Compact result of importing one preset attachment. */
 export interface PresetImportResult {
@@ -54,9 +56,14 @@ export interface PresetSeedRecord {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable preset activation whose source attachment remains inspectable. */
+    'plugin:agent-rp/sillytavern-preset-seed': PresetSeedRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable preset activation whose source attachment remains inspectable. */
-    'agent-rp/sillytavern-preset-seed': PresetSeedRecord
+    'plugin:agent-rp/sillytavern-preset-seed': PresetSeedRecord
   }
 }
 
@@ -103,7 +110,7 @@ function parseMeta(value: JsonValue | undefined): PresetImportMeta {
 export function readActiveSessionPreset(events: readonly SessionEvent[]): ActiveSessionPreset | undefined {
   let active: ActiveSessionPreset | undefined
   for (const event of events) {
-    if (event.type === 'agent-rp/sillytavern-preset-seed') {
+    if (event.type === 'plugin:agent-rp/sillytavern-preset-seed') {
       active = {
         result: event.data.result,
         importedPreset: event.data.preset,
@@ -147,8 +154,8 @@ export function readActiveSessionPreset(events: readonly SessionEvent[]): Active
       }
       continue
     }
-    if (event.type !== 'tool/result' || event.data.message.content[0]?.isError === true) continue
-    const callId = String(event.data.message.content[0]?.toolCallId)
+    if (event.type !== 'tool/result' || event.data.message.isError === true) continue
+    const callId = String(event.data.message.toolCallId)
     const call = events.find(candidate => candidate.type === 'tool/call' && String(candidate.data.callId) === callId)
     if (call?.type !== 'tool/call' || call.data.name !== 'import_sillytavern_preset') continue
     const meta = parseMeta(event.data.meta)
@@ -172,8 +179,8 @@ export function createPresetSessionSeed(
   const prepared = preparePresetImportResult(preset, events.length, attachment)
   const { preset: _value, ...result } = prepared
   return [...structuredClone(events), {
-    type: 'agent-rp/sillytavern-preset-seed',
-    seq: events.length,
+    type: 'plugin:agent-rp/sillytavern-preset-seed',
+    seq: SessionSeq(events.length),
     time: Date.now(),
     data: {
       format: 0,

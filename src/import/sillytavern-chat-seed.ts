@@ -4,12 +4,7 @@ import {
   createAssistantMessage,
   createUserMessage,
 } from '@deepseek-ai/dsh-llm'
-import {
-  Session,
-  SessionId,
-  type JsonValue,
-  type SessionEvent,
-} from '@deepseek-ai/dsh-session'
+import {Session, SessionId, type SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { FileAttachmentRef } from './session-character.ts'
 import { decodeCharacterLibraryLaunch } from './session-character.ts'
 import {
@@ -17,6 +12,7 @@ import {
   type SillyTavernChatCommandRecord,
 } from '../sillytavern-chat-protocol.ts'
 import type { ImportedSillyTavernChat, ImportedSillyTavernChatMessage } from './types.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Durable import metadata that points back to the original JSONL attachment. */
 export interface SillyTavernChatImportRecord {
@@ -62,9 +58,14 @@ export function resolveSillyTavernChatIdentity(
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable SillyTavern provenance; the original file remains authoritative. */
+    'plugin:agent-rp/sillytavern-chat-import': SillyTavernChatImportRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable SillyTavern provenance; the original file remains authoritative. */
-    'agent-rp/sillytavern-chat-import': SillyTavernChatImportRecord
+    'plugin:agent-rp/sillytavern-chat-import': SillyTavernChatImportRecord
   }
 }
 
@@ -123,7 +124,7 @@ export function readSillyTavernChatIdentity(
       }
       continue
     }
-    if (event?.type !== 'agent-rp/sillytavern-chat-import') continue
+    if (event?.type !== 'plugin:agent-rp/sillytavern-chat-import') continue
     const header = event.data.header
     if (typeof header !== 'object' || header === null || Array.isArray(header)) return undefined
     const headerCharacterName = typeof header.character_name === 'string' ? header.character_name : undefined
@@ -165,6 +166,7 @@ function appendMessageEvents(
           content: [{ type: 'text', text: message.text }],
           source: { provider: 'sillytavern-import', model: 'history' },
         }),
+        stream: [],
       },
       surfaceOp: 'append',
     })
@@ -197,8 +199,8 @@ export function createSillyTavernChatSeed(
 ): readonly SessionEvent[] {
   if (!/\.jsonl$/iu.test(attachment.name)) throw new Error('SillyTavern chat source must be a .jsonl file')
   const events: SessionEvent[] = [{
-    type: 'agent-rp/sillytavern-chat-import',
-    seq: 0,
+    type: 'plugin:agent-rp/sillytavern-chat-import',
+    seq: SessionSeq(0),
     time: Date.now(),
     data: metadata(chat, attachment),
     ignorable: true,
@@ -212,5 +214,5 @@ export function createSillyTavernChatSeed(
     appendMessageEvents(events, message, turn, eventTime(message, fallbackTime))
   }
   const validated = Session.create(SessionId('agent-rp-sillytavern-import-validation'), events)
-  return Object.freeze(validated.events.slice(0, events.length))
+  return Object.freeze(validated.snapshotEvents().slice(0, events.length))
 }

@@ -1,15 +1,15 @@
 /** Durable requests and results for auxiliary model calls owned by the Roleplay act phase. */
 
-import type { GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type { GenerateOptions, RequestMessage } from '@deepseek-ai/dsh-llm'
+import type {Session, SessionEvent} from '@deepseek-ai/dsh-session'
 import type { RoleplayResponseRepairPlan, RoleplayTurnPlan } from './roleplay-turn-plan.ts'
-import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import { appendAgentRpSessionEvent, type AgentRpSessionEvent, type AgentRpAppendResult } from './session-event-compat.ts'
 
 /** Exact credential-free provider request dispatched by an act-phase program. */
 export interface RoleplayActModelDispatch {
   readonly provider: string
   readonly model: string
-  readonly messages: readonly Message[]
+  readonly messages: readonly RequestMessage[]
   readonly system?: string
   readonly reasoningEffort?: string
   readonly temperature?: number
@@ -56,11 +56,18 @@ export interface RoleplayActModelResultRecord {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Ignorable exact request for an auxiliary act-phase model call. */
+    'plugin:agent-rp/act-model-request': RoleplayActModelRequestRecord
+    /** Ignorable settlement for an auxiliary act-phase model call. */
+    'plugin:agent-rp/act-model-result': RoleplayActModelResultRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Ignorable exact request for an auxiliary act-phase model call. */
-    'agent-rp/act-model-request': RoleplayActModelRequestRecord
+    'plugin:agent-rp/act-model-request': RoleplayActModelRequestRecord
     /** Ignorable settlement for an auxiliary act-phase model call. */
-    'agent-rp/act-model-result': RoleplayActModelResultRecord
+    'plugin:agent-rp/act-model-result': RoleplayActModelResultRecord
   }
 }
 
@@ -75,15 +82,15 @@ export function resolveRoleplayActModelBoundary(
   session: Session,
   plan: RoleplayTurnPlan,
 ): RoleplayActModelBoundary | undefined {
-  const events = session.events
+  const events = session.snapshotEvents()
   const openStarts = events.filter((event): event is SessionEvent<'step/start'> =>
     event.type === 'step/start' && !events.some(candidate => candidate.seq > event.seq
       && candidate.type === 'step/end' && candidate.data.turn === event.data.turn
       && candidate.data.step === event.data.step))
   if (openStarts.length !== 1) return undefined
   const start = openStarts[0]!
-  const plans = events.filter((event): event is SessionEvent<'agent-rp/turn-plan'> =>
-    event.type === 'agent-rp/turn-plan' && event.seq > start.seq
+  const plans = events.filter((event): event is AgentRpSessionEvent<'plugin:agent-rp/turn-plan'> =>
+    event.type === 'plugin:agent-rp/turn-plan' && event.seq > start.seq
       && event.data.turn === start.data.turn && event.data.reference.step === start.data.step)
   if (plans.length !== 1) return undefined
   const receipt = plans[0]!
@@ -109,16 +116,16 @@ export function roleplayActModelDispatch(options: GenerateOptions): RoleplayActM
 export function appendRoleplayActModelRequest(
   session: Session,
   record: RoleplayActModelRequestRecord,
-): SessionEvent<'agent-rp/act-model-request'> & { readonly ignorable: true } {
-  return appendAgentRpSessionEvent(session, 'agent-rp/act-model-request', record)
+): AgentRpAppendResult<'plugin:agent-rp/act-model-request'> {
+  return appendAgentRpSessionEvent(session, 'plugin:agent-rp/act-model-request', record)
 }
 
 /** Persist one terminal result linked to its exact act-phase request. */
 export function appendRoleplayActModelResult(
   session: Session,
   record: RoleplayActModelResultRecord,
-): SessionEvent<'agent-rp/act-model-result'> & { readonly ignorable: true } {
-  return appendAgentRpSessionEvent(session, 'agent-rp/act-model-result', record)
+): AgentRpAppendResult<'plugin:agent-rp/act-model-result'> {
+  return appendAgentRpSessionEvent(session, 'plugin:agent-rp/act-model-result', record)
 }
 
 /** Reduce thrown provider details to a replay-stable failure class. */

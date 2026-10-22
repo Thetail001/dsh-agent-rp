@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { CommandId } from '@deepseek-ai/dsh-commands'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import { encodeGenerationState } from '../src/generation.ts'
 import {
   MAX_SILLYTAVERN_CHAT_BYTES,
@@ -12,12 +12,12 @@ import {
 } from '../src/import/sillytavern-chat.ts'
 import { exportSillyTavernSessionChat } from '../src/sillytavern-chat-export.ts'
 
-function appendAssistant(session: Session, text: string, surfaceOp: 'append' | { op: 'replace'; start: number; end: number } = 'append') {
-  return session.append('assistant/message', {
+function appendAssistant(session: Session, text: string, surfaceOp: 'append' | { op: 'replace'; startSeq: SessionSeq; endSeq: SessionSeq } = 'append') {
+  return session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({ content: [{ type: 'text', text }], source: { provider: 'fixture', model: 'fixture' } }),
-  }, { surfaceOp, ...(surfaceOp === 'append' ? {} : { sourceEventSeqs: [surfaceOp.start] }) })
+  }, { surfaceOp })
 }
 
 test('imports a SillyTavern JSONL chat losslessly with swipes and inert system rows', () => {
@@ -72,7 +72,7 @@ test('exports the active transcript with the current reply and its alternatives'
     content: [{ type: 'text', text: '今晚去哪里？' }], source: { kind: 'user' },
   }), { surfaceOp: 'append' })
   const original = appendAssistant(session, '去钟楼。')
-  const alternative = appendAssistant(session, '去港口。', { op: 'replace', start: original.seq, end: original.seq })
+  const alternative = appendAssistant(session, '去港口。', { op: 'replace', startSeq: original.seq, endSeq: original.seq })
   const state = {
     format: 0,
     groupId: '00000000-0000-4000-8000-000000000001',

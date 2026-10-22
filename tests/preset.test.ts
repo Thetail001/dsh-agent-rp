@@ -7,8 +7,8 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import { createScope } from '@deepseek-ai/dsh-scope'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 import type { CharacterCardAttachmentRef, FileAttachmentRef } from '../src/import/session-character.ts'
 import { readActiveSessionCharacter } from '../src/import/session-character.ts'
 import { isAgentRpCapabilityComposition } from '../src/agent-capability-preset.ts'
@@ -367,9 +367,9 @@ test('imports a preset by forking the current roleplay Session before a model tu
     name: 'V18.json',
     mediaType: 'application/json',
   }
-  const imported = Session.create(SessionId('preset-imported'), createPresetSessionSeed(source.events, preset, attachment))
+  const imported = Session.create(SessionId('preset-imported'), createPresetSessionSeed(source.snapshotEvents(), preset, attachment))
 
-  assert.equal(readActiveSessionPreset(imported.events)?.preset.name, 'V18')
-  assert.equal(readActiveSessionPreset(imported.events)?.result.enabledCount, 1)
+  assert.equal(readActiveSessionPreset(imported.snapshotEvents())?.preset.name, 'V18')
+  assert.equal(readActiveSessionPreset(imported.snapshotEvents())?.result.enabledCount, 1)
   assert.equal(imported.deriveMessages().length, 0)
 })

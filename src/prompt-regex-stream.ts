@@ -3,15 +3,20 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import {
-  createMessage,
-  createUserMessage,
+  freezeMessage,
   isAgentLoopRequest,
   type ContentBlock,
   type GenerateOptions,
   type Message,
   type MessageSource,
+  type RequestMessage,
 } from '@deepseek-ai/dsh-llm'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import {
+  SessionSeq,
+  type Session,
+  type SessionEvent,
+  type SessionMessageProjection,
+} from '@deepseek-ai/dsh-session'
 import {
   AI_OUTPUT_PLACEMENT,
   PROMPT_REGEX_SOURCE_MARKER,
@@ -27,6 +32,9 @@ import type { ImportedRegexScript } from './import/types.ts'
 import {
   prepareSillyTavernProviderMessages,
 } from './preset-prompt.ts'
+import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import { hiddenReplyVersionSeqs } from './generation-state-record.ts'
+import { messageEditContents } from './message-edit.ts'
 import type {
   RoleplayPromptRegexTransform,
   RoleplayPromptTransformPlan,
@@ -60,11 +68,14 @@ function dialogueEvent(event: SessionEvent | undefined): event is DialogueNode['
 }
 
 function dialogueNodes(session: Session): DialogueNode[] {
+  // 0.2.1: 账本隐藏的非选中 swipe 版本不参与正则改写，也不计入 depth。
+  const hidden = hiddenReplyVersionSeqs(session.snapshotEvents())
   return session.surface.nodes.flatMap(seq => {
-    const current = session.events[seq]
+    if (hidden.has(Number(seq))) return []
+    const current = session.snapshotEvents()[seq]
     if (!dialogueEvent(current)) return []
     const marker = sourceMarker(messageOf(current).source)
-    const candidate = marker === undefined ? current : session.events[marker.originalSeq]
+    const candidate = marker === undefined ? current : session.snapshotEvents()[marker.originalSeq]
     const original = dialogueEvent(candidate) && candidate.type === current.type ? candidate : current
     return [{ current, original, role: current.type === 'user/message' ? 'user' as const : 'assistant' as const }]
   })
@@ -108,49 +119,82 @@ function sameContent(left: readonly ContentBlock[], right: readonly ContentBlock
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
-function traceCarrier(nodes: readonly DialogueNode[]): DialogueNode | undefined {
-  return nodes.findLast(node => !messageOf(node.current).content.some(block => block.type === 'tool-call'))
-}
-
-function sourceWithMarker(
-  source: MessageSource,
+function sourceWithMarker<S extends MessageSource>(
+  source: S,
   originalSeq: number,
   trace?: PromptRegexTraceRecord,
-): MessageSource {
-  const { replayState: _replayState, ...stable } = source as MessageSource & { readonly replayState?: unknown }
+): S {
+  const { replayState: _replayState, ...stable } = source as S & { readonly replayState?: unknown }
   return {
     ...stable,
     [PROMPT_REGEX_SOURCE_MARKER]: { format: 0, originalSeq, ...(trace === undefined ? {} : { trace }) },
-  } as unknown as MessageSource
+  } as unknown as S
 }
 
-function appendReplacement(
-  session: Session,
-  node: DialogueNode,
-  content: ContentBlock[],
-  position: OpenStep,
-  trace?: PromptRegexTraceRecord,
-): void {
-  const originalMessage = messageOf(node.original)
-  const sourceEventSeqs = [...new Set([node.current.seq, node.original.seq])]
-  const surfaceOp = { op: 'replace' as const, start: node.current.seq, end: node.current.seq }
-  if (node.role === 'user') {
-    session.append('user/message', createUserMessage({
-      content,
-      source: sourceWithMarker(originalMessage.source, node.original.seq, trace),
-    }), { surfaceOp, sourceEventSeqs })
-    return
+/**
+ * Durable prompt-regex view record: one per request that ran prompt scripts,
+ * carrying every rewritten message keyed by its original event seq.
+ * 0.2.1 移除了 assistant/message 的 surface replace（数学上不可能：
+ * assistant 禁带 sourceEventSeqs，replace 又必须引用全部被覆盖节点），
+ * 正则改写改走 messageProjection：日志本体不动，派生消息层生效。
+ */
+export interface PromptRegexViewRecord {
+  readonly format: 0
+  readonly turn: number
+  readonly step: number
+  readonly replacements: readonly {
+    readonly seq: number
+    readonly content: readonly ContentBlock[]
+  }[]
+  readonly trace: PromptRegexTraceRecord
+}
+
+declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Prompt-regex view rewriting existing dialogue messages at derivation time. */
+    'plugin:agent-rp/prompt-regex-view': PromptRegexViewRecord
   }
-  const replacedAssistant = node.current.type === 'assistant/message' ? node.current.data : undefined
-  session.append('assistant/message', {
-    turn: replacedAssistant?.turn ?? position.turn,
-    step: replacedAssistant?.step ?? position.step,
-    message: createMessage({
-      role: 'assistant',
-      content,
-      source: sourceWithMarker(originalMessage.source, node.original.seq, trace),
-    }) as Extract<SessionEvent, { type: 'assistant/message' }>['data']['message'],
-  }, { surfaceOp, sourceEventSeqs })
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
+  interface SessionEventMap {
+    /** Prompt-regex view rewriting existing dialogue messages at derivation time. */
+    'plugin:agent-rp/prompt-regex-view': PromptRegexViewRecord
+  }
+}
+
+/**
+ * Pure interpreter turning prompt-regex view records into derived-message
+ * rewrites. Rebuilt from the durable original events (never from earlier
+ * projections), so chained records stay idempotent across replay.
+ */
+export const promptRegexViewProjection: SessionMessageProjection<'plugin:agent-rp/prompt-regex-view'> = {
+  type: 'plugin:agent-rp/prompt-regex-view',
+  project(event, context) {
+    const updates = new Map<SessionSeq, Message>()
+    const base = Number(context.baseSeq)
+    for (const replacement of event.data.replacements) {
+      const original = context.events[replacement.seq - base]
+      if (original === undefined) {
+        // Fork/restore 的重放窗口不含目标事件时，该节点也不在本窗口的表面上。
+        if (replacement.seq < base) continue
+        throw new Error('正则视图记录引用了不存在的对话消息')
+      }
+      const message = original.type === 'user/message' ? original.data
+        : original.type === 'assistant/message' ? original.data.message
+          : undefined
+      if (message === undefined) throw new Error('正则视图记录引用了不存在的对话消息')
+      updates.set(SessionSeq(replacement.seq), freezeMessage({
+        ...message,
+        content: replacement.content,
+        source: sourceWithMarker(message.source, replacement.seq, event.data.trace),
+      } as Message))
+    }
+    return updates
+  },
+}
+
+/** Register the prompt-regex view projection for all future session create/restore/fork. */
+export function registerPromptRegexViewProjection(ctx: Context): void {
+  ctx.sessions.registerMessageProjection(promptRegexViewProjection)
 }
 
 function outcomeRank(value: PromptRegexOutcome): number {
@@ -218,13 +262,14 @@ function preparePromptRegexStreamOptions(
   if (agent === undefined) return undefined
   const plan = promptPlanForAgent(agent)
   if (plan === undefined) return undefined
-  const hasManagedSurface = dialogueNodes(agent.session)
-    .some(node => sourceMarker(messageOf(node.current).source) !== undefined)
+  // 0.2.1: 正则改写不再落在 surface 事件上，"是否有受管视图"看投影记录是否存在。
+  const hasManagedSurface = agent.session.snapshotEvents()
+    .some(event => event.type === 'plugin:agent-rp/prompt-regex-view')
   const hasPromptScripts = plan.transforms.operations.length > 0
   if (!hasPromptScripts && !hasManagedSurface
     && plan.beforeHistory.length === 0 && plan.afterHistory.length === 0 && plan.inChat.length === 0
     && plan.includeHistory && plan.continuation === undefined) return undefined
-  let messages = options.messages
+  let messages: readonly RequestMessage[] = options.messages
   if (hasPromptScripts || hasManagedSurface) {
     const trace = applyPromptRegexSurface(agent.session, plan.transforms)
     if (trace !== undefined && trace.replacementCount > 0) messages = [...agent.session.deriveMessages()]
@@ -253,22 +298,23 @@ function llmStreamOwnerContext(ctx: Context): Context {
   return owner as Context
 }
 
-/** Apply one request's prompt view to the durable model surface. */
+/** Apply one request's prompt view as a durable projection record. */
 export function applyPromptRegexSurface(
   session: Session,
   plan: RoleplayPromptTransformPlan,
 ): PromptRegexTraceRecord | undefined {
-  const position = openStep(session.events)
+  const position = openStep(session.snapshotEvents())
   if (position === undefined) return undefined
   const { card, scripts } = executionProgram(plan)
   const nodes = dialogueNodes(session)
   const summaries = scripts.map((_script, index) => ({ outcome: 'disabled' as PromptRegexOutcome, affectedMessages: 0, index }))
-  const replacements: { readonly node: DialogueNode; readonly content: ContentBlock[] }[] = []
+  const replacements: PromptRegexViewRecord['replacements'][number][] = []
+  // 0.2.1: 正则作用于楼层编辑后的文本（message-edit 投影记录），而非 durable 原文。
+  const edits = messageEditContents(session.snapshotEvents())
   for (const [index, node] of nodes.entries()) {
-    const original = messageOf(node.original)
-    const current = messageOf(node.current)
+    const baseline = edits.get(node.current.seq) ?? messageOf(node.original).content
     const rendered = transformedContent(
-      original.content,
+      baseline,
       card,
       node.role === 'user' ? USER_INPUT_PLACEMENT : AI_OUTPUT_PLACEMENT,
       nodes.length - index - 1,
@@ -281,8 +327,10 @@ export function applyPromptRegexSurface(
       if (outcomeRank(outcome) > outcomeRank(summary.outcome)) summary.outcome = outcome
       if (outcome === 'applied') summary.affectedMessages += 1
     }
-    if (sameContent(current.content, rendered.content)) continue
-    replacements.push({ node, content: rendered.content })
+    // 幂等：与当前派生（含既有投影）内容一致就不重复改写。
+    const derived = session.deriveEventMessage(node.current)
+    if (derived !== null && sameContent(derived.content, rendered.content)) continue
+    replacements.push({ seq: node.current.seq, content: rendered.content })
   }
   const record: PromptRegexTraceRecord = {
     format: 0,
@@ -298,22 +346,14 @@ export function applyPromptRegexSurface(
       affectedMessages: summaries[index]?.affectedMessages ?? 0,
     })),
   }
-  if (replacements.length === 0) {
-    const node = traceCarrier(nodes)
-    if (node !== undefined) {
-      appendReplacement(session, node, [...messageOf(node.current).content], position, record)
-    }
-  } else {
-    replacements.forEach((replacement, index) => {
-      appendReplacement(
-        session,
-        replacement.node,
-        replacement.content,
-        position,
-        index === replacements.length - 1 ? record : undefined,
-      )
-    })
-  }
+  // 0.2.1: 不再 append replace 事件。一条插件记录承载全部改写与 trace，
+  // 投影负责派生层生效；replacements 为空也落记录，trace 供客户端投影消费。
+  appendAgentRpSessionEvent(session, 'plugin:agent-rp/prompt-regex-view', {
+    format: 0,
+    ...position,
+    replacements,
+    trace: record,
+  })
   return record
 }
 

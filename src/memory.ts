@@ -1,7 +1,9 @@
 /** Durable Agent RP memory reconstructed from native tool events. */
 
 import type { Branded } from '@deepseek-ai/dsh-brand'
-import { Session, SessionId, type JsonValue, type SessionEvent, type UserMessage } from '@deepseek-ai/dsh-session'
+import {Session, SessionId, type SessionEvent, type UserMessage, SessionSeq } from '@deepseek-ai/dsh-session'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
+import type { AgentRpSessionEvent } from './session-event-compat.ts'
 
 const PERSISTENT_MEMORY_INTENT = /(?:记住|记得|别忘|不要忘|以后|今后|下次|从现在起|remember|do(?:n['’]?t| not) forget|from now on|next time)/iu
 
@@ -69,9 +71,14 @@ export interface AgentRpMemorySeedRecord {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable active-memory snapshot explicitly carried into a new Roleplay Session. */
+    'plugin:agent-rp/memory-seed': AgentRpMemorySeedRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable active-memory snapshot explicitly carried into a new Roleplay Session. */
-    'agent-rp/memory-seed': AgentRpMemorySeedRecord
+    'plugin:agent-rp/memory-seed': AgentRpMemorySeedRecord
   }
 }
 
@@ -290,19 +297,20 @@ function parseCanonicalResult(
   result: SessionEvent<'tool/result'>,
   call: SessionEvent<'tool/call'>,
 ): JsonValue {
-  const block = result.data.message.content[0]
-  if (String(block.toolCallId) !== String(call.data.callId)
-    || String(result.data.message.source.callId) !== String(call.data.callId)) {
+  // 0.2.1: toolCallId/isError 直接挂在 tool 角色消息上，不再有 tool-result 内容块。
+  const message = result.data.message
+  if (String(message.toolCallId) !== String(call.data.callId)
+    || String(message.source.callId) !== String(call.data.callId)) {
     throw new Error(`remember result for call ${call.data.callId} has inconsistent call identity`)
   }
   if (result.sourceEventSeqs?.length !== 1 || result.sourceEventSeqs[0] !== call.seq) {
     throw new Error(`remember result for call ${call.data.callId} does not cite its direct tool call`)
   }
-  if (block.content.length !== 1 || block.content[0]?.type !== 'text') {
+  if (message.content.length !== 1 || message.content[0]?.type !== 'text') {
     throw new Error(`remember result for call ${call.data.callId} has invalid canonical content`)
   }
   try {
-    return JSON.parse(block.content[0].text) as JsonValue
+    return JSON.parse(message.content[0].text) as JsonValue
   } catch {
     throw new Error(`remember result for call ${call.data.callId} has invalid canonical JSON`)
   }
@@ -314,9 +322,8 @@ function successfulRememberResults(events: readonly SessionEvent[]): Map<string,
   const results = new Map<string, SessionEvent<'tool/result'>>()
   for (const event of events) {
     if (event.type !== 'tool/result') continue
-    const block = event.data.message.content[0]
-    if (block.isError === true || event.data.error !== undefined) continue
-    const callId = String(block.toolCallId)
+    if (event.data.message.isError === true || event.data.error !== undefined) continue
+    const callId = String(event.data.message.toolCallId)
     if (!rememberCallIds.has(callId)) continue
     if (results.has(callId)) throw new Error(`tool call ${callId} has multiple successful results`)
     results.set(callId, event)
@@ -411,7 +418,7 @@ function applyCommandRecord(
 }
 
 function applySeedRecord(
-  event: SessionEvent<'agent-rp/memory-seed'>,
+  event: AgentRpSessionEvent<'plugin:agent-rp/memory-seed'>,
   active: Map<AgentRpMemoryId, AgentRpMemoryRecord>,
 ): readonly AgentRpMemoryRecord[] {
   if (event.data.format !== 0 || event.data.sourceSessionId.trim() === '' || event.data.sourceSessionId.length > 512
@@ -451,7 +458,7 @@ export function readAgentRpMemoryHistory(events: readonly SessionEvent[]): Agent
   const active = new Map<AgentRpMemoryId, AgentRpMemoryRecord>()
   const results = successfulRememberResults(events)
   for (const event of events) {
-    if (event.type === 'agent-rp/memory-seed') {
+    if (event.type === 'plugin:agent-rp/memory-seed') {
       all.push(...applySeedRecord(event, active))
       continue
     }
@@ -479,8 +486,8 @@ export function appendAgentRpMemorySeed(
   if (sourceSessionId.trim() === '' || sourceSessionId.length > 512) throw new Error('来源角色会话编号无效')
   const time = Math.max(Date.now(), (seed.at(-1)?.time ?? 0) + 1)
   const events: SessionEvent[] = [...seed, {
-    type: 'agent-rp/memory-seed',
-    seq: seed.length,
+    type: 'plugin:agent-rp/memory-seed',
+    seq: SessionSeq(seed.length),
     time,
     data: {
       format: 0,
@@ -489,11 +496,11 @@ export function appendAgentRpMemorySeed(
     },
     ignorable: true,
   }]
-  return Object.freeze(Session.create(SessionId('agent-rp-memory-seed-validation'), events).events.slice(0, events.length))
+  return Object.freeze(Session.create(SessionId('agent-rp-memory-seed-validation'), events).snapshotEvents().slice(0, events.length))
 }
 
 function findRememberCall(session: Session, callId: string): SessionEvent<'tool/call'> {
-  const call = session.events.findLast(event => event.type === 'tool/call' && event.data.callId === callId)
+  const call = session.snapshotEvents().findLast(event => event.type === 'tool/call' && event.data.callId === callId)
   if (call?.type !== 'tool/call' || call.data.name !== 'remember') {
     throw new Error('remember execution has no matching direct Session tool call')
   }
@@ -512,7 +519,7 @@ export function prepareAgentRpMemory(
   callId: string,
   input: AgentRpMemoryInput,
 ): AgentRpMemoryRecord {
-  const history = readAgentRpMemoryHistory(session.events)
+  const history = readAgentRpMemoryHistory(session.snapshotEvents())
   const call = findRememberCall(session, callId)
   const sourceInput = sourceArguments(call)
   if (sourceInput.kind !== input.kind

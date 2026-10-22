@@ -1,11 +1,12 @@
 /** Durable imported-character replay from native tool events. */
 
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 import { parseCharacterCardValue } from './character-card.ts'
 import { CHARACTER_IMPORT_DEGRADATIONS } from './types.ts'
 import type { CharacterCardPngPayload, CharacterImportDegradation, ImportedCharacterCard } from './types.ts'
 import type { SessionPersonaSnapshot } from '../persona-library-protocol.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 import {
   parseSillyTavernChatCommandRecord,
   type SillyTavernChatCommandRecord,
@@ -217,7 +218,7 @@ function validateImport(events: readonly SessionEvent[], resultEvent: SessionEve
   const call = resultEvent.sourceEventSeqs?.length === 1 ? events[resultEvent.sourceEventSeqs[0]!] : undefined
   if (call?.type !== 'tool/call' || call.data.name !== 'import_character_card'
     || call.seq >= resultEvent.seq
-    || String(call.data.callId) !== String(resultEvent.data.message.content[0].toolCallId)) {
+    || String(call.data.callId) !== String(resultEvent.data.message.toolCallId)) {
     throw new Error('import_character_card result does not cite its direct tool call')
   }
   let callArguments: unknown
@@ -269,7 +270,7 @@ function validateImport(events: readonly SessionEvent[], resultEvent: SessionEve
 export function readActiveSessionCharacter(events: readonly SessionEvent[]): ActiveSessionCharacter | undefined {
   let active: ActiveSessionCharacter | undefined
   for (const event of events) {
-    if (event.type === 'agent-rp/character-card-seed') {
+    if (event.type === 'plugin:agent-rp/character-card-seed') {
       const meta = parseCharacterImportMeta(event.data.meta as unknown as JsonValue)
       const result = meta.result
       const card = parseCharacterCardValue(meta.raw)
@@ -317,8 +318,8 @@ export function readActiveSessionCharacter(events: readonly SessionEvent[]): Act
       }
       continue
     }
-    if (event.type !== 'tool/result' || event.data.message.content[0].isError === true) continue
-    const callId = String(event.data.message.content[0].toolCallId)
+    if (event.type !== 'tool/result' || event.data.message.isError === true) continue
+    const callId = String(event.data.message.toolCallId)
     const call = events.find(candidate => candidate.type === 'tool/call' && String(candidate.data.callId) === callId)
     if (call?.type !== 'tool/call' || call.data.name !== 'import_character_card') continue
     active = validateImport(events, event)

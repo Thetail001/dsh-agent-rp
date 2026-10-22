@@ -1,6 +1,6 @@
 /** Bind logged third-party plugin context to the exact Roleplay model step that consumed it. */
 
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 import type { Message } from '@deepseek-ai/dsh-llm'
 import type { RoleplayExternalContextRead, RoleplayTurnPlan } from './roleplay-turn-plan.ts'
 

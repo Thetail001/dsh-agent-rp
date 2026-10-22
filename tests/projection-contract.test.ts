@@ -1,3 +1,4 @@
+import { SessionSeq } from '@deepseek-ai/dsh-session'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { agentRpProjectionDefinition, createAgentRpProjectionDefinition } from '../src/projection.ts'
@@ -19,8 +20,8 @@ test('projects the selected turn mode from the live Host capability instead of a
   const supported = createAgentRpProjectionDefinition(undefined, () => true)
   const unsupported = createAgentRpProjectionDefinition(undefined, () => false)
   const selected = supported.apply(supported.init(), {
-    type: 'agent-rp/turn-mode',
-    seq: 0,
+    type: 'plugin:agent-rp/turn-mode',
+    seq: SessionSeq(0),
     time: 1,
     ignorable: true,
     data: { format: 0, mode: 'agent', source: 'default' },

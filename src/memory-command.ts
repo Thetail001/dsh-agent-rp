@@ -16,12 +16,12 @@ export function executeAgentRpMemoryCommand(invocation: {
   readonly rawInput: string
 }): { readonly kind: 'success'; readonly text: string } {
   const request = parseAgentRpMemoryCommandRequest(invocation.rawInput)
-  const source = invocation.agent.session.events.at(-1)
+  const source = invocation.agent.session.snapshotEvents().at(-1)
   if (source?.type !== 'command/run' || source.data.name !== 'rp-memory'
     || String(source.data.commandId) !== String(invocation.commandId)) {
     throw new Error('记忆操作命令不是当前 Session 事件')
   }
-  const history = readAgentRpMemoryHistory(invocation.agent.session.events)
+  const history = readAgentRpMemoryHistory(invocation.agent.session.snapshotEvents())
   if (request.operation === 'add') {
     const conflict = findAgentRpMemorySubjectConflict(history.active, request.subject)
     if (conflict !== undefined) throw new Error(`“${request.subject}”已经有一条有效记忆，请直接纠正原记录`)

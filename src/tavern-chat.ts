@@ -2,8 +2,11 @@
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { isSurfaceEvent, type JsonValue, type SessionEvent, type SurfaceEvent, type SurfaceIntent } from '@deepseek-ai/dsh-session'
+import {isSurfaceEvent, type SessionEvent, type SurfaceEvent, type SurfaceIntent} from '@deepseek-ai/dsh-session'
 import type { TavernChatMessageInput, TavernChatMutationRequest, TavernHiddenMessage } from './tavern-helper.ts'
+import { hiddenReplyVersionSeqs } from './generation-state-record.ts'
+import { appendMessageEdit, messageEditContents } from './message-edit.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 type JsonRecord = Readonly<Record<string, JsonValue>>
 
@@ -39,16 +42,24 @@ function textContent(event: SurfaceEvent): string | undefined {
 
 function surfaceEntries(agent: Agent): readonly SurfaceEntry[] {
   return agent.session.surface.nodes.map(seq => {
-    const event = agent.session.events[seq]
+    const event = agent.session.snapshotEvents()[seq]
     if (event === undefined || !isSurfaceEvent(event)) throw new Error('current Session surface contains an invalid node')
     return { kind: 'existing' as const, event }
   })
 }
 
-function visibleMessages(entries: readonly SurfaceEntry[]): readonly VisibleMessage[] {
+function visibleMessages(entries: readonly SurfaceEntry[], events: readonly SessionEvent[]): readonly VisibleMessage[] {
+  // 0.2.1: swipe 版本全部在表面上，楼层枚举按账本剔除非选中版本；
+  // 投影层的内容编辑（message-edit 记录）覆盖 durable 文本。
+  const hidden = hiddenReplyVersionSeqs(events)
+  const edits = messageEditContents(events)
   return entries.flatMap((entry, rawIndex) => {
     if (entry.kind !== 'existing') return []
-    const text = textContent(entry.event)
+    if (hidden.has(entry.event.seq)) return []
+    const edited = edits.get(entry.event.seq)
+    const text = edited === undefined
+      ? textContent(entry.event)
+      : edited.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
     if (text === undefined) return []
     const role = entry.event.type === 'assistant/message' ? 'assistant' as const : 'user' as const
     return [{ messageId: 0, rawIndex, event: entry.event, role, text }]
@@ -62,7 +73,7 @@ export function tavernChatMessageSeqs(
 ): readonly number[] {
   return [
     ...hiddenPrefix.map(message => message.seq),
-    ...visibleMessages(surfaceEntries(agent)).map(message => message.event.seq),
+    ...visibleMessages(surfaceEntries(agent), agent.session.snapshotEvents()).map(message => message.event.seq),
   ]
 }
 
@@ -80,10 +91,12 @@ function requireSurfaceEvent(event: SessionEvent): SurfaceEvent {
 }
 
 function appendEntry(agent: Agent, entry: SurfaceEntry, intent: SurfaceIntent): SurfaceEvent {
+  // 0.2.1: assistant/message 不能引用 sourceEventSeqs（来源由 stream 承载），只保留 surfaceOp。
+  const assistantIntent: SurfaceIntent<'assistant/message'> = { surfaceOp: intent.surfaceOp }
   if (entry.kind === 'existing') {
     const event = entry.event
     if (event.type === 'user/message') return requireSurfaceEvent(agent.session.append(event.type, event.data, intent))
-    if (event.type === 'assistant/message') return requireSurfaceEvent(agent.session.append(event.type, event.data, intent))
+    if (event.type === 'assistant/message') return requireSurfaceEvent(agent.session.append(event.type, event.data, assistantIntent))
     return requireSurfaceEvent(agent.session.append(event.type, event.data, intent))
   }
   if (entry.role === 'user') {
@@ -92,14 +105,14 @@ function appendEntry(agent: Agent, entry: SurfaceEntry, intent: SurfaceIntent): 
       source: { kind: 'user' },
     }), intent))
   }
-  const coordinates = assistantCoordinates(agent.session.events)
-  return requireSurfaceEvent(agent.session.append('assistant/message', {
+  const coordinates = assistantCoordinates(agent.session.snapshotEvents())
+  return requireSurfaceEvent(agent.session.append('assistant/message', { stream: [],
     ...coordinates,
     message: createAssistantMessage({
       content: [{ type: 'text', text: entry.text }],
       source: { provider: 'dsh-agent-rp', model: 'tavern-script' },
     }),
-  }, intent))
+  }, assistantIntent))
 }
 
 function rewriteSurface(agent: Agent, before: readonly SurfaceEntry[], after: readonly SurfaceEntry[]): void {
@@ -108,20 +121,10 @@ function rewriteSurface(agent: Agent, before: readonly SurfaceEntry[], after: re
     for (const entry of after) appendEntry(agent, entry, { surfaceOp: 'append' })
     return
   }
-  const sourceEventSeqs = before.map(entry => entry.kind === 'existing' ? entry.event.seq : -1).filter(seq => seq >= 0)
-  const start = sourceEventSeqs[0]
-  const end = sourceEventSeqs.at(-1)
-  if (start === undefined || end === undefined) throw new Error('当前角色会话没有可重写的聊天楼层')
-  after.forEach((entry, index) => {
-    if (index === 0) {
-      appendEntry(agent, entry, { surfaceOp: { op: 'replace', start, end }, sourceEventSeqs })
-      return
-    }
-    appendEntry(agent, entry, {
-      surfaceOp: 'append',
-      ...(entry.kind === 'existing' ? { sourceEventSeqs: [entry.event.seq] } : {}),
-    })
-  })
+  // 0.2.1: assistant/message 的 surface replace 已被平台移除，surface 不能缩小、
+  // 重排或中间插入。删除/移动/插入/隐藏楼层统一降级为明确报错；
+  // 内容编辑走 messageProjection（见 setMessages），末尾新增仍然可用。
+  throw new Error('当前 DSH 版本不支持删除、移动、隐藏或中间插入聊天楼层，仅支持末尾新增与内容编辑')
 }
 
 function empty(record: JsonRecord | undefined): boolean {
@@ -173,7 +176,7 @@ function setMessages(
   hiddenPrefix: readonly TavernHiddenMessage[],
 ): TavernChatMutationResult {
   const entries = surfaceEntries(agent)
-  const visible = visibleMessages(entries)
+  const visible = visibleMessages(entries, agent.session.snapshotEvents())
   let messageVariables: JsonRecord | undefined
   const planned: {
     readonly target: VisibleMessage
@@ -194,14 +197,22 @@ function setMessages(
     }
     const role = update.role ?? target.role
     if (role === 'system') throw new Error('DSH 会话暂时没有可由卡片脚本创建的 system 聊天楼层')
+    // 0.2.1: 楼层角色不能改（assistant 不能 replace，投影也必须保持消息身份）。
+    if (role !== target.role) throw new Error('当前 DSH 版本不支持修改聊天楼层的角色')
     const text = selectedText(update, target.text)
-    if (role !== target.role || text !== target.text) planned.push({ target, role, text })
+    if (text !== target.text) planned.push({ target, role, text })
   }
   for (const update of planned) {
-    appendEntry(agent, { kind: 'synthetic', role: update.role, text: update.text }, {
-      surfaceOp: { op: 'replace', start: update.target.event.seq, end: update.target.event.seq },
-      sourceEventSeqs: [update.target.event.seq],
-    })
+    if (update.target.role === 'user') {
+      // user/message replace 在 0.2.1 仍然合法（sourceEventSeqs 引用被覆盖节点）。
+      appendEntry(agent, { kind: 'synthetic', role: 'user', text: update.text }, {
+        surfaceOp: { op: 'replace', startSeq: update.target.event.seq, endSeq: update.target.event.seq },
+        sourceEventSeqs: [update.target.event.seq],
+      })
+      continue
+    }
+    // 0.2.1: assistant 楼层不能 replace，内容编辑走 messageProjection 记录。
+    appendMessageEdit(agent.session, update.target.event.seq, [{ type: 'text', text: update.text }])
   }
   return { hiddenPrefix, ...(messageVariables === undefined ? {} : { messageVariables }) }
 }
@@ -308,7 +319,7 @@ function setHidden(
 ): TavernChatMutationResult {
   const entries = surfaceEntries(agent)
   const current = blocks(entries)
-  const visible = visibleMessages(entries)
+  const visible = visibleMessages(entries, agent.session.snapshotEvents())
   const total = hiddenPrefix.length + visible.length
   if (request.start !== 0 || request.end >= total) throw new Error('当前仅支持从第 0 楼开始隐藏或恢复')
   if (request.hidden) {

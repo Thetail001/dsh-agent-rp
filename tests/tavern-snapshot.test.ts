@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import {SessionId} from '@deepseek-ai/dsh-session'
 import type { ImportedTavernHelperScript } from '../src/import/types.ts'
 import { agentRpProjectionDefinition } from '../src/projection.ts'
 import {

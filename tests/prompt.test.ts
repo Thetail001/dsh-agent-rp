@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
 import { claimAgentRpPrompt } from '../src/index.ts'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'

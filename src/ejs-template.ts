@@ -1,12 +1,12 @@
 /** Isolated, deterministic rendering for the supported SillyTavern EJS subset. */
 
 import variant from '@jitl/quickjs-singlefile-mjs-release-sync'
-import type { JsonValue } from '@deepseek-ai/dsh-session'
 import {
   newQuickJSWASMModuleFromVariant,
   type QuickJSHandle,
   type QuickJSWASMModule,
 } from 'quickjs-emscripten-core'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 import type {
   LorebookRegexEngine,
   LorebookRegexMatcher,

@@ -8,7 +8,7 @@ import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { CommandId } from '@deepseek-ai/dsh-commands'
 import {
-  CallId,
+  ToolCallId,
   createAssistantMessage,
   createToolResultMessage,
   createUserMessage,
@@ -17,7 +17,7 @@ import {
   type GenerateOptions,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import {Session, SessionId, SessionSeq} from '@deepseek-ai/dsh-session'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRegistry, { defineTool } from '@deepseek-ai/dsh-tools'
@@ -61,6 +61,7 @@ import {
   StExtensionGenerationCoordinator,
 } from '../src/st-extension-generation.ts'
 import { installIgnorableSessionEventFixture } from './session-event-fixture.ts'
+import type { AgentRpSessionEvent } from '../src/session-event-compat.ts'
 
 installIgnorableSessionEventFixture()
 
@@ -152,7 +153,7 @@ function cardSession(
 function beginTurn(session: Session): {
   readonly plan: RoleplayTurnPlan
   readonly reference: RoleplayTurnPlanReference
-  readonly record: SessionEvent<'agent-rp/turn-plan'>
+  readonly record: AgentRpSessionEvent<'plugin:agent-rp/turn-plan'>
 } {
   session.append('turn/start', { turn: 1 })
   const pending = createUserMessage({
@@ -174,23 +175,23 @@ function appendActionCall(
   text = '白露把修行笔记收好，终于跨过了原先的门槛。',
 ) {
   const argumentsText = JSON.stringify(args)
-  const assistant = session.append('assistant/message', {
+  const assistant = session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [{ type: 'text', text }, {
         type: 'tool-call',
-        id: CallId(callId),
+        id: ToolCallId(callId),
         name: ROLEPLAY_STATE_ACTION_TOOL,
         arguments: argumentsText,
       }],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  }, { surfaceOp: 'append' })
   const call = session.append('tool/call', {
     turn: 1,
     step: 1,
-    callId: CallId(callId),
+    callId: ToolCallId(callId),
     name: ROLEPLAY_STATE_ACTION_TOOL,
     arguments: argumentsText,
   })
@@ -214,7 +215,7 @@ async function executeAndAppend(
   sourceEventSeqs: readonly number[] = [callSeq],
 ) {
   const result = await ctx.tools.execute({
-    callId: CallId(callId),
+    callId: ToolCallId(callId),
     name: ROLEPLAY_STATE_ACTION_TOOL,
     arguments: args,
     agent,
@@ -226,12 +227,12 @@ async function executeAndAppend(
     turn: 1,
     step: 1,
     message: createToolResultMessage({
-      callId: CallId(callId),
+      callId: ToolCallId(callId),
       content: result.content,
       isError: false,
     }),
     ...(result.meta === undefined ? {} : { meta: result.meta }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [...sourceEventSeqs] })
+  }, { surfaceOp: 'append', sourceEventSeqs: sourceEventSeqs.map(seq => SessionSeq(seq)) })
   return { event, result }
 }
 
@@ -337,7 +338,7 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
     step: 1,
     signal: new AbortController().signal,
   }, () => Promise.resolve({ provider: 'fixture', model: 'fixture' }))
-  const memoryPlanRecord = readSessionRoleplayTurnPlans(native.session.events).at(-1)
+  const memoryPlanRecord = readSessionRoleplayTurnPlans(native.session.snapshotEvents()).at(-1)
   assert.notEqual(memoryPlanRecord, undefined)
   const memoryPlan = replaySessionRoleplayTurnPlan({
     session: native.session,
@@ -370,7 +371,7 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
     source: { kind: 'user' },
   })
   executeRoleplayTurnModeCommand({ commandId, agent: nativeAgent, rawInput })
-  assert.equal(readRoleplayTurnMode(Session.create(native.session.id, native.session.events).events), 'conversation')
+  assert.equal(readRoleplayTurnMode(Session.create(native.session.id, native.session.snapshotEvents()).snapshotEvents()), 'conversation')
   native.session.append('turn/start', { turn: 3 })
   agentEvents(root, nativeAgent).emit('agent/inbox/claimed', {
     message: createUserMessage({
@@ -388,16 +389,16 @@ test('keeps state arithmetic out of the actor step and does not migrate resumed 
   const resumedScope = createScope(agentParentCtx, resumedAgent, { parent: presetKey })
   Object.assign(resumedAgent, { ctx: resumedScope.ctx })
   const disposeResumed = root.agents.register(resumedAgent)
-  agentEvents(root, resumedAgent).emit('agent/session-start', { source: 'resume' })
-  assert.equal(readRoleplayTurnMode(resumedSession.events), 'conversation')
+  agentEvents(root, resumedAgent).emit('agent/created', { source: 'resume' })
+  assert.equal(readRoleplayTurnMode(resumedSession.snapshotEvents()), 'conversation')
 
   const freshSession = Session.create(SessionId('state-action-fresh-default'))
   const freshAgent = { id: freshSession.id, session: freshSession } as Agent
   const freshScope = createScope(agentParentCtx, freshAgent, { parent: presetKey })
   Object.assign(freshAgent, { ctx: freshScope.ctx })
   const disposeFresh = root.agents.register(freshAgent)
-  agentEvents(root, freshAgent).emit('agent/session-start', { source: 'startup' })
-  assert.equal(readRoleplayTurnMode(freshSession.events), 'agent')
+  agentEvents(root, freshAgent).emit('agent/created', { source: 'startup' })
+  assert.equal(readRoleplayTurnMode(freshSession.snapshotEvents()), 'agent')
 
   context.after(async () => {
     unregisterStGeneration()
@@ -434,21 +435,21 @@ test('applies one semantic action after turn end and keeps its narrative message
   const { assistant, call } = appendActionCall(session, 'state-action-success-call', args)
   const { event, result } = await executeAndAppend(ctx, { session } as Agent, 'state-action-success-call', call.seq, args)
   assert.equal(result.concludesTurn, true)
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [event.seq] })
+  }, { surfaceOp: 'append' })
   session.append('step/end', { turn: 1, step: 1 })
   session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
-  const restarted = Session.create(session.id, session.events)
-  assert.equal(restarted.events.at(-1)?.type, 'session/end-seed')
+  const restarted = Session.create(session.id, session.snapshotEvents())
+  assert.equal(restarted.snapshotEvents().at(-1)?.type, 'session/end-seed')
 
   assert.deepEqual(collectRoleplayStateActionIntents({
-    events: restarted.events,
+    events: restarted.snapshotEvents(),
     sessionId: String(restarted.id),
     turn: 1,
     plans: [reference],
@@ -463,16 +464,16 @@ test('applies one semantic action after turn end and keeps its narrative message
     updateCount: 1,
     source: { kind: 'agent-action', turn: 1, resultEventSeqs: [event.seq] },
   })
-  const actionState = restarted.events.findLast(event => event.type === 'agent-rp/mvu-state')
-  assert.equal(actionState?.type, 'agent-rp/mvu-state')
-  if (actionState?.type === 'agent-rp/mvu-state') {
+  const actionState = restarted.snapshotEvents().findLast(event => event.type === 'plugin:agent-rp/mvu-state')
+  assert.equal(actionState?.type, 'plugin:agent-rp/mvu-state')
+  if (actionState?.type === 'plugin:agent-rp/mvu-state') {
     assert.deepEqual(actionState.data.source, {
       kind: 'agent-action',
       turn: 1,
       resultEventSeqs: [event.seq],
     })
   }
-  const settlement = readRoleplayTurnSettlements(restarted.events)[0]
+  const settlement = readRoleplayTurnSettlements(restarted.snapshotEvents())[0]
   assert.equal(settlement?.reply?.eventSeq, assistant.seq)
   assert.deepEqual(settlement?.state, [{
     id: 'state:mvu', beforeRevision: 0, afterRevision: 1, outcome: 'updated',
@@ -485,7 +486,7 @@ test('applies one semantic action after turn end and keeps its narrative message
     presentations: 0,
     turns: [],
   })
-  assert.equal(restarted.events.filter(candidate => candidate.type === 'agent-rp/mvu-state').length, 1)
+  assert.equal(restarted.snapshotEvents().filter(candidate => candidate.type === 'plugin:agent-rp/mvu-state').length, 1)
 })
 
 test('settles MVU after the visible reply through a replayable local-provider stage', async () => {
@@ -505,14 +506,14 @@ test('settles MVU after the visible reply through a replayable local-provider st
   const openingPlan = prepareRoleplayTurn({ session, deployment, resolved: openingResolved })
   session.append('step/start', { turn: 1, step: 1 })
   appendSessionRoleplayTurnPlan(session, 1, 1, openingPlan)
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [{ type: 'text', text: '门还没锁。这是同一回合中已经结束的角色开场白。' }],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  }, { surfaceOp: 'append' })
   session.append('step/end', { turn: 1, step: 1 })
   const pending = createUserMessage({
     source: { kind: 'user' },
@@ -535,16 +536,16 @@ test('settles MVU after the visible reply through a replayable local-provider st
     reason: 'initial',
     header: { config: { provider: 'fixture', model: 'fixture', maxTokens: 128 } },
   })
-  const narrative = session.append('assistant/message', {
+  const narrative = session.append('assistant/message', { stream: [],
     turn: 1,
     step: 2,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [{ type: 'text', text: '白露合上修行笔记，确认自己已经跨过两级门槛。' }],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  }, { surfaceOp: 'append' })
   session.append('step/end', { turn: 1, step: 2 })
-  const reviewedNarrative = session.append('assistant/message', {
+  const reviewedNarrative = session.append('assistant/message', { stream: [],
     turn: 1,
     step: 2,
     message: createAssistantMessage({
@@ -552,8 +553,7 @@ test('settles MVU after the visible reply through a replayable local-provider st
       content: [{ type: 'text', text: '白露合上修行笔记，确认自己已经稳稳跨过两级门槛。' }],
     }),
   }, {
-    surfaceOp: { op: 'replace', start: narrative.seq, end: narrative.seq },
-    sourceEventSeqs: [narrative.seq],
+    surfaceOp: { op: 'replace', startSeq: narrative.seq, endSeq: narrative.seq },
   })
   const requestTexts: string[] = []
   const requestSystems: string[] = []
@@ -633,11 +633,11 @@ test('settles MVU after the visible reply through a replayable local-provider st
     { provider: 'fixture', model: 'fixture' },
     { provider: 'fast-fixture', model: 'verification-fixture' },
   ])
-  assert.equal(session.events.filter(event => event.type === 'assistant/message').length, 3)
-  const requestEvent = session.events.find(event => event.type === 'agent-rp/staged-state-request'
+  assert.equal(session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 3)
+  const requestEvent = session.snapshotEvents().find(event => event.type === 'plugin:agent-rp/staged-state-request'
     && event.data.stage === 'proposal')
-  assert.equal(requestEvent?.type, 'agent-rp/staged-state-request')
-  if (requestEvent?.type !== 'agent-rp/staged-state-request') assert.fail('staged request was not recorded')
+  assert.equal(requestEvent?.type, 'plugin:agent-rp/staged-state-request')
+  if (requestEvent?.type !== 'plugin:agent-rp/staged-state-request') assert.fail('staged request was not recorded')
   assert.equal(JSON.stringify(requestEvent.data.dispatch.messages), requestText)
   assert.equal(requestEvent.data.dispatch.system, requestSystem)
   const requestBlock = requestEvent.data.dispatch.messages[0]?.content[0]
@@ -659,21 +659,21 @@ test('settles MVU after the visible reply through a replayable local-provider st
   assert.ok(requestBody.indexOf('<imported_state_rules>') < requestBody.indexOf('<current_state>'))
   assert.ok(requestBody.indexOf('<current_state>') < requestBody.indexOf('<player_input>'))
   assert.ok(requestBody.indexOf('<player_input>') < requestBody.indexOf('<roleplay_reply>'))
-  const proposalResult = session.events.find(event => event.type === 'agent-rp/staged-state-result'
+  const proposalResult = session.snapshotEvents().find(event => event.type === 'plugin:agent-rp/staged-state-result'
     && event.data.requestSeq === requestEvent.seq)
-  const verificationRequest = session.events.find(event => event.type === 'agent-rp/staged-state-request'
+  const verificationRequest = session.snapshotEvents().find(event => event.type === 'plugin:agent-rp/staged-state-request'
     && event.data.stage === 'verification')
-  assert.equal(proposalResult?.type, 'agent-rp/staged-state-result')
-  assert.equal(verificationRequest?.type, 'agent-rp/staged-state-request')
-  if (proposalResult?.type !== 'agent-rp/staged-state-result'
-    || verificationRequest?.type !== 'agent-rp/staged-state-request') {
+  assert.equal(proposalResult?.type, 'plugin:agent-rp/staged-state-result')
+  assert.equal(verificationRequest?.type, 'plugin:agent-rp/staged-state-request')
+  if (proposalResult?.type !== 'plugin:agent-rp/staged-state-result'
+    || verificationRequest?.type !== 'plugin:agent-rp/staged-state-request') {
     assert.fail('staged verification chain was not recorded')
   }
   assert.equal(proposalResult.data.result.kind, 'success')
   if (proposalResult.data.result.kind !== 'success') assert.fail('staged proposal unexpectedly failed')
   assert.deepEqual(proposalResult.data.result.operations, [{ op: 'delta', path: '/角色/等级', value: 1 }])
   assert.throws(() => collectRoleplayStagedStateSettlement({
-    events: session.events.slice(0, proposalResult.seq + 1),
+    events: session.snapshotEvents().slice(0, proposalResult.seq + 1),
     sessionId: String(session.id),
     turn: 1,
     plans: [reference],
@@ -681,8 +681,8 @@ test('settles MVU after the visible reply through a replayable local-provider st
   const legacyRequest = {
     ...requestEvent,
     data: { ...requestEvent.data, stage: undefined },
-  } as SessionEvent<'agent-rp/staged-state-request'>
-  const legacyEvents = session.events.slice(0, proposalResult.seq + 1).map(event =>
+  } as AgentRpSessionEvent<'plugin:agent-rp/staged-state-request'>
+  const legacyEvents = session.snapshotEvents().slice(0, proposalResult.seq + 1).map(event =>
     event.seq === legacyRequest.seq ? legacyRequest : event)
   assert.deepEqual(collectRoleplayStagedStateSettlement({
     events: legacyEvents,
@@ -695,7 +695,7 @@ test('settles MVU after the visible reply through a replayable local-provider st
   assert.equal(verificationRequest.data.dispatch.provider, 'fast-fixture')
   assert.equal(verificationRequest.data.dispatch.model, 'verification-fixture')
   const staged = collectRoleplayStagedStateSettlement({
-    events: session.events,
+    events: session.snapshotEvents(),
     sessionId: String(session.id),
     turn: 1,
     plans: [reference],
@@ -703,9 +703,9 @@ test('settles MVU after the visible reply through a replayable local-provider st
   assert.equal(staged?.outcome, 'success')
   if (staged === undefined) assert.fail('staged verification was not collected')
   assert.deepEqual(staged?.operations, [{ op: 'delta', path: '/角色/等级', value: 2 }])
-  const verificationResult = session.events[staged.resultEventSeq]
-  assert.equal(verificationResult?.type, 'agent-rp/staged-state-result')
-  if (verificationResult?.type !== 'agent-rp/staged-state-result') {
+  const verificationResult = session.snapshotEvents()[staged.resultEventSeq]
+  assert.equal(verificationResult?.type, 'plugin:agent-rp/staged-state-result')
+  if (verificationResult?.type !== 'plugin:agent-rp/staged-state-result') {
     assert.fail('staged verification result was not recorded')
   }
   const failedVerification = {
@@ -715,7 +715,7 @@ test('settles MVU after the visible reply through a replayable local-provider st
       result: { kind: 'failure' as const, failure: 'aborted' as const },
     },
   }
-  const failedEvents = session.events.map(event =>
+  const failedEvents = session.snapshotEvents().map(event =>
     event.seq === failedVerification.seq ? failedVerification : event)
   assert.deepEqual(collectRoleplayStagedStateSettlement({
     events: failedEvents,
@@ -731,7 +731,7 @@ test('settles MVU after the visible reply through a replayable local-provider st
     operations: [],
     error: '后台状态结算失败（aborted）',
   })
-  assert.equal(session.events[record.seq]?.type, 'agent-rp/turn-plan')
+  assert.equal(session.snapshotEvents()[record.seq]?.type, 'plugin:agent-rp/turn-plan')
 
   session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
   assert.deepEqual(recoverSessionRoleplayTurns({ session, deployment }), {
@@ -751,9 +751,9 @@ test('settles MVU after the visible reply through a replayable local-provider st
       resultEventSeqs: [staged!.resultEventSeq],
     },
   })
-  assert.equal(readRoleplayTurnSettlements(session.events)[0]?.reply?.eventSeq, reviewedNarrative.seq)
+  assert.equal(readRoleplayTurnSettlements(session.snapshotEvents())[0]?.reply?.eventSeq, reviewedNarrative.seq)
   assert.equal(collectRoleplayStagedStateSettlement({
-    events: session.events,
+    events: session.snapshotEvents(),
     sessionId: String(session.id),
     turn: 2,
     plans: [],
@@ -801,14 +801,14 @@ function preparedEmptyStagedSettlement(input: {
     reason: 'initial',
     header: { config: { provider: 'fixture', model: 'fixture', maxTokens: 8192 } },
   })
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [{ type: 'text', text: '白露检查了一遍，状态没有发生变化。' }],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  }, { surfaceOp: 'append' })
   session.append('step/end', { turn: 1, step: 1 })
   return { card, session, plan, reference }
 }
@@ -917,7 +917,7 @@ test('retries one invalid state response and records both verification attempts'
   assert.equal(requestCount, 3)
   assert.equal(outcome.outcome, 'unchanged')
   assert.deepEqual(recovery, { settlements: 1, presentations: 1, turns: [1] })
-  const results = session.events.filter(event => event.type === 'agent-rp/staged-state-result')
+  const results = session.snapshotEvents().filter(event => event.type === 'plugin:agent-rp/staged-state-result')
   assert.equal(results.length, 3)
   assert.deepEqual(results[1]?.data.result, {
     kind: 'failure',
@@ -950,8 +950,8 @@ test('retries one provider failure only when its captured policy allows the code
   assert.equal(requestCount, 3)
   assert.equal(outcome.outcome, 'unchanged')
   assert.deepEqual(recovery, { settlements: 1, presentations: 1, turns: [1] })
-  const first = session.events.find(event => event.type === 'agent-rp/staged-state-result')
-  assert.equal(first?.type, 'agent-rp/staged-state-result')
+  const first = session.snapshotEvents().find(event => event.type === 'plugin:agent-rp/staged-state-result')
+  assert.equal(first?.type, 'plugin:agent-rp/staged-state-result')
   assert.deepEqual(first?.data.result, {
     kind: 'failure',
     failure: 'provider',
@@ -992,7 +992,7 @@ test('keeps deterministic and aborted provider failures terminal with local deta
     assert.equal(requestCount, 1)
     assert.equal(outcome.outcome, 'failed')
     assert.equal(readCurrentSessionMvuState(card, session)?.lastError, fixture.expected)
-    assert.equal(session.events.filter(event => event.type === 'agent-rp/staged-state-result').length, 1)
+    assert.equal(session.snapshotEvents().filter(event => event.type === 'plugin:agent-rp/staged-state-result').length, 1)
   }
 })
 
@@ -1003,9 +1003,9 @@ test('bounds provider diagnostics and rejects malformed durable failure details'
     failure: { code: 'AUTH', message: 'x'.repeat(2_100), status: 401 },
     retryableCodes: ['SERVER'],
   })
-  const result = session.events.find(event => event.type === 'agent-rp/staged-state-result')
-  assert.equal(result?.type, 'agent-rp/staged-state-result')
-  if (result?.type !== 'agent-rp/staged-state-result' || result.data.result.kind !== 'failure') {
+  const result = session.snapshotEvents().find(event => event.type === 'plugin:agent-rp/staged-state-result')
+  assert.equal(result?.type, 'plugin:agent-rp/staged-state-result')
+  if (result?.type !== 'plugin:agent-rp/staged-state-result' || result.data.result.kind !== 'failure') {
     assert.fail('missing bounded state failure')
   }
   assert.equal(result.data.result.detail?.message, `${'x'.repeat(1_999)}…`)
@@ -1015,8 +1015,8 @@ test('bounds provider diagnostics and rejects malformed durable failure details'
       ...result.data,
       result: { ...result.data.result, detail: { code: '', message: 'missing code' } },
     },
-  } as SessionEvent<'agent-rp/staged-state-result'>
-  const events = session.events.map(event => event.seq === malformed.seq ? malformed : event)
+  } as AgentRpSessionEvent<'plugin:agent-rp/staged-state-result'>
+  const events = session.snapshotEvents().map(event => event.seq === malformed.seq ? malformed : event)
   assert.throws(() => collectRoleplayStagedStateSettlement({
     events,
     sessionId: String(session.id),
@@ -1034,21 +1034,21 @@ test('clears a previous state error after a verified unchanged settlement', asyn
 
   assert.equal(outcome.outcome, 'unchanged')
   assert.deepEqual(recovery, { settlements: 1, presentations: 1, turns: [1] })
-  const result = session.events.findLast(event => event.type === 'agent-rp/staged-state-result')
-  assert.equal(result?.type, 'agent-rp/staged-state-result')
+  const result = session.snapshotEvents().findLast(event => event.type === 'plugin:agent-rp/staged-state-result')
+  assert.equal(result?.type, 'plugin:agent-rp/staged-state-result')
   assert.deepEqual(readCurrentSessionMvuState(card, session), {
     statData: { 角色: { 等级: 1, 称号: '学徒' } },
     updateCount: 0,
     source: { kind: 'agent-action', turn: 1, resultEventSeqs: [result!.seq] },
   })
-  assert.equal(session.events.filter(event => event.type === 'agent-rp/mvu-state').length, 2)
-  const cleared = session.events.findLast(event => event.type === 'agent-rp/mvu-state')
-  assert.equal(cleared?.type, 'agent-rp/mvu-state')
-  const interrupted = Session.create(session.id, session.events.slice(0, cleared!.seq + 1))
+  assert.equal(session.snapshotEvents().filter(event => event.type === 'plugin:agent-rp/mvu-state').length, 2)
+  const cleared = session.snapshotEvents().findLast(event => event.type === 'plugin:agent-rp/mvu-state')
+  assert.equal(cleared?.type, 'plugin:agent-rp/mvu-state')
+  const interrupted = Session.create(session.id, session.snapshotEvents().slice(0, cleared!.seq + 1))
   assert.deepEqual(recoverSessionRoleplayTurns({ session: interrupted, deployment }), {
     settlements: 1, presentations: 1, turns: [1],
   })
-  assert.equal(interrupted.events.filter(event => event.type === 'agent-rp/mvu-state').length, 2)
+  assert.equal(interrupted.snapshotEvents().filter(event => event.type === 'plugin:agent-rp/mvu-state').length, 2)
   assert.deepEqual(recoverSessionRoleplayTurns({ session, deployment }), {
     settlements: 0, presentations: 0, turns: [],
   })
@@ -1065,7 +1065,7 @@ test('does not append an MVU snapshot for an unchanged settlement without an old
     statData: { 角色: { 等级: 1, 称号: '学徒' } },
     updateCount: 0,
   })
-  assert.equal(session.events.some(event => event.type === 'agent-rp/mvu-state'), false)
+  assert.equal(session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/mvu-state'), false)
 })
 
 test('keeps a genuine staged state failure visible', async () => {
@@ -1082,7 +1082,7 @@ test('keeps a genuine staged state failure visible', async () => {
     source: {
       kind: 'agent-action',
       turn: 1,
-      resultEventSeqs: [session.events.findLast(event => event.type === 'agent-rp/staged-state-result')!.seq],
+      resultEventSeqs: [session.snapshotEvents().findLast(event => event.type === 'plugin:agent-rp/staged-state-result')!.seq],
     },
   })
 })

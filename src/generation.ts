@@ -8,7 +8,7 @@ import {
   type ContentBlock,
   type MessageSource,
 } from '@deepseek-ai/dsh-llm'
-import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   decodeGenerationCommandResult,
   encodeGenerationCommandResult,
@@ -39,49 +39,9 @@ import type {
   RoleplayTurnPresentation,
 } from './roleplay-turn-presentation-types.ts'
 import { appendAgentRpSessionEvent, supportsAgentRpSessionEvents } from './session-event-compat.ts'
+import { hiddenReplyVersionSeqs, type GenerationStateRecord } from './generation-state-record.ts'
 
-/** A complete reply-version group snapshot stored after every mutation. */
-export interface GenerationStateRecord {
-  readonly format: 0
-  readonly groupId: string
-  readonly operation: 'regenerate' | 'continue' | 'select' | 'review'
-  readonly originSeq: number
-  readonly anchorSeq: number
-  readonly assistantSeqs: readonly number[]
-  readonly versions: readonly {
-    readonly seq: number
-    readonly text: string
-    /** Assistant replies whose tool-stage decisions compose this visible version. */
-    readonly artifactReplySeqs?: readonly number[]
-    readonly tavernStateSeq?: number
-    readonly mvu?: {
-      readonly statData: JsonValue
-      readonly updateCount: number
-      readonly lastError?: string
-    }
-  }[]
-  readonly baseTavernStateSeq?: number
-  readonly baseMvu?: {
-    readonly statData: JsonValue
-    readonly updateCount: number
-    readonly lastError?: string
-  }
-  readonly selectedVersionSeq: number
-  readonly surfaceSeq: number
-  readonly tavern?: TavernHelperState
-  readonly mvu?: {
-    readonly statData: JsonValue
-    readonly updateCount: number
-    readonly lastError?: string
-  }
-}
-
-declare module '@deepseek-ai/dsh-session' {
-  interface SessionEventMap {
-    /** Ignorable reply-version snapshot written by an automatic post-narrative Worker. */
-    'agent-rp/generation-state': GenerationStateRecord
-  }
-}
+export type { GenerationStateRecord } from './generation-state-record.ts'
 
 /** Browser request sent through the private generation command. */
 export type GenerationRequest =
@@ -194,7 +154,7 @@ export function readGenerationGroups(events: readonly SessionEvent[]): readonly 
   for (const event of events) {
     const data = event.type === 'command/done' && event.data.kind === 'success'
       ? decodeGenerationState(event.data.text)
-      : event.type === ('agent-rp/generation-state' as SessionEvent['type'])
+      : event.type === ('plugin:agent-rp/generation-state' as SessionEvent['type'])
         ? (event as SessionEvent & { readonly data: GenerationStateRecord }).data
         : undefined
     if (data === undefined) continue
@@ -225,7 +185,7 @@ function visibleText(event: Extract<SessionEvent, { type: 'assistant/message' }>
   return event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim()
 }
 
-function replacementMessage(message: AssistantMessage, content: ContentBlock[] = message.content): AssistantMessage {
+function replacementMessage(message: AssistantMessage, content: readonly ContentBlock[] = message.content): AssistantMessage {
   const { kind: _kind, ...source } = message.source
   if (JSON.stringify(content) === JSON.stringify(message.content)) {
     return createAssistantMessage({ content, source })
@@ -248,31 +208,25 @@ function continuedContent(before: readonly ContentBlock[], continuation: readonl
   return result
 }
 
-function sourceSeqs(nodes: readonly number[], selectedVersionSeq: number): number[] {
-  return [...new Set([...nodes, selectedVersionSeq])]
-}
-
-function appendCurrentReplySurface(
+/**
+ * 0.2.1: assistant/message 只能 append，不能 replace。
+ * 所有 swipe 版本都是表面上正常 append 的 assistant 事件，
+ * 「哪个版本被选中」完全由 generation-state 账本承担。
+ * 显示层按账本隐藏非选中版本；提示词组装按账本过滤。
+ */
+function appendReplyVersion(
   agent: Agent,
-  currentSurfaceSeq: number,
   selected: Extract<SessionEvent, { type: 'assistant/message' }>,
   content?: ContentBlock[],
 ): Extract<SessionEvent, { type: 'assistant/message' }> {
-  const nodes = [...agent.session.surface.nodes]
-  const startIndex = nodes.indexOf(currentSurfaceSeq)
-  if (startIndex < 0) throw new Error('回复已不在当前对话末尾')
-  const shadowed = nodes.slice(startIndex)
-  const start = shadowed[0]
-  const end = shadowed.at(-1)
-  if (start === undefined || end === undefined) throw new Error('当前回复不可替换')
   return agent.session.append('assistant/message', {
     turn: selected.data.turn,
     step: selected.data.step,
     message: replacementMessage(selected.data.message, content),
+    stream: selected.data.stream,
     ...(selected.data.usage === undefined || content !== undefined ? {} : { usage: selected.data.usage }),
   }, {
-    surfaceOp: { op: 'replace', start, end },
-    sourceEventSeqs: sourceSeqs(shadowed, selected.seq),
+    surfaceOp: 'append',
   })
 }
 
@@ -281,10 +235,21 @@ export function currentVisibleRoleplayReply(
   agent: Agent,
   turn: number,
 ): Extract<SessionEvent, { type: 'assistant/message' }> | undefined {
+  const events = agent.session.snapshotEvents()
+  const groups = readGenerationGroups(events)
+  // 0.2.1: select 之后表面尾部不一定是选中版本，优先按账本取选中版本。
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const selected = events[groups[index]?.selectedVersionSeq ?? -1]
+    if (selected?.type === 'assistant/message' && selected.data.turn === turn && visibleText(selected) !== '') {
+      return selected
+    }
+  }
+  const hidden = hiddenReplyVersionSeqs(events)
   return [...agent.session.surface.nodes].reverse()
-    .map(seq => agent.session.events[seq])
+    .map(seq => events[Number(seq)])
     .find((event): event is Extract<SessionEvent, { type: 'assistant/message' }> =>
-      event?.type === 'assistant/message' && event.data.turn === turn && visibleText(event) !== '')
+      event?.type === 'assistant/message' && event.data.turn === turn
+      && !hidden.has(event.seq) && visibleText(event) !== '')
 }
 
 /** Register a reviewed current reply as a selectable version without losing the character Agent's original. */
@@ -300,8 +265,8 @@ export function appendReviewedReplyVersion(
   if (original === undefined) throw new Error('正文 Worker 找不到本轮可见角色回复')
   const originalText = visibleText(original)
   const content: ContentBlock[] = [{ type: 'text', text: reviewedText }]
-  const reviewed = appendCurrentReplySurface(agent, original.seq, original, content)
-  const tavern = readTavernHelperStateSnapshot(agent.session.events)
+  const reviewed = appendReplyVersion(agent, original, content)
+  const tavern = readTavernHelperStateSnapshot(agent.session.snapshotEvents())
   const mvu = mvuSnapshot(agent)
   const shared = {
     ...(tavern === undefined ? {} : { tavernStateSeq: tavern.eventSeq }),
@@ -320,7 +285,7 @@ export function appendReviewedReplyVersion(
     selectedVersionSeq: reviewed.seq,
     surfaceSeq: reviewed.seq,
   }, mvu, tavern?.state)
-  const stateEvent = appendAgentRpSessionEvent(agent.session, 'agent-rp/generation-state', state)
+  const stateEvent = appendAgentRpSessionEvent(agent.session, 'plugin:agent-rp/generation-state', state)
   return { originalSeq: original.seq, reviewedSeq: reviewed.seq, stateEventSeq: stateEvent.seq }
 }
 
@@ -328,41 +293,49 @@ function latestReply(
   agent: Agent,
   replySeq: number,
 ): { readonly group?: ActiveGenerationGroup; readonly surfaceSeq: number; readonly selectedSeq: number } {
-  const events = agent.session.events
-  const surfaceSeq = agent.session.surface.nodes.at(-1)
-  if (surfaceSeq === undefined) throw new Error('当前会话还没有角色回复')
+  const events = agent.session.snapshotEvents()
+  // 0.2.1: 不再用 surface replace 隐藏非选中版本，所有版本都是 surface 上的正常 append。
+  // 尾部校验改为：从 surface 尾部往前找最后一个非空 assistant 消息，确认它属于目标 group。
+  const nodes = [...agent.session.surface.nodes]
+  const lastAssistantSeq = nodes.reverse().find(seq => {
+    const event = events[Number(seq)]
+    return event?.type === 'assistant/message' && visibleText(event) !== ''
+  })
+  if (lastAssistantSeq === undefined) throw new Error('当前会话还没有角色回复')
+  const surfaceSeq = Number(lastAssistantSeq)
   const groups = readGenerationGroups(events)
   const group = groups.findLast(candidate => candidate.anchorSeq === replySeq)
   if (group !== undefined) {
-    if (group.surfaceSeq !== surfaceSeq) {
-      const currentSurface = assistantEvent(events, surfaceSeq)
-      const selected = group.versions.find(version => version.seq === group.selectedVersionSeq)
-      if (selected === undefined || visibleText(currentSurface) !== selected.text) {
-        throw new Error('只能操作对话末尾的角色回复')
-      }
+    if (!group.assistantSeqs.includes(surfaceSeq)) {
+      throw new Error('只能操作对话末尾的角色回复')
     }
     return { group, surfaceSeq, selectedSeq: group.selectedVersionSeq }
   }
   const reply = assistantEvent(events, replySeq)
-  if (reply.surfaceOp !== 'append' || surfaceSeq !== reply.seq || visibleText(reply) === '') {
+  if (reply.seq !== surfaceSeq || visibleText(reply) === '') {
     throw new Error('只能操作对话末尾的角色回复')
   }
   return { surfaceSeq, selectedSeq: reply.seq }
 }
 
 function mvuSnapshot(agent: Agent): GenerationStateRecord['mvu'] {
-  const configuration = readWorldInfoConfiguration(agent.session.events)
-  const lorebooks = readActiveSessionLorebookSourcesFromEvents(agent.session.events)
+  const configuration = readWorldInfoConfiguration(agent.session.snapshotEvents())
+  const lorebooks = readActiveSessionLorebookSourcesFromEvents(agent.session.snapshotEvents())
     .map(source => configuredLorebook(source, configuration).lorebook)
   return readCurrentSessionMvuStateFromLorebooks(lorebooks, agent.session)
 }
 
 function mvuBeforeReply(agent: Agent, replySeq: number): GenerationStateRecord['mvu'] {
-  const configuration = readWorldInfoConfiguration(agent.session.events)
-  const lorebooks = readActiveSessionLorebookSourcesFromEvents(agent.session.events)
+  const events = agent.session.snapshotEvents()
+  const configuration = readWorldInfoConfiguration(events)
+  const lorebooks = readActiveSessionLorebookSourcesFromEvents(events)
     .map(source => configuredLorebook(source, configuration).lorebook)
-  const visiblePrefix = new Set(agent.session.surface.nodes.filter(seq => seq < replySeq))
-  return readCurrentMvuStateFromLorebooks(lorebooks, agent.session.events
+  // 0.2.1: 表面上有非选中 swipe 版本，它们的 MVU 更新不能计入基准状态。
+  const hidden = hiddenReplyVersionSeqs(events.slice(0, replySeq))
+  const visiblePrefix = new Set([...agent.session.surface.nodes]
+    .map(Number)
+    .filter(seq => seq < replySeq && !hidden.has(seq)))
+  return readCurrentMvuStateFromLorebooks(lorebooks, events
     .slice(0, replySeq)
     .filter(event => event.type !== 'assistant/message' || visiblePrefix.has(event.seq)))
 }
@@ -405,7 +378,7 @@ function selectedTavernState(
 ): TavernHelperState | undefined {
   return eventSeq === undefined
     ? undefined
-    : readTavernHelperStateSnapshotAt(agent.session.events, eventSeq).state
+    : readTavernHelperStateSnapshotAt(agent.session.snapshotEvents(), eventSeq).state
 }
 
 function latestPresentationForReply(
@@ -414,7 +387,7 @@ function latestPresentationForReply(
 ): RoleplayTurnPresentation | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
-    if (event?.type !== 'agent-rp/turn-presentation') continue
+    if (event?.type !== 'plugin:agent-rp/turn-presentation') continue
     if (event.data.selectedReply?.sourceSeq === replySeq || event.data.selectedReply?.surfaceSeq === replySeq) {
       return event.data
     }
@@ -428,7 +401,7 @@ function restoreTavernState(agent: Agent, state: TavernHelperState | undefined):
 }
 
 function initialTavernState(agent: Agent): TavernHelperState | undefined {
-  return readTavernHelperStateSnapshot(agent.session.events) === undefined
+  return readTavernHelperStateSnapshot(agent.session.snapshotEvents()) === undefined
     ? undefined
     : prepareTavernHelperState(agent, undefined)
 }
@@ -440,7 +413,7 @@ function instruction(operation: 'regenerate' | 'continue'): string {
 }
 
 async function generate(agent: Agent, operation: 'regenerate' | 'continue', signal: AbortSignal): Promise<number> {
-  if (agent.status !== 'idle' || agent.inbox.hasPending) throw new Error('请等待当前回复完成后再操作')
+  if (agent.status !== 'idle' || (agent.inbox.nextTurn.length > 0 || agent.inbox.nextStep.length > 0)) throw new Error('请等待当前回复完成后再操作')
   const before = agent.session.seq
   const onAbort = (): void => { agent.cancel({ kind: 'user' }) }
   signal.addEventListener('abort', onAbort, { once: true })
@@ -460,7 +433,7 @@ async function generate(agent: Agent, operation: 'regenerate' | 'continue', sign
   } finally {
     signal.removeEventListener('abort', onAbort)
   }
-  const generated = agent.session.events.slice(before)
+  const generated = agent.session.snapshotEvents().slice(before)
     .findLast((event): event is Extract<SessionEvent, { type: 'assistant/message' }> =>
       event.type === 'assistant/message' && event.surfaceOp === 'append')
   if (generated === undefined || visibleText(generated) === '') throw new Error('模型没有生成可用的角色回复')
@@ -472,10 +445,10 @@ export async function executeGenerationCommand(invocation: {
   readonly agent: Agent
   readonly rawInput: string
   readonly signal: AbortSignal
-}): Promise<{ readonly kind: 'success'; readonly text: string; readonly sourceEventSeq: number }> {
+}): Promise<{ readonly kind: 'success'; readonly text: string; readonly sourceEventSeq: SessionSeq }> {
   const request = parseGenerationRequest(invocation.rawInput)
   const current = latestReply(invocation.agent, request.replySeq)
-  const events = invocation.agent.session.events
+  const events = invocation.agent.session.snapshotEvents()
   const existing = current.group
   const groupId = existing?.groupId ?? crypto.randomUUID()
   const originSeq = existing?.originSeq ?? current.selectedSeq
@@ -498,11 +471,11 @@ export async function executeGenerationCommand(invocation: {
     const selectedSeq = selectedVersion.seq
     if (selectedSeq === current.selectedSeq) {
       if (existing === undefined) throw new Error('当前回复还没有其他版本')
-      return { kind: 'success', text: encodeGenerationState(existing), sourceEventSeq: existing.surfaceSeq }
+      return { kind: 'success', text: encodeGenerationState(existing), sourceEventSeq: SessionSeq(existing.surfaceSeq) }
     }
-    const selected = assistantEvent(events, selectedSeq)
-    const surface = appendCurrentReplySurface(invocation.agent, current.surfaceSeq, selected)
-    const presented = latestPresentationForReply(invocation.agent.session.events, selectedSeq)
+    // 0.2.1: select 不再做 surface replace，只更新账本里的 selectedVersionSeq。
+    // 显示层按账本隐藏非选中版本，提示词组装按账本过滤。
+    const presented = latestPresentationForReply(invocation.agent.session.snapshotEvents(), selectedSeq)
     const presentedTavern = roleplayPresentedState(presented, TAVERN_HELPER_ROLEPLAY_STATE_ID)
     const presentedTavernStateSeq = presentedTavern?.eventSeq
     if (presentedTavernStateSeq !== undefined && presentedTavernStateSeq !== selectedVersion.tavernStateSeq) {
@@ -521,15 +494,14 @@ export async function executeGenerationCommand(invocation: {
     const state = appendState({
       groupId, operation: 'select', originSeq,
       anchorSeq: existing?.anchorSeq ?? originSeq,
-      assistantSeqs, versions, selectedVersionSeq: selectedSeq, surfaceSeq: surface.seq,
+      assistantSeqs, versions, selectedVersionSeq: selectedSeq, surfaceSeq: current.surfaceSeq,
       ...(existing?.baseTavernStateSeq === undefined ? {} : { baseTavernStateSeq: existing.baseTavernStateSeq }),
       ...(existing?.baseMvu === undefined ? {} : { baseMvu: existing.baseMvu }),
     }, selectedVersion.mvu, selectedVersionState)
-    return { kind: 'success', text: encodeGenerationState(state), sourceEventSeq: state.surfaceSeq }
+    return { kind: 'success', text: encodeGenerationState(state), sourceEventSeq: SessionSeq(state.surfaceSeq) }
   }
 
   let generatedSeq: number | undefined
-  let replacementStartSeq = current.surfaceSeq
   let baseTavernStateSeq = existing?.baseTavernStateSeq
   const baseMvu = existing?.baseMvu ?? mvuBeforeReply(invocation.agent, originSeq)
   try {
@@ -541,28 +513,27 @@ export async function executeGenerationCommand(invocation: {
         && !supportsAgentRpSessionEvents(invocation.agent.session)) {
         throw new Error('当前 DSH Host 缺少安全插件事件能力，无法重新生成含状态的回复')
       }
-      const selected = assistantEvent(invocation.agent.session.events, current.selectedSeq)
-      replacementStartSeq = appendCurrentReplySurface(
-        invocation.agent,
-        current.surfaceSeq,
-        selected,
-        [],
-      ).seq
+      // 0.2.1: 不再做空内容占位 replace。followup 生成的新版本自然 append 到表面，
+      // 账本负责记录版本关系。旧版本仍然在表面上，显示层按账本隐藏它。
       let baseTavern = candidateBaseTavern
       baseTavern ??= currentTavern === undefined ? undefined : initialTavernState(invocation.agent)
       baseTavernStateSeq = restoreTavernState(invocation.agent, baseTavern) ?? baseTavernStateSeq
       appendMvuSelection(invocation.agent, baseMvu)
     }
     generatedSeq = await generate(invocation.agent, request.operation, invocation.signal)
-    const generated = assistantEvent(invocation.agent.session.events, generatedSeq)
+    const generated = assistantEvent(invocation.agent.session.snapshotEvents(), generatedSeq)
     assistantSeqs.push(generatedSeq)
     let selectedSeq = generatedSeq
-    let surface
+    let surfaceSeq = generatedSeq
     if (request.operation === 'continue') {
-      const selected = assistantEvent(invocation.agent.session.events, current.selectedSeq)
+      const selected = assistantEvent(invocation.agent.session.snapshotEvents(), current.selectedSeq)
       const content = continuedContent(selected.data.message.content, generated.data.message.content)
-      surface = appendCurrentReplySurface(invocation.agent, replacementStartSeq, generated, content)
-      selectedSeq = surface.seq
+      // 0.2.1: 续写部分已由 followup 自然 append。再 append 一条拼接后的完整版本，
+      // 作为选中版本参与提示词组装和显示。
+      const continued = appendReplyVersion(invocation.agent, generated, content)
+      assistantSeqs.push(continued.seq)
+      selectedSeq = continued.seq
+      surfaceSeq = continued.seq
       const continuedMvu = continuedMvuState(currentMvu, generated) ?? mvuSnapshot(invocation.agent)
       appendMvuSelection(invocation.agent, continuedMvu)
       versions.push({
@@ -577,8 +548,8 @@ export async function executeGenerationCommand(invocation: {
         ...(continuedMvu === undefined ? {} : { mvu: continuedMvu }),
       })
     } else {
-      surface = appendCurrentReplySurface(invocation.agent, replacementStartSeq, generated)
-      const generatedTavern = readTavernHelperStateSnapshot(invocation.agent.session.events)
+      // 0.2.1: regenerate 的新版本已由 followup 自然 append，无需额外操作。
+      const generatedTavern = readTavernHelperStateSnapshot(invocation.agent.session.snapshotEvents())
       const generatedMvu = mvuSnapshot(invocation.agent)
       versions.push({
         seq: selectedSeq,
@@ -592,21 +563,15 @@ export async function executeGenerationCommand(invocation: {
     const state = appendState({
       groupId, operation: request.operation, originSeq,
       anchorSeq: existing?.anchorSeq ?? request.replySeq,
-      assistantSeqs, versions, selectedVersionSeq: selectedSeq, surfaceSeq: surface.seq,
+      assistantSeqs, versions, selectedVersionSeq: selectedSeq, surfaceSeq,
       ...(baseTavernStateSeq === undefined ? {} : { baseTavernStateSeq }),
       ...(baseMvu === undefined ? {} : { baseMvu }),
     }, selectedVersion?.mvu, selectedVersion === undefined
       ? undefined
       : selectedTavernState(invocation.agent, selectedVersion.tavernStateSeq))
-    return { kind: 'success', text: encodeGenerationState(state), sourceEventSeq: state.surfaceSeq }
+    return { kind: 'success', text: encodeGenerationState(state), sourceEventSeq: SessionSeq(state.surfaceSeq) }
   } catch (error: unknown) {
-    const surfaceNodes = invocation.agent.session.surface.nodes
-    const restoreRequired = replacementStartSeq !== current.surfaceSeq
-      || surfaceNodes.at(-1) !== replacementStartSeq
-    if (restoreRequired && surfaceNodes.includes(replacementStartSeq)) {
-      const selected = assistantEvent(invocation.agent.session.events, current.selectedSeq)
-      appendCurrentReplySurface(invocation.agent, replacementStartSeq, selected)
-    }
+    // 0.2.1: 不再做 surface replace，失败恢复只需还原状态快照，不需要回滚表面。
     restoreTavernState(invocation.agent, currentTavern?.state)
     appendMvuSelection(invocation.agent, currentMvu)
     throw error

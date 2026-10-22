@@ -1,11 +1,13 @@
 /** Durable standalone World Info replay from native tool events. */
 
-import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 import { parseWorldInfoJson } from './world-info.ts'
 import { WORLD_INFO_IMPORT_DEGRADATIONS } from './types.ts'
 import type { ImportedWorldInfo, WorldInfoImportDegradation } from './types.ts'
 import type { FileAttachmentRef } from './session-character.ts'
 import { decodeWorldInfoLibraryImport } from '../world-info-library-protocol.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
+import type { AgentRpSessionEvent } from '../session-event-compat.ts'
 
 /** Model-facing canonical value for one completed World Info import. */
 export interface WorldInfoImportResult {
@@ -50,9 +52,14 @@ export interface WorldInfoLibrarySeedRecord {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable World Info activation available before the Agent is constructed. */
+    'plugin:agent-rp/world-info-library-seed': WorldInfoLibrarySeedRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable World Info activation available before the Agent is constructed. */
-    'agent-rp/world-info-library-seed': WorldInfoLibrarySeedRecord
+    'plugin:agent-rp/world-info-library-seed': WorldInfoLibrarySeedRecord
   }
 }
 
@@ -112,7 +119,7 @@ function validateImport(events: readonly SessionEvent[], resultEvent: SessionEve
   const call = resultEvent.sourceEventSeqs?.length === 1 ? events[resultEvent.sourceEventSeqs[0]!] : undefined
   if (call?.type !== 'tool/call' || call.data.name !== 'import_world_info'
     || call.seq >= resultEvent.seq
-    || String(call.data.callId) !== String(resultEvent.data.message.content[0].toolCallId)) {
+    || String(call.data.callId) !== String(resultEvent.data.message.toolCallId)) {
     throw new Error('import_world_info result does not cite its direct tool call')
   }
   let callArguments: unknown
@@ -148,7 +155,7 @@ function validateImport(events: readonly SessionEvent[], resultEvent: SessionEve
 }
 
 /** Resolve explicit or legacy placement metadata from one replayable library seed. */
-export function worldInfoLibrarySeedSemantics(event: SessionEvent<'agent-rp/world-info-library-seed'>): {
+export function worldInfoLibrarySeedSemantics(event: AgentRpSessionEvent<'plugin:agent-rp/world-info-library-seed'>): {
   readonly placement: ActiveSessionWorldInfo['placement']
   readonly purpose: ActiveSessionWorldInfo['purpose']
 } {
@@ -174,7 +181,7 @@ export function worldInfoLibrarySeedSemantics(event: SessionEvent<'agent-rp/worl
 export function readActiveSessionWorldInfos(events: readonly SessionEvent[]): ActiveSessionWorldInfo[] {
   const active = new Map<string, ActiveSessionWorldInfo>()
   for (const event of events) {
-    if (event.type === 'agent-rp/world-info-library-seed') {
+    if (event.type === 'plugin:agent-rp/world-info-library-seed') {
       if (event.data.format !== 0 || !/^world-info-[a-f0-9]{32}$/u.test(event.data.worldInfoLibraryId)) {
         throw new Error('世界书启动种子字段无效')
       }
@@ -217,8 +224,8 @@ export function readActiveSessionWorldInfos(events: readonly SessionEvent[]): Ac
       })
       continue
     }
-    if (event.type !== 'tool/result' || event.data.message.content[0].isError === true) continue
-    const callId = String(event.data.message.content[0].toolCallId)
+    if (event.type !== 'tool/result' || event.data.message.isError === true) continue
+    const callId = String(event.data.message.toolCallId)
     const call = events.find(candidate => candidate.type === 'tool/call' && String(candidate.data.callId) === callId)
     if (call?.type !== 'tool/call' || call.data.name !== 'import_world_info') continue
     const imported = validateImport(events, event)
@@ -233,7 +240,7 @@ export function readWorldInfoLibrarySessionSeed(
 ): WorldInfoLibrarySeedRecord | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
-    if (event?.type === 'agent-rp/world-info-library-seed'
+    if (event?.type === 'plugin:agent-rp/world-info-library-seed'
       && worldInfoLibrarySeedSemantics(event).purpose === 'scenario') return event.data
   }
   return undefined

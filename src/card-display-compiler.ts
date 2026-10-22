@@ -111,8 +111,7 @@ function htmlTagsOutsideCode(value: string): readonly HtmlTagToken[] {
       const name = tag?.[2]?.toLowerCase()
       if (tag?.[0] !== undefined && name !== undefined) {
         tags.push({
-          start: cursor,
-          end: cursor + tag[0].length,
+          start: cursor, end: cursor + tag[0].length,
           name,
           closing: tag[1] === '/',
           selfClosing: tag[3] === '/',

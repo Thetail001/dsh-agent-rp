@@ -3,7 +3,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import type {SessionEvent, SessionId} from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from './character-library.ts'
 import {
   CHARACTER_LIBRARY_PATH, type CharacterLibraryDetail, type CharacterLibraryEditRequest,
@@ -39,7 +39,7 @@ function snapshotSignature(snapshots: readonly {
 
 function sessionReferencesCharacter(events: readonly SessionEvent[], id: string): boolean {
   for (const event of events) {
-    if (event.type === 'agent-rp/character-card-seed'
+    if (event.type === 'plugin:agent-rp/character-card-seed'
       && 'characterLibraryId' in event.data.source
       && event.data.source.characterLibraryId === id) return true
     if (event.type === 'command/done' && event.data.kind === 'success'

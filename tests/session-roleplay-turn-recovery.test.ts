@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import {Session, SessionId, type SessionEvent} from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
 import { createCharacterCardSessionSeed } from '../src/import/character-card-seed.ts'
@@ -42,6 +42,7 @@ import {
   TAVERN_HELPER_ROLEPLAY_STATE_ID,
 } from '../src/tavern-helper.ts'
 import { installIgnorableSessionEventFixture } from './session-event-fixture.ts'
+import type { AgentRpSessionEvent } from '../src/session-event-compat.ts'
 
 installIgnorableSessionEventFixture()
 
@@ -55,14 +56,14 @@ function pending() {
 }
 
 function reply(session: Session, turn: number, text: string, step = 1) {
-  return session.append('assistant/message', {
+  return session.append('assistant/message', { stream: [],
     turn,
     step,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [{ type: 'text', text }],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  }, { surfaceOp: 'append' })
 }
 
 function appendRecoverableTextTurn(session: Session, turn: number, text: string): void {
@@ -83,20 +84,20 @@ function reopenWithLegacyPlanReceipt(
   recordSeq: number,
   plan: ReturnType<typeof prepareRoleplayTurn>,
   schema: RoleplayTurnPlanSchema,
-): { readonly session: Session; readonly record: SessionEvent<'agent-rp/turn-plan'> } {
+): { readonly session: Session; readonly record: AgentRpSessionEvent<'plugin:agent-rp/turn-plan'> } {
   const reference = createRoleplayTurnPlanReference(1, plan, schema)
   if (reference.receipt === undefined) throw new Error('missing fixture plan receipt')
   const { preparedPlanSchema: _preparedPlanSchema, ...legacyReceipt } = reference.receipt
-  const events = session.events.map((event): SessionEvent => event.seq !== recordSeq ? structuredClone(event) : {
+  const events = session.snapshotEvents().map((event): SessionEvent => event.seq !== recordSeq ? structuredClone(event) : {
     ...structuredClone(event),
     data: {
-      ...(event as SessionEvent<'agent-rp/turn-plan'>).data,
+      ...(event as AgentRpSessionEvent<'plugin:agent-rp/turn-plan'>).data,
       reference: { ...reference, receipt: legacyReceipt },
     },
-  } as SessionEvent<'agent-rp/turn-plan'>)
+  } as AgentRpSessionEvent<'plugin:agent-rp/turn-plan'>)
   const reopened = Session.create(session.id, events)
-  const record = reopened.events[recordSeq]
-  if (record?.type !== 'agent-rp/turn-plan') throw new Error('missing fixture plan event')
+  const record = reopened.snapshotEvents()[recordSeq]
+  if (record?.type !== 'plugin:agent-rp/turn-plan') throw new Error('missing fixture plan event')
   return { session: reopened, record }
 }
 
@@ -142,7 +143,7 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
   })
   const externalEvent = session.append('user/message', external, { surfaceOp: 'append' })
   const dispatchedPlan = bindRoleplayExternalContext({
-    plan, events: session.events, visibleMessages: session.deriveMessages(), turn: 1, step: 1,
+    plan, events: session.snapshotEvents(), visibleMessages: session.deriveMessages(), turn: 1, step: 1,
   })
 
   const first = appendSessionRoleplayTurnPlan(session, 1, 1, dispatchedPlan)
@@ -153,8 +154,8 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
     generation: { temperature: 0.91 },
   }), /changed after dispatch/u)
 
-  const reopened = Session.create(session.id, session.events)
-  const records = readSessionRoleplayTurnPlans(reopened.events)
+  const reopened = Session.create(session.id, session.snapshotEvents())
+  const records = readSessionRoleplayTurnPlans(reopened.snapshotEvents())
   assert.equal(records.length, 1)
   assert.equal(records[0]?.data.reference.receipt.preparedPlanSchema, 5)
   assert.deepEqual(records[0]?.data.toolGuidance, toolGuidance)
@@ -163,7 +164,7 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
   const expectedContextReads = session.deriveMessages()
     .filter(value => value.source.kind === 'plugin')
     .map((value) => {
-      const event = session.events.find(candidate =>
+      const event = session.snapshotEvents().find(candidate =>
         candidate.type === 'user/message' && String(candidate.data.id) === String(value.id))
       assert.equal(event?.type, 'user/message')
       return { eventSeq: event!.seq, messageId: String(value.id) }
@@ -191,7 +192,7 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
     record: rc236.record,
     deployment,
   }), dispatchedPlan)
-  const wrongSchemaEvents = session.events.map((event): SessionEvent => event.seq !== first.seq
+  const wrongSchemaEvents = session.snapshotEvents().map((event): SessionEvent => event.seq !== first.seq
     ? structuredClone(event)
     : {
         ...structuredClone(event),
@@ -206,7 +207,7 @@ test('persists one content-free plan receipt before dispatch and rejects retry d
   const wrongSchemaSession = Session.create(session.id, wrongSchemaEvents)
   assert.throws(() => replaySessionRoleplayTurnPlan({
     session: wrongSchemaSession,
-    record: wrongSchemaSession.events[first.seq] as typeof first,
+    record: wrongSchemaSession.snapshotEvents()[first.seq] as typeof first,
     deployment,
   }), /content digest/u)
   assert.throws(() => replaySessionRoleplayTurnPlan({
@@ -257,9 +258,9 @@ test('replays a cardless prompt-policy transform from the exact Session prefix',
   session.append('user/message', message, { surfaceOp: 'append' })
   const record = appendSessionRoleplayTurnPlan(session, 1, 1, plan)
 
-  const reopened = Session.create(session.id, session.events)
-  const stored = reopened.events[record.seq]
-  assert.equal(stored?.type, 'agent-rp/turn-plan')
+  const reopened = Session.create(session.id, session.snapshotEvents())
+  const stored = reopened.snapshotEvents()[record.seq]
+  assert.equal(stored?.type, 'plugin:agent-rp/turn-plan')
   assert.deepEqual(replaySessionRoleplayTurnPlan({
     session: reopened,
     record: stored as typeof record,
@@ -324,9 +325,9 @@ test('replays frozen MVU response repair rules and state without copying either 
   session.append('user/message', message, { surfaceOp: 'append' })
   const record = appendSessionRoleplayTurnPlan(session, 1, 1, plan)
 
-  const reopened = Session.create(session.id, session.events)
-  const stored = reopened.events[record.seq]
-  assert.equal(stored?.type, 'agent-rp/turn-plan')
+  const reopened = Session.create(session.id, session.snapshotEvents())
+  const stored = reopened.snapshotEvents()[record.seq]
+  assert.equal(stored?.type, 'plugin:agent-rp/turn-plan')
   assert.deepEqual(replaySessionRoleplayTurnPlan({
     session: reopened,
     record: stored as typeof record,
@@ -378,7 +379,7 @@ test('recovers a cold-closed turn and folds a late causal browser state into pre
     turn: 1,
     result: 'error',
     plans,
-    events: session.events,
+    events: session.snapshotEvents(),
     after: boundary.snapshot,
     contributions: collectSessionRoleplaySettlementContributions({
       session,
@@ -394,7 +395,7 @@ test('recovers a cold-closed turn and folds a late causal browser state into pre
     replySeq: assistant.seq,
   }, true)
 
-  const closing = session.events.find(event => event.type === 'turn/end' && event.data.turn === 1)
+  const closing = session.snapshotEvents().find(event => event.type === 'turn/end' && event.data.turn === 1)
   assert.equal(closing?.type, 'turn/end')
   const exactBoundary = createSessionRoleplayTurnBoundary(session, closing!)
   assert.equal(exactBoundary.events.at(-1)?.seq, closing?.seq)
@@ -405,12 +406,12 @@ test('recovers a cold-closed turn and folds a late causal browser state into pre
     memoryWriteAvailable: true,
   }).snapshot, boundary.snapshot)
 
-  const restarted = Session.create(session.id, session.events)
-  assert.equal(readRoleplayTurnSettlements(restarted.events).length, 0)
+  const restarted = Session.create(session.id, session.snapshotEvents())
+  assert.equal(readRoleplayTurnSettlements(restarted.snapshotEvents()).length, 0)
   const recovered = recoverSessionRoleplayTurns({ session: restarted, deployment })
   assert.deepEqual(recovered, { settlements: 1, presentations: 1, turns: [1] })
 
-  const settlement = readRoleplayTurnSettlements(restarted.events)[0]
+  const settlement = readRoleplayTurnSettlements(restarted.snapshotEvents())[0]
   assert.deepEqual(settlement, expected)
   assert.equal(settlement?.result, 'error')
   assert.equal(settlement?.reply?.eventSeq, assistant.seq)
@@ -420,7 +421,7 @@ test('recovers a cold-closed turn and folds a late causal browser state into pre
     outcome: 'deferred',
     changes: 0,
   })
-  const presentation = readCurrentRoleplayTurnPresentation(restarted.events)
+  const presentation = readCurrentRoleplayTurnPresentation(restarted.snapshotEvents())
   assert.equal(presentation?.selectedReply?.sourceSeq, assistant.seq)
   assert.deepEqual(roleplayPresentedState(presentation!, TAVERN_HELPER_ROLEPLAY_STATE_ID), {
     id: TAVERN_HELPER_ROLEPLAY_STATE_ID,
@@ -436,7 +437,7 @@ test('recovers a cold-closed turn and folds a late causal browser state into pre
   assert.deepEqual(recoverSessionRoleplayTurns({ session: restarted, deployment }), {
     settlements: 0, presentations: 0, turns: [],
   })
-  assert.doesNotThrow(() => Session.create(restarted.id, restarted.events))
+  assert.doesNotThrow(() => Session.create(restarted.id, restarted.snapshotEvents()))
 })
 
 test('leaves a pre-dispatch plan alone while its turn is still open', () => {
@@ -453,7 +454,7 @@ test('leaves a pre-dispatch plan alone while its turn is still open', () => {
     settlements: 0, presentations: 0, turns: [],
   })
   assert.equal(readRoleplayTurnRecords(session)[0]?.boundary.endSeq, undefined)
-  assert.equal(readRoleplayTurnSettlements(session.events).length, 0)
+  assert.equal(readRoleplayTurnSettlements(session.snapshotEvents()).length, 0)
 })
 
 test('finalizes every logged plan in a multi-step hot turn without coordinator state', () => {
@@ -525,7 +526,7 @@ test('adds only presentation when a durable settlement already exists', () => {
     turn: 1,
     result: 'completed',
     plans: [{ step: 1, plan }],
-    events: session.events,
+    events: session.snapshotEvents(),
     after: after.snapshot,
   }))
 
@@ -554,9 +555,9 @@ test('refuses recovery when persisted act evidence no longer matches the Session
   const after = resolveSessionRoleplayRuntime({ session, deployment, memoryWriteAvailable: true })
   appendRoleplayTurnSettlement(session, compileRoleplayTurnSettlement({
     sessionId: String(session.id), turn: 1, result: 'completed', plans: [{ step: 1, plan }],
-    events: session.events, after: after.snapshot,
+    events: session.snapshotEvents(), after: after.snapshot,
   }))
-  const tampered = session.events.map(event => event.type !== 'agent-rp/turn-settlement'
+  const tampered = session.snapshotEvents().map(event => event.type !== 'plugin:agent-rp/turn-settlement'
     || event.data.act === undefined ? structuredClone(event) : {
       ...structuredClone(event),
       data: {

@@ -1,7 +1,7 @@
 /** Durable per-Session choice between compatibility dialogue and native Agent turns. */
 
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
-import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import type {Session, SessionEvent} from '@deepseek-ai/dsh-session'
+import { appendAgentRpSessionEvent, type AgentRpSessionEvent } from './session-event-compat.ts'
 
 /** Compatibility dialogue preserves author-defined output formats; Agent turns use runtime actions. */
 export type RoleplayTurnMode = 'conversation' | 'agent'
@@ -22,9 +22,14 @@ export interface RoleplayTurnModeCommandRequest {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Required capability selection that changes later model-visible tools and prompts. */
+    'plugin:agent-rp/turn-mode': RoleplayTurnModeRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Required capability selection that changes later model-visible tools and prompts. */
-    'agent-rp/turn-mode': RoleplayTurnModeRecord
+    'plugin:agent-rp/turn-mode': RoleplayTurnModeRecord
   }
 }
 
@@ -75,7 +80,7 @@ export function parseRoleplayTurnModeRecord(value: unknown): RoleplayTurnModeRec
   }
 }
 
-function verifyUserSelection(events: readonly SessionEvent[], event: SessionEvent<'agent-rp/turn-mode'>): void {
+function verifyUserSelection(events: readonly SessionEvent[], event: AgentRpSessionEvent<'plugin:agent-rp/turn-mode'>): void {
   const record = parseRoleplayTurnModeRecord(event.data)
   if (record.source !== 'user') return
   const source = events[record.sourceEventSeq!]
@@ -91,7 +96,7 @@ function verifyUserSelection(events: readonly SessionEvent[], event: SessionEven
 export function readRoleplayTurnMode(events: readonly SessionEvent[]): RoleplayTurnMode {
   let current: RoleplayTurnMode = 'conversation'
   for (const event of events) {
-    if (event.type !== 'agent-rp/turn-mode') continue
+    if (event.type !== 'plugin:agent-rp/turn-mode') continue
     verifyUserSelection(events, event)
     current = parseRoleplayTurnModeRecord(event.data).mode
   }
@@ -100,8 +105,8 @@ export function readRoleplayTurnMode(events: readonly SessionEvent[]): RoleplayT
 
 /** Initialize a Session once without rewriting an explicit player choice. */
 export function ensureDefaultRoleplayTurnMode(session: Session, value: RoleplayTurnMode): void {
-  if (session.events.some(event => event.type === 'agent-rp/turn-mode')) return
-  appendAgentRpSessionEvent(session, 'agent-rp/turn-mode', { format: 0, mode: value, source: 'default' })
+  if (session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/turn-mode')) return
+  appendAgentRpSessionEvent(session, 'plugin:agent-rp/turn-mode', { format: 0, mode: value, source: 'default' })
 }
 
 /** Append one player-authorized mode selection tied to its private command. */
@@ -110,13 +115,13 @@ export function appendUserRoleplayTurnMode(
   request: RoleplayTurnModeCommandRequest,
   sourceEventSeq: number,
 ): void {
-  const source = session.events[sourceEventSeq]
+  const source = session.snapshotEvents()[sourceEventSeq]
   if (source?.type !== 'command/run' || source.data.name !== 'rp-turn-mode'
     || source.data.source.kind !== 'user' || typeof source.data.args !== 'string'
     || parseRoleplayTurnModeCommandRequest(source.data.args).mode !== request.mode) {
     throw new Error('回合方式命令不是当前 Session 事件')
   }
-  appendAgentRpSessionEvent(session, 'agent-rp/turn-mode', {
+  appendAgentRpSessionEvent(session, 'plugin:agent-rp/turn-mode', {
     format: 0,
     mode: request.mode,
     source: 'user',

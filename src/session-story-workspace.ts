@@ -2,7 +2,7 @@
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type {SessionEvent, SessionSeq} from '@deepseek-ai/dsh-session'
 import { appendAgentRpSessionEvent, supportsAgentRpSessionEvents } from './session-event-compat.ts'
 import { StoryWorkspaceStore } from './story-workspace.ts'
 
@@ -14,9 +14,14 @@ export interface SessionStoryWorkspaceSelectionRecord {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Ignorable user selection of the story workspace that prepares future turns. */
+    'plugin:agent-rp/story-workspace-selection': SessionStoryWorkspaceSelectionRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Ignorable user selection of the story workspace that prepares future turns. */
-    'agent-rp/story-workspace-selection': SessionStoryWorkspaceSelectionRecord
+    'plugin:agent-rp/story-workspace-selection': SessionStoryWorkspaceSelectionRecord
   }
 }
 
@@ -45,7 +50,7 @@ function parseRequest(rawInput: string): StoryWorkspaceCommandRequest {
 export function readSessionStoryWorkspaceId(events: readonly SessionEvent[]): string | undefined {
   let active: string | undefined
   for (const event of events) {
-    if (event.type !== 'agent-rp/story-workspace-selection') continue
+    if (event.type !== 'plugin:agent-rp/story-workspace-selection') continue
     if (event.data.format !== 0 || !Number.isSafeInteger(event.data.sourceEventSeq)
       || event.data.sourceEventSeq < 0 || event.data.sourceEventSeq >= event.seq) {
       throw new Error('故事工作区 Session 事件无效')
@@ -68,19 +73,19 @@ export function executeStoryWorkspaceCommand(
     readonly agent: Agent
     readonly rawInput: string
   },
-): { readonly kind: 'success'; readonly sourceEventSeq: number } {
+): { readonly kind: 'success'; readonly sourceEventSeq: SessionSeq } {
   if (!supportsAgentRpSessionEvents(invocation.agent.session)) {
     throw new Error('当前 DSH Host 缺少安全插件事件能力，无法启用故事工作区')
   }
   const request = parseRequest(invocation.rawInput)
   if (request.workspaceId !== null) store.get(request.workspaceId)
-  const source = invocation.agent.session.events.findLast(event => event.type === 'command/run'
+  const source = invocation.agent.session.snapshotEvents().findLast(event => event.type === 'command/run'
     && String(event.data.commandId) === String(invocation.commandId))
   if (source?.type !== 'command/run' || source.data.name !== 'rp-story-workspace'
     || source.data.source.kind !== 'user') {
     throw new Error('故事工作区命令不是当前 Session 事件')
   }
-  appendAgentRpSessionEvent(invocation.agent.session, 'agent-rp/story-workspace-selection', {
+  appendAgentRpSessionEvent(invocation.agent.session, 'plugin:agent-rp/story-workspace-selection', {
     format: 0,
     ...(request.workspaceId === null ? {} : { workspaceId: request.workspaceId }),
     sourceEventSeq: source.seq,

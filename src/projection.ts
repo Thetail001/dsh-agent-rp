@@ -1,7 +1,8 @@
 /** Incremental browser projection of the active Roleplay identity. */
 
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
-import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
+import type { SessionHeader, SessionLogOffset } from '@deepseek-ai/dsh-session/types'
 import { parseCharacterCardValue } from './import/character-card.ts'
 import { decodeCharacterLibraryLaunch, type CharacterImportMeta, type CharacterLibraryLaunchRecord } from './import/session-character.ts'
 import { readSillyTavernChatIdentity } from './import/sillytavern-chat-seed.ts'
@@ -74,6 +75,7 @@ import {
 import { substituteSillyTavernIdentityMacros } from './sillytavern-identity-macro.ts'
 import { summarizeRegexPackScripts } from './regex-pack.ts'
 import { parseSessionRegexPack, type SessionRegexPackSnapshot } from './session-regex-pack.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 export type { AgentRpProjection } from './projection-types.ts'
 
@@ -174,6 +176,8 @@ interface AgentRpProjectionState {
   readonly presetState?: ActiveSessionPreset
   readonly presetLibrary: AgentRpProjection['presetLibrary']
   readonly lastRequest?: AgentRpProjection['lastRequest']
+  /** 0.2.1: header 不再携带 system，最新 system/message 文本单独跟踪。 */
+  readonly systemText: string
   readonly promptRegex?: AgentRpProjection['promptRegex']
   readonly generations: Readonly<Record<string, GenerationStateRecord>>
   readonly currentReplySeq?: number
@@ -334,6 +338,19 @@ function applySurface(
   surface: AgentRpProjectionState['surface'],
   event: SessionEvent,
 ): AgentRpProjectionState['surface'] {
+  // 0.2.1: 楼层内容编辑以投影记录形式落日志，客户端投影直接应用编辑后文本。
+  if (event.type === 'plugin:agent-rp/message-edit') {
+    let next = surface
+    for (const edit of event.data.edits) {
+      const index = next.findIndex(node => node.seq === edit.seq)
+      if (index < 0) continue
+      const node = next[index]
+      if (node === undefined) continue
+      const text = edit.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+      next = [...next.slice(0, index), { ...node, text }, ...next.slice(index + 1)]
+    }
+    return next
+  }
   if (event.type !== 'user/message' && event.type !== 'assistant/message' && event.type !== 'tool/result') return surface
   const message = event.type === 'user/message' ? event.data : event.data.message
   if (event.type !== 'tool/result'
@@ -350,8 +367,8 @@ function applySurface(
   const operation = event.surfaceOp
   if (operation === undefined) return surface
   if (operation === 'append') return [...surface, node]
-  const start = surface.findIndex(value => value.seq === operation.start)
-  const end = surface.findIndex(value => value.seq === operation.end)
+  const start = surface.findIndex(value => value.seq === operation.startSeq)
+  const end = surface.findIndex(value => value.seq === operation.endSeq)
   if (start < 0 || end < start) return surface
   return [
     ...surface.slice(0, start),
@@ -469,12 +486,13 @@ function worldInfoProjection(
 }
 
 function toolCallId(event: Extract<SessionEvent, { type: 'tool/result' }>): string | undefined {
-  const first = event.data.message.content[0]
-  return first === undefined ? undefined : String(first.toolCallId)
+  // 0.2.1: toolCallId 直接挂在 tool 角色消息上。
+  const id = event.data.message.toolCallId
+  return id === undefined ? undefined : String(id)
 }
 
 function toolFailed(event: Extract<SessionEvent, { type: 'tool/result' }>): boolean {
-  return event.data.message.content[0]?.isError === true
+  return event.data.message.isError === true
 }
 
 function parseCharacterMeta(value: JsonValue | undefined): CharacterImportMeta | undefined {
@@ -703,7 +721,9 @@ function withoutCall(
   return Object.fromEntries(Object.entries(calls).filter(([id]) => id !== callId))
 }
 
-type AgentRpProjectionDefinition = ProjectionDefinition<'agentRp', AgentRpProjectionState> & {
+type AgentRpProjectionDefinition = Omit<ProjectionDefinition<'agentRp', AgentRpProjectionState>, 'init'> & {
+  /** The 0.2.1 host always supplies header and fork prefix; this projection ignores both. */
+  init(header?: SessionHeader, inheritedEventCount?: SessionLogOffset): AgentRpProjectionState
   readonly wire: NonNullable<ProjectionDefinition<'agentRp', AgentRpProjectionState>['wire']>
   /** DSH rc.8 projection contract; retained beside `stateSchema`/`wire` for newer Hosts. */
   readonly schema: typeof projectionSchema
@@ -737,6 +757,7 @@ export function createAgentRpProjectionDefinition(
     nativeStates: [],
     presetLibrary: [],
     generations: {},
+    systemText: '',
     tavernMessageAnnotations: {},
     auxiliaryGenerations: EMPTY_TAVERN_AUXILIARY_GENERATION_REPLAY,
     regexPacks: [],
@@ -752,10 +773,10 @@ export function createAgentRpProjectionDefinition(
     if (tavernMessageAnnotations !== withSurface.tavernMessageAnnotations) {
       return { ...withSurface, tavernMessageAnnotations }
     }
-    if (event.type === 'agent-rp/turn-mode') {
+    if (event.type === 'plugin:agent-rp/turn-mode') {
       return { ...withSurface, turnMode: parseRoleplayTurnModeRecord(event.data).mode }
     }
-    if (event.type === 'agent-rp/regex-pack-seed') {
+    if (event.type === 'plugin:agent-rp/regex-pack-seed') {
       try {
         const pack = parseSessionRegexPack(event.data)
         if (withSurface.regexPacks.some(existing => existing.id === pack.id)) return withSurface
@@ -764,8 +785,8 @@ export function createAgentRpProjectionDefinition(
         return withSurface
       }
     }
-    if (event.type === 'agent-rp/mvu-state') return { ...withSurface, mvu: event.data }
-    if (event.type === 'agent-rp/world-info-library-seed') {
+    if (event.type === 'plugin:agent-rp/mvu-state') return { ...withSurface, mvu: event.data }
+    if (event.type === 'plugin:agent-rp/world-info-library-seed') {
       try {
         const semantics = worldInfoLibrarySeedSemantics(event)
         const meta = parseWorldInfoImportMeta(event.data.meta as unknown as JsonValue)
@@ -811,9 +832,13 @@ export function createAgentRpProjectionDefinition(
     }
     const nativeStates = applyRoleplayStateEvent(withSurface.nativeStates, event)
     if (nativeStates !== withSurface.nativeStates) return { ...withSurface, nativeStates }
-    if (event.type === 'agent-rp/turn-presentation') {
+    if (event.type === 'plugin:agent-rp/turn-presentation') {
       const presentation = normalizeRoleplayTurnPresentation(event.data)
       return presentation.current ? { ...withSurface, presentation } : withSurface
+    }
+    // 0.2.1: 正则视图改写以投影记录形式落日志，trace 由记录携带。
+    if (event.type === 'plugin:agent-rp/prompt-regex-view') {
+      return { ...withSurface, promptRegex: event.data.trace }
     }
     const trace = promptRegexTrace(event)
     if (trace !== undefined) return { ...withSurface, promptRegex: trace }
@@ -851,12 +876,12 @@ export function createAgentRpProjectionDefinition(
         }
       }
     }
-    if (event.type === 'agent-rp/tavern-state' || event.type === 'agent-rp/tavern-state-attachment'
+    if (event.type === 'plugin:agent-rp/tavern-state' || event.type === 'plugin:agent-rp/tavern-state-attachment'
       || (event.type === 'command/done' && event.data.kind === 'success')) {
       try {
-        const tavern = event.type === 'agent-rp/tavern-state'
+        const tavern = event.type === 'plugin:agent-rp/tavern-state'
           ? event.data
-          : event.type === 'agent-rp/tavern-state-attachment'
+          : event.type === 'plugin:agent-rp/tavern-state-attachment'
             ? event.data.active ? event.data.state : undefined
             : decodeActiveTavernHelperState(event.data.text)
         if (tavern !== undefined) {
@@ -873,7 +898,7 @@ export function createAgentRpProjectionDefinition(
     }
     const generation = event.type === 'command/done' && event.data.kind === 'success'
       ? decodeGenerationState(event.data.text)
-      : event.type === ('agent-rp/generation-state' as SessionEvent['type'])
+      : event.type === ('plugin:agent-rp/generation-state' as SessionEvent['type'])
         ? (event as SessionEvent & { readonly data: GenerationStateRecord }).data
         : undefined
     if (generation !== undefined) {
@@ -914,7 +939,7 @@ export function createAgentRpProjectionDefinition(
       }
       if (worldInfoConfiguration !== undefined) return { ...withSurface, worldInfoConfiguration }
     }
-    if (event.type === 'agent-rp/persona-seed') {
+    if (event.type === 'plugin:agent-rp/persona-seed') {
       try {
         const persona = parseSessionPersona(event.data.persona)
         return {
@@ -925,7 +950,7 @@ export function createAgentRpProjectionDefinition(
         return withSurface
       }
     }
-    if (event.type === 'agent-rp/sillytavern-chat-import') {
+    if (event.type === 'plugin:agent-rp/sillytavern-chat-import') {
       const identity = readSillyTavernChatIdentity([event])
       return {
         ...withSurface,
@@ -980,7 +1005,7 @@ export function createAgentRpProjectionDefinition(
         }
       }
     }
-    if (event.type === 'agent-rp/character-card-seed') {
+    if (event.type === 'plugin:agent-rp/character-card-seed') {
       const card = parseCharacterCardValue(event.data.meta.raw)
       const projected = cardProjection(withSurface.character, event.data.meta, card)
       const libraryId = 'characterLibraryId' in event.data.source
@@ -1031,7 +1056,7 @@ export function createAgentRpProjectionDefinition(
         }
       }
     }
-    if (event.type === 'agent-rp/sillytavern-preset-seed') {
+    if (event.type === 'plugin:agent-rp/sillytavern-preset-seed') {
       const presetState = {
         result: event.data.result,
         importedPreset: event.data.preset,
@@ -1123,6 +1148,10 @@ export function createAgentRpProjectionDefinition(
         return withSurface
       }
     }
+    if (event.type === 'system/message') {
+      const text = event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+      return text === withSurface.systemText ? withSurface : { ...withSurface, systemText: text }
+    }
     if (event.type === 'request/header') {
       const config = event.data.header.config
       return {
@@ -1134,7 +1163,7 @@ export function createAgentRpProjectionDefinition(
             presetName: withSurface.presetState.result.name,
             presetRevision: withSurface.presetState.revision,
           }),
-          system: event.data.header.system ?? '',
+          system: withSurface.systemText,
           config: {
             provider: config.provider,
             model: config.model,
@@ -1248,7 +1277,15 @@ export function createAgentRpProjectionDefinition(
     const worldInfo = worldInfoProjection(state, ejsTemplateEngine)
     const auxiliaryGenerations = summarizeTavernAuxiliaryGenerationReplay(state.auxiliaryGenerations)
     const tavernMessageAnnotations = indexTavernMessageAnnotations(state.tavernMessageAnnotations)
+    // 0.2.1: swipe 版本全部在表面上，客户端楼层列表按账本剔除非选中版本。
+    const hiddenVersions = new Set<number>()
+    for (const group of Object.values(state.generations)) {
+      for (const seq of group.assistantSeqs) {
+        if (seq !== group.selectedVersionSeq) hiddenVersions.add(seq)
+      }
+    }
     const visibleTavernMessages = state.surface.flatMap(({ seq, text, reasoning, role }) => text === undefined || role === undefined
+      || hiddenVersions.has(seq)
       ? []
       : [{ seq, role, text, ...(reasoning === undefined ? {} : { reasoning }), isHidden: false as const }])
     const hiddenTavernMessages = state.tavern?.hiddenPrefix ?? []
@@ -1297,7 +1334,9 @@ export function createAgentRpProjectionDefinition(
             ...visibleTavernMessages,
           ].map((message, messageId) => {
             const selected = Object.values(state.generations)
-              .findLast(generation => generation.surfaceSeq === message.seq)?.selectedVersionSeq ?? message.seq
+              // 0.2.1: surfaceSeq 语义已变为「最新 append 版本」，
+              // tavern 消息按是否属于 group 的版本集匹配，取选中版本查批注。
+              .findLast(generation => generation.assistantSeqs.includes(message.seq))?.selectedVersionSeq ?? message.seq
             const annotations = tavernMessageAnnotations.get(selected) ?? {}
             return {
               ...message,

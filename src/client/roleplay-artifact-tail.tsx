@@ -4,8 +4,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type {
   ConversationNodeDefinition,
-} from '@deepseek-ai/dsh-client-runtime/client'
-import type { TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
+} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
 import { useEffect, useState } from 'react'
 import {
   normalizeRoleplayTurnPresentation,
@@ -18,7 +18,7 @@ import type {
 /** DSH requires a Location data key to equal its owning Conversation Definition kind. */
 const ROLEPLAY_PRESENTATION_KIND = 'agent-rp/presentation'
 
-declare module '@deepseek-ai/dsh-client-runtime/client' {
+declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
   interface ConversationTurnDataMap {
     /** Latest replayable RP presentation snapshot for this exact Turn. */
     'agent-rp/presentation': RoleplayTurnPresentation
@@ -32,7 +32,7 @@ interface RoleplayPresentationState {
 function presentationFromEvent(event: unknown): RoleplayTurnPresentation | undefined {
   if (typeof event !== 'object' || event === null) return undefined
   const record = event as { readonly type?: unknown; readonly data?: unknown }
-  if (record.type !== 'agent-rp/turn-presentation'
+  if (record.type !== 'plugin:agent-rp/turn-presentation'
     || typeof record.data !== 'object' || record.data === null || Array.isArray(record.data)) return undefined
   const presentation = record.data as RoleplayTurnPresentation
   if (presentation.format !== 0 || !Number.isSafeInteger(presentation.turn) || presentation.turn < 0
@@ -142,18 +142,17 @@ function RoleplayArtifactTail({ owner }: { readonly owner: ArtifactTailOwner }) 
 /** Register replay projection and the independent turnTail surface. */
 export function installRoleplayArtifactTail(ctx: Context): void {
   ctx.effect(
-    () => ctx.conversationEvents.register(roleplayPresentationDefinition),
+    () => ctx.uiConversation.events.register(roleplayPresentationDefinition),
     'agent-rp: project per-turn presentation artifacts',
   )
   ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
     name: 'conversation.chat.turnTail',
-    priority: 80,
-    select: owner => {
-      const presentation = owner.turn.data.get(ROLEPLAY_PRESENTATION_KIND)
-      return presentation?.selectedReply?.surfaceSeq === owner.seq
-        && (presentation.present.artifacts?.length ?? 0) > 0
-        ? {}
-        : null
-    },
-  }, props => <RoleplayArtifactTail owner={props as ArtifactTailOwner} />))
+    id: 'agent-rp-artifact-tail',
+    order: 80,
+  }, props => {
+    const presentation = props.turn.data.get(ROLEPLAY_PRESENTATION_KIND)
+    if (presentation?.selectedReply?.surfaceSeq !== props.seq
+      || (presentation.present.artifacts?.length ?? 0) === 0) return null
+    return <RoleplayArtifactTail owner={props as ArtifactTailOwner} />
+  }))
 }

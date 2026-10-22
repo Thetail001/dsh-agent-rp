@@ -2,12 +2,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import {
-  Session,
-  snapshotJsonValue,
-  type JsonValue,
-  type SessionEvent,
-} from '@deepseek-ai/dsh-session'
+import {Session, type SessionEvent} from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   appendMvuState,
@@ -20,6 +15,8 @@ import {
 import { collectRoleplayStagedStateSettlement } from './roleplay-staged-state-settlement.ts'
 import { parseRoleplayStateOperations } from './roleplay-state-operations.ts'
 import type { RoleplayTurnPlanReference } from './roleplay-turn-settlement.ts'
+import { snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-util-values'
+import type { AgentRpSessionEvent } from './session-event-compat.ts'
 
 /** Model-facing tool that records semantic state work without mutating state mid-turn. */
 export const ROLEPLAY_STATE_ACTION_TOOL = 'apply_roleplay_state'
@@ -146,9 +143,9 @@ function matchingPlanEvent(
   turn: number,
   step: number,
   beforeSeq: number,
-): SessionEvent<'agent-rp/turn-plan'> {
-  const matches = events.filter((event): event is SessionEvent<'agent-rp/turn-plan'> =>
-    event.type === 'agent-rp/turn-plan' && event.seq < beforeSeq
+): AgentRpSessionEvent<'plugin:agent-rp/turn-plan'> {
+  const matches = events.filter((event): event is AgentRpSessionEvent<'plugin:agent-rp/turn-plan'> =>
+    event.type === 'plugin:agent-rp/turn-plan' && event.seq < beforeSeq
       && event.data.turn === turn && event.data.reference.step === step)
   if (matches.length !== 1) throw new Error('Roleplay state action has no unique prepared plan')
   return matches[0]!
@@ -157,9 +154,9 @@ function matchingPlanEvent(
 function toolCallForExecution(agent: Agent, callId: string): {
   readonly call: SessionEvent<'tool/call'>
   readonly assistant: SessionEvent<'assistant/message'>
-  readonly plan: SessionEvent<'agent-rp/turn-plan'>
+  readonly plan: AgentRpSessionEvent<'plugin:agent-rp/turn-plan'>
 } {
-  const events = agent.session.events
+  const events = agent.session.snapshotEvents()
   const calls = events.filter((event): event is SessionEvent<'tool/call'> => event.type === 'tool/call'
     && String(event.data.callId) === callId && event.data.name === ROLEPLAY_STATE_ACTION_TOOL)
   const call = calls.at(-1)
@@ -267,10 +264,11 @@ function resultIntent(
 ): RoleplayStateActionIntent | undefined {
   const intent = readRoleplayStateActionIntent(event.data.meta)
   if (intent === undefined) return undefined
-  const block = event.data.message.content[0]
+  // 0.2.1: toolCallId/isError 直接挂在 tool 角色消息上。
   if (event.data.turn !== turn || intent.turn !== turn || intent.sessionId === ''
-    || block?.type !== 'tool-result' || block.isError === true || event.data.error !== undefined
-    || String(event.data.message.source.callId) !== intent.callId || String(block.toolCallId) !== intent.callId) {
+    || event.data.message.isError === true || event.data.error !== undefined
+    || String(event.data.message.source.callId) !== intent.callId
+    || String(event.data.message.toolCallId) !== intent.callId) {
     throw new Error('Roleplay state action result is not a successful causal tool result')
   }
   const call = events[intent.callEventSeq]
@@ -285,7 +283,7 @@ function resultIntent(
     || !assistant.data.message.content.some(content => content.type === 'tool-call'
       && String(content.id) === intent.callId && content.name === ROLEPLAY_STATE_ACTION_TOOL
       && sameArguments(content.arguments, intent.stateId, intent.operations))
-    || plan?.type !== 'agent-rp/turn-plan' || plan.seq >= assistant.seq
+    || plan?.type !== 'plugin:agent-rp/turn-plan' || plan.seq >= assistant.seq
     || plan.data.turn !== intent.turn || plan.data.reference.step !== intent.step) {
     throw new Error('Roleplay state action causal references are invalid')
   }
@@ -325,7 +323,7 @@ export function collectRoleplayStateActionIntents(input: {
 
 function sessionThrough(session: Session, seq: number): Session {
   const constructor = session.constructor as typeof Session
-  return constructor.create(session.id, session.events.slice(0, seq + 1)) as Session
+  return constructor.create(session.id, session.snapshotEvents().slice(0, seq + 1)) as Session
 }
 
 function sameNumbers(left: readonly number[], right: readonly number[]): boolean {
@@ -373,8 +371,8 @@ export function settleSessionRoleplayStateActions(input: {
     ? new Set(collected.map(item => item.intent.expectedRevision))
     : new Set([staged.target.expectedRevision])
   const successfulUnchanged = staged?.outcome === 'success' && operations.length === 0
-  const existing = input.session.events.filter((event): event is SessionEvent<'agent-rp/mvu-state'> =>
-    event.type === 'agent-rp/mvu-state' && event.data.source?.kind === 'agent-action'
+  const existing = input.session.snapshotEvents().filter((event): event is AgentRpSessionEvent<'plugin:agent-rp/mvu-state'> =>
+    event.type === 'plugin:agent-rp/mvu-state' && event.data.source?.kind === 'agent-action'
       && event.data.source.turn === input.turn)
   if (existing.length > 1) throw new Error('Roleplay turn has multiple Agent action state snapshots')
   if (existing[0] !== undefined) {
@@ -391,7 +389,7 @@ export function settleSessionRoleplayStateActions(input: {
   if (successfulUnchanged && input.base?.lastError === undefined) {
     return { session: sessionThrough(input.session, closing.seq), resultEventSeqs, outcome: 'idle' }
   }
-  const laterRequired = input.session.events.some(event => event.seq > closing.seq
+  const laterRequired = input.session.snapshotEvents().some(event => event.seq > closing.seq
     && event.type !== 'session/end-seed' && event.ignorable !== true)
   if (laterRequired) throw new Error('Roleplay state actions cannot be inserted after a later required Session event')
   const base = input.base

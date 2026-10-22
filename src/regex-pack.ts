@@ -1,8 +1,8 @@
 /** Standalone SillyTavern regex-pack parsing shared by browser hints and Host storage. */
 
-import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { parseRegexScript } from './import/regex-script.ts'
 import type { ImportedRegexScript } from './import/types.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Maximum number of ordered rules accepted from one standalone export. */
 export const MAX_REGEX_PACK_SCRIPTS = 256

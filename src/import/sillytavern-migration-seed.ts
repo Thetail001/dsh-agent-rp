@@ -1,6 +1,6 @@
 /** One-shot SillyTavern character and chat migration. */
 
-import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import {Session, SessionId, type SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
 import { createCharacterCardSessionSeed } from './character-card-seed.ts'
 import { createSillyTavernChatSeed, resolveSillyTavernChatIdentity } from './sillytavern-chat-seed.ts'
 import type {
@@ -39,20 +39,20 @@ export function createSillyTavernMigrationSeed(
     undefined,
     libraryId,
   )[0]
-  if (cardEvent?.type !== 'agent-rp/character-card-seed') throw new Error('Character Card seed is missing')
+  if (cardEvent?.type !== 'plugin:agent-rp/character-card-seed') throw new Error('Character Card seed is missing')
   const seq = events.length
   events.push({
     ...cardEvent,
-    seq,
+    seq: SessionSeq(seq),
     time: Math.max(Date.now(), events.at(-1)?.time ?? 0),
     data: {
       ...cardEvent.data,
       meta: {
         ...cardEvent.data.meta,
-        result: { ...cardEvent.data.meta.result, sourceEventSeq: seq },
+        result: { ...cardEvent.data.meta.result, sourceEventSeq: SessionSeq(seq)},
       },
     },
   })
   const validated = Session.create(SessionId('agent-rp-sillytavern-migration-validation'), events)
-  return Object.freeze(validated.events.slice(0, events.length))
+  return Object.freeze(validated.snapshotEvents().slice(0, events.length))
 }

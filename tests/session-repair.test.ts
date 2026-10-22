@@ -25,8 +25,8 @@ test('repairs only known legacy events in a chosen multi-frame session and keeps
     frame({ type: 'session', version: 0, id: 'fixture', createdAt: 1, delegationDepth: 0 }),
     frame([
       { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
-      { type: 'agent-rp/turn-settlement', seq: 1, time: 2, data: { format: 0 } },
-      { type: 'agent-rp/state', seq: 2, time: 3, data: { format: 0 }, ignorable: true },
+      { type: 'plugin:agent-rp/turn-settlement', seq: 1, time: 2, data: { format: 0 } },
+      { type: 'plugin:agent-rp/state', seq: 2, time: 3, data: { format: 0 }, ignorable: true },
     ]),
   ])
   await writeFile(path, original)
@@ -72,7 +72,7 @@ test('locates one encoded Session id and refuses ambiguous or misplaced artifact
   const firstPath = join(firstDirectory, 'session.jsonl.zstd')
   const original = Buffer.concat([
     frame({ type: 'session', version: 0, id: sessionId, createdAt: 1, delegationDepth: 0 }),
-    frame({ type: 'agent-rp/turn-settlement', seq: 0, time: 2, data: { format: 0 } }),
+    frame({ type: 'plugin:agent-rp/turn-settlement', seq: 0, time: 2, data: { format: 0 } }),
   ])
   await writeFile(firstPath, original)
 
@@ -88,7 +88,7 @@ test('locates one encoded Session id and refuses ambiguous or misplaced artifact
   const misplacedPath = join(misplacedDirectory, 'session.jsonl')
   const misplaced = Buffer.from([
     JSON.stringify({ type: 'session', version: 0, id: 'another-session', createdAt: 1, delegationDepth: 0 }),
-    JSON.stringify({ type: 'agent-rp/state', seq: 0, time: 2, data: { format: 0 } }),
+    JSON.stringify({ type: 'plugin:agent-rp/state', seq: 0, time: 2, data: { format: 0 } }),
     '',
   ].join('\n'))
   await writeFile(misplacedPath, misplaced)

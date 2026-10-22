@@ -6,7 +6,7 @@ import { AgentRegistry, agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import type { CharacterImportMeta } from '../src/import/session-character.ts'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { createScope } from '@deepseek-ai/dsh-scope'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import {
   coalesceWorldbookSnapshot,
   createWorldbookCharacterContextRegistry,

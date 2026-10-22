@@ -2,11 +2,12 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { JsonValue, SessionEvent } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 import { defineTool, type GenericCallView } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { isDeepStrictEqual } from 'node:util'
 import type { RoleplayResourceReference } from './roleplay-resource-catalog-protocol.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 export const ROLEPLAY_ACTOR_REVISION_TOOL = 'revise_actor'
 export const ROLEPLAY_ACTOR_INSPECTION_TOOL = 'inspect_actor'
@@ -628,8 +629,8 @@ export interface RoleplayActorRevisionAttempt {
 }
 
 function resultCallId(event: Extract<SessionEvent, { readonly type: 'tool/result' }>): string | undefined {
-  const block = event.data.message.content[0]
-  return block === undefined ? undefined : String(block.toolCallId)
+  const id = event.data.message.toolCallId
+  return id === undefined ? undefined : String(id)
 }
 
 /** Rebuild every actor proposal and its approval/write settlement from the Session Log alone. */
@@ -682,7 +683,7 @@ export function readRoleplayActorRevisionAttempts(
     if (attempt.failed !== undefined || attempt.result !== undefined) {
       throw new Error(`actor revision call ${JSON.stringify(callId)} has repeated results`)
     }
-    attempt.failed = event.data.message.content[0]?.isError === true
+    attempt.failed = event.data.message.isError === true
     if (!attempt.failed) {
       const result = parseRevisionValue(event.data.meta)
       if (result.baseRevision !== attempt.input.revision

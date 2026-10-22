@@ -1,10 +1,10 @@
 /** SillyTavern Chat Completion preset parsing without executing extension code. */
 
-import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { parseRegexScript } from './regex-script.ts'
 import { parseTavernHelperScripts, tavernHelperExtension, tavernHelperVariables } from './tavern-helper.ts'
 import type { ImportedRegexScript, ImportedTavernHelperScript, TavernHelperImportSummary } from './types.ts'
 import type { NormalizedTavernHelperExtension } from './tavern-helper.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Role assigned to one Prompt Manager entry. */
 export type SillyTavernPresetRole = 'system' | 'user' | 'assistant'

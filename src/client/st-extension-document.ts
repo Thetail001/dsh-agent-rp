@@ -1,11 +1,11 @@
 /** Isolated singleton document for browser-installed SillyTavern extensions. */
 
-import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import type { TavernInstalledExtensionPrompt } from '../tavern-helper.ts'
 import type { InstalledStExtensionEntry } from './st-extension-registry.ts'
 import { inlineScriptJson } from './inline-script-json.ts'
 import { isJsonValue } from './json-value.ts'
 import type { TavernPageSnapshot } from './tavern-runtime.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 const documentNoncePattern = /^[A-Za-z0-9_-]{16,128}$/u
 

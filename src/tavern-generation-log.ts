@@ -1,8 +1,9 @@
 /** Durable audit records for auxiliary model calls made by isolated Tavern scripts. */
 
 import type { Message } from '@deepseek-ai/dsh-llm'
-import type { JsonValue, Session, SessionEvent } from '@deepseek-ai/dsh-session'
-import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import type {Session, SessionEvent} from '@deepseek-ai/dsh-session'
+import { appendAgentRpSessionEvent, type AgentRpAppendResult } from './session-event-compat.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Exact dispatchable request recorded before a Host-routed auxiliary model call. */
 export interface TavernHostGenerationDispatch {
@@ -53,11 +54,18 @@ export interface TavernAuxiliaryGenerationResultRecord {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable exact request for an auxiliary Tavern script model call. */
+    'plugin:agent-rp/tavern-generation-request': TavernAuxiliaryGenerationRequestRecord
+    /** Skippable credential-free settlement for an auxiliary Tavern script model call. */
+    'plugin:agent-rp/tavern-generation-result': TavernAuxiliaryGenerationResultRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable exact request for an auxiliary Tavern script model call. */
-    'agent-rp/tavern-generation-request': TavernAuxiliaryGenerationRequestRecord
+    'plugin:agent-rp/tavern-generation-request': TavernAuxiliaryGenerationRequestRecord
     /** Skippable credential-free settlement for an auxiliary Tavern script model call. */
-    'agent-rp/tavern-generation-result': TavernAuxiliaryGenerationResultRecord
+    'plugin:agent-rp/tavern-generation-result': TavernAuxiliaryGenerationResultRecord
   }
 }
 
@@ -91,16 +99,16 @@ export const EMPTY_TAVERN_AUXILIARY_GENERATION_REPLAY: TavernAuxiliaryGeneration
 export function appendTavernAuxiliaryGenerationRequest(
   session: Session,
   record: TavernAuxiliaryGenerationRequestRecord,
-): SessionEvent<'agent-rp/tavern-generation-request'> & { readonly ignorable: true } {
-  return appendAgentRpSessionEvent(session, 'agent-rp/tavern-generation-request', record)
+): AgentRpAppendResult<'plugin:agent-rp/tavern-generation-request'> {
+  return appendAgentRpSessionEvent(session, 'plugin:agent-rp/tavern-generation-request', record)
 }
 
 /** Append one bounded settlement linked to its exact request event. */
 export function appendTavernAuxiliaryGenerationResult(
   session: Session,
   record: TavernAuxiliaryGenerationResultRecord,
-): SessionEvent<'agent-rp/tavern-generation-result'> & { readonly ignorable: true } {
-  return appendAgentRpSessionEvent(session, 'agent-rp/tavern-generation-result', record)
+): AgentRpAppendResult<'plugin:agent-rp/tavern-generation-result'> {
+  return appendAgentRpSessionEvent(session, 'plugin:agent-rp/tavern-generation-result', record)
 }
 
 /** Classify one auxiliary failure without retaining remote response text. */
@@ -147,7 +155,7 @@ export function applyTavernAuxiliaryGenerationEvent(
   state: TavernAuxiliaryGenerationReplay,
   event: SessionEvent,
 ): TavernAuxiliaryGenerationReplay {
-  if (event.type === 'agent-rp/tavern-generation-request') {
+  if (event.type === 'plugin:agent-rp/tavern-generation-request') {
     const data = record((event as { readonly data: unknown }).data)
     const requestId = data?.requestId
     if (data?.format !== 0 || typeof requestId !== 'string' || requestId === ''
@@ -160,7 +168,7 @@ export function applyTavernAuxiliaryGenerationEvent(
       requests: { ...state.requests, [requestId]: { seq: event.seq } },
     }
   }
-  if (event.type !== 'agent-rp/tavern-generation-result') return state
+  if (event.type !== 'plugin:agent-rp/tavern-generation-result') return state
   const data = record((event as { readonly data: unknown }).data)
   const requestId = data?.requestId
   const result = record(data?.result)

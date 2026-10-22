@@ -13,7 +13,7 @@ import {
   type LlmFailure,
   type ResolvedRetryPolicy,
 } from '@deepseek-ai/dsh-llm'
-import { foldSurface, type JsonValue, type SessionEvent } from '@deepseek-ai/dsh-session'
+import {foldSurface, type SessionEvent} from '@deepseek-ai/dsh-session'
 import { jsonrepair } from 'jsonrepair'
 import {
   roleplayActModelDispatch,
@@ -26,7 +26,7 @@ import {
 } from './roleplay-state-action.ts'
 import { parseRoleplayStateOperations } from './roleplay-state-operations.ts'
 import type { BoundRoleplayTurnPlan, RoleplayTurnPlanReference } from './roleplay-turn-settlement.ts'
-import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import { appendAgentRpSessionEvent, type AgentRpSessionEvent, type AgentRpAppendResult } from './session-event-compat.ts'
 import { applyMvuOperations, type MvuStateOperation } from './mvu.ts'
 import type { RoleplayTurnWorkerOutcome } from './roleplay-turn-worker.ts'
 import type {
@@ -34,6 +34,7 @@ import type {
   RoleplayWorkerModelSelection,
 } from './workspace-settings.ts'
 import { stringifySillyTavernPromptJson } from './sillytavern-identity-macro.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 interface RoleplayStagedStateRequestBase {
   readonly format: 0
@@ -81,11 +82,18 @@ export interface RoleplayStagedStateFailureDetail {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Ignorable exact request made by the post-narrative settlement stage. */
+    'plugin:agent-rp/staged-state-request': RoleplayStagedStateRequestRecord
+    /** Ignorable terminal result consumed by turn settlement. */
+    'plugin:agent-rp/staged-state-result': RoleplayStagedStateResultRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Ignorable exact request made by the post-narrative settlement stage. */
-    'agent-rp/staged-state-request': RoleplayStagedStateRequestRecord
+    'plugin:agent-rp/staged-state-request': RoleplayStagedStateRequestRecord
     /** Ignorable terminal result consumed by turn settlement. */
-    'agent-rp/staged-state-result': RoleplayStagedStateResultRecord
+    'plugin:agent-rp/staged-state-result': RoleplayStagedStateResultRecord
   }
 }
 
@@ -226,7 +234,7 @@ function textContent(content: readonly ContentBlock[]): string {
 
 function playerInputText(
   events: readonly SessionEvent[],
-  planEvent: SessionEvent<'agent-rp/turn-plan'>,
+  planEvent: AgentRpSessionEvent<'plugin:agent-rp/turn-plan'>,
 ): string {
   const input = planEvent.data.reference.input
   if (new Set(input.pendingMessageIds).size !== input.pendingMessageIds.length) {
@@ -275,7 +283,7 @@ function settlementEvidence(
   agent: Agent,
   turn: number,
   step: number,
-  planEvent: SessionEvent<'agent-rp/turn-plan'>,
+  planEvent: AgentRpSessionEvent<'plugin:agent-rp/turn-plan'>,
   surfaceThroughEventSeq: number,
   target: RoleplayStateActionPlan,
   current: JsonValue,
@@ -289,10 +297,10 @@ function settlementEvidence(
     stringifySillyTavernPromptJson(current, identity),
     '</current_state>',
     '<player_input>',
-    playerInputText(agent.session.events, planEvent),
+    playerInputText(agent.session.snapshotEvents(), planEvent),
     '</player_input>',
     '<roleplay_reply>',
-    visibleReplyText(agent.session.events, turn, step, planEvent.seq, surfaceThroughEventSeq),
+    visibleReplyText(agent.session.snapshotEvents(), turn, step, planEvent.seq, surfaceThroughEventSeq),
     '</roleplay_reply>',
   ].join('\n')
 }
@@ -386,9 +394,9 @@ function matchingPlanEvent(
   events: readonly SessionEvent[],
   turn: number,
   plan: BoundRoleplayTurnPlan,
-): SessionEvent<'agent-rp/turn-plan'> {
-  const matches = events.filter((event): event is SessionEvent<'agent-rp/turn-plan'> =>
-    event.type === 'agent-rp/turn-plan' && event.data.turn === turn
+): AgentRpSessionEvent<'plugin:agent-rp/turn-plan'> {
+  const matches = events.filter((event): event is AgentRpSessionEvent<'plugin:agent-rp/turn-plan'> =>
+    event.type === 'plugin:agent-rp/turn-plan' && event.data.turn === turn
       && event.data.reference.step === plan.step)
   if (matches.length !== 1 || !sameJson(matches[0]!.data.reference.input, plan.plan.input)) {
     throw new Error('Roleplay staged settlement has no unique prepared plan')
@@ -412,28 +420,28 @@ function terminalForCoverage(
   turn: number,
   throughEventSeq: number,
 ): boolean {
-  const requests = events.filter((event): event is SessionEvent<'agent-rp/staged-state-request'> =>
-    event.type === 'agent-rp/staged-state-request' && event.data.turn === turn
+  const requests = events.filter((event): event is AgentRpSessionEvent<'plugin:agent-rp/staged-state-request'> =>
+    event.type === 'plugin:agent-rp/staged-state-request' && event.data.turn === turn
       && event.data.throughEventSeq === throughEventSeq)
   const latest = requests.at(-1)
   if (latest === undefined) return false
-  const result = events.find((event): event is SessionEvent<'agent-rp/staged-state-result'> =>
-    event.type === 'agent-rp/staged-state-result' && event.data.requestSeq === latest.seq)
+  const result = events.find((event): event is AgentRpSessionEvent<'plugin:agent-rp/staged-state-result'> =>
+    event.type === 'plugin:agent-rp/staged-state-result' && event.data.requestSeq === latest.seq)
   return result !== undefined && (latest.data.stage !== 'proposal' || result.data.result.kind === 'failure')
 }
 
 type StateSettlementDispatchOutcome =
   | {
       readonly outcome: 'success'
-      readonly requestEvent: SessionEvent<'agent-rp/staged-state-request'>
-      readonly resultEvent: SessionEvent<'agent-rp/staged-state-result'>
+      readonly requestEvent: AgentRpAppendResult<'plugin:agent-rp/staged-state-request'>
+      readonly resultEvent: AgentRpAppendResult<'plugin:agent-rp/staged-state-result'>
       readonly text: string
       readonly operations: readonly MvuStateOperation[]
     }
   | {
       readonly outcome: 'failed'
-      readonly requestEvent: SessionEvent<'agent-rp/staged-state-request'>
-      readonly resultEvent: SessionEvent<'agent-rp/staged-state-result'>
+      readonly requestEvent: AgentRpAppendResult<'plugin:agent-rp/staged-state-request'>
+      readonly resultEvent: AgentRpAppendResult<'plugin:agent-rp/staged-state-result'>
       readonly detail: RoleplayStagedStateFailureDetail
     }
 
@@ -507,7 +515,7 @@ async function dispatchStateSettlement(
   const stage = input.stage === 'proposal'
     ? { stage: 'proposal' as const }
     : { stage: 'verification' as const, proposalResultSeq: input.proposalResultSeq }
-  const requestEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-request', {
+  const requestEvent = appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/staged-state-request', {
     format: 0,
     requestId,
     sessionId: String(input.agent.session.id),
@@ -525,7 +533,7 @@ async function dispatchStateSettlement(
     for await (const chunk of input.ctx.llm.stream(input.request)) assembler.push(chunk)
     if (assembler.finish.kind === 'error' || assembler.finish.kind === 'aborted') {
       const detail = providerFailureDetail(assembler.finish.failure)
-      const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
+      const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/staged-state-result', {
         format: 0,
         requestId,
         requestSeq: requestEvent.seq,
@@ -548,7 +556,7 @@ async function dispatchStateSettlement(
     } catch (reason: unknown) {
       throw new StateSettlementResponseError(reason)
     }
-    const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
+    const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/staged-state-result', {
       format: 0,
       requestId,
       requestSeq: requestEvent.seq,
@@ -556,16 +564,17 @@ async function dispatchStateSettlement(
     })
     return { outcome: 'success', requestEvent, resultEvent, text, operations }
   } catch (error: unknown) {
-    let resultEvent = input.agent.session.events.find(
-      (event): event is SessionEvent<'agent-rp/staged-state-result'> =>
-        event.type === 'agent-rp/staged-state-result' && event.data.requestSeq === requestEvent.seq,
-    )
+    let resultEvent: AgentRpAppendResult<'plugin:agent-rp/staged-state-result'> | undefined =
+      input.agent.session.snapshotEvents().find(
+        (event): event is AgentRpSessionEvent<'plugin:agent-rp/staged-state-result'> =>
+          event.type === 'plugin:agent-rp/staged-state-result' && event.data.requestSeq === requestEvent.seq,
+      )
     if (resultEvent === undefined) {
       const detail = thrownFailureDetail(error)
       const failure = error instanceof StateSettlementResponseError
         ? 'unknown'
         : roleplayActModelFailure(error)
-      resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/staged-state-result', {
+      resultEvent = appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/staged-state-result', {
         format: 0,
         requestId,
         requestSeq: requestEvent.seq,
@@ -609,9 +618,9 @@ export async function runRoleplayStagedStateSettlement(input: {
   if (target === undefined) return { outcome: 'skipped' }
   const state = input.plan.plan.stateReads.find(read => read.id === target.stateId)
   if (state?.value === undefined) return { outcome: 'skipped' }
-  const planEvent = matchingPlanEvent(input.agent.session.events, input.turn, input.plan)
-  const through = stepEnd(input.agent.session.events, input.turn, input.plan.step)
-  if (terminalForCoverage(input.agent.session.events, input.turn, through.seq)) return { outcome: 'skipped' }
+  const planEvent = matchingPlanEvent(input.agent.session.snapshotEvents(), input.turn, input.plan)
+  const through = stepEnd(input.agent.session.snapshotEvents(), input.turn, input.plan.step)
+  if (terminalForCoverage(input.agent.session.snapshotEvents(), input.turn, through.seq)) return { outcome: 'skipped' }
   const evidence = settlementEvidence(
     input.agent,
     input.turn,
@@ -685,11 +694,11 @@ export function collectRoleplayStagedStateSettlement(input: {
   readonly turn: number
   readonly plans: readonly RoleplayTurnPlanReference[]
 }): CollectedRoleplayStagedStateSettlement | undefined {
-  const requests = new Map<number, SessionEvent<'agent-rp/staged-state-request'>>()
-  const results = new Map<number, SessionEvent<'agent-rp/staged-state-result'>>()
+  const requests = new Map<number, AgentRpSessionEvent<'plugin:agent-rp/staged-state-request'>>()
+  const results = new Map<number, AgentRpSessionEvent<'plugin:agent-rp/staged-state-result'>>()
   const requestIds = new Set<string>()
   for (const event of input.events) {
-    if (event.type === 'agent-rp/staged-state-request' && event.data.turn === input.turn) {
+    if (event.type === 'plugin:agent-rp/staged-state-request' && event.data.turn === input.turn) {
       const data = event.data
       const target = typeof data.target === 'object' && data.target !== null && !Array.isArray(data.target)
         ? data.target : undefined
@@ -704,7 +713,7 @@ export function collectRoleplayStagedStateSettlement(input: {
       const proposalResultSeq = data.proposalResultSeq
       const proposalResult = proposalResultSeq !== undefined && Number.isSafeInteger(proposalResultSeq)
         ? input.events[proposalResultSeq] : undefined
-      const proposalRequest = proposalResult?.type === 'agent-rp/staged-state-result'
+      const proposalRequest = proposalResult?.type === 'plugin:agent-rp/staged-state-result'
         && Number.isSafeInteger(proposalResult.data.requestSeq)
         ? requests.get(proposalResult.data.requestSeq) : undefined
       const stageValid = data.stage === undefined
@@ -712,7 +721,7 @@ export function collectRoleplayStagedStateSettlement(input: {
         : data.stage === 'proposal'
           ? data.proposalResultSeq === undefined
           : data.stage === 'verification'
-            && proposalResult?.type === 'agent-rp/staged-state-result'
+            && proposalResult?.type === 'plugin:agent-rp/staged-state-result'
             && proposalResult.seq < event.seq
             && proposalResult.data.result.kind === 'success'
             && proposalRequest?.data.stage === 'proposal'
@@ -726,7 +735,7 @@ export function collectRoleplayStagedStateSettlement(input: {
       if (data.format !== 0 || data.sessionId !== input.sessionId
         || typeof data.requestId !== 'string' || data.requestId === '' || requestIds.has(data.requestId)
         || !Number.isSafeInteger(data.step) || data.step <= 0
-        || planEvent?.type !== 'agent-rp/turn-plan' || planEvent.seq >= event.seq
+        || planEvent?.type !== 'plugin:agent-rp/turn-plan' || planEvent.seq >= event.seq
         || planEvent.data.turn !== input.turn || !sameJson(planEvent.data.reference, reference)
         || through?.type !== 'step/end' || through.seq >= event.seq
         || through.data.turn !== input.turn || through.data.step !== data.step
@@ -744,10 +753,10 @@ export function collectRoleplayStagedStateSettlement(input: {
       }
       requestIds.add(data.requestId)
       requests.set(event.seq, event)
-    } else if (event.type === 'agent-rp/staged-state-result') {
+    } else if (event.type === 'plugin:agent-rp/staged-state-result') {
       const recordedRequest = Number.isSafeInteger(event.data.requestSeq)
         ? input.events[event.data.requestSeq] : undefined
-      if (recordedRequest?.type !== 'agent-rp/staged-state-request'
+      if (recordedRequest?.type !== 'plugin:agent-rp/staged-state-request'
         || recordedRequest.data.turn !== input.turn) continue
       const request = requests.get(event.data.requestSeq)
       if (event.data.format !== 0 || request === undefined || request.seq >= event.seq

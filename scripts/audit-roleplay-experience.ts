@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { basename, extname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from '../src/character-library.ts'
 import { resolveConfig } from '../src/config.ts'
 import { parseSillyTavernPresetBytes } from '../src/import/sillytavern-preset.ts'
@@ -112,12 +112,12 @@ export function auditRoleplayExperience(input: RoleplayExperienceAuditInput): Ro
       promptPolicy: { kind: 'prompt-policy', id: promptPolicyId },
     })
     const first = Session.create(SessionId('agent-rp-experience-audit-first'), prepared.seed)
-    const reopened = Session.create(SessionId('agent-rp-experience-audit-reopened'), structuredClone(first.events))
+    const reopened = Session.create(SessionId('agent-rp-experience-audit-reopened'), structuredClone(first.snapshotEvents()))
     const runtime = resolveSessionRoleplayRuntime({
       session: reopened,
       deployment: resolveConfig({ characterName: 'Audit Actor' }),
     }).snapshot
-    const selection = readRoleplayExperienceSelection(reopened.events)
+    const selection = readRoleplayExperienceSelection(reopened.snapshotEvents())
     const entries = catalog.list()
     const actorDetail = catalog.inspect('actor', actorId)
     const participantDetail = catalog.inspect('persona', participant.id)
@@ -145,9 +145,9 @@ export function auditRoleplayExperience(input: RoleplayExperienceAuditInput): Ro
         enabledPromptModules: promptPolicyDetail.enabledModuleCount,
       },
       session: {
-        events: reopened.events.length,
+        events: reopened.snapshotEvents().length,
         selectionRecorded: selection !== undefined,
-        replayExact: JSON.stringify(first.events) === JSON.stringify(reopened.events),
+        replayExact: JSON.stringify(first.snapshotEvents()) === JSON.stringify(reopened.snapshotEvents()),
         actorReferenceExact: runtime.actor?.id === actorId && runtime.experience.id === actorId,
         participantReferenceExact: runtime.participant?.id === participant.id,
         worldReferenceExact: runtime.world.bindings.some(binding => binding.id === worldId),

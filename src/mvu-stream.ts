@@ -11,7 +11,6 @@ import {
   type StreamChunk,
   type TokenUsage,
 } from '@deepseek-ai/dsh-llm'
-import type { JsonValue } from '@deepseek-ai/dsh-session'
 import {
   appendRoleplayActModelRequest,
   appendRoleplayActModelResult,
@@ -28,6 +27,7 @@ import {
 } from './mvu.ts'
 import type { RoleplayTurnPlan } from './roleplay-turn-plan.ts'
 import { supportsAgentRpSessionEvents } from './session-event-compat.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 export interface PreparedMvuResponseRepair {
   readonly engine: 'mvu-v0'
@@ -249,7 +249,7 @@ export function installMvuStreamCompletion(
           }
         }
       } catch (error: unknown) {
-        if (!agent.session.events.some(event => event.type === 'agent-rp/act-model-result'
+        if (!agent.session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/act-model-result'
           && event.data.requestSeq === requestEvent.seq)) {
           appendRoleplayActModelResult(agent.session, {
             format: 0,

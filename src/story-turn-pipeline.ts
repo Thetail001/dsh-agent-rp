@@ -8,9 +8,9 @@ import {
   ReasoningEffortId,
   type GenerateOptions,
 } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
+import type {SessionEvent, UserMessage} from '@deepseek-ai/dsh-session'
 import { roleplayActModelDispatch, roleplayActModelFailure, type RoleplayActModelDispatch, type RoleplayActModelFailureKind } from './roleplay-act-model-log.ts'
-import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import { appendAgentRpSessionEvent, type AgentRpSessionEvent, type AgentRpAppendResult } from './session-event-compat.ts'
 import { compileStoryCharacterContext, StoryWorkspaceStore } from './story-workspace.ts'
 import type { StoryWorkspaceSnapshot } from './story-workspace-protocol.ts'
 import { searchStoryWorkspaceSources } from './story-research.ts'
@@ -105,19 +105,34 @@ export interface StoryWebSearchResultRecord {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Ignorable exact request sent to one story-pipeline Worker. */
+    'plugin:agent-rp/story-stage-request': StoryTurnStageRequestRecord
+    /** Ignorable terminal result from one story-pipeline Worker. */
+    'plugin:agent-rp/story-stage-result': StoryTurnStageResultRecord
+    /** Ignorable final story brief consumed by the visible character request. */
+    'plugin:agent-rp/story-turn-brief': StoryTurnBriefRecord
+    /** Ignorable story-document update committed after the visible reply. */
+    'plugin:agent-rp/story-turn-materialized': StoryTurnMaterializedRecord
+    /** Ignorable exact web query made for one story turn. */
+    'plugin:agent-rp/story-web-search-request': StoryWebSearchRequestRecord
+    /** Ignorable portable web-search result consumed by story research. */
+    'plugin:agent-rp/story-web-search-result': StoryWebSearchResultRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Ignorable exact request sent to one story-pipeline Worker. */
-    'agent-rp/story-stage-request': StoryTurnStageRequestRecord
+    'plugin:agent-rp/story-stage-request': StoryTurnStageRequestRecord
     /** Ignorable terminal result from one story-pipeline Worker. */
-    'agent-rp/story-stage-result': StoryTurnStageResultRecord
+    'plugin:agent-rp/story-stage-result': StoryTurnStageResultRecord
     /** Ignorable final story brief consumed by the visible character request. */
-    'agent-rp/story-turn-brief': StoryTurnBriefRecord
+    'plugin:agent-rp/story-turn-brief': StoryTurnBriefRecord
     /** Ignorable story-document update committed after the visible reply. */
-    'agent-rp/story-turn-materialized': StoryTurnMaterializedRecord
+    'plugin:agent-rp/story-turn-materialized': StoryTurnMaterializedRecord
     /** Ignorable exact web query made for one story turn. */
-    'agent-rp/story-web-search-request': StoryWebSearchRequestRecord
+    'plugin:agent-rp/story-web-search-request': StoryWebSearchRequestRecord
     /** Ignorable portable web-search result consumed by story research. */
-    'agent-rp/story-web-search-result': StoryWebSearchResultRecord
+    'plugin:agent-rp/story-web-search-result': StoryWebSearchResultRecord
   }
 }
 
@@ -304,7 +319,7 @@ async function searchWeb(
     return `${source.name}: ${content}`
   }).join('\n').slice(0, 2_000)
   const query = `${scope}\n${playerInput}`.trim().slice(0, 2_500)
-  const requestEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/story-web-search-request', {
+  const requestEvent = appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/story-web-search-request', {
     format: 0,
     sessionId: String(input.agent.session.id),
     workspaceId: input.workspace.manifest.id,
@@ -319,7 +334,7 @@ async function searchWeb(
     const web = webSearchGateway(input.ctx)
     if (web === undefined) throw new Error('web search unavailable')
     const result = await web.search({ query, maxResults: 6 }, input.signal)
-    const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/story-web-search-result', {
+    const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/story-web-search-result', {
       format: 0,
       requestSeq: requestEvent.seq,
       result: { kind: 'success', ...result },
@@ -327,7 +342,7 @@ async function searchWeb(
     resultEventSeqs.push(resultEvent.seq)
     return webSearchText({ kind: 'success', ...result })
   } catch (error: unknown) {
-    const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/story-web-search-result', {
+    const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/story-web-search-result', {
       format: 0,
       requestSeq: requestEvent.seq,
       result: { kind: 'failure', failure: webFailure(error) },
@@ -402,7 +417,7 @@ async function runStage(
   subjectId?: string,
 ): Promise<StageOutput> {
   const requestId = crypto.randomUUID()
-  const requestEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/story-stage-request', {
+  const requestEvent = appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/story-stage-request', {
     format: 0,
     requestId,
     sessionId: String(input.agent.session.id),
@@ -419,7 +434,7 @@ async function runStage(
     const assembler = new BlockAssembler()
     for await (const chunk of input.ctx.llm.stream(request)) assembler.push(chunk)
     if (assembler.finish.kind === 'error' || assembler.finish.kind === 'aborted') {
-      const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/story-stage-result', {
+      const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/story-stage-result', {
         format: 0,
         requestId,
         requestSeq: requestEvent.seq,
@@ -430,7 +445,7 @@ async function runStage(
     }
     const text = assembler.blocks().flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim()
     if (text === '' || text.length > 256 * 1_024) throw new Error('故事 Worker 返回了不可用文本')
-    const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'agent-rp/story-stage-result', {
+    const resultEvent = appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/story-stage-result', {
       format: 0,
       requestId,
       requestSeq: requestEvent.seq,
@@ -439,9 +454,9 @@ async function runStage(
     resultEventSeqs.push(resultEvent.seq)
     return { text, resultEventSeq: resultEvent.seq }
   } catch (error: unknown) {
-    const existing = input.agent.session.events.find(event => event.type === 'agent-rp/story-stage-result'
+    const existing = input.agent.session.snapshotEvents().find(event => event.type === 'plugin:agent-rp/story-stage-result'
       && event.data.requestSeq === requestEvent.seq)
-    const resultEvent = existing ?? appendAgentRpSessionEvent(input.agent.session, 'agent-rp/story-stage-result', {
+    const resultEvent = existing ?? appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/story-stage-result', {
       format: 0,
       requestId,
       requestSeq: requestEvent.seq,
@@ -455,9 +470,9 @@ async function runStage(
 function existingBrief(
   events: readonly SessionEvent[],
   input: RunStoryTurnPipelineInput,
-): SessionEvent<'agent-rp/story-turn-brief'> | undefined {
-  return events.findLast((event): event is SessionEvent<'agent-rp/story-turn-brief'> =>
-    event.type === 'agent-rp/story-turn-brief' && event.data.turn === input.turn && event.data.step === input.step
+): AgentRpAppendResult<'plugin:agent-rp/story-turn-brief'> | undefined {
+  return events.findLast((event): event is AgentRpSessionEvent<'plugin:agent-rp/story-turn-brief'> =>
+    event.type === 'plugin:agent-rp/story-turn-brief' && event.data.turn === input.turn && event.data.step === input.step
       && event.data.workspaceId === input.workspace.manifest.id
       && event.data.workspaceRevision === input.workspace.manifest.revision)
 }
@@ -494,7 +509,7 @@ function modelContext(finalDraft: string): string {
 
 /** Run or replay the complete story Worker pipeline for one accepted model step. */
 export async function runStoryTurnPipeline(input: RunStoryTurnPipelineInput): Promise<StoryTurnBriefRecord> {
-  const prior = existingBrief(input.agent.session.events, input)
+  const prior = existingBrief(input.agent.session.snapshotEvents(), input)
   if (prior !== undefined) return prior.data
   input.signal.throwIfAborted()
   const playerInput = messageText(input.messages)
@@ -616,7 +631,7 @@ export async function runStoryTurnPipeline(input: RunStoryTurnPipelineInput): Pr
     finalDraft,
     modelContext: context,
   }
-  appendAgentRpSessionEvent(input.agent.session, 'agent-rp/story-turn-brief', record)
+  appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/story-turn-brief', record)
   await input.ctx.sessions.flush(input.agent.session)
   return record
 }
@@ -630,15 +645,15 @@ export async function materializeStoryTurn(input: {
   readonly turn: number
   readonly signal: AbortSignal
 }): Promise<StoryTurnMaterializedRecord | undefined> {
-  const previous = input.agent.session.events.findLast((event): event is SessionEvent<'agent-rp/story-turn-materialized'> =>
-    event.type === 'agent-rp/story-turn-materialized' && event.data.turn === input.turn
+  const previous = input.agent.session.snapshotEvents().findLast((event): event is AgentRpSessionEvent<'plugin:agent-rp/story-turn-materialized'> =>
+    event.type === 'plugin:agent-rp/story-turn-materialized' && event.data.turn === input.turn
       && event.data.workspaceId === input.workspaceId)
   if (previous !== undefined) return previous.data
-  const briefEvent = input.agent.session.events.findLast((event): event is SessionEvent<'agent-rp/story-turn-brief'> =>
-    event.type === 'agent-rp/story-turn-brief' && event.data.turn === input.turn
+  const briefEvent = input.agent.session.snapshotEvents().findLast((event): event is AgentRpSessionEvent<'plugin:agent-rp/story-turn-brief'> =>
+    event.type === 'plugin:agent-rp/story-turn-brief' && event.data.turn === input.turn
       && event.data.workspaceId === input.workspaceId)
   if (briefEvent === undefined) return undefined
-  const visibleReply = visibleReplyText(input.agent.session.events, input.turn)
+  const visibleReply = visibleReplyText(input.agent.session.snapshotEvents(), input.turn)
   if (visibleReply === '') return undefined
   const workspace = input.store.get(input.workspaceId)
   const participants = workspace.manifest.characters.filter(character => character.enabled)
@@ -701,7 +716,7 @@ export async function materializeStoryTurn(input: {
     observations: update.observations,
     proposals,
   }
-  appendAgentRpSessionEvent(input.agent.session, 'agent-rp/story-turn-materialized', record)
+  appendAgentRpSessionEvent(input.agent.session, 'plugin:agent-rp/story-turn-materialized', record)
   await input.ctx.sessions.flush(input.agent.session)
   return record
 }
@@ -712,6 +727,6 @@ export function readStoryTurnBrief(
   turn: number,
   step: number,
 ): StoryTurnBriefRecord | undefined {
-  return events.findLast((event): event is SessionEvent<'agent-rp/story-turn-brief'> =>
-    event.type === 'agent-rp/story-turn-brief' && event.data.turn === turn && event.data.step === step)?.data
+  return events.findLast((event): event is AgentRpSessionEvent<'plugin:agent-rp/story-turn-brief'> =>
+    event.type === 'plugin:agent-rp/story-turn-brief' && event.data.turn === turn && event.data.step === step)?.data
 }

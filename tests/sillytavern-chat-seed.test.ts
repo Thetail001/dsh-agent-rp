@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import { parseSillyTavernChat, parseSillyTavernChatBytes } from '../src/import/sillytavern-chat.ts'
 import {
   createSillyTavernChatSeed,
@@ -41,9 +41,9 @@ test('retains swipes and the original attachment in skippable import metadata', 
   const seed = createSillyTavernChatSeed(chat, attachment)
   const imported = seed[0]
 
-  assert.equal(imported?.type, 'agent-rp/sillytavern-chat-import')
+  assert.equal(imported?.type, 'plugin:agent-rp/sillytavern-chat-import')
   assert.equal(imported?.ignorable, true)
-  if (imported?.type !== 'agent-rp/sillytavern-chat-import') assert.fail('missing import metadata')
+  if (imported?.type !== 'plugin:agent-rp/sillytavern-chat-import') assert.fail('missing import metadata')
   assert.equal(imported.data.source.attachments[0].attachmentId, attachment.attachmentId)
   assert.deepEqual(imported.data.messages[0]?.swipes, ['门还没锁。', '你来得正好。'])
   assert.deepEqual((imported.data.header as { chat_metadata: object }).chat_metadata, {
@@ -71,7 +71,7 @@ test('keeps ordinary system rows and empty messages out of model history', () =>
 
   assert.deepEqual(Session.create(SessionId('inert-chat'), seed).deriveMessages(), [])
   const imported = seed[0]
-  if (imported?.type !== 'agent-rp/sillytavern-chat-import') assert.fail('missing import metadata')
+  if (imported?.type !== 'plugin:agent-rp/sillytavern-chat-import') assert.fail('missing import metadata')
   assert.deepEqual(imported.data.messages.map(message => message.kind), ['user', 'system'])
 })
 

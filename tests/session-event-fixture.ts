@@ -1,11 +1,6 @@
 /** Detached-Session fixture for the appendIgnorable API not yet present in the published DSH test dependency. */
 
-import {
-  Session,
-  type SessionEvent,
-  type SessionEventMap,
-  type SessionEventType,
-} from '@deepseek-ai/dsh-session'
+import {Session, type SessionEvent, type SessionEventMap, type SessionEventType} from '@deepseek-ai/dsh-session'
 
 interface SessionInternals {
   readonly log: SessionEvent[]

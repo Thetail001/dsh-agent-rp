@@ -300,8 +300,7 @@ function moduleReferences(
     }
     return [{
       url: approvedModuleUrl(specifier, origins, base),
-      start: imported.s,
-      end: imported.e,
+      start: imported.s, end: imported.e,
       dynamic: imported.d !== -1,
     }]
   })

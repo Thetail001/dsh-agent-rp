@@ -7,7 +7,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { CommandId } from '@deepseek-ai/dsh-commands'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
 import { decodeGenerationState, encodeGenerationState, executeGenerationCommand } from '../src/generation.ts'
 import { parseCharacterCardJson } from '../src/import/character-card.ts'
@@ -47,7 +47,7 @@ const state = {
 }
 
 function appendAssistant(session: Session, turn: number, text: string) {
-  return session.append('assistant/message', {
+  return session.append('assistant/message', { stream: [],
     turn,
     step: 1,
     message: createAssistantMessage({
@@ -114,9 +114,9 @@ test('refuses an unsafe fallback without changing a published-host Session', () 
   const session = Session.create(SessionId('published-host-without-plugin-events'))
 
   assert.equal(supportsAgentRpSessionEvents(session), false)
-  assert.throws(() => appendAgentRpSessionEvent(session, 'agent-rp/state', state), /已拒绝写入/u)
+  assert.throws(() => appendAgentRpSessionEvent(session, 'plugin:agent-rp/state', state), /已拒绝写入/u)
   assert.equal(session.seq, 0)
-  assert.deepEqual(session.events, [])
+  assert.deepEqual(session.snapshotEvents(), [])
 })
 
 test('keeps the repair vocabulary identical to the writable private vocabulary', () => {
@@ -139,8 +139,8 @@ test('persists a player state revision through command/done on the published Hos
   assert.match(result.text ?? '', /^agent-rp-state-v0:/u)
   session.append('command/done', { commandId, ...result })
 
-  assert.equal(session.events.some(event => event.type === 'agent-rp/state'), false)
-  assert.deepEqual(readRoleplayStates(session.events), [{
+  assert.equal(session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/state'), false)
+  assert.deepEqual(readRoleplayStates(session.snapshotEvents()), [{
     format: 0,
     id: 'state:scene',
     revision: 1,
@@ -150,8 +150,8 @@ test('persists a player state revision through command/done on the published Hos
     value: { weather: '雨' },
     eventSeq: 1,
   }])
-  const reopened = Session.create(SessionId('published-host-command-state-replay'), session.events)
-  assert.deepEqual(readRoleplayStates(reopened.events), readRoleplayStates(session.events))
+  const reopened = Session.create(SessionId('published-host-command-state-replay'), session.snapshotEvents())
+  assert.deepEqual(readRoleplayStates(reopened.snapshotEvents()), readRoleplayStates(session.snapshotEvents()))
 })
 
 test('continues and switches MVU reply checkpoints through command/done on the published Host', async () => {
@@ -167,7 +167,7 @@ test('continues and switches MVU reply checkpoints through command/done on the p
   const agent = {
     session,
     status: 'idle',
-    inbox: { hasPending: false },
+    inbox: { nextTurn: [], nextStep: [] },
     followup(message: ReturnType<typeof createUserMessage>) {
       session.append('user/message', message, { surfaceOp: 'append' })
       appendAssistant(
@@ -191,7 +191,7 @@ test('continues and switches MVU reply checkpoints through command/done on the p
   assert.deepEqual(decodeGenerationState(continued.text)?.mvu, {
     statData: { 角色: { 等级: 4 } }, updateCount: 2,
   })
-  assert.equal(session.events.some(event => event.type === 'agent-rp/mvu-state'), false)
+  assert.equal(session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/mvu-state'), false)
   assert.deepEqual(readCurrentSessionMvuState(card, session), {
     statData: { 角色: { 等级: 4 } }, updateCount: 2,
   })
@@ -208,7 +208,7 @@ test('continues and switches MVU reply checkpoints through command/done on the p
     statData: { 角色: { 等级: 2 } }, updateCount: 1,
   })
 
-  const reopened = Session.create(session.id, session.events)
+  const reopened = Session.create(session.id, session.snapshotEvents())
   assert.deepEqual(readCurrentSessionMvuState(card, reopened), readCurrentSessionMvuState(card, session))
 })
 
@@ -227,13 +227,12 @@ test('switches Tavern reply branches through command/done on the published Host'
   const alternativeAttachment = appendPublishedTavernAttachment(
     session, CommandId('published-tavern-alternative'), alternative.seq, alternativeState, false,
   )
-  const surface = session.append('assistant/message', {
+  const surface = session.append('assistant/message', { stream: [],
     turn: alternative.data.turn,
     step: alternative.data.step,
     message: alternative.data.message,
   }, {
-    surfaceOp: { op: 'replace', start: original.seq, end: alternative.seq },
-    sourceEventSeqs: [original.seq, alternative.seq],
+    surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: alternative.seq },
   })
   const groupId = '00000000-0000-4000-8000-000000000201'
   const seedId = CommandId('published-tavern-generation-seed')
@@ -257,7 +256,7 @@ test('switches Tavern reply branches through command/done on the published Host'
       tavern: alternativeState,
     }),
   })
-  assert.deepEqual(readTavernHelperState(session.events)?.scopes.chat, { marker: 'alternative' })
+  assert.deepEqual(readTavernHelperState(session.snapshotEvents())?.scopes.chat, { marker: 'alternative' })
 
   const agent = { session } as Agent
   const originalSelectId = CommandId('published-tavern-select-original')
@@ -270,9 +269,9 @@ test('switches Tavern reply branches through command/done on the published Host'
     signal: new AbortController().signal,
   })
   session.append('command/done', { commandId: originalSelectId, ...selectedOriginal })
-  assert.equal(session.events.some(event => event.type === 'agent-rp/tavern-state'), false)
-  assert.deepEqual(readTavernHelperState(session.events)?.scopes.chat, { marker: 'original' })
-  assert.deepEqual(readTavernHelperState(Session.create(session.id, session.events).events)?.scopes.chat,
+  assert.equal(session.snapshotEvents().some(event => event.type === 'plugin:agent-rp/tavern-state'), false)
+  assert.deepEqual(readTavernHelperState(session.snapshotEvents())?.scopes.chat, { marker: 'original' })
+  assert.deepEqual(readTavernHelperState(Session.create(session.id, session.snapshotEvents()).snapshotEvents())?.scopes.chat,
     { marker: 'original' })
 
   const alternativeSelectId = CommandId('published-tavern-select-alternative')
@@ -285,8 +284,8 @@ test('switches Tavern reply branches through command/done on the published Host'
     signal: new AbortController().signal,
   })
   session.append('command/done', { commandId: alternativeSelectId, ...selectedAlternative })
-  assert.deepEqual(readTavernHelperState(session.events)?.scopes.chat, { marker: 'alternative' })
-  assert.deepEqual(readTavernHelperState(Session.create(session.id, session.events).events)?.scopes.chat,
+  assert.deepEqual(readTavernHelperState(session.snapshotEvents())?.scopes.chat, { marker: 'alternative' })
+  assert.deepEqual(readTavernHelperState(Session.create(session.id, session.snapshotEvents()).snapshotEvents())?.scopes.chat,
     { marker: 'alternative' })
 })
 
@@ -305,13 +304,13 @@ test('rejects unsafe Tavern regeneration before changing a published-host Sessio
     content: [{ type: 'text', text: '重新回答。' }], source: { kind: 'user' },
   }), { surfaceOp: 'append' })
   const original = appendAssistant(session, 1, '保留到安全切换开始。')
-  const beforeEvents = structuredClone(session.events)
+  const beforeEvents = structuredClone(session.snapshotEvents())
   const beforeSurface = [...session.surface.nodes]
   let followedUp = false
   const agent = {
     session,
     status: 'idle',
-    inbox: { hasPending: false },
+    inbox: { nextTurn: [], nextStep: [] },
     followup() { followedUp = true },
     whenIdle: async () => {},
     cancel: () => {},
@@ -323,7 +322,7 @@ test('rejects unsafe Tavern regeneration before changing a published-host Sessio
     signal: new AbortController().signal,
   }), /DSH Host 缺少安全插件事件能力/u)
   assert.equal(followedUp, false)
-  assert.deepEqual(session.events, beforeEvents)
+  assert.deepEqual(session.snapshotEvents(), beforeEvents)
   assert.deepEqual(session.surface.nodes, beforeSurface)
 })
 
@@ -339,16 +338,17 @@ test('writes and exactly replays a prepared turn with a local newer DSH Host', a
   const session = local.Session.create(local.SessionId('agent-rp-new-host-write'))
   assert.equal(supportsAgentRpSessionEvents(session as Session), true)
 
-  const written = appendAgentRpSessionEvent(session as Session, 'agent-rp/state', state)
-  assert.equal(written.ignorable, true)
-  assert.equal(written.type, 'agent-rp/state')
+  const written = appendAgentRpSessionEvent(session as Session, 'plugin:agent-rp/state', state)
   assert.deepEqual(written.data, state)
+  const committed = session.snapshotEvents()[Number(written.seq)]
+  assert.equal(committed?.ignorable, true)
+  assert.equal(committed?.type, 'plugin:agent-rp/state')
 
   const reopened = local.Session.create(
     local.SessionId('agent-rp-new-host-replay'),
-    structuredClone(session.events),
+    structuredClone(session.snapshotEvents()),
   )
-  assert.deepEqual(reopened.events[0], written)
+  assert.deepEqual(reopened.snapshotEvents()[0], committed)
 
   const turnSession = local.Session.create(local.SessionId('agent-rp-new-host-turn')) as Session
   turnSession.append('turn/start', { turn: 1 })
@@ -387,11 +387,11 @@ test('writes and exactly replays a prepared turn with a local newer DSH Host', a
   })
   const externalEvent = turnSession.append('user/message', external, { surfaceOp: 'append' })
   const dispatchedPlan = bindRoleplayExternalContext({
-    plan, events: turnSession.events, visibleMessages: turnSession.deriveMessages(), turn: 1, step: 1,
+    plan, events: turnSession.snapshotEvents(), visibleMessages: turnSession.deriveMessages(), turn: 1, step: 1,
   })
   const receipt = appendSessionRoleplayTurnPlan(turnSession, 1, 1, dispatchedPlan)
   assert.equal(receipt.ignorable, true)
-  assert.equal(receipt.type, 'agent-rp/turn-plan')
+  assert.equal(receipt.type, 'plugin:agent-rp/turn-plan')
   const candidateContextReads = receipt.data.reference.receipt?.recall?.contextReads ?? []
   assert.equal(candidateContextReads.some(read => read.eventSeq === externalEvent.seq), true)
   const supportsSnapshotChannels = (turnSession.constructor as {
@@ -402,11 +402,11 @@ test('writes and exactly replays a prepared turn with a local newer DSH Host', a
 
   const turnReopened = local.Session.create(
     local.SessionId('agent-rp-new-host-turn'),
-    structuredClone(turnSession.events),
+    structuredClone(turnSession.snapshotEvents()),
   ) as Session
-  const reopenedReceipt = turnReopened.events[receipt.seq]
-  assert.equal(reopenedReceipt?.type, 'agent-rp/turn-plan')
-  if (reopenedReceipt?.type !== 'agent-rp/turn-plan') throw new Error('turn receipt was not replayed')
+  const reopenedReceipt = turnReopened.snapshotEvents()[receipt.seq]
+  assert.equal(reopenedReceipt?.type, 'plugin:agent-rp/turn-plan')
+  if (reopenedReceipt?.type !== 'plugin:agent-rp/turn-plan') throw new Error('turn receipt was not replayed')
   assert.deepEqual(replaySessionRoleplayTurnPlan({
     session: turnReopened,
     record: reopenedReceipt,

@@ -1,6 +1,5 @@
 /** Character Card V1/V2/V3 JSON parser with lossless raw preservation. */
 
-import { snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-session'
 import type {
   CharacterCardVersion,
   CharacterImportDegradation,
@@ -12,6 +11,7 @@ import type {
 } from './types.ts'
 import { parseRegexScript } from './regex-script.ts'
 import { parseTavernHelperScripts, tavernHelperExtension, tavernHelperVariables } from './tavern-helper.ts'
+import { snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Maximum decoded card definition accepted independently from transport media. */
 export const MAX_CHARACTER_CARD_JSON_BYTES = 8 * 1024 * 1024

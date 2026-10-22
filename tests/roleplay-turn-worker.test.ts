@@ -3,7 +3,7 @@ import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import { executeGenerationCommand, readGenerationGroups } from '../src/generation.ts'
 import { createRoleplayNarrativeReviewWorker } from '../src/roleplay-narrative-review-worker.ts'
 import { RoleplayTurnWorkerRegistry, type RoleplayTurnWorkerInput } from '../src/roleplay-turn-worker.ts'
@@ -43,7 +43,7 @@ test('runs review before settlement and isolates one Worker failure', async () =
     ['review', 'failed'],
     ['state', 'applied'],
   ])
-  assert.equal(session.events.every(event => event.type !== 'agent-rp/turn-worker-result'
+  assert.equal(session.snapshotEvents().every(event => event.type !== 'plugin:agent-rp/turn-worker-result'
     || event.ignorable === true), true)
   assert.deepEqual(await registry.run(input(session)), [])
 })
@@ -55,14 +55,14 @@ test('reviews one reply through an isolated request and preserves the original a
     reason: 'initial',
     header: { config: { provider: 'fixture', model: 'fixture', maxTokens: 8_192 } },
   })
-  const original = session.append('assistant/message', {
+  const original = session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' },
       content: [{ type: 'text', text: '她向前走。她向前走，然后推开门。' }],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  }, { surfaceOp: 'append' })
   session.append('step/end', { turn: 1, step: 1 })
   let system = ''
   let messages = ''
@@ -92,15 +92,15 @@ test('reviews one reply through an isolated request and preserves the original a
   assert.doesNotMatch(messages, /世界书|预设模块/u)
   assert.deepEqual(session.deriveMessages().flatMap(message => message.content
     .flatMap(block => block.type === 'text' ? [block.text] : [])), ['她向前走去，然后推开门。'])
-  const group = readGenerationGroups(session.events)[0]
+  const group = readGenerationGroups(session.snapshotEvents())[0]
   assert.deepEqual(group?.versions.map(version => version.text), [
     '她向前走。她向前走，然后推开门。',
     '她向前走去，然后推开门。',
   ])
-  const resultEvent = session.events.find(event => event.type === 'agent-rp/narrative-review-result'
+  const resultEvent = session.snapshotEvents().find(event => event.type === 'plugin:agent-rp/narrative-review-result'
     && event.seq === outcome.resultEventSeq)
-  assert.equal(resultEvent?.type, 'agent-rp/narrative-review-result')
-  assert.equal(resultEvent?.type === 'agent-rp/narrative-review-result'
+  assert.equal(resultEvent?.type, 'plugin:agent-rp/narrative-review-result')
+  assert.equal(resultEvent?.type === 'plugin:agent-rp/narrative-review-result'
     && resultEvent.data.result.kind === 'success'
     ? resultEvent.data.result.reviewedReplySeq
     : undefined, group?.selectedVersionSeq)

@@ -1,6 +1,6 @@
 /** Pure World Info overlay parsing, persistence, and state transitions. */
 
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 import type { ImportedLorebook, ImportedLorebookEntry } from './import/types.ts'
 import type { TavernHelperState, TavernWorldbookEntry } from './tavern-helper.ts'
 import type {

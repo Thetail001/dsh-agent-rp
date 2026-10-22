@@ -1,7 +1,13 @@
 /** Prompt Manager assembly for imported SillyTavern Chat Completion presets. */
 
-import { createMessage, type Message } from '@deepseek-ai/dsh-llm'
-import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
+import {
+  createAssistantMessage,
+  createSystemMessage,
+  createUserMessage,
+  type Message,
+  type RequestMessage,
+} from '@deepseek-ai/dsh-llm'
+import type {Session, UserMessage} from '@deepseek-ai/dsh-session'
 import type { ImportedCharacterCard } from './import/types.ts'
 import type {
   ImportedSillyTavernPreset,
@@ -264,19 +270,20 @@ function continuationPlan(
 function precedingToolTransactionStart(messages: readonly Message[], end: number): number | undefined {
   const resultIds = new Set<string>()
   let cursor = end
+  // 0.2.1: 工具结果是独立的 tool 角色消息，不再是可以嵌在 user 消息里的内容块。
   while (cursor > 0) {
     const message = messages[cursor - 1]!
-    const results = message.content.filter(block => block.type === 'tool-result')
-    if (message.role !== 'user' || results.length === 0 || results.length !== message.content.length) break
-    results.forEach(result => resultIds.add(String(result.toolCallId)))
+    if (message.role !== 'tool') break
+    resultIds.add(String(message.toolCallId))
     cursor -= 1
   }
   if (cursor === end || cursor === 0) return undefined
   const assistant = messages[cursor - 1]!
+  if (assistant.role !== 'assistant') return undefined
   const callIds = assistant.content
     .filter(block => block.type === 'tool-call')
     .map(block => String(block.id))
-  if (assistant.role !== 'assistant' || callIds.length === 0
+  if (callIds.length === 0
     || callIds.length !== resultIds.size || callIds.some(id => !resultIds.has(id))) return undefined
   return cursor - 1
 }
@@ -313,11 +320,7 @@ export function injectSillyTavernInChatPrompts(
           .filter(Boolean)
           .join('\n')
         if (content === '') continue
-        injected.push(createMessage({
-          role,
-          source: { kind: 'plugin', plugin: 'dsh-agent-rp-preset-in-chat' },
-          content: [{ type: 'text', text: content }],
-        }))
+        injected.push(pluginPromptMessage(role, 'dsh-agent-rp-preset-in-chat', content))
       }
     }
     result.splice(Math.max(0, baseLength - depth), 0, ...injected)
@@ -325,12 +328,27 @@ export function injectSillyTavernInChatPrompts(
   return [...result, ...transaction]
 }
 
-function orderedMessage(prompt: RoleplayOrderedPrompt): Message {
-  return createMessage({
-    role: prompt.role,
-    source: { kind: 'plugin', plugin: 'dsh-agent-rp-preset' },
-    content: [{ type: 'text', text: prompt.content }],
+/**
+ * Synthetic preset messages. 0.2.1 pins each role's source shape: system takes
+ * the system-prompt producer, assistant requires provider/model metadata, and
+ * only user/developer messages may carry the plugin source variant.
+ */
+function pluginPromptMessage(role: RoleplayPromptRole, plugin: string, text: string): Message {
+  if (role === 'system') return createSystemMessage(text)
+  if (role === 'assistant') {
+    return createAssistantMessage({
+      content: [{ type: 'text', text }],
+      source: { provider: plugin, model: 'preset-injection' },
+    })
+  }
+  return createUserMessage({
+    content: [{ type: 'text', text }],
+    source: { kind: 'plugin', plugin },
   })
+}
+
+function orderedMessage(prompt: RoleplayOrderedPrompt): Message {
+  return pluginPromptMessage(prompt.role, 'dsh-agent-rp-preset', prompt.content)
 }
 
 /**
@@ -389,16 +407,20 @@ export function applySillyTavernContinuation(
   const nudge = continuation.nudgePrompt.replace(/\{\{lastchatmessage\}\}/giu, messageText(assistant).trim()).trim()
   if (nudge === '') return [...messages]
   return messages.map((message, index) => index === instructionIndex
-    ? { ...message, role: 'system', content: [{ type: 'text', text: nudge }] }
+    ? createSystemMessage(nudge)
     : message)
 }
 
 /** Produce the exact provider-facing order after prompt placement and continuation handling. */
 export function prepareSillyTavernProviderMessages(
-  messages: readonly Message[],
+  messages: readonly RequestMessage[],
   plan: RoleplayProviderPromptPlan,
 ): Message[] {
-  return applySillyTavernContinuation(injectSillyTavernPromptPlan(messages, plan), plan.continuation)
+  // 请求期用户输入没有持久身份；先落成普通 user 消息再进布局链路。
+  const durable = messages.map(message => message.id === undefined
+    ? createUserMessage({ content: message.content, source: { kind: 'user' } })
+    : message)
+  return applySillyTavernContinuation(injectSillyTavernPromptPlan(durable, plan), plan.continuation)
 }
 
 /** Assemble every ordered module around the retained chat history. */

@@ -1,12 +1,8 @@
 /** Durable native Roleplay state reconstructed from required Session events. */
 
-import {
-  snapshotJsonValue,
-  type JsonValue,
-  type Session,
-  type SessionEvent,
-} from '@deepseek-ai/dsh-session'
+import {type Session, type SessionEvent} from '@deepseek-ai/dsh-session'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import { snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Native lifecycle module that owns all source-neutral Roleplay state namespaces. */
 export const ROLEPLAY_STATE_MODULE_ID = 'roleplay:state'
@@ -53,9 +49,14 @@ export interface RoleplayStateCommandRequest {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Required native Roleplay state; skipping it would change later model-visible input. */
+    'plugin:agent-rp/state': RoleplayStateRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Required native Roleplay state; skipping it would change later model-visible input. */
-    'agent-rp/state': RoleplayStateRecord
+    'plugin:agent-rp/state': RoleplayStateRecord
   }
 }
 
@@ -197,7 +198,7 @@ export function applyRoleplayStateEvent(
   states: readonly RoleplayStateSnapshot[],
   event: SessionEvent,
 ): readonly RoleplayStateSnapshot[] {
-  const record = event.type === 'agent-rp/state'
+  const record = event.type === 'plugin:agent-rp/state'
     ? parseRoleplayStateRecord(event.data)
     : event.type === 'command/done' && event.data.kind === 'success'
       ? decodeRoleplayStateRecord(event.data.text)
@@ -236,7 +237,7 @@ export function readRoleplayStates(
   let current: readonly RoleplayStateSnapshot[] = []
   for (const event of events) {
     if (event.seq >= beforeSeq) continue
-    const record = event.type === 'agent-rp/state'
+    const record = event.type === 'plugin:agent-rp/state'
       ? parseRoleplayStateRecord(event.data)
       : event.type === 'command/done' && event.data.kind === 'success'
         ? decodeRoleplayStateRecord(event.data.text)
@@ -256,7 +257,7 @@ export function appendRoleplayState(
   const id = identifier(input.id, 'state id', STATE_ID_PATTERN)
   const expectedRevision = revision(input.expectedRevision, true)
   const writerModuleId = identifier(input.writerModuleId, 'state writer module id', MODULE_ID_PATTERN)
-  const current = readRoleplayStates(session.events).find(state => state.id === id)
+  const current = readRoleplayStates(session.snapshotEvents()).find(state => state.id === id)
   const currentRevision = current?.revision ?? 0
   if (expectedRevision !== currentRevision) {
     throw new Error(
@@ -275,7 +276,7 @@ export function appendRoleplayState(
     writerModuleId,
     value: stateValue(input.value),
   }
-  const event = appendAgentRpSessionEvent(session, 'agent-rp/state', record)
+  const event = appendAgentRpSessionEvent(session, 'plugin:agent-rp/state', record)
   return { ...event.data, ownerModuleId, eventSeq: event.seq }
 }
 
@@ -285,7 +286,7 @@ export function prepareUserRoleplayState(
   request: RoleplayStateCommandRequest,
   sourceEventSeq: number,
 ): RoleplayStateRecord {
-  const source = session.events[sourceEventSeq]
+  const source = session.snapshotEvents()[sourceEventSeq]
   if (source?.type !== 'command/run' || source.data.name !== 'rp-state' || typeof source.data.args !== 'string') {
     throw new Error('状态操作命令不是当前 Session 事件')
   }
@@ -294,7 +295,7 @@ export function prepareUserRoleplayState(
     || JSON.stringify(sourceRequest.value) !== JSON.stringify(request.value)) {
     throw new Error('状态操作请求与当前 Session 命令不一致')
   }
-  const current = readRoleplayStates(session.events).find(state => state.id === request.id)
+  const current = readRoleplayStates(session.snapshotEvents()).find(state => state.id === request.id)
   const currentRevision = current?.revision ?? 0
   if (request.expectedRevision !== currentRevision) {
     throw new Error(
@@ -319,7 +320,7 @@ export function appendUserRoleplayState(
   sourceEventSeq: number,
 ): RoleplayStateSnapshot {
   const record = prepareUserRoleplayState(session, request, sourceEventSeq)
-  const event = appendAgentRpSessionEvent(session, 'agent-rp/state', record)
+  const event = appendAgentRpSessionEvent(session, 'plugin:agent-rp/state', record)
   return { ...event.data, ownerModuleId: record.ownerModuleId!, eventSeq: event.seq }
 }
 

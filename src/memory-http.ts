@@ -2,7 +2,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import {SessionId} from '@deepseek-ai/dsh-session'
 import {
   jsonResponse as json,
   trustedBrowserRequest,
@@ -40,7 +40,7 @@ export function installAgentRpMemoryHttp(routeCtx: Context, hostCtx: Context, se
         const agent = (hostCtx.get('agents') as AgentRegistryGateway | undefined)?.get(SessionId(sourceSessionId))
         const presets = hostCtx.get('agentPresets') as AgentPresetGateway | undefined
         if (presets === undefined || !agentHasAgentRpRuntime(presets, agent)) throw new Error('角色会话当前不可用')
-        const history = readAgentRpMemoryHistory(agent.session.events)
+        const history = readAgentRpMemoryHistory(agent.session.snapshotEvents())
         const value: AgentRpMemoryResponse = {
           format: 0,
           memories: history.active.map(memory => ({
@@ -48,9 +48,9 @@ export function installAgentRpMemoryHttp(routeCtx: Context, hostCtx: Context, se
             kind: memory.kind,
             subject: memory.subject,
             text: memory.text,
-            source: agent.session.events[memory.sourceEventSeq]?.type === 'command/run'
+            source: agent.session.snapshotEvents()[memory.sourceEventSeq]?.type === 'command/run'
               ? 'user'
-              : agent.session.events[memory.sourceEventSeq]?.type === 'agent-rp/memory-seed' ? 'inherited' : 'character',
+              : agent.session.snapshotEvents()[memory.sourceEventSeq]?.type === 'plugin:agent-rp/memory-seed' ? 'inherited' : 'character',
           })),
         }
         json(response, 200, value)

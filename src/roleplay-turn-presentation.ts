@@ -1,11 +1,11 @@
 /** Replayable selection of the visible reply and runtime state presented for one Roleplay turn. */
 
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type {Session, SessionEvent} from '@deepseek-ai/dsh-session'
 import type {
   BoundRoleplayTurnPlan,
   RoleplayTurnPlanReference,
 } from './roleplay-turn-settlement.ts'
-import { appendAgentRpSessionEvent } from './session-event-compat.ts'
+import { appendAgentRpSessionEvent, type AgentRpSessionEvent } from './session-event-compat.ts'
 import {
   normalizeRoleplayTurnPresentation as importedNormalizePresentation,
 } from './roleplay-turn-presentation-state.ts'
@@ -18,9 +18,14 @@ import type {
 } from './roleplay-turn-presentation-types.ts'
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Informational Roleplay presentation; all selected state remains reconstructable without it. */
+    'plugin:agent-rp/turn-presentation': RoleplayTurnPresentation
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Informational Roleplay presentation; all selected state remains reconstructable without it. */
-    'agent-rp/turn-presentation': RoleplayTurnPresentation
+    'plugin:agent-rp/turn-presentation': RoleplayTurnPresentation
   }
 }
 
@@ -53,9 +58,9 @@ function assistantAt(
 function settlementEventAt(
   events: readonly SessionEvent[],
   seq: number,
-): Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }> {
+): Extract<SessionEvent, { type: 'plugin:agent-rp/turn-settlement' }> {
   const event = eventAt(events, seq)
-  if (event?.type !== 'agent-rp/turn-settlement') {
+  if (event?.type !== 'plugin:agent-rp/turn-settlement') {
     throw new Error('Roleplay presentation references a missing settlement')
   }
   return event
@@ -63,7 +68,7 @@ function settlementEventAt(
 
 function latestVisibleAssistantSeq(session: Session): number | undefined {
   for (const seq of [...session.surface.nodes].reverse()) {
-    const event = eventAt(session.events, seq)
+    const event = eventAt(session.snapshotEvents(), seq)
     if (event?.type !== 'assistant/message') continue
     const text = event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
     if (text.trim() !== '') return seq
@@ -106,7 +111,7 @@ function defaultModuleOutcomes(
 }
 
 function settlementStates(
-  settlement: Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }>,
+  settlement: Extract<SessionEvent, { type: 'plugin:agent-rp/turn-settlement' }>,
 ): readonly RoleplayPresentedState[] {
   return settlement.data.state.map(state => state.outcome === 'removed'
     ? { id: state.id, status: 'absent' as const }
@@ -155,7 +160,7 @@ function applyContributions(
 /** Compile the source-neutral present snapshot at one completed turn boundary. */
 export function compileInitialRoleplayTurnPresentation(input: {
   readonly session: Session
-  readonly settlementEvent: Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }>
+  readonly settlementEvent: Extract<SessionEvent, { type: 'plugin:agent-rp/turn-settlement' }>
   readonly plans?: readonly BoundRoleplayTurnPlan[]
   readonly contributions?: readonly RoleplayPresentationContribution[]
   readonly artifacts?: readonly RoleplayPresentedArtifact[]
@@ -163,7 +168,7 @@ export function compileInitialRoleplayTurnPresentation(input: {
   const { session, settlementEvent } = input
   const settlement = settlementEvent.data
   if (settlement.sessionId !== String(session.id)) throw new Error('Roleplay settlement belongs to another Session')
-  const reply = settlement.reply === undefined ? undefined : assistantAt(session.events, settlement.reply.eventSeq)
+  const reply = settlement.reply === undefined ? undefined : assistantAt(session.snapshotEvents(), settlement.reply.eventSeq)
   if (reply !== undefined && String(reply.data.message.id) !== settlement.reply?.messageId) {
     throw new Error('Roleplay settlement reply identity changed')
   }
@@ -203,7 +208,7 @@ export function compileInitialRoleplayTurnPresentation(input: {
 export function readRoleplayTurnPresentations(
   events: readonly SessionEvent[],
 ): readonly RoleplayTurnPresentation[] {
-  return events.flatMap(event => event.type === 'agent-rp/turn-presentation'
+  return events.flatMap(event => event.type === 'plugin:agent-rp/turn-presentation'
     ? [normalizePresentation(event.data)]
     : [])
 }
@@ -221,7 +226,7 @@ export function readCurrentRoleplayTurnPresentation(
 ): RoleplayTurnPresentation | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
-    if (event?.type !== 'agent-rp/turn-presentation') continue
+    if (event?.type !== 'plugin:agent-rp/turn-presentation') continue
     const presentation = normalizePresentation(event.data)
     if (presentation.current) return presentation
   }
@@ -235,7 +240,7 @@ export function readLatestRoleplayPresentationForReply(
 ): RoleplayTurnPresentation | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
-    if (event?.type !== 'agent-rp/turn-presentation') continue
+    if (event?.type !== 'plugin:agent-rp/turn-presentation') continue
     const presentation = normalizePresentation(event.data)
     if (presentation.selectedReply?.sourceSeq === replySeq
       || presentation.selectedReply?.surfaceSeq === replySeq) return presentation
@@ -254,11 +259,11 @@ export function compileRoleplayReplyVersionPresentation(input: {
   readonly contributions?: readonly RoleplayPresentationContribution[]
   readonly artifacts?: readonly RoleplayPresentedArtifact[]
 }): RoleplayTurnPresentation | undefined {
-  const baseline = readLatestRoleplayPresentationForReply(input.session.events, input.anchorSeq)
+  const baseline = readLatestRoleplayPresentationForReply(input.session.snapshotEvents(), input.anchorSeq)
   if (baseline === undefined) return undefined
-  settlementEventAt(input.session.events, baseline.settlementSeq)
-  const source = assistantAt(input.session.events, input.selectedVersionSeq)
-  const surface = assistantAt(input.session.events, input.surfaceSeq)
+  settlementEventAt(input.session.snapshotEvents(), baseline.settlementSeq)
+  const source = assistantAt(input.session.snapshotEvents(), input.selectedVersionSeq)
+  const surface = assistantAt(input.session.snapshotEvents(), input.surfaceSeq)
   const presented = applyContributions(
     updatedModules(baseline.present.modules, {
       moduleId: 'roleplay:reply-versions', outcome: 'applied', changes: 1,
@@ -300,10 +305,10 @@ export function compileRoleplayModulePresentationUpdate(input: {
   readonly replySeq: number
   readonly contributions: readonly RoleplayPresentationContribution[]
 }): RoleplayTurnPresentation | undefined {
-  assistantAt(input.session.events, input.replySeq)
-  const baseline = readLatestRoleplayPresentationForReply(input.session.events, input.replySeq)
+  assistantAt(input.session.snapshotEvents(), input.replySeq)
+  const baseline = readLatestRoleplayPresentationForReply(input.session.snapshotEvents(), input.replySeq)
   if (baseline?.selectedReply === undefined) return undefined
-  settlementEventAt(input.session.events, baseline.settlementSeq)
+  settlementEventAt(input.session.snapshotEvents(), baseline.settlementSeq)
   const presented = applyContributions(baseline.present.modules, baseline.state, input.contributions)
   return {
     ...baseline,
@@ -321,11 +326,14 @@ export function compileRoleplayModulePresentationUpdate(input: {
 export function appendRoleplayTurnPresentation(
   session: Session,
   presentation: RoleplayTurnPresentation,
-): SessionEvent<'agent-rp/turn-presentation'> {
+): AgentRpSessionEvent<'plugin:agent-rp/turn-presentation'> {
   if (presentation.sessionId !== String(session.id)) throw new Error('Roleplay presentation belongs to another Session')
-  const existing = session.events.find(event => event.type === 'agent-rp/turn-presentation'
+  const existing = session.snapshotEvents().find(event => event.type === 'plugin:agent-rp/turn-presentation'
     && event.data.trigger.kind === presentation.trigger.kind
     && event.data.trigger.eventSeq === presentation.trigger.eventSeq)
-  if (existing?.type === 'agent-rp/turn-presentation') return existing
-  return appendAgentRpSessionEvent(session, 'agent-rp/turn-presentation', presentation)
+  if (existing?.type === 'plugin:agent-rp/turn-presentation') return existing
+  const written = appendAgentRpSessionEvent(session, 'plugin:agent-rp/turn-presentation', presentation)
+  const committed = session.snapshotEvents()[Number(written.seq)]
+  if (committed?.type !== 'plugin:agent-rp/turn-presentation') throw new Error('Roleplay turn presentation was not committed')
+  return committed
 }

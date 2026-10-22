@@ -1,11 +1,11 @@
 /** Host-owned external-window protocol and broker shared by isolated frontend runtimes. */
 
-import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import {
   AGENT_RP_CAPABILITIES,
   type AgentRpExtensionRuntime,
 } from '../extension-capability.ts'
 import { isJsonValue } from './json-value.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Validated legacy `window.open` arguments. */
 export interface ExternalWindowRequestPayload {

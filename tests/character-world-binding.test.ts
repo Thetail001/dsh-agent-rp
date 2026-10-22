@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import { CharacterLibrary } from '../src/character-library.ts'
 import { CharacterWorldBindingStore } from '../src/character-world-binding-store.ts'
 import { resolveConfig } from '../src/config.ts'
@@ -175,7 +175,7 @@ test('edits a character world composition across future launch, runtime, project
       greetingIndex: 0,
     },
   )
-  const legacySeed = oldPrepared.seed.filter(event => event.type !== 'agent-rp/world-info-library-seed')
+  const legacySeed = oldPrepared.seed.filter(event => event.type !== 'plugin:agent-rp/world-info-library-seed')
   const oldSession = Session.create(SessionId('character-world-binding-old-runtime'), legacySeed)
 
   const primary = worlds.importFile({ filename: '新主世界.json', data: worldInfoBytes('新主世界', '主世界采用新的潮汐纪年。') })
@@ -217,13 +217,13 @@ test('edits a character world composition across future launch, runtime, project
       greetingIndex: 0,
     },
   )
-  const worldSeeds = prepared.seed.filter(event => event.type === 'agent-rp/world-info-library-seed')
+  const worldSeeds = prepared.seed.filter(event => event.type === 'plugin:agent-rp/world-info-library-seed')
   assert.deepEqual(worldSeeds.map(event => event.data.worldInfoLibraryId), [primary.id, supporting.id, embeddedWorldId])
   assert.ok(worldSeeds.every(event => event.data.placement === 'actor'))
   assert.ok(worldSeeds.every(event => event.data.purpose === 'character-binding'))
 
   const session = Session.create(SessionId('character-world-binding-runtime'), prepared.seed)
-  const sources = readSessionLorebookSourcesFromEvents(session.events)
+  const sources = readSessionLorebookSourcesFromEvents(session.snapshotEvents())
   assert.deepEqual(sources.map(source => source.id), [
     `character:library:${primary.id}`,
     `character:library:${supporting.id}`,
@@ -241,13 +241,13 @@ test('edits a character world composition across future launch, runtime, project
   assert.deepEqual(runtime.mvu?.statData, { 角色: { 等级: 1 } })
 
   let projectionState = agentRpProjectionDefinition.init()
-  for (const event of session.events) projectionState = agentRpProjectionDefinition.apply(projectionState, event)
+  for (const event of session.snapshotEvents()) projectionState = agentRpProjectionDefinition.apply(projectionState, event)
   const projection = agentRpProjectionDefinition.wire.view(projectionState)
   assert.equal(projection.worldInfo.books.length, 3)
   assert.ok(projection.worldInfo.books.every(book => book.source === 'character'))
   assert.deepEqual(projection.mvu?.statData, { 角色: { 等级: 1 } })
 
-  const oldSources = readSessionLorebookSourcesFromEvents(oldSession.events)
+  const oldSources = readSessionLorebookSourcesFromEvents(oldSession.snapshotEvents())
   assert.equal(oldSources.length, 1)
   assert.equal(oldSources[0]?.source, 'character')
   const oldRuntime = resolveSessionRoleplayRuntime({
@@ -256,7 +256,7 @@ test('edits a character world composition across future launch, runtime, project
   })
   assert.equal(oldRuntime.lorebooks.length, 1)
   let oldProjectionState = agentRpProjectionDefinition.init()
-  for (const event of oldSession.events) {
+  for (const event of oldSession.snapshotEvents()) {
     oldProjectionState = agentRpProjectionDefinition.apply(oldProjectionState, event)
   }
   const oldProjection = agentRpProjectionDefinition.wire.view(oldProjectionState)

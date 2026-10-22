@@ -6,11 +6,11 @@ import {
 } from '../card-remote-resource.ts'
 import type { CharacterRemoteResourceApproval } from '../character-library-protocol.ts'
 import { AGENT_RP_CAPABILITIES } from '../extension-capability.ts'
-import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import {
   normalizeNativeIdentityAudience,
   normalizeNativeIdentityNonce,
 } from '../native-identity-protocol.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 import {
   parseExternalWindowRequestPayload,
   type ExternalWindowRequestPayload,

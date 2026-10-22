@@ -15,7 +15,6 @@ import {
 import { basename, join, resolve } from 'node:path'
 import { unzipSync, zipSync } from 'fflate'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
-import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { CharacterImportTransport } from './import/session-character.ts'
 import type {
   ImportedCharacterCard, ImportedLorebookEntry, ImportedRegexScript, TavernHelperImportSummary,
@@ -44,6 +43,7 @@ import {
 } from './character-world-binding-store.ts'
 import { characterCardWithWorldInfo, embeddedWorldInfoAsset } from './embedded-world-info.ts'
 import { WorldInfoLibrary } from './world-info-library.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 const META_SUFFIX = '.meta.json'
 const OVERLAY_SUFFIX = '.overlay.json'

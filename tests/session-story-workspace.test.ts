@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { CommandId } from '@deepseek-ai/dsh-commands'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import {
   executeStoryWorkspaceCommand,
   readSessionStoryWorkspaceId,
@@ -32,7 +32,7 @@ test('selects and clears a story workspace when private command args are not rec
   })
 
   executeStoryWorkspaceCommand(store, { commandId: selectId, agent, rawInput: selectInput })
-  assert.equal(readSessionStoryWorkspaceId(session.events), workspace.manifest.id)
+  assert.equal(readSessionStoryWorkspaceId(session.snapshotEvents()), workspace.manifest.id)
 
   const clearId = CommandId('story-workspace-clear')
   session.append('command/run', {
@@ -46,5 +46,5 @@ test('selects and clears a story workspace when private command args are not rec
     agent,
     rawInput: JSON.stringify({ format: 0, workspaceId: null }),
   })
-  assert.equal(readSessionStoryWorkspaceId(session.events), undefined)
+  assert.equal(readSessionStoryWorkspaceId(session.snapshotEvents()), undefined)
 })

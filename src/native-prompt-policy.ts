@@ -1,6 +1,7 @@
 /** Replayable prompt policies owned by Agent RP rather than an imported format. */
 
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionSeq } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 import type { RoleplayResourceProvider } from './roleplay-resource-catalog.ts'
 
 export const NATIVE_PROMPT_POLICY_PROVIDER_ID = 'agent-rp-native-prompt-policies'
@@ -26,9 +27,14 @@ export interface NativePromptPolicySnapshot {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable snapshot of one Agent RP-owned prompt policy composition. */
+    'plugin:agent-rp/native-prompt-policy-seed': NativePromptPolicySnapshot
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable snapshot of one Agent RP-owned prompt policy composition. */
-    'agent-rp/native-prompt-policy-seed': NativePromptPolicySnapshot
+    'plugin:agent-rp/native-prompt-policy-seed': NativePromptPolicySnapshot
   }
 }
 
@@ -126,7 +132,7 @@ export function parseNativePromptPolicy(value: unknown): NativePromptPolicySnaps
 export function readNativePromptPolicy(events: readonly SessionEvent[]): NativePromptPolicySnapshot | undefined {
   let active: NativePromptPolicySnapshot | undefined
   for (const event of events) {
-    if (event.type === 'agent-rp/native-prompt-policy-seed') active = parseNativePromptPolicy(event.data)
+    if (event.type === 'plugin:agent-rp/native-prompt-policy-seed') active = parseNativePromptPolicy(event.data)
   }
   return active
 }
@@ -163,8 +169,8 @@ export function nativePromptPolicyResourceProvider(): RoleplayResourceProvider {
       }
       return {
         events: [...structuredClone(input.events), {
-          type: 'agent-rp/native-prompt-policy-seed' as const,
-          seq: input.events.length,
+          type: 'plugin:agent-rp/native-prompt-policy-seed' as const,
+          seq: SessionSeq(input.events.length),
           time: Date.now(),
           data: structuredClone(policy),
           ignorable: true,

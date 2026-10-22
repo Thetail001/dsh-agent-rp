@@ -1,6 +1,6 @@
 /** Durable Persona snapshot selected for one Roleplay Session. */
 
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type {SessionEvent} from '@deepseek-ai/dsh-session'
 import {
   parseSessionPersonaSnapshot,
   type SessionPersonaSnapshot,
@@ -15,9 +15,14 @@ export interface PersonaSeedRecord {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** Skippable player Persona selected when a Roleplay Session is created. */
+    'plugin:agent-rp/persona-seed': PersonaSeedRecord
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** Skippable player Persona selected when a Roleplay Session is created. */
-    'agent-rp/persona-seed': PersonaSeedRecord
+    'plugin:agent-rp/persona-seed': PersonaSeedRecord
   }
 }
 
@@ -65,7 +70,7 @@ export function readSessionPersonaSelection(events: readonly SessionEvent[]): Se
       }
       continue
     }
-    if (event.type !== 'agent-rp/persona-seed') continue
+    if (event.type !== 'plugin:agent-rp/persona-seed') continue
     if (event.data.format !== 0) throw new Error('Persona Session 事件格式不受支持')
     active = parseSessionPersona(event.data.persona)
     explicit = true

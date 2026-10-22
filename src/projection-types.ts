@@ -2,11 +2,11 @@
 
 import type { ImportedCharacterFrontend } from './import/types.ts'
 import type { ImportedRegexScript } from './import/types.ts'
-import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import type { SessionPersonaSnapshot } from './persona-library-protocol.ts'
 import type { TavernHelperState } from './tavern-helper.ts'
 import type { PromptRegexTraceRecord } from './frontend-regex.ts'
 import type { RoleplayTurnPresentation } from './roleplay-turn-presentation-types.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Stable fallback identity used by resource-only roleplay Sessions. */
 export const DEFAULT_AGENT_RP_CHARACTER_NAME = '角色会话'

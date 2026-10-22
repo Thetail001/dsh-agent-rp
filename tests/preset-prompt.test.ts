@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  CallId,
+  ToolCallId,
   createAssistantMessage,
-  createMessage,
+  createDeveloperMessage,
+  createSystemMessage,
   createToolResultMessage,
   createUserMessage,
   type Message,
 } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import type { ImportedSillyTavernPreset } from '../src/import/sillytavern-preset.ts'
 import type { ImportedCharacterCard } from '../src/import/types.ts'
 import {
@@ -253,7 +254,7 @@ test('keeps changing state after stable world context across continuous turns an
   assert.equal(firstDifference(thirdUnchanged, thirdChanged), thirdChanged.length - 1)
   assert.equal(textOf(thirdChanged.at(-2)), longWorld)
 
-  const callId = CallId('continuous-turn-tool')
+  const callId = ToolCallId('continuous-turn-tool')
   const call = createAssistantMessage({
     source: { provider: 'fixture', model: 'fixture' },
     content: [{ type: 'tool-call', id: callId, name: 'inspect_board', arguments: '{}' }],
@@ -373,12 +374,12 @@ test('resolves replay-safe card, persona, dialogue, and utility macros in preset
     regexScripts: [], extensionSummary: { regexScriptCount: 0, hasSPreset: false, hasTavernHelper: false },
   }
   const session = Session.create(SessionId('replay-safe-context-macros'))
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [],
     turn: 0, step: 1,
     message: createAssistantMessage({
       source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: '旧回答' }],
     }),
-  }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  }, { surfaceOp: 'append' })
   const pending = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '新问题' }] })
 
   const assembled = assembleSillyTavernPreset(compatPreset, {
@@ -432,11 +433,15 @@ test('renders EJS in imported preset modules and drops only a failing module', a
 })
 
 function message(role: Message['role'], text: string): Message {
-  return createMessage({
-    role,
-    source: role === 'user' ? { kind: 'user' } : { kind: 'plugin', plugin: 'fixture' },
-    content: [{ type: 'text', text }],
-  })
+  const content = [{ type: 'text' as const, text }]
+  // 0.2.1: createMessage 按角色字面量收窄；assistant 必须有模型来源（plugin 来源的 assistant 不再合法）。
+  if (role === 'user') return createUserMessage({ source: { kind: 'user' }, content })
+  if (role === 'assistant') {
+    return createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content })
+  }
+  if (role === 'system') return createSystemMessage(text)
+  if (role === 'developer') return createDeveloperMessage({ source: { kind: 'plugin', plugin: 'fixture' }, content })
+  return createToolResultMessage({ callId: ToolCallId('fixture-call'), content, isError: false })
 }
 
 function continueInstruction(): Message {
@@ -533,7 +538,7 @@ test('inserts in-chat modules by depth, descending priority, and role', () => {
 })
 
 test('keeps a continuous chain of completed tool transactions at the request tail', () => {
-  const firstCallId = CallId('failed-image')
+  const firstCallId = ToolCallId('failed-image')
   const firstAssistant = createAssistantMessage({
     source: { provider: 'fixture', model: 'fixture' },
     content: [
@@ -546,7 +551,7 @@ test('keeps a continuous chain of completed tool transactions at the request tai
     content: [{ type: 'text', text: 'Error: 图片服务没有配置' }],
     isError: true,
   })
-  const secondCallId = CallId('repeated-image')
+  const secondCallId = ToolCallId('repeated-image')
   const secondAssistant = createAssistantMessage({
     source: { provider: 'fixture', model: 'fixture' },
     content: [

@@ -1,6 +1,6 @@
 /** Session adapters that contribute compatibility state to the source-neutral present phase. */
 
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type {Session, SessionEvent} from '@deepseek-ai/dsh-session'
 import { decodeGenerationState, type GenerationStateRecord } from './generation.ts'
 import {
   MVU_ROLEPLAY_STATE_ID,
@@ -43,7 +43,7 @@ function causalTavernState(
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
     if (event === undefined || event.seq >= beforeSeq) continue
-    if (event.type === 'agent-rp/tavern-state-attachment') {
+    if (event.type === 'plugin:agent-rp/tavern-state-attachment') {
       if (event.data.cause.replySeq === replySeq) return { eventSeq: event.seq, state: event.data.state }
       continue
     }
@@ -58,7 +58,7 @@ function causalTavernState(
 
 function initialTavernContribution(input: {
   readonly session: Session
-  readonly settlementEvent: Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }>
+  readonly settlementEvent: Extract<SessionEvent, { type: 'plugin:agent-rp/turn-settlement' }>
   readonly plans?: readonly BoundRoleplayTurnPlan[]
 }): RoleplayPresentationContribution | undefined {
   const presentModules = resolveRoleplayPresentModuleIds(
@@ -69,8 +69,8 @@ function initialTavernContribution(input: {
   const replySeq = input.settlementEvent.data.reply?.eventSeq
   const causal = replySeq === undefined
     ? undefined
-    : causalTavernState(input.session.events, replySeq, input.settlementEvent.seq)
-  const baseline = causal ?? readTavernHelperStateSnapshot(input.session.events, input.settlementEvent.seq)
+    : causalTavernState(input.session.snapshotEvents(), replySeq, input.settlementEvent.seq)
+  const baseline = causal ?? readTavernHelperStateSnapshot(input.session.snapshotEvents(), input.settlementEvent.seq)
   const deferred = input.settlementEvent.data.settle.modules.some(module =>
     module.moduleId === TAVERN_HELPER_ROLEPLAY_MODULE_ID && module.outcome === 'deferred')
   const status = causal !== undefined ? 'attached' as const
@@ -97,12 +97,12 @@ function initialTavernContribution(input: {
 /** Compile an initial presentation with compatibility modules contributing their own state. */
 export function compileInitialSessionRoleplayTurnPresentation(input: {
   readonly session: Session
-  readonly settlementEvent: Extract<SessionEvent, { type: 'agent-rp/turn-settlement' }>
+  readonly settlementEvent: Extract<SessionEvent, { type: 'plugin:agent-rp/turn-settlement' }>
   readonly plans?: readonly BoundRoleplayTurnPlan[]
 }): RoleplayTurnPresentation {
   const tavern = initialTavernContribution(input)
   const artifacts = readPresentedRoleplayArtifacts(
-    input.session.events,
+    input.session.snapshotEvents(),
     input.settlementEvent.data.turn,
     input.settlementEvent.seq,
   )
@@ -125,16 +125,16 @@ function generationArtifacts(
 ): readonly RoleplayPresentedArtifact[] | undefined {
   const selected = generation.versions.find(version => version.seq === generation.selectedVersionSeq)
   if (selected?.artifactReplySeqs === undefined) {
-    return readLatestRoleplayPresentationForReply(session.events, generation.selectedVersionSeq)?.present.artifacts
+    return readLatestRoleplayPresentationForReply(session.snapshotEvents(), generation.selectedVersionSeq)?.present.artifacts
   }
   const artifacts = new Map<string, RoleplayPresentedArtifact>()
   for (const replySeq of selected.artifactReplySeqs) {
-    const reply = eventAt(session.events, replySeq)
+    const reply = eventAt(session.snapshotEvents(), replySeq)
     if (reply?.type !== 'assistant/message') throw new Error('Roleplay artifact source reply is missing')
-    const closing = session.events.find(event => event.seq > reply.seq
+    const closing = session.snapshotEvents().find(event => event.seq > reply.seq
       && event.type === 'turn/end' && event.data.turn === reply.data.turn)
     for (const artifact of readPresentedRoleplayArtifacts(
-      session.events,
+      session.snapshotEvents(),
       reply.data.turn,
       closing === undefined ? Number.POSITIVE_INFINITY : closing.seq + 1,
     )) artifacts.set(artifact.artifactId, artifact)
@@ -148,7 +148,7 @@ function presentationForGeneration(
   generation: GenerationStateRecord,
 ): RoleplayTurnPresentation | undefined {
   selectedGenerationVersion(generation)
-  const baseline = readLatestRoleplayPresentationForReply(session.events, generation.anchorSeq)
+  const baseline = readLatestRoleplayPresentationForReply(session.snapshotEvents(), generation.anchorSeq)
   if (baseline === undefined) return undefined
   const contributions: RoleplayPresentationContribution[] = []
   if (generation.mvu !== undefined || roleplayPresentedState(baseline, MVU_ROLEPLAY_STATE_ID) !== undefined) {
@@ -158,7 +158,7 @@ function presentationForGeneration(
       ...(generation.mvu === undefined ? {} : { eventSeq: event.seq }),
     }] })
   }
-  const replayedTavern = readTavernHelperStateSnapshot(session.events, event.seq)
+  const replayedTavern = readTavernHelperStateSnapshot(session.snapshotEvents(), event.seq)
   const tavern = generation.tavern === undefined
     ? replayedTavern
     : { eventSeq: event.seq, state: generation.tavern }
@@ -196,19 +196,19 @@ function presentationForGeneration(
 
 function presentationForTavernMutation(
   session: Session,
-  event: Extract<SessionEvent, { type: 'command/done' | 'agent-rp/tavern-state-attachment' }>,
+  event: Extract<SessionEvent, { type: 'command/done' | 'plugin:agent-rp/tavern-state-attachment' }>,
 ): RoleplayTurnPresentation | undefined {
   const commandAttachment = event.type === 'command/done'
     ? decodeTavernHelperStateAttachment(event.data.text)
     : undefined
-  const tavern = event.type === 'agent-rp/tavern-state-attachment'
+  const tavern = event.type === 'plugin:agent-rp/tavern-state-attachment'
     ? event.data.state
     : commandAttachment?.state ?? decodeTavernHelperState(event.data.text)
-  const cause = event.type === 'agent-rp/tavern-state-attachment'
+  const cause = event.type === 'plugin:agent-rp/tavern-state-attachment'
     ? event.data.cause
     : commandAttachment?.cause ?? tavern?.lastMutation?.cause
   if (tavern === undefined || cause === undefined || cause.sessionId !== String(session.id)) return undefined
-  const reply = eventAt(session.events, cause.replySeq)
+  const reply = eventAt(session.snapshotEvents(), cause.replySeq)
   if (reply?.type !== 'assistant/message') throw new Error('Roleplay presentation references a missing reply')
   const mvuChanged = (tavern.lastMutation?.scope === 'message' || tavern.lastMutation?.scope === 'chat')
     && typeof tavern.scopes[tavern.lastMutation.scope].stat_data === 'object'
@@ -232,9 +232,9 @@ function presentationForTavernMutation(
 /** Compile a follow-up presentation from one reply-version or causal compatibility event. */
 export function compileSessionRoleplayTurnPresentationUpdate(
   session: Session,
-  event: Extract<SessionEvent, { type: 'command/done' | 'agent-rp/tavern-state-attachment' }>,
+  event: Extract<SessionEvent, { type: 'command/done' | 'plugin:agent-rp/tavern-state-attachment' }>,
 ): RoleplayTurnPresentation | undefined {
-  if (event.type === 'agent-rp/tavern-state-attachment') return presentationForTavernMutation(session, event)
+  if (event.type === 'plugin:agent-rp/tavern-state-attachment') return presentationForTavernMutation(session, event)
   if (event.data.kind !== 'success') return undefined
   const generation = decodeGenerationState(event.data.text)
   return generation === undefined

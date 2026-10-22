@@ -1,12 +1,13 @@
 /** Session-owned Tavern Helper variable compatibility. */
 
-import { snapshotJsonValue, type JsonValue, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
+import {type Session, type SessionEvent} from '@deepseek-ai/dsh-session'
 import type { ImportedCharacterFrontend, ImportedTavernHelperScript } from './import/types.ts'
 import { AGENT_RP_CAPABILITIES } from './extension-capability.ts'
 import type { RoleplayTurnSettlementContribution } from './roleplay-runtime.ts'
 import { appendAgentRpSessionEvent } from './session-event-compat.ts'
 import { decodeGenerationCommandResult } from './generation-command-result.ts'
 import type { TavernMessageAnnotationOwner, TavernMessageAnnotationValue } from './tavern-message-annotation.ts'
+import { snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-util-values'
 import {
   parseTavernScriptIdentity,
   tavernScriptIdentity,
@@ -202,11 +203,18 @@ export interface TavernHelperState {
 }
 
 declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    /** @mode event Complete Tavern Helper state selected for the active reply version. */
+    'plugin:agent-rp/tavern-state': TavernHelperState
+    /** Branch-local Tavern Helper state produced for one causal reply, active only when explicitly marked. */
+    'plugin:agent-rp/tavern-state-attachment': TavernHelperStateAttachment
+  }
+  /** 镜像进 SessionEventMap 仅为读路径判别收窄；写入只走 appendPluginRecord。 */
   interface SessionEventMap {
     /** @mode event Complete Tavern Helper state selected for the active reply version. */
-    'agent-rp/tavern-state': TavernHelperState
+    'plugin:agent-rp/tavern-state': TavernHelperState
     /** Branch-local Tavern Helper state produced for one causal reply, active only when explicitly marked. */
-    'agent-rp/tavern-state-attachment': TavernHelperStateAttachment
+    'plugin:agent-rp/tavern-state-attachment': TavernHelperStateAttachment
   }
 }
 
@@ -957,8 +965,7 @@ export function parseTavernHelperMutationRequest(raw: string): TavernHelperMutat
       format: 0,
       operation: value.operation,
       begin: integer(value.begin, 'rotate-chat-messages begin'),
-      middle: integer(value.middle, 'rotate-chat-messages middle'),
-      end: integer(value.end, 'rotate-chat-messages end'),
+      middle: integer(value.middle, 'rotate-chat-messages middle'), end: integer(value.end, 'rotate-chat-messages end'),
     }, cause)
   }
   if (value.format === 0 && value.operation === 'set-chat-hidden') {
@@ -1402,8 +1409,8 @@ export function decodeActiveTavernHelperState(text: string | undefined): TavernH
 }
 
 function stateFromEvent(event: SessionEvent): TavernHelperState | undefined {
-  if (event.type === 'agent-rp/tavern-state') return event.data
-  if (event.type === 'agent-rp/tavern-state-attachment') return event.data.active ? event.data.state : undefined
+  if (event.type === 'plugin:agent-rp/tavern-state') return event.data
+  if (event.type === 'plugin:agent-rp/tavern-state-attachment') return event.data.active ? event.data.state : undefined
   return event.type === 'command/done' && event.data.kind === 'success'
     ? decodeActiveTavernHelperState(event.data.text)
     : undefined
@@ -1411,7 +1418,7 @@ function stateFromEvent(event: SessionEvent): TavernHelperState | undefined {
 
 /** Append an explicit state selection used by reply regeneration and swipe changes. */
 export function appendTavernHelperState(session: Session, state: TavernHelperState): TavernHelperStateSnapshot {
-  const event = appendAgentRpSessionEvent(session, 'agent-rp/tavern-state', state)
+  const event = appendAgentRpSessionEvent(session, 'plugin:agent-rp/tavern-state', state)
   return { eventSeq: event.seq, state }
 }
 
@@ -1424,7 +1431,7 @@ export function appendTavernHelperStateAttachment(
 ): TavernHelperStateSnapshot {
   const event = appendAgentRpSessionEvent(
     session,
-    'agent-rp/tavern-state-attachment',
+    'plugin:agent-rp/tavern-state-attachment',
     { format: 0, cause, active, state },
   )
   return { eventSeq: event.seq, state }
@@ -1453,7 +1460,7 @@ export function readTavernHelperStateSnapshotAt(
   const commandAttachment = event?.type === 'command/done' && event.data.kind === 'success'
     ? decodeTavernHelperStateAttachment(event.data.text)
     : undefined
-  const state = event?.type === 'agent-rp/tavern-state-attachment'
+  const state = event?.type === 'plugin:agent-rp/tavern-state-attachment'
     ? event.data.state
     : commandAttachment?.state ?? (event === undefined ? undefined : stateFromEvent(event))
   if (state === undefined) throw new Error('回复版本引用的脚本状态不存在')

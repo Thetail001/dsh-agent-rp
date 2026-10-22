@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import {
   parseAgentRpTurnHealthDiagnostic,
 } from '../src/roleplay-turn-health-protocol.ts'

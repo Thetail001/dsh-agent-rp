@@ -1,6 +1,5 @@
 /** Capability routing for authenticated Tavern Helper frame mutations. */
 
-import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import type { TavernHelperMutationRequest } from '../tavern-helper.ts'
 import { AGENT_RP_CAPABILITIES } from '../extension-capability.ts'
 import { parseExternalWindowRequestPayload } from './external-window.ts'
@@ -10,6 +9,7 @@ import {
   normalizeNativeIdentityNonce,
 } from '../native-identity-protocol.ts'
 import type { TavernStorageRequest } from './tavern-storage.ts'
+import { type JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Host message actions that carry a capability-scoped Tavern mutation request. */
 export type TavernMutationCapabilityAction = 'chat-mutate' | 'worldbook-mutate'

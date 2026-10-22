@@ -6,7 +6,7 @@ import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import {Session, SessionId} from '@deepseek-ai/dsh-session'
 import type { StoryWorkspaceSnapshot } from '../src/story-workspace-protocol.ts'
 import { appendAgentRpSessionEvent } from '../src/session-event-compat.ts'
 import { createStoryCharacterId, StoryWorkspaceStore } from '../src/story-workspace.ts'
@@ -173,12 +173,12 @@ test('runs logged story stages while keeping each character request privately sc
   assert.match(result.finalDraft, /阿梨看向徽章/u)
   assert.match(result.modelContext, /阿梨看向徽章/u)
   assert.doesNotMatch(result.modelContext, /导演方案|下一幕会停电|第三幕打开/u)
-  assert.equal(session.events.filter(event => event.type === 'agent-rp/story-stage-request').length, 8)
-  assert.equal(session.events.filter(event => event.type === 'agent-rp/story-stage-result').length, 8)
-  assert.equal(session.events.filter(event => event.type === 'agent-rp/story-turn-brief').length, 1)
-  assert.equal(session.events.filter(event => event.type === 'agent-rp/story-web-search-request').length, 1)
-  assert.equal(session.events.filter(event => event.type === 'agent-rp/story-web-search-result').length, 1)
-  assert.equal(session.events.every(event => !event.type.startsWith('agent-rp/story-') || event.ignorable === true), true)
+  assert.equal(session.snapshotEvents().filter(event => event.type === 'plugin:agent-rp/story-stage-request').length, 8)
+  assert.equal(session.snapshotEvents().filter(event => event.type === 'plugin:agent-rp/story-stage-result').length, 8)
+  assert.equal(session.snapshotEvents().filter(event => event.type === 'plugin:agent-rp/story-turn-brief').length, 1)
+  assert.equal(session.snapshotEvents().filter(event => event.type === 'plugin:agent-rp/story-web-search-request').length, 1)
+  assert.equal(session.snapshotEvents().filter(event => event.type === 'plugin:agent-rp/story-web-search-result').length, 1)
+  assert.equal(session.snapshotEvents().every(event => !event.type.startsWith('agent-rp/story-') || event.ignorable === true), true)
 
   assert.deepEqual(await runStoryTurnPipeline(input), result)
   assert.equal(calls, 8)
@@ -211,7 +211,7 @@ test('materializes continuity from the actually visible reply instead of the pre
   })
   session.append('turn/start', { turn: 1 })
   session.append('step/start', { turn: 1, step: 1 })
-  appendAgentRpSessionEvent(session, 'agent-rp/story-turn-brief', {
+  appendAgentRpSessionEvent(session, 'plugin:agent-rp/story-turn-brief', {
     format: 0,
     sessionId: String(session.id),
     workspaceId: workspace.manifest.id,
@@ -223,7 +223,7 @@ test('materializes continuity from the actually visible reply instead of the pre
     finalDraft: '流水线准备稿。',
     modelContext: '准备上下文。',
   })
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [],
     turn: 1,
     step: 1,
     message: createAssistantMessage({
@@ -271,8 +271,8 @@ test('materializes continuity from the actually visible reply instead of the pre
   assert.match(saved.documents.history, /阿梨在车站看见雨停/u)
   assert.match(saved.documents.characters[0]!.knowledge, /阿梨亲眼看见雨停/u)
   assert.match(saved.documents.proposals, /徽章在雨后反光/u)
-  assert.equal(session.events.filter(event => event.type === 'agent-rp/story-turn-materialized').length, 1)
-  assert.equal(session.events.find(event => event.type === 'agent-rp/story-stage-request')?.data.stage, 'continuity')
+  assert.equal(session.snapshotEvents().filter(event => event.type === 'plugin:agent-rp/story-turn-materialized').length, 1)
+  assert.equal(session.snapshotEvents().find(event => event.type === 'plugin:agent-rp/story-stage-request')?.data.stage, 'continuity')
 
   assert.deepEqual(await materializeStoryTurn({
     ctx: fake,
